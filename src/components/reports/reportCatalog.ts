@@ -1,0 +1,319 @@
+import { ReportItem } from './reportTypes';
+
+export const INITIAL_REPORTS_CATALOG: ReportItem[] = [
+  // Business Overview
+  {
+    id: 'pnl_standard',
+    name: 'Profit and Loss',
+    category: 'Business Overview',
+    description: 'Standard income statement showing revenue, cost of goods sold, operating expenses, and net profit.',
+    createdBy: 'System Generated',
+    lastVisited: '08/05/2025 03:07 PM',
+    isFavorite: true,
+  },
+  {
+    id: 'pnl_schedule_iii',
+    name: 'Profit and Loss (Schedule III)',
+    category: 'Business Overview',
+    description: 'Statutory income statement formatted per Indian Companies Act Schedule III compliance.',
+    createdBy: 'System Generated',
+    lastVisited: '-',
+    isFavorite: false,
+  },
+  {
+    id: 'pnl_horizontal',
+    name: 'Horizontal Profit and Loss',
+    category: 'Business Overview',
+    description: 'Side-by-side comparative P&L statement comparing current vs previous accounting periods.',
+    createdBy: 'System Generated',
+    lastVisited: '-',
+    isFavorite: false,
+  },
+  {
+    id: 'cash_flow_statement',
+    name: 'Cash Flow Statement',
+    category: 'Business Overview',
+    description: 'Analysis of cash inflows and outflows across Operating, Investing, and Financing activities.',
+    createdBy: 'System Generated',
+    lastVisited: '08/02/2025 11:20 AM',
+    isFavorite: true,
+  },
+  {
+    id: 'balance_sheet_standard',
+    name: 'Balance Sheet',
+    category: 'Business Overview',
+    description: 'Statement of financial position detailing Assets, Liabilities, and Owner Equity at a specific date.',
+    createdBy: 'System Generated',
+    lastVisited: '08/04/2025 04:15 PM',
+    isFavorite: true,
+  },
+  {
+    id: 'balance_sheet_horizontal',
+    name: 'Horizontal Balance Sheet',
+    category: 'Business Overview',
+    description: 'T-Format horizontal balance sheet displaying Assets on the right and Equity/Liabilities on the left.',
+    createdBy: 'System Generated',
+    lastVisited: '-',
+    isFavorite: false,
+  },
+  {
+    id: 'balance_sheet_schedule_iii',
+    name: 'Balance Sheet (Schedule III)',
+    category: 'Business Overview',
+    description: 'Statutory balance sheet structured per Schedule III regulatory guidelines for companies.',
+    createdBy: 'System Generated',
+    lastVisited: '-',
+    isFavorite: false,
+  },
+  {
+    id: 'business_performance_ratios',
+    name: 'Business Performance Ratios',
+    category: 'Business Overview',
+    description: 'Comprehensive financial health indicators: Liquidity, Solvency, Margins, Debt-Equity, and ROE.',
+    createdBy: 'System Generated',
+    lastVisited: '07/28/2025 09:45 AM',
+    isFavorite: false,
+  },
+  {
+    id: 'movement_of_equity',
+    name: 'Movement of Equity',
+    category: 'Business Overview',
+    description: 'Statement of changes in equity including share capital, retained earnings, and reserves.',
+    createdBy: 'System Generated',
+    lastVisited: '-',
+    isFavorite: false,
+  },
+
+  // Sales
+  {
+    id: 'sales_by_customer',
+    name: 'Sales by Customer',
+    category: 'Sales',
+    description: 'Breakdown of total revenue generated per client with invoice counts and average deal size.',
+    createdBy: 'System Generated',
+    lastVisited: '08/01/2025 02:30 PM',
+    isFavorite: true,
+  },
+  {
+    id: 'sales_by_item',
+    name: 'Sales by Item',
+    category: 'Sales',
+    description: 'Itemized sales performance tracking product line volumes, unit prices, and total billing.',
+    createdBy: 'System Generated',
+    lastVisited: '-',
+    isFavorite: false,
+  },
+  {
+    id: 'sales_by_salesperson',
+    name: 'Sales by Salesperson',
+    category: 'Sales',
+    description: 'Revenue performance and commission attribution aggregated by sales representative.',
+    createdBy: 'System Generated',
+    lastVisited: '-',
+    isFavorite: false,
+  },
+  {
+    id: 'sales_summary',
+    name: 'Sales Summary',
+    category: 'Sales',
+    description: 'Executive summary of gross sales, discounts, tax collections, and net sales per month/quarter.',
+    createdBy: 'System Generated',
+    lastVisited: '07/25/2025 10:00 AM',
+    isFavorite: false,
+  },
+
+  // Receivables
+  {
+    id: 'aged_receivables',
+    name: 'Aged Receivables',
+    category: 'Receivables',
+    description: 'Invoice aging schedule categorizing unpaid client balances into 1-30, 31-60, 61-90, and 90+ day buckets.',
+    createdBy: 'System Generated',
+    lastVisited: '08/03/2025 01:10 PM',
+    isFavorite: true,
+  },
+  {
+    id: 'customer_balances',
+    name: 'Customer Balances',
+    category: 'Receivables',
+    description: 'Summary of outstanding credit, unapplied retainer payments, and net receivable balance per client.',
+    createdBy: 'System Generated',
+    lastVisited: '-',
+    isFavorite: false,
+  },
+
+  // Payments Received
+  {
+    id: 'payments_received_summary',
+    name: 'Payments Received Summary',
+    category: 'Payments Received',
+    description: 'Detailed log of client remittances categorized by payment method (Wire, Bank, Card, UPI, Check).',
+    createdBy: 'System Generated',
+    lastVisited: '-',
+    isFavorite: false,
+  },
+
+  // Recurring Invoices
+  {
+    id: 'recurring_invoices_summary',
+    name: 'Recurring Invoices Summary',
+    category: 'Recurring Invoices',
+    description: 'Audit report of active recurring billing schedules, billing cycles, and automated next run dates.',
+    createdBy: 'System Generated',
+    lastVisited: '-',
+    isFavorite: false,
+  },
+
+  // Payables
+  {
+    id: 'aged_payables',
+    name: 'Aged Payables',
+    category: 'Payables',
+    description: 'Vendor bill aging breakdown tracking outstanding vendor payables across 30, 60, and 90+ day intervals.',
+    createdBy: 'System Generated',
+    lastVisited: '07/29/2025 05:00 PM',
+    isFavorite: false,
+  },
+  {
+    id: 'vendor_balances',
+    name: 'Vendor Balances',
+    category: 'Payables',
+    description: 'Net outstanding payable balance per supplier and vendor credit note balances.',
+    createdBy: 'System Generated',
+    lastVisited: '-',
+    isFavorite: false,
+  },
+
+  // Purchases and Expenses
+  {
+    id: 'expenses_by_category',
+    name: 'Expenses by Category',
+    category: 'Purchases and Expenses',
+    description: 'Distribution of firm expenses across chart of accounts categories, billable vs non-billable spend.',
+    createdBy: 'System Generated',
+    lastVisited: '08/04/2025 09:12 AM',
+    isFavorite: true,
+  },
+  {
+    id: 'purchase_by_vendor',
+    name: 'Purchase by Vendor',
+    category: 'Purchases and Expenses',
+    description: 'Vendor procurement volume breakdown and contractor bill summaries.',
+    createdBy: 'System Generated',
+    lastVisited: '-',
+    isFavorite: false,
+  },
+
+  // Taxes
+  {
+    id: 'tax_summary',
+    name: 'Tax Summary & GST/VAT Audit',
+    category: 'Taxes',
+    description: 'Tax liability reconciliation comparing Output Tax collected vs Input Tax Credit (ITC) claimed.',
+    createdBy: 'System Generated',
+    lastVisited: '07/31/2025 11:40 AM',
+    isFavorite: false,
+  },
+
+  // Banking
+  {
+    id: 'bank_reconciliation_summary',
+    name: 'Bank Reconciliation Summary',
+    category: 'Banking',
+    description: 'Audit statement matching general ledger bank accounts against bank statement balances and uncleared checks.',
+    createdBy: 'System Generated',
+    lastVisited: '08/02/2025 03:30 PM',
+    isFavorite: false,
+  },
+  {
+    id: 'cash_flow_projection',
+    name: 'Cash Flow Projection',
+    category: 'Banking',
+    description: 'Forward-looking 30, 60, and 90-day cash position forecast based on expected receivables and payables.',
+    createdBy: 'System Generated',
+    lastVisited: '-',
+    isFavorite: false,
+  },
+
+  // Projects and Timesheet
+  {
+    id: 'project_profitability',
+    name: 'Project Profitability',
+    category: 'Projects and Timesheet',
+    description: 'Project-wise P&L analyzing allocated budget, billed income, subcontractor costs, and gross margins.',
+    createdBy: 'System Generated',
+    lastVisited: '08/05/2025 02:15 PM',
+    isFavorite: true,
+  },
+  {
+    id: 'unbilled_time_expenses',
+    name: 'Unbilled Time & Expenses',
+    category: 'Projects and Timesheet',
+    description: 'Accrued unbilled billable hours and billable expenses pending client invoice generation.',
+    createdBy: 'System Generated',
+    lastVisited: '-',
+    isFavorite: false,
+  },
+
+  // Accountant
+  {
+    id: 'trial_balance',
+    name: 'Trial Balance',
+    category: 'Accountant',
+    description: 'Full chart of accounts closing trial balance displaying debit and credit balance equality.',
+    createdBy: 'System Generated',
+    lastVisited: '08/04/2025 10:20 AM',
+    isFavorite: true,
+  },
+  {
+    id: 'general_ledger',
+    name: 'General Ledger',
+    category: 'Accountant',
+    description: 'Detailed transaction ledger per account with opening balances, debit/credit postings, and running balances.',
+    createdBy: 'System Generated',
+    lastVisited: '08/05/2025 01:45 PM',
+    isFavorite: true,
+  },
+  {
+    id: 'journal_report',
+    name: 'Journal Report',
+    category: 'Accountant',
+    description: 'Chronological audit trail of all manual journal entries posted with line-item debit/credit details.',
+    createdBy: 'System Generated',
+    lastVisited: '-',
+    isFavorite: false,
+  },
+
+  // Currency
+  {
+    id: 'currency_revaluation',
+    name: 'Unrealized Gain/Loss (FX)',
+    category: 'Currency',
+    description: 'Foreign exchange currency revaluation summary for foreign currency bank accounts and invoices.',
+    createdBy: 'System Generated',
+    lastVisited: '-',
+    isFavorite: false,
+  },
+
+  // Activity
+  {
+    id: 'audit_trail_activity',
+    name: 'Audit Trail & Activity Log',
+    category: 'Activity',
+    description: 'Chronological security log tracking user actions, document creations, edits, and transaction locks.',
+    createdBy: 'System Generated',
+    lastVisited: '08/01/2025 04:00 PM',
+    isFavorite: false,
+  },
+
+  // Automation
+  {
+    id: 'automation_logs',
+    name: 'Automation Execution Logs',
+    category: 'Automation',
+    description: 'System audit logs for automated invoice generation, late fee calculations, and recurring postings.',
+    createdBy: 'System Generated',
+    lastVisited: '-',
+    isFavorite: false,
+  },
+];

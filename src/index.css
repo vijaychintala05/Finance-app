@@ -1,0 +1,89 @@
+@import "tailwindcss";
+
+@variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-primary-blue: #2563eb;
+  --color-primary-blue-hover: #1d4ed8;
+  --color-sidebar-blue: #1d50bd;
+  --color-sidebar-darker: #1742a1;
+  --color-ink: #1e293b;
+  --color-body-text: #334155;
+  --color-muted-text: #64748b;
+  --color-hairline: #e2e8f0;
+  --color-hairline-soft: #f1f5f9;
+  --color-canvas: #f8fafc;
+  --color-surface-soft: #f1f5f9;
+  --color-surface-strong: #e2e8f0;
+}
+
+/* Custom sleek scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.3);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.5);
+}
+
+/* Utility classes for component styles */
+.btn-primary-blue {
+  background-color: #2563eb;
+  color: #ffffff;
+  font-weight: 600;
+  border-radius: 0.5rem;
+  padding: 0.625rem 1.25rem;
+  transition: all 0.15s ease-in-out;
+}
+.btn-primary-blue:hover {
+  background-color: #1d4ed8;
+}
+
+.card-books {
+  background-color: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.75rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+}
+
+@media print {
+  /* Hide non-printable app layout elements */
+  header, nav, aside, .print\:hidden {
+    display: none !important;
+  }
+
+  body {
+    background-color: #ffffff !important;
+    color: #000000 !important;
+  }
+
+  /* Reset fixed overlay for full-page print */
+  .fixed.inset-0 {
+    position: static !important;
+    background: transparent !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    display: block !important;
+  }
+
+  .max-h-\[92vh\], .max-h-\[90vh\] {
+    max-height: none !important;
+    box-shadow: none !important;
+    border: none !important;
+  }
+
+  .overflow-y-auto {
+    overflow: visible !important;
+  }
+}
+

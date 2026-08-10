@@ -15,14 +15,16 @@ export interface SearchResultItem {
 }
 
 interface GlobalSearchBarProps {
-  onNavigate?: (tab: string, options?: { entityId?: string }) => void;
+  onNavigate?: (tab: string, options?: { entityId?: string; autoCreate?: boolean }) => void;
+  isMobileTrigger?: boolean;
 }
 
-export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate }) => {
+export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, isMobileTrigger }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResultItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
 
   const {
@@ -42,6 +44,7 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate }) 
 
   const apiClient = useMemo(() => new ApiClient(), []);
   const inputRef = useRef<HTMLInputElement>(null);
+  const requestSeqRef = useRef(0);
 
   // Keyboard shortcut: Cmd/Ctrl + K and Escape
   useEffect(() => {
@@ -58,22 +61,31 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate }) 
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // Debounced search
+  // Debounced search with stale request protection
   useEffect(() => {
-    if (!query.trim()) {
+    const trimmed = query.trim();
+    if (!trimmed || trimmed.length < 2) {
       setResults([]);
       setSelectedIndex(0);
+      setLoading(false);
+      setError(null);
       return;
     }
 
+    const currentSeq = ++requestSeqRef.current;
+    setError(null);
+    setLoading(true);
+
     const timer = setTimeout(async () => {
-      setLoading(true);
-      const q = query.trim().toLowerCase();
-      const numQ = Number(query.replace(/[^0-9.]/g, '')) || -999999;
+      const q = trimmed.toLowerCase();
+      const numQ = Number(trimmed.replace(/[^0-9.]/g, '')) || -999999;
 
       try {
         // Try backend search first
-        const res = await apiClient.get<{ results: any[] }>(`/search?q=${encodeURIComponent(query)}`);
+        const res = await apiClient.get<{ results: any[] }>(`/search?q=${encodeURIComponent(trimmed)}`);
+        // If newer request occurred, discard
+        if (currentSeq !== requestSeqRef.current) return;
+
         if (res.data?.results && res.data.results.length > 0) {
           const mapped: SearchResultItem[] = res.data.results.map((r: any) => {
             let tabTarget = 'dashboard';
@@ -103,11 +115,14 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate }) 
           setLoading(false);
           return;
         }
-      } catch {
-        // Fallback to local memory search
+      } catch (err) {
+        // If newer request occurred, discard
+        if (currentSeq !== requestSeqRef.current) return;
+        console.warn('[GlobalSearch UI] Backend search failed, utilizing local cache fallback');
       }
 
-      // Local In-Memory Search
+      // Local In-Memory Search Fallback
+      if (currentSeq !== requestSeqRef.current) return;
       const localResults: SearchResultItem[] = [];
 
       // 1. Invoices
@@ -362,19 +377,30 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate }) 
   return (
     <>
       {/* Search Input Trigger in Header */}
-      <div className="relative w-full">
-        <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400 pointer-events-none" />
-        <input
-          type="text"
-          readOnly
+      {isMobileTrigger ? (
+        <button
           onClick={() => setIsOpen(true)}
-          placeholder="Search invoices, customers, bills, accounts... (⌘K)"
-          className="w-full bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700/80 rounded-2xl pl-9 pr-14 py-1.5 text-xs font-medium text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 cursor-pointer hover:bg-slate-200/70 transition-colors"
-        />
-        <kbd className="absolute right-3 top-2 px-1.5 py-0.5 text-[10px] font-mono font-medium text-slate-400 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded shadow-2xs pointer-events-none">
-          ⌘K
-        </kbd>
-      </div>
+          className="p-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-colors cursor-pointer border border-slate-200 dark:border-slate-700 shadow-2xs"
+          title="Search (⌘K)"
+          aria-label="Search Records"
+        >
+          <Search className="w-4 h-4 text-slate-600 dark:text-slate-300" />
+        </button>
+      ) : (
+        <div className="relative w-full">
+          <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400 pointer-events-none" />
+          <input
+            type="text"
+            readOnly
+            onClick={() => setIsOpen(true)}
+            placeholder="Search invoices, customers, bills, accounts... (⌘K)"
+            className="w-full bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700/80 rounded-2xl pl-9 pr-14 py-1.5 text-xs font-medium text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 cursor-pointer hover:bg-slate-200/70 transition-colors"
+          />
+          <kbd className="absolute right-3 top-2 px-1.5 py-0.5 text-[10px] font-mono font-medium text-slate-400 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded shadow-2xs pointer-events-none">
+            ⌘K
+          </kbd>
+        </div>
+      )}
 
       {/* Global Search Modal Overlay */}
       {isOpen && (

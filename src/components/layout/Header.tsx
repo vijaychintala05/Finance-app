@@ -152,13 +152,18 @@ export const Header: React.FC<HeaderProps> = ({
         )}
       </div>
 
-      {/* Center: Global Search Bar */}
+      {/* Center: Global Search Bar (Desktop) */}
       <div className="hidden md:flex items-center flex-1 max-w-md mx-6">
-        <GlobalSearchBar onNavigate={(tab) => onNavigate && onNavigate(tab)} />
+        <GlobalSearchBar onNavigate={(tab, opts) => onNavigate && onNavigate(tab, opts)} />
       </div>
 
-      {/* Right: Global + New Dropdown & Theme / Utilities */}
+      {/* Right: Mobile Search, Global + New Dropdown & Theme / Utilities */}
       <div className="flex items-center space-x-2.5">
+        {/* Mobile Search Trigger */}
+        <div className="md:hidden">
+          <GlobalSearchBar onNavigate={(tab, opts) => onNavigate && onNavigate(tab, opts)} isMobileTrigger={true} />
+        </div>
+
         {/* Global + New Dropdown Button */}
         <div className="relative" ref={newMenuRef}>
           <button

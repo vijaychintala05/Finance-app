@@ -172,7 +172,7 @@ export class Phase8Controller {
     try {
       const orgId = req.auth!.organizationId;
       const { q } = req.query;
-      const results = await GlobalSearchService.search(orgId, (q as string) || '');
+      const results = await GlobalSearchService.search(orgId, (q as string) || '', req.auth?.permissions);
       res.json({ results });
     } catch (err: any) {
       console.error('[GlobalSearch Error]:', err?.stack || err?.message || err);

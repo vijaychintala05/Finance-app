@@ -68,7 +68,10 @@ export const MobileNav: React.FC<MobileNavProps> = ({
       label: 'Banking & Cash',
       icon: <Landmark className="w-5 h-5" />,
       defaultTab: 'banking',
-      subItems: [{ id: 'banking', label: 'Bank & Cash Accounts' }],
+      subItems: [
+        { id: 'banking', label: 'Bank & Cash Accounts' },
+        { id: 'bank_reconciliation', label: 'Bank Reconciliation' },
+      ],
     },
     {
       id: 'sales_section',

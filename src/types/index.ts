@@ -2,9 +2,12 @@
  * FirmBooks - Core Data Models & TypeScript Definitions
  */
 
+export * from './banking';
+
 export type NavigationTab =
   | 'dashboard'
   | 'banking'
+  | 'bank_reconciliation'
   | 'projects'
   | 'clients'
   | 'salespersons'
@@ -119,6 +122,7 @@ export type AccountSubType =
 
 export interface Account {
   id: string;
+  organizationId?: string;
   code: string;
   name: string;
   type: AccountType;
@@ -142,6 +146,7 @@ export interface Account {
 
 export interface PeriodLock {
   id: string;
+  organizationId?: string;
   lockDate: string; // YYYY-MM-DD
   region: string; // e.g. "North America / Global", "APAC / India", "EMEA"
   lockedBy: string; // Name & Role
@@ -154,6 +159,7 @@ export interface PeriodLock {
 
 export interface Salesperson {
   id: string;
+  organizationId?: string;
   name: string;
   code: string;
   email: string;
@@ -167,6 +173,7 @@ export interface Salesperson {
 
 export interface Client {
   id: string;
+  organizationId?: string;
   name: string;
   companyName: string;
   email: string;
@@ -181,6 +188,7 @@ export interface Client {
 
 export interface Vendor {
   id: string;
+  organizationId?: string;
   name: string;
   companyName?: string;
   contactPerson?: string;
@@ -199,6 +207,7 @@ export type ProjectBudgetType = 'Fixed Cost' | 'Time & Materials' | 'Task Hours'
 
 export interface Project {
   id: string;
+  organizationId?: string;
   code: string; // e.g. PRJ-101
   name: string;
   clientId: string;
@@ -216,6 +225,7 @@ export interface Project {
 
 export interface TimeEntry {
   id: string;
+  organizationId?: string;
   projectId: string;
   projectName: string;
   clientName: string;
@@ -255,6 +265,7 @@ export interface InvoiceEditHistory {
 
 export interface Invoice {
   id: string;
+  organizationId?: string;
   invoiceNumber: string; // e.g. INV-2026-001
   clientId: string;
   clientName: string;
@@ -283,6 +294,7 @@ export type EstimateStatus = 'Draft' | 'Sent' | 'Accepted' | 'Declined' | 'Conve
 
 export interface Estimate {
   id: string;
+  organizationId?: string;
   estimateNumber: string; // e.g. EST-2026-001
   clientId: string;
   clientName: string;
@@ -310,6 +322,7 @@ export interface ExpenseItem {
 
 export interface Expense {
   id: string;
+  organizationId?: string;
   referenceNumber: string; // e.g. EXP-2026-042
   invoiceNumber?: string; // Vendor Invoice #
   vendorId?: string;
@@ -350,6 +363,7 @@ export interface JournalLine {
 
 export interface JournalEntry {
   id: string;
+  organizationId?: string;
   entryNumber: string; // e.g. JRN-2026-001
   date: string;
   reference: string;

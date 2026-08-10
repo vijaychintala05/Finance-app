@@ -74,6 +74,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       defaultTab: 'banking',
       subItems: [
         { id: 'banking', label: 'Bank & Cash Accounts' },
+        { id: 'bank_reconciliation', label: 'Bank Reconciliation' },
       ],
     },
     {

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useBooks } from '../../../context/BooksContext';
 import { formatCurrency, formatDate } from '../../../utils/formatters';
 
@@ -8,7 +8,8 @@ interface Props {
 }
 
 export const SalesReceivablesReports: React.FC<Props> = ({ reportId, dateRangeLabel }) => {
-  const { settings, invoices, clients, salespersons } = useBooks();
+  const { settings, invoices, clients, salespersons, paymentsReceived, creditNotes } = useBooks();
+  const [selectedClientId, setSelectedClientId] = useState<string>(clients[0]?.id || '');
 
   // Sales by Customer calculation
   const customerSalesMap = clients.map((client) => {
@@ -309,6 +310,202 @@ export const SalesReceivablesReports: React.FC<Props> = ({ reportId, dateRangeLa
                 <td className="p-3 text-right font-mono">{formatCurrency(grandTotalBilled, settings.currencySymbol)}</td>
                 <td className="p-3 text-right font-mono text-emerald-600">{formatCurrency(grandTotalPaid, settings.currencySymbol)}</td>
                 <td className="p-3 text-right font-mono text-purple-600">{formatCurrency(grandTotalCommission, settings.currencySymbol)}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+    );
+  }
+
+  // Customer Statement of Account
+  if (reportId === 'customer_statement') {
+    const activeClient = clients.find((c) => c.id === selectedClientId) || clients[0];
+    const clientInvoices = invoices.filter(
+      (inv) => inv.clientId === activeClient?.id || inv.clientName.toLowerCase() === activeClient?.name.toLowerCase()
+    );
+    const clientPayments = paymentsReceived.filter(
+      (p) => p.clientId === activeClient?.id || p.clientName?.toLowerCase() === activeClient?.name.toLowerCase()
+    );
+    const clientCredits = creditNotes.filter(
+      (c) => c.clientId === activeClient?.id || c.clientName?.toLowerCase() === activeClient?.name.toLowerCase()
+    );
+
+    // Build timeline entries
+    interface TimelineEntry {
+      id: string;
+      date: string;
+      type: 'Invoice' | 'Payment Received' | 'Credit Note';
+      refNumber: string;
+      description: string;
+      debit: number;
+      credit: number;
+    }
+
+    const timeline: TimelineEntry[] = [];
+
+    clientInvoices.forEach((inv) => {
+      timeline.push({
+        id: inv.id,
+        date: inv.issueDate,
+        type: 'Invoice',
+        refNumber: inv.invoiceNumber,
+        description: `Invoice generated - ${inv.status}`,
+        debit: inv.totalAmount,
+        credit: 0,
+      });
+    });
+
+    clientPayments.forEach((p) => {
+      timeline.push({
+        id: p.id,
+        date: p.paymentDate,
+        type: 'Payment Received',
+        refNumber: p.paymentNumber,
+        description: `Payment received via ${p.paymentMode || 'Bank/Cash'}`,
+        debit: 0,
+        credit: p.amount,
+      });
+    });
+
+    clientCredits.forEach((cn) => {
+      timeline.push({
+        id: cn.id,
+        date: cn.creditNoteDate,
+        type: 'Credit Note',
+        refNumber: cn.creditNoteNumber,
+        description: `Credit note issued - ${cn.reason || 'Adjustment'}`,
+        debit: 0,
+        credit: cn.totalAmount,
+      });
+    });
+
+    // Sort chronologically
+    timeline.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+    let runningBalance = 0;
+    const ledgerRows = timeline.map((entry) => {
+      runningBalance += entry.debit - entry.credit;
+      return {
+        ...entry,
+        balance: runningBalance,
+      };
+    });
+
+    const totalDebits = timeline.reduce((sum, e) => sum + e.debit, 0);
+    const totalCredits = timeline.reduce((sum, e) => sum + e.credit, 0);
+    const netBalanceDue = totalDebits - totalCredits;
+
+    return (
+      <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-8 shadow-xs max-w-5xl mx-auto space-y-6 text-xs">
+        {/* Customer Selector Header */}
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-4 bg-slate-50 dark:bg-slate-800/50 p-4 rounded-xl border border-slate-200 dark:border-slate-700">
+          <div>
+            <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 block mb-1">
+              Select Customer / Client
+            </label>
+            <select
+              value={selectedClientId}
+              onChange={(e) => setSelectedClientId(e.target.value)}
+              className="px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg font-bold text-xs text-slate-800 dark:text-slate-200 focus:outline-hidden"
+            >
+              {clients.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name} {c.companyName ? `(${c.companyName})` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="text-right">
+            <span className="text-[10px] uppercase font-bold text-slate-400 block">Statement Period</span>
+            <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">{dateRangeLabel}</span>
+          </div>
+        </div>
+
+        {/* Customer Header Card */}
+        {activeClient && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 border-b border-slate-200 dark:border-slate-800 pb-5">
+            <div>
+              <h2 className="text-lg font-black text-slate-900 dark:text-white">{activeClient.companyName || activeClient.name}</h2>
+              <p className="text-xs text-slate-500">Contact: {activeClient.name} • {activeClient.email}</p>
+              {activeClient.taxNumber && (
+                <p className="text-xs text-slate-500 mt-1 font-mono">Tax / GSTIN: {activeClient.taxNumber}</p>
+              )}
+            </div>
+
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div className="p-2.5 bg-blue-50 dark:bg-blue-950/40 border border-blue-100 dark:border-blue-900 rounded-xl">
+                <span className="text-[9px] font-bold text-blue-600 dark:text-blue-400 uppercase block">Total Billed</span>
+                <span className="text-xs font-black font-mono text-blue-700 dark:text-blue-300">{formatCurrency(totalDebits, settings.currencySymbol)}</span>
+              </div>
+              <div className="p-2.5 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-100 dark:border-emerald-900 rounded-xl">
+                <span className="text-[9px] font-bold text-emerald-600 dark:text-emerald-400 uppercase block">Total Paid/Credits</span>
+                <span className="text-xs font-black font-mono text-emerald-700 dark:text-emerald-300">{formatCurrency(totalCredits, settings.currencySymbol)}</span>
+              </div>
+              <div className="p-2.5 bg-amber-50 dark:bg-amber-950/40 border border-amber-100 dark:border-amber-900 rounded-xl">
+                <span className="text-[9px] font-bold text-amber-600 dark:text-amber-400 uppercase block">Net Balance Due</span>
+                <span className="text-xs font-black font-mono text-amber-700 dark:text-amber-300">{formatCurrency(netBalanceDue, settings.currencySymbol)}</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Ledger Table */}
+        <div className="overflow-x-auto border border-slate-200 dark:border-slate-800 rounded-xl">
+          <table className="w-full text-left">
+            <thead className="bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 font-bold uppercase text-[10px]">
+              <tr>
+                <th className="p-3">Date</th>
+                <th className="p-3">Type</th>
+                <th className="p-3">Reference #</th>
+                <th className="p-3">Description</th>
+                <th className="p-3 text-right">Debit ({settings.currencySymbol})</th>
+                <th className="p-3 text-right">Credit ({settings.currencySymbol})</th>
+                <th className="p-3 text-right">Balance ({settings.currencySymbol})</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-medium text-slate-800 dark:text-slate-200">
+              {ledgerRows.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="p-6 text-center text-slate-400 italic">
+                    No transactions recorded for this customer statement period.
+                  </td>
+                </tr>
+              ) : (
+                ledgerRows.map((row) => (
+                  <tr key={row.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                    <td className="p-3 text-slate-500 font-mono">{formatDate(row.date)}</td>
+                    <td className="p-3 font-bold">
+                      <span className={`px-2 py-0.5 rounded text-[10px] ${
+                        row.type === 'Invoice' ? 'bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300' :
+                        row.type === 'Payment Received' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300' :
+                        'bg-purple-50 text-purple-700 dark:bg-purple-950 dark:text-purple-300'
+                      }`}>
+                        {row.type}
+                      </span>
+                    </td>
+                    <td className="p-3 font-mono font-bold text-slate-900 dark:text-white">{row.refNumber}</td>
+                    <td className="p-3 text-slate-600 dark:text-slate-400">{row.description}</td>
+                    <td className="p-3 text-right font-mono font-bold text-blue-600 dark:text-blue-400">
+                      {row.debit > 0 ? formatCurrency(row.debit, settings.currencySymbol) : '-'}
+                    </td>
+                    <td className="p-3 text-right font-mono text-emerald-600 dark:text-emerald-400">
+                      {row.credit > 0 ? formatCurrency(row.credit, settings.currencySymbol) : '-'}
+                    </td>
+                    <td className="p-3 text-right font-mono font-bold text-slate-900 dark:text-white">
+                      {formatCurrency(row.balance, settings.currencySymbol)}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+            <tfoot className="bg-slate-100 dark:bg-slate-800 font-bold border-t border-slate-200 dark:border-slate-700">
+              <tr>
+                <td colSpan={4} className="p-3 text-right uppercase text-[10px]">Total Statement Activity:</td>
+                <td className="p-3 text-right font-mono text-blue-600 dark:text-blue-400">{formatCurrency(totalDebits, settings.currencySymbol)}</td>
+                <td className="p-3 text-right font-mono text-emerald-600 dark:text-emerald-400">{formatCurrency(totalCredits, settings.currencySymbol)}</td>
+                <td className="p-3 text-right font-mono text-amber-600 dark:text-amber-400">{formatCurrency(netBalanceDue, settings.currencySymbol)}</td>
               </tr>
             </tfoot>
           </table>

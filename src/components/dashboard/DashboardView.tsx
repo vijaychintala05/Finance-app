@@ -19,6 +19,7 @@ import {
   Megaphone,
   Plus,
   Receipt,
+  RefreshCw,
   ShieldAlert,
   SlidersHorizontal,
   TrendingUp,
@@ -310,19 +311,42 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     > = {};
 
     const now = new Date();
-    const monthsCount = cashFlowPeriod === 'six_months' ? 6 : 12;
 
-    for (let i = monthsCount - 1; i >= 0; i--) {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      const monthKey = d.toLocaleString('en-US', { month: 'short' });
-      const yearMonth = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-      monthsMap[yearMonth] = {
-        month: monthKey,
-        inflow: 0,
-        outflow: 0,
-        netFlow: 0,
-        timestamp: d.getTime(),
-      };
+    if (cashFlowPeriod === 'six_months') {
+      for (let i = 5; i >= 0; i--) {
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        const monthKey = d.toLocaleString('en-US', { month: 'short' });
+        const yearMonth = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        monthsMap[yearMonth] = {
+          month: monthKey,
+          inflow: 0,
+          outflow: 0,
+          netFlow: 0,
+          timestamp: d.getTime(),
+        };
+      }
+    } else {
+      // Fiscal Year Calculation
+      // Default fiscal year start month is 4 (April) unless specified
+      const startMonth = parseInt(String(settings.fiscalYearStart || '4'), 10) || 4; // 1-12
+      const currentMonth = now.getMonth() + 1; // 1-12
+      const fiscalYearStartYear = currentMonth >= startMonth ? now.getFullYear() : now.getFullYear() - 1;
+
+      for (let i = 0; i < 12; i++) {
+        const monthIndex = (startMonth - 1 + i) % 12;
+        const yearOffset = Math.floor((startMonth - 1 + i) / 12);
+        const year = fiscalYearStartYear + yearOffset;
+        const d = new Date(year, monthIndex, 1);
+        const monthKey = d.toLocaleString('en-US', { month: 'short' });
+        const yearMonth = `${year}-${String(monthIndex + 1).padStart(2, '0')}`;
+        monthsMap[yearMonth] = {
+          month: monthKey,
+          inflow: 0,
+          outflow: 0,
+          netFlow: 0,
+          timestamp: d.getTime(),
+        };
+      }
     }
 
     // Inflows from collected invoices
@@ -357,7 +381,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     });
 
     return Object.values(monthsMap).sort((a, b) => a.timestamp - b.timestamp);
-  }, [invoices, expenses, cashFlowPeriod]);
+  }, [invoices, expenses, cashFlowPeriod, settings.fiscalYearStart]);
 
   const totalInflowPeriod = useMemo(
     () => cashFlowAnalysisData.reduce((sum, m) => sum + m.inflow, 0),
@@ -440,7 +464,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     ? 'bg-blue-50/70 dark:bg-blue-950/30 border-blue-100 dark:border-blue-900/50'
                     : 'bg-amber-50/70 dark:bg-amber-950/30 border-amber-100 dark:border-amber-900/50'
                 }`}>
-                  <span className="text-[10px] uppercase font-bold text-slate-600 dark:text-slate-400 block">Net Liquid Flow</span>
+                  <span className="text-[10px] uppercase font-bold text-slate-600 dark:text-slate-400 block">Net Cash Flow</span>
                   <span className={`text-base font-black font-mono ${
                     netCashFlowPeriod >= 0 ? 'text-blue-700 dark:text-blue-300' : 'text-amber-700 dark:text-amber-300'
                   }`}>
@@ -569,63 +593,99 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       case 'receivables':
         return (
-          <div key={widget.id} className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col justify-between shadow-xs">
-            <div>
-              <div className="flex justify-between items-start">
-                <div>
-                  <span className="text-xs uppercase tracking-wider font-bold text-slate-400">
-                    Accounts Receivable
-                  </span>
-                  <h3 className="text-sm font-semibold text-slate-700 mt-0.5">Total Receivables</h3>
-                </div>
-                <span className="text-xs font-bold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-lg border border-blue-100">
-                  Active Billing
-                </span>
-              </div>
-
-              <div className="mt-4 text-3xl sm:text-4xl font-extrabold font-mono tracking-tight text-slate-900">
-                {formatCurrency(accountsReceivable, settings.currencySymbol)}
-              </div>
-
-              <div className="mt-6 flex flex-col gap-3">
-                <div>
-                  <div className="flex justify-between text-xs mb-1">
-                    <span className="text-slate-400 uppercase tracking-wider font-semibold">Current</span>
-                    <span className="font-mono font-bold text-slate-800">
-                      {formatCurrency(currentReceivables, settings.currencySymbol)}
+          <div key={widget.id} className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col justify-between shadow-2xs h-full">
+            <div className="space-y-4">
+              {/* Receivables Section */}
+              <div>
+                <div className="flex justify-between items-start mb-1">
+                  <div>
+                    <span className="text-[10px] uppercase tracking-wider font-extrabold text-blue-600 dark:text-blue-400 block">
+                      Accounts Receivable
                     </span>
+                    <h3 className="text-sm font-black text-slate-900 dark:text-white">Total Receivables</h3>
                   </div>
-                  <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden">
-                    <div
-                      className="bg-blue-500 h-full rounded-full transition-all duration-500"
-                      style={{ width: `${arPercentCurrent}%` }}
-                    />
-                  </div>
+                  <button
+                    onClick={() => onNavigate('invoices')}
+                    className="text-xs font-bold text-blue-600 dark:text-blue-400 hover:underline"
+                  >
+                    Invoices →
+                  </button>
                 </div>
 
-                <div>
-                  <div className="flex justify-between text-xs mb-1">
-                    <span className="text-slate-400 uppercase tracking-wider font-semibold">Overdue</span>
-                    <span className="font-mono font-bold text-rose-500">
-                      {formatCurrency(overdueReceivables, settings.currencySymbol)}
+                <div className="text-2xl font-black font-mono tracking-tight text-slate-900 dark:text-white">
+                  {formatCurrency(accountsReceivable, settings.currencySymbol)}
+                </div>
+
+                <div className="mt-2.5 space-y-1.5">
+                  <div>
+                    <div className="flex justify-between text-[11px] mb-0.5">
+                      <span className="text-slate-400 uppercase tracking-wider font-bold text-[9px]">Current</span>
+                      <span className="font-mono font-bold text-slate-800 dark:text-slate-200">
+                        {formatCurrency(currentReceivables, settings.currencySymbol)}
+                      </span>
+                    </div>
+                    <div className="w-full h-2 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                      <div
+                        className="bg-blue-500 h-full rounded-full transition-all duration-500"
+                        style={{ width: `${arPercentCurrent}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between text-[11px] mb-0.5">
+                      <span className="text-slate-400 uppercase tracking-wider font-bold text-[9px]">Overdue</span>
+                      <span className="font-mono font-bold text-rose-500">
+                        {formatCurrency(overdueReceivables, settings.currencySymbol)}
+                      </span>
+                    </div>
+                    <div className="w-full h-2 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                      <div
+                        className="bg-rose-500 h-full rounded-full transition-all duration-500"
+                        style={{ width: `${arPercentOverdue}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Payables Section */}
+              <div className="border-t border-slate-100 dark:border-slate-800 pt-3.5">
+                <div className="flex justify-between items-start mb-1">
+                  <div>
+                    <span className="text-[10px] uppercase tracking-wider font-extrabold text-rose-600 dark:text-rose-400 block">
+                      Accounts Payable
+                    </span>
+                    <h3 className="text-sm font-black text-slate-900 dark:text-white">Total Payables</h3>
+                  </div>
+                  <button
+                    onClick={() => onNavigate('expenses')}
+                    className="text-xs font-bold text-rose-600 dark:text-rose-400 hover:underline"
+                  >
+                    Expenses →
+                  </button>
+                </div>
+
+                <div className="text-2xl font-black font-mono tracking-tight text-slate-900 dark:text-white">
+                  {formatCurrency(totalPayables, settings.currencySymbol)}
+                </div>
+
+                <div className="mt-2.5 p-2.5 bg-rose-50/60 dark:bg-rose-950/30 rounded-xl border border-rose-100 dark:border-rose-900/50 flex justify-between items-center text-xs">
+                  <div>
+                    <span className="font-bold text-rose-900 dark:text-rose-200 block text-[11px]">Overdue Bills</span>
+                    <span className="text-[10px] text-rose-700 dark:text-rose-400">
+                      {overdueBillsCount} {overdueBillsCount === 1 ? 'bill requires' : 'bills require'} settlement
                     </span>
                   </div>
-                  <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden">
-                    <div
-                      className="bg-rose-500 h-full rounded-full transition-all duration-500"
-                      style={{ width: `${arPercentOverdue}%` }}
-                    />
-                  </div>
+                  <button
+                    onClick={() => onNavigate('expenses')}
+                    className="px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-lg text-[10px] transition-colors cursor-pointer"
+                  >
+                    Settle
+                  </button>
                 </div>
               </div>
             </div>
-
-            <button
-              onClick={() => onNavigate('invoices')}
-              className="mt-6 w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer shadow-2xs"
-            >
-              View All Client Invoices →
-            </button>
           </div>
         );
 
@@ -752,13 +812,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   </div>
                 </div>
 
-                <button
-                  onClick={() => onNavigate('banking')}
-                  className="text-xs font-bold text-blue-600 dark:text-blue-400 hover:underline flex items-center space-x-1"
-                >
-                  <span>Open Banking</span>
-                  <ArrowUpRight className="w-3.5 h-3.5" />
-                </button>
+                <div className="flex items-center space-x-2">
+                  <button
+                    onClick={() => onNavigate('bank_reconciliation')}
+                    className="px-3 py-1.5 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 border border-indigo-200 dark:border-indigo-800 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                    <span>Reconcile</span>
+                  </button>
+                  <button
+                    onClick={() => onNavigate('banking')}
+                    className="text-xs font-bold text-blue-600 dark:text-blue-400 hover:underline flex items-center space-x-1"
+                  >
+                    <span>Open Banking</span>
+                    <ArrowUpRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -1585,15 +1654,75 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               onClick={() => onNavigate('reports')}
               className="px-3.5 py-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 rounded-xl text-xs font-semibold transition-all shadow-2xs cursor-pointer"
             >
-              P&L Financial Reports
+              View P&L
             </button>
-            <button
-              onClick={onOpenQuickCreate || (() => onNavigate('invoices'))}
-              className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-2xs transition-all cursor-pointer"
-            >
-              <Plus className="w-4 h-4" />
-              <span>New Entry</span>
-            </button>
+          </div>
+        </div>
+
+        {/* TOP-LEVEL 4 KPI CARDS: Revenue, Expenses, Profit, Cash */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {/* Revenue */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 p-5 rounded-2xl shadow-2xs">
+            <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 mb-1">
+              <span className="text-xs font-bold uppercase tracking-wider">Revenue</span>
+              <div className="w-8 h-8 rounded-xl bg-indigo-50 text-indigo-600 dark:bg-indigo-950 dark:text-indigo-400 flex items-center justify-center font-bold">
+                <TrendingUp className="w-4 h-4" />
+              </div>
+            </div>
+            <div className="text-2xl font-black font-mono text-slate-900 dark:text-white tracking-tight">
+              {formatCurrency(totalInvoiced, settings.currencySymbol)}
+            </div>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 font-medium">
+              Total invoiced sales revenue
+            </p>
+          </div>
+
+          {/* Expenses */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 p-5 rounded-2xl shadow-2xs">
+            <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 mb-1">
+              <span className="text-xs font-bold uppercase tracking-wider">Expenses</span>
+              <div className="w-8 h-8 rounded-xl bg-rose-50 text-rose-600 dark:bg-rose-950 dark:text-rose-400 flex items-center justify-center font-bold">
+                <Receipt className="w-4 h-4" />
+              </div>
+            </div>
+            <div className="text-2xl font-black font-mono text-slate-900 dark:text-white tracking-tight">
+              {formatCurrency(totalExpenses, settings.currencySymbol)}
+            </div>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 font-medium">
+              Total operational & vendor costs
+            </p>
+          </div>
+
+          {/* Profit */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 p-5 rounded-2xl shadow-2xs">
+            <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 mb-1">
+              <span className="text-xs font-bold uppercase tracking-wider">Profit</span>
+              <div className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-600 dark:bg-emerald-950 dark:text-emerald-400 flex items-center justify-center font-bold">
+                <Calculator className="w-4 h-4" />
+              </div>
+            </div>
+            <div className={`text-2xl font-black font-mono tracking-tight ${netOperatingProfit >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+              {formatCurrency(netOperatingProfit, settings.currencySymbol)}
+            </div>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 font-medium">
+              Gross sales minus operational expenses
+            </p>
+          </div>
+
+          {/* Cash */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 p-5 rounded-2xl shadow-2xs">
+            <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 mb-1">
+              <span className="text-xs font-bold uppercase tracking-wider">Cash</span>
+              <div className="w-8 h-8 rounded-xl bg-blue-50 text-blue-600 dark:bg-blue-950 dark:text-blue-400 flex items-center justify-center font-bold">
+                <Landmark className="w-4 h-4" />
+              </div>
+            </div>
+            <div className="text-2xl font-black font-mono text-slate-900 dark:text-white tracking-tight">
+              {formatCurrency(totalCashBank, settings.currencySymbol)}
+            </div>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 font-medium">
+              Liquid balances across Bank & Cash accounts
+            </p>
           </div>
         </div>
 

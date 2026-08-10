@@ -141,6 +141,15 @@ export const INITIAL_REPORTS_CATALOG: ReportItem[] = [
     lastVisited: '-',
     isFavorite: false,
   },
+  {
+    id: 'customer_statement',
+    name: 'Customer Statement of Account',
+    category: 'Receivables',
+    description: 'Itemized transaction statement detailing all invoice debits, payment credits, credit notes, and running balance per customer.',
+    createdBy: 'System Generated',
+    lastVisited: '08/08/2025 03:00 PM',
+    isFavorite: true,
+  },
 
   // Payments Received
   {

@@ -56,10 +56,10 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
         <div>
           <h2 className="text-xl font-bold text-slate-900 dark:text-slate-100 flex items-center space-x-2">
             <FileText className="w-6 h-6 text-blue-600" />
-            <span>Sales Invoices & Billing</span>
+            <span>Sales Invoices</span>
           </h2>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-            Create itemized client invoices, edit existing bills with audit logs, and track Accounts Receivable
+            Create tax invoices, issue payment reminders, track Accounts Receivable, and manage client balances
           </p>
         </div>
 
@@ -73,6 +73,52 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
           <Plus className="w-4 h-4" />
           <span>New Invoice</span>
         </button>
+      </div>
+
+      {/* KPI Summary Cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs">
+          <p className="text-[10px] font-extrabold uppercase tracking-wider text-amber-600 dark:text-amber-400">Total Outstanding AR</p>
+          <p className="text-xl font-black font-mono text-amber-600 dark:text-amber-400 mt-1">
+            {formatCurrency(
+              invoices.reduce((s, i) => s + (i.status !== 'Void' ? i.balanceDue : 0), 0),
+              settings.currencySymbol
+            )}
+          </p>
+          <p className="text-[10px] text-slate-400 mt-0.5">Uncollected invoice balance</p>
+        </div>
+
+        <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs">
+          <p className="text-[10px] font-extrabold uppercase tracking-wider text-rose-600 dark:text-rose-400">Overdue Balance</p>
+          <p className="text-xl font-black font-mono text-rose-600 dark:text-rose-400 mt-1">
+            {formatCurrency(
+              invoices
+                .filter((i) => i.status === 'Overdue' || (i.dueDate < new Date().toISOString().split('T')[0] && i.balanceDue > 0))
+                .reduce((s, i) => s + i.balanceDue, 0),
+              settings.currencySymbol
+            )}
+          </p>
+          <p className="text-[10px] text-slate-400 mt-0.5">Past due payment date</p>
+        </div>
+
+        <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs">
+          <p className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">Draft Invoices</p>
+          <p className="text-xl font-black font-mono text-slate-800 dark:text-slate-100 mt-1">
+            {invoices.filter((i) => i.status === 'Draft').length}
+          </p>
+          <p className="text-[10px] text-slate-400 mt-0.5">Pending dispatch to clients</p>
+        </div>
+
+        <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs">
+          <p className="text-[10px] font-extrabold uppercase tracking-wider text-blue-600 dark:text-blue-400">Total Invoiced (YTD)</p>
+          <p className="text-xl font-black font-mono text-slate-900 dark:text-slate-100 mt-1">
+            {formatCurrency(
+              invoices.reduce((s, i) => s + (i.status !== 'Void' ? i.totalAmount : 0), 0),
+              settings.currencySymbol
+            )}
+          </p>
+          <p className="text-[10px] text-slate-400 mt-0.5">Total billing generated</p>
+        </div>
       </div>
 
       {/* Filter & Search */}

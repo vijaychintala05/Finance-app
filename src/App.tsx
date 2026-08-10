@@ -62,6 +62,9 @@ function MainAppLayout() {
       case 'banking_overview':
       case 'banking':
         return <BankingView />;
+      case 'bank_reconciliation':
+      case 'reconciliation':
+        return <BankingView autoOpenReconcile={true} />;
 
       // Sales Sub-Tabs
       case 'sales_overview':
@@ -166,6 +169,7 @@ function MainAppLayout() {
       <div className="flex-1 flex flex-col h-full overflow-hidden min-w-0">
         <Header
           currentTab={activeTab as any}
+          onNavigate={handleNavigate}
           onOpenMobileNav={() => setMobileNavOpen(true)}
           onOpenOrgSwitcher={() => setIsOrgSwitcherOpen(true)}
           onOpenOrgWizard={() => setIsOrgWizardOpen(true)}

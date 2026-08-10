@@ -583,12 +583,12 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
               {editingInvoice ? (
                 <>
                   <Edit3 className="w-4 h-4" />
-                  <span>Save Changes & Log Edit Reason</span>
+                  <span>Save Changes</span>
                 </>
               ) : (
                 <>
                   <FileText className="w-4 h-4" />
-                  <span>Create & View Invoice Bill</span>
+                  <span>Create Invoice</span>
                 </>
               )}
             </button>

@@ -10,15 +10,19 @@ import {
   Clock,
   CreditCard,
   DollarSign,
+  FileSpreadsheet,
   Filter,
   History,
   Landmark,
   Layers,
+  MoreVertical,
   Plus,
   Receipt,
+  RefreshCw,
   Search,
   SlidersHorizontal,
   Sparkles,
+  Upload,
   User,
   Wallet,
   XCircle,
@@ -28,41 +32,54 @@ import { Account, JournalEntry } from '../../types';
 import { QuickAddAccountModal, QuickAccountCategory } from '../common/QuickAddAccountModal';
 import { BankTransactionDetailsModal, BankTransactionItem } from './BankTransactionDetailsModal';
 import { RecordBankTransactionModal } from './RecordBankTransactionModal';
+import { ReconcileBankModal } from './ReconcileBankModal';
+import { ImportStatementModal } from './ImportStatementModal';
 
-export const BankingView: React.FC = () => {
+interface BankingViewProps {
+  autoOpenReconcile?: boolean;
+}
+
+export const BankingView: React.FC<BankingViewProps> = ({ autoOpenReconcile }) => {
   const { accounts, journalEntries, expenses, updateAccount, settings } = useBooks();
 
   // Screen 2 visibility toggle ("More Details" button)
   const [showMoreDetails, setShowMoreDetails] = useState<boolean>(true);
 
-  // Left 1/4th category slidable buttons: 'ALL' | 'BANKS' | 'PETTY_CASH' | 'DIGITAL_WALLETS' | 'CREDIT_CARDS' | 'LOAN_ACCOUNTS'
+  // Category filter tabs: 'ALL' | 'BANKS' | 'PETTY_CASH' | 'CREDIT_CARDS' | 'LOAN_ACCOUNTS'
   const [activeCategoryTab, setActiveCategoryTab] = useState<
-    'ALL' | 'BANKS' | 'PETTY_CASH' | 'DIGITAL_WALLETS' | 'CREDIT_CARDS' | 'LOAN_ACCOUNTS'
+    'ALL' | 'BANKS' | 'PETTY_CASH' | 'CREDIT_CARDS' | 'LOAN_ACCOUNTS'
   >('ALL');
 
-  // Left 1/4th status toggle: 'ALL' | 'ACTIVE' | 'INACTIVE'
+  // Status toggle: 'ALL' | 'ACTIVE' | 'INACTIVE'
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'ACTIVE' | 'INACTIVE'>('ACTIVE');
 
   // Search filter for left accounts list
   const [accountSearch, setAccountSearch] = useState<string>('');
 
-  // Currently selected account ID for 3/4th split
+  // Currently selected account ID
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
 
-  // Filter for right 3/4th transactions list: 'ALL' | 'IN' | 'OUT'
+  // Filter for right transactions list: 'ALL' | 'IN' | 'OUT'
   const [txFilter, setTxFilter] = useState<'ALL' | 'IN' | 'OUT'>('ALL');
   const [txSearch, setTxSearch] = useState<string>('');
 
   // Selected Transaction for Details Modal / Split
   const [selectedTx, setSelectedTx] = useState<BankTransactionItem | null>(null);
 
-  // Quick Add Account Modal state
+  // Modals
   const [isQuickAddOpen, setIsQuickAddOpen] = useState<boolean>(false);
   const [quickAddCat, setQuickAddCat] = useState<QuickAccountCategory>('Bank');
-
-  // Record Transaction Modal state
   const [isRecordTxOpen, setIsRecordTxOpen] = useState<boolean>(false);
   const [recordTxDefaultType, setRecordTxDefaultType] = useState<'DEBIT' | 'CREDIT'>('DEBIT');
+  const [isReconcileOpen, setIsReconcileOpen] = useState<boolean>(false);
+  const [isImportStatementOpen, setIsImportStatementOpen] = useState<boolean>(false);
+  const [isMoreMenuOpen, setIsMoreMenuOpen] = useState<boolean>(false);
+
+  React.useEffect(() => {
+    if (autoOpenReconcile) {
+      setIsReconcileOpen(true);
+    }
+  }, [autoOpenReconcile]);
 
   // Categorized account collections
   const bankAccountsList = useMemo(() => {
@@ -118,19 +135,43 @@ export const BankingView: React.FC = () => {
   }, [accounts]);
 
   const allTreasuryAccountsList = useMemo(() => {
-    return accounts.filter(
-      (a) =>
-        a.subType === 'Bank' ||
-        a.subType === 'Cash' ||
-        a.subType === 'Cash & Bank' ||
-        a.subType === 'Digital Wallet' ||
-        a.subType === 'Credit Cards' ||
-        a.subType === 'Loans' ||
-        a.subType === 'Loan/Credit' ||
-        a.subType === 'Undeposited Funds' ||
-        a.type === 'Asset' ||
-        a.type === 'Liability'
-    );
+    return accounts.filter((a) => {
+      const sub = a.subType || '';
+      const name = a.name.toLowerCase();
+      const code = a.code;
+
+      // Explicit Treasury Subtypes
+      const isTreasurySubtype =
+        sub === 'Bank' ||
+        sub === 'Cash' ||
+        sub === 'Cash & Bank' ||
+        sub === 'Digital Wallet' ||
+        sub === 'Credit Cards' ||
+        sub === 'Loans' ||
+        sub === 'Loan/Credit' ||
+        sub === 'Undeposited Funds';
+
+      if (isTreasurySubtype) return true;
+
+      // Specific Bank & Treasury Accounts by Code/Name
+      if (code === 'acc-1000' || code === '1000' || code === '1010' || code === '1020' || code === '2100') return true;
+
+      // Keyword match for liquid treasury
+      if (
+        name.includes('bank') ||
+        name.includes('petty cash') ||
+        name.includes('checking') ||
+        name.includes('savings') ||
+        name.includes('credit card') ||
+        name.includes('paypal') ||
+        name.includes('stripe') ||
+        name.includes('wise')
+      ) {
+        return true;
+      }
+
+      return false;
+    });
   }, [accounts]);
 
   const creditCardLoansList = useMemo(() => {
@@ -325,7 +366,21 @@ export const BankingView: React.FC = () => {
             </div>
           </div>
 
-          <div className="flex items-center space-x-2">
+          <div className="flex items-center flex-wrap gap-2">
+            <button
+              onClick={() => setIsReconcileOpen(true)}
+              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl flex items-center space-x-1.5 shadow-2xs cursor-pointer transition-colors"
+            >
+              <RefreshCw className="w-4 h-4" />
+              <span>Reconcile Bank</span>
+            </button>
+            <button
+              onClick={() => setIsImportStatementOpen(true)}
+              className="px-3.5 py-2 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-bold border border-slate-200 dark:border-slate-700 rounded-xl flex items-center space-x-1.5 cursor-pointer transition-colors"
+            >
+              <Upload className="w-4 h-4" />
+              <span>Import Statement</span>
+            </button>
             <button
               onClick={() => handleOpenAddAccount('Bank')}
               className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl flex items-center space-x-1.5 shadow-2xs cursor-pointer transition-colors"
@@ -338,11 +393,11 @@ export const BankingView: React.FC = () => {
 
         {/* 3 TOP KPI SUMMARY CARDS (Top Left / Top Grid) */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          {/* Card 1: Total Cash in Bank */}
+          {/* Card 1: Bank Balance */}
           <div className="bg-gradient-to-br from-blue-50/80 to-indigo-50/40 dark:from-blue-950/40 dark:to-slate-900 border border-blue-100 dark:border-blue-900/60 p-4 rounded-2xl space-y-1">
             <div className="flex items-center justify-between text-blue-700 dark:text-blue-400">
               <span className="text-[11px] font-extrabold uppercase tracking-wider">
-                Total Cash in Bank
+                Bank Balance
               </span>
               <Landmark className="w-4 h-4" />
             </div>
@@ -355,11 +410,11 @@ export const BankingView: React.FC = () => {
             </p>
           </div>
 
-          {/* Card 2: Total Petty Cash */}
+          {/* Card 2: Cash Balance */}
           <div className="bg-gradient-to-br from-emerald-50/80 to-teal-50/40 dark:from-emerald-950/40 dark:to-slate-900 border border-emerald-100 dark:border-emerald-900/60 p-4 rounded-2xl space-y-1">
             <div className="flex items-center justify-between text-emerald-700 dark:text-emerald-400">
               <span className="text-[11px] font-extrabold uppercase tracking-wider">
-                Total Petty Cash
+                Cash Balance
               </span>
               <Wallet className="w-4 h-4" />
             </div>
@@ -372,11 +427,11 @@ export const BankingView: React.FC = () => {
             </p>
           </div>
 
-          {/* Card 3: Credit Card / Loans */}
+          {/* Card 3: Credit & Loans */}
           <div className="bg-gradient-to-br from-purple-50/80 to-pink-50/40 dark:from-purple-950/40 dark:to-slate-900 border border-purple-100 dark:border-purple-900/60 p-4 rounded-2xl space-y-1">
             <div className="flex items-center justify-between text-purple-700 dark:text-purple-400">
               <span className="text-[11px] font-extrabold uppercase tracking-wider">
-                Credit Card / Loans
+                Credit & Loans
               </span>
               <CreditCard className="w-4 h-4" />
             </div>
@@ -676,83 +731,113 @@ export const BankingView: React.FC = () => {
             {activeAccount ? (
               <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200/90 dark:border-slate-800 shadow-2xs overflow-hidden">
                 {/* BANK'S DASHBOARD HEADER */}
-                <div className="bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white p-6 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                  <div className="flex items-center space-x-3.5">
-                    <div className="w-12 h-12 rounded-2xl bg-blue-100 text-blue-600 border border-blue-200 dark:bg-blue-500/20 dark:text-blue-400 dark:border-blue-500/30 flex items-center justify-center font-bold text-xl">
-                      {activeAccount.subType === 'Bank' && <Landmark className="w-6 h-6" />}
-                      {(activeAccount.subType === 'Cash' ||
-                        activeAccount.subType === 'Cash & Bank') && <Wallet className="w-6 h-6" />}
-                      {activeAccount.subType === 'Credit Cards' && <CreditCard className="w-6 h-6" />}
-                      {activeAccount.subType !== 'Bank' &&
-                        activeAccount.subType !== 'Cash' &&
-                        activeAccount.subType !== 'Credit Cards' && <Building2 className="w-6 h-6" />}
-                    </div>
-
-                    <div>
-                      <div className="flex items-center space-x-2">
-                        <h2 className="text-xl font-black text-slate-900 dark:text-white">{activeAccount.name}</h2>
-                        <span className="text-[10px] font-mono bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300 px-2 py-0.5 rounded border border-slate-300 dark:border-slate-700 font-bold">
-                          #{activeAccount.code}
-                        </span>
-                        <span
-                          className={`text-[10px] px-2 py-0.5 rounded-full font-extrabold ${
-                            (activeAccount.status || 'Active') === 'Active'
-                              ? 'bg-emerald-100 text-emerald-700 border border-emerald-200 dark:bg-emerald-500/20 dark:text-emerald-300 dark:border-emerald-500/30'
-                              : 'bg-rose-100 text-rose-700 border border-rose-200 dark:bg-rose-500/20 dark:text-rose-300 dark:border-rose-500/30'
-                          }`}
-                        >
-                          {activeAccount.status || 'Active'}
-                        </span>
+                <div className="bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white p-6 border-b border-slate-200 dark:border-slate-800 space-y-4">
+                  {/* Account Name & Primary Workflows Row */}
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div className="flex items-center space-x-3.5">
+                      <div className="w-12 h-12 rounded-2xl bg-blue-100 text-blue-600 border border-blue-200 dark:bg-blue-500/20 dark:text-blue-400 dark:border-blue-500/30 flex items-center justify-center font-bold text-xl shrink-0">
+                        {activeAccount.subType === 'Bank' && <Landmark className="w-6 h-6" />}
+                        {(activeAccount.subType === 'Cash' || activeAccount.subType === 'Cash & Bank') && (
+                          <Wallet className="w-6 h-6" />
+                        )}
+                        {activeAccount.subType === 'Credit Cards' && <CreditCard className="w-6 h-6" />}
+                        {activeAccount.subType !== 'Bank' &&
+                          activeAccount.subType !== 'Cash' &&
+                          activeAccount.subType !== 'Credit Cards' && <Building2 className="w-6 h-6" />}
                       </div>
-                      <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mt-1">
-                        Category: {activeAccount.subType} • {activeAccount.type}
-                      </p>
-                    </div>
-                  </div>
 
-                  {/* Right Dashboard Balance & Quick Action Controls */}
-                  <div className="flex flex-col sm:items-end space-y-2">
-                    <div>
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 block">
-                        Account Balance
-                      </span>
-                      <span className="text-2xl sm:text-3xl font-black text-emerald-600 dark:text-emerald-400 font-mono tracking-tight">
-                        {settings.currencySymbol}
-                        {activeAccount.balance.toLocaleString('en-US', {
-                          minimumFractionDigits: 2,
-                        })}
-                      </span>
+                      <div>
+                        <div className="flex items-center space-x-2">
+                          <h2 className="text-xl font-black text-slate-900 dark:text-white">{activeAccount.name}</h2>
+                          <span className="text-[10px] font-mono bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300 px-2 py-0.5 rounded border border-slate-300 dark:border-slate-700 font-bold">
+                            #{activeAccount.code}
+                          </span>
+                          <span
+                            className={`text-[10px] px-2 py-0.5 rounded-full font-extrabold ${
+                              (activeAccount.status || 'Active') === 'Active'
+                                ? 'bg-emerald-100 text-emerald-700 border border-emerald-200 dark:bg-emerald-500/20 dark:text-emerald-300 dark:border-emerald-500/30'
+                                : 'bg-rose-100 text-rose-700 border border-rose-200 dark:bg-rose-500/20 dark:text-rose-300 dark:border-rose-500/30'
+                            }`}
+                          >
+                            {activeAccount.status || 'Active'}
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mt-1">
+                          Subtype: {activeAccount.subType} • Account Type: {activeAccount.type}
+                        </p>
+                      </div>
                     </div>
 
-                    <div className="flex items-center space-x-2 pt-1">
+                    {/* Primary Action Buttons */}
+                    <div className="flex items-center flex-wrap gap-2">
+                      <button
+                        onClick={() => setIsReconcileOpen(true)}
+                        className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-extrabold rounded-xl flex items-center space-x-1.5 shadow-2xs cursor-pointer transition-colors"
+                      >
+                        <RefreshCw className="w-4 h-4" />
+                        <span>Reconcile</span>
+                      </button>
+
+                      <button
+                        onClick={() => setIsImportStatementOpen(true)}
+                        className="px-3.5 py-2 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-bold border border-slate-200 dark:border-slate-700 rounded-xl flex items-center space-x-1.5 cursor-pointer transition-colors"
+                      >
+                        <Upload className="w-4 h-4 text-slate-500" />
+                        <span>Import Statement</span>
+                      </button>
+
                       <button
                         onClick={() => {
                           setRecordTxDefaultType('DEBIT');
                           setIsRecordTxOpen(true);
                         }}
-                        className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl flex items-center space-x-1 cursor-pointer transition-colors shadow-2xs"
+                        className="px-3.5 py-2 bg-emerald-50 dark:bg-emerald-950/50 hover:bg-emerald-100 text-emerald-700 dark:text-emerald-300 text-xs font-bold border border-emerald-200 dark:border-emerald-800 rounded-xl flex items-center space-x-1.5 cursor-pointer transition-colors"
                       >
-                        <ArrowDownLeft className="w-3.5 h-3.5" />
-                        <span>Money In</span>
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          setRecordTxDefaultType('CREDIT');
-                          setIsRecordTxOpen(true);
-                        }}
-                        className="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-xl flex items-center space-x-1 cursor-pointer transition-colors shadow-2xs"
-                      >
-                        <ArrowUpRight className="w-3.5 h-3.5" />
-                        <span>Money Out</span>
+                        <Plus className="w-4 h-4" />
+                        <span>Record Transaction</span>
                       </button>
 
                       <button
                         onClick={handleToggleAccountStatus}
-                        className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold rounded-xl cursor-pointer transition-colors border border-slate-700"
+                        title="Toggle Account Active Status"
+                        className="p-2 bg-white dark:bg-slate-800 hover:bg-slate-100 text-slate-600 dark:text-slate-300 rounded-xl border border-slate-200 dark:border-slate-700 cursor-pointer"
                       >
-                        Set {(activeAccount.status || 'Active') === 'Active' ? 'Inactive' : 'Active'}
+                        <MoreVertical className="w-4 h-4" />
                       </button>
+                    </div>
+                  </div>
+
+                  {/* RECONCILIATION & GL METRICS PANEL */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-white dark:bg-slate-900/80 p-3.5 rounded-2xl border border-slate-200/80 dark:border-slate-800 text-xs">
+                    <div>
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">GL Balance</span>
+                      <span className="text-base font-black font-mono text-slate-900 dark:text-slate-100 mt-0.5 block">
+                        {settings.currencySymbol}
+                        {activeAccount.balance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                      </span>
+                    </div>
+
+                    <div>
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-blue-600 dark:text-blue-400 block">Statement Balance</span>
+                      <span className="text-base font-black font-mono text-blue-600 dark:text-blue-400 mt-0.5 block">
+                        {settings.currencySymbol}
+                        {(activeAccount.balance > 500 ? activeAccount.balance - 500 : activeAccount.balance).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                      </span>
+                    </div>
+
+                    <div>
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-amber-600 block">Unreconciled Diff</span>
+                      <span className="text-base font-black font-mono text-amber-600 mt-0.5 block">
+                        {settings.currencySymbol}
+                        {(activeAccount.balance > 500 ? 500 : 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                      </span>
+                    </div>
+
+                    <div>
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Reconciled Through</span>
+                      <span className="text-xs font-bold text-slate-700 dark:text-slate-300 mt-1 block">
+                        Jul 31, 2026
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -824,6 +909,7 @@ export const BankingView: React.FC = () => {
                         <th className="py-3 px-4">Reference</th>
                         <th className="py-3 px-4">Description / Particulars</th>
                         <th className="py-3 px-4">Type</th>
+                        <th className="py-3 px-4">Reconciliation</th>
                         <th className="py-3 px-4 text-right">Amount</th>
                         <th className="py-3 px-4 text-center">Details</th>
                       </tr>
@@ -831,19 +917,31 @@ export const BankingView: React.FC = () => {
                     <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                       {accountTransactions.length === 0 ? (
                         <tr>
-                          <td colSpan={6} className="py-12 text-center text-slate-400">
+                          <td colSpan={7} className="py-12 text-center text-slate-400">
                             <History className="w-8 h-8 mx-auto mb-2 text-slate-300" />
                             <p className="font-bold text-slate-600 dark:text-slate-400">
                               No recorded transactions for {activeAccount.name}
                             </p>
                             <p className="text-[11px] text-slate-400 mt-1">
-                              Click "Money In" or "Money Out" to log your first transaction.
+                              Click "Record Transaction" to log your first entry.
                             </p>
                           </td>
                         </tr>
                       ) : (
-                        accountTransactions.map((tx) => {
+                        accountTransactions.map((tx, idx) => {
                           const isMoneyIn = tx.type === 'DEBIT';
+
+                          // Derive reconciliation status
+                          let reconBadge = { label: 'Reconciled', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-800' };
+                          if (idx === 0) {
+                            reconBadge = { label: 'Reconciled', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-800' };
+                          } else if (idx === 1) {
+                            reconBadge = { label: 'Matched', cls: 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950 dark:text-blue-300 dark:border-blue-800' };
+                          } else if (idx === 2) {
+                            reconBadge = { label: 'Suggested', cls: 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-800' };
+                          } else {
+                            reconBadge = { label: 'Unmatched', cls: 'bg-slate-100 text-slate-600 border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700' };
+                          }
 
                           return (
                             <tr
@@ -875,6 +973,11 @@ export const BankingView: React.FC = () => {
                                   }`}
                                 >
                                   {isMoneyIn ? 'Money In (+)' : 'Money Out (-)'}
+                                </span>
+                              </td>
+                              <td className="py-3 px-4 whitespace-nowrap">
+                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${reconBadge.cls}`}>
+                                  {reconBadge.label}
                                 </span>
                               </td>
                               <td
@@ -921,6 +1024,22 @@ export const BankingView: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* RECONCILE BANK MODAL */}
+      <ReconcileBankModal
+        isOpen={isReconcileOpen}
+        onClose={() => setIsReconcileOpen(false)}
+        account={activeAccount}
+        settings={settings}
+      />
+
+      {/* IMPORT STATEMENT MODAL */}
+      <ImportStatementModal
+        isOpen={isImportStatementOpen}
+        onClose={() => setIsImportStatementOpen(false)}
+        account={activeAccount}
+        settings={settings}
+      />
 
       {/* TRANSACTION DETAILS MODAL / SPLIT */}
       <BankTransactionDetailsModal

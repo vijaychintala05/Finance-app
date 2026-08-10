@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Bell,
   Briefcase,
@@ -14,12 +14,20 @@ import {
   Sun,
   Moon,
   Laptop,
+  FileText,
+  User,
+  ShoppingBag,
+  CreditCard,
+  Calculator,
+  Receipt,
+  FileSpreadsheet,
 } from 'lucide-react';
 import { NavigationTab } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 
 interface HeaderProps {
   currentTab?: NavigationTab;
+  onNavigate?: (tab: string, options?: { autoCreate?: boolean }) => void;
   onOpenMobileMenu?: () => void;
   onOpenMobileNav?: () => void;
   onOpenQuickCreate?: () => void;
@@ -29,14 +37,27 @@ interface HeaderProps {
 
 export const Header: React.FC<HeaderProps> = ({
   currentTab = 'dashboard',
+  onNavigate,
   onOpenMobileMenu,
   onOpenMobileNav,
   onOpenQuickCreate,
   onOpenOrgSwitcher,
   onOpenOrgWizard,
 }) => {
-  const { settings, updateSettings, currentOrg, exportOrganizationJSON, exportDataJSON, loadSampleData, clearAllData } = useBooks();
+  const { settings, updateSettings, currentOrg, clearAllData } = useBooks();
   const handleMobileToggle = onOpenMobileMenu || onOpenMobileNav || (() => {});
+  const [isNewMenuOpen, setIsNewMenuOpen] = useState(false);
+  const newMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (newMenuRef.current && !newMenuRef.current.contains(e.target as Node)) {
+        setIsNewMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   const currentTheme = settings.userPreferences?.theme || 'Light';
 
@@ -58,105 +79,176 @@ export const Header: React.FC<HeaderProps> = ({
     });
   };
 
-  const getTitle = () => {
-    switch (currentTab) {
-      case 'dashboard':
-        return 'Financial Dashboard';
-      case 'banking':
-        return 'Banking & Cash Accounts';
-      case 'projects':
-        return 'Project-Level Bookkeeping';
-      case 'clients':
-        return 'Client Directory';
-      case 'invoices':
-        return 'Invoices & Billing';
-      case 'estimates':
-        return 'Estimates & Quotes';
-      case 'expenses':
-        return 'Expenses & Vendor Bills';
-      case 'accounting':
-        return 'Accounting & Ledger Governance';
-      case 'coa':
-        return 'Chart of Accounts (COA)';
-      case 'journals':
-        return 'Manual Journals';
-      case 'bulk_updates':
-        return 'Bulk Accounting Operations';
-      case 'transaction_locking':
-        return 'Transaction & Period Locking';
-      case 'reports':
-        return 'Financial Reports & P&L';
-      case 'settings':
-        return 'Firm Settings & Data Management';
-      default:
-        return 'LedgerFlow';
+  const activeLogoUrl = settings.orgProfileDetails?.logoUrl || settings.branding?.logoUrl || currentOrg.logoUrl;
+
+  const handleQuickNew = (tab: string, autoCreate = true) => {
+    setIsNewMenuOpen(false);
+    if (onNavigate) {
+      onNavigate(tab, { autoCreate });
     }
   };
 
-  const activeLogoUrl = settings.orgProfileDetails?.logoUrl || settings.branding?.logoUrl || currentOrg.logoUrl;
-
   return (
-    <header className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 sm:px-6 py-3 sticky top-0 z-20 flex items-center justify-between shadow-2xs">
-      {/* Left: Mobile Toggle & Brand / Title */}
+    <header className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 sm:px-6 py-2.5 sticky top-0 z-30 flex items-center justify-between shadow-2xs">
+      {/* Left: Mobile Menu & Organization Brand */}
       <div className="flex items-center space-x-3 sm:space-x-4">
         <button
           onClick={handleMobileToggle}
-          className="lg:hidden p-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors cursor-pointer"
+          className="lg:hidden p-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-colors cursor-pointer"
           aria-label="Open Mobile Menu"
         >
           <Menu className="w-5 h-5" />
         </button>
 
-        <div className="flex items-center space-x-3">
-          {activeLogoUrl ? (
-            <img
-              src={activeLogoUrl}
-              alt={currentOrg.name}
-              className="w-9 h-9 rounded-xl object-contain bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-0.5 shadow-2xs shrink-0"
-            />
-          ) : (
-            <div className="w-9 h-9 bg-blue-600 text-white rounded-xl flex items-center justify-center font-extrabold text-sm shadow-2xs shrink-0">
-              {currentOrg.name ? currentOrg.name.charAt(0).toUpperCase() : 'O'}
-            </div>
-          )}
-          <div>
-            <h1 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white leading-tight truncate max-w-[180px] sm:max-w-[260px]">
-              {currentOrg.name}
-            </h1>
-          </div>
-        </div>
-      </div>
-
-      {/* Center: Prominent Organization Switcher Dropdown Trigger */}
-      {onOpenOrgSwitcher && (
-        <div className="flex items-center justify-center">
+        {/* Organization Switcher Trigger (Single Clean Instance) */}
+        {onOpenOrgSwitcher ? (
           <button
             onClick={onOpenOrgSwitcher}
-            className="group flex items-center space-x-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-100 px-3.5 py-1.5 rounded-xl text-xs font-semibold shadow-2xs transition-all cursor-pointer border border-slate-200 dark:border-slate-700 active:scale-[0.98]"
+            className="group flex items-center space-x-2.5 hover:bg-slate-100 dark:hover:bg-slate-800 p-1.5 pr-3 rounded-2xl transition-all cursor-pointer border border-transparent hover:border-slate-200 dark:hover:border-slate-700 active:scale-[0.98]"
             title="Switch Organization Workspace"
           >
             {activeLogoUrl ? (
               <img
                 src={activeLogoUrl}
-                alt=""
-                className="w-4 h-4 rounded-md object-contain bg-white dark:bg-slate-800 shrink-0 p-0.5"
+                alt={currentOrg.name}
+                className="w-8 h-8 rounded-xl object-contain bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-0.5 shadow-2xs shrink-0"
               />
             ) : (
-              <Building2 className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
+              <div className="w-8 h-8 bg-blue-600 text-white rounded-xl flex items-center justify-center font-extrabold text-xs shadow-2xs shrink-0">
+                {currentOrg.name ? currentOrg.name.charAt(0).toUpperCase() : 'O'}
+              </div>
             )}
-            <span className="max-w-[150px] sm:max-w-[220px] truncate tracking-tight font-bold">
-              {currentOrg.name}
-            </span>
-            <span className="hidden xs:inline-block font-mono text-[10px] text-amber-700 bg-amber-50 border border-amber-200 dark:text-amber-300 dark:bg-amber-950/80 dark:border-amber-800/80 px-1.5 py-0.5 rounded">
-              {currentOrg.publicOrgId || `#${currentOrg.orgCode}`}
-            </span>
-            <ChevronDown className="w-3.5 h-3.5 text-slate-500 group-hover:text-slate-800 dark:text-slate-400 dark:group-hover:text-white transition-transform duration-150" />
+            <div className="text-left">
+              <div className="flex items-center space-x-1">
+                <h1 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white leading-tight truncate max-w-[160px] sm:max-w-[220px]">
+                  {currentOrg.name}
+                </h1>
+                <ChevronDown className="w-3.5 h-3.5 text-slate-400 group-hover:text-slate-700 dark:group-hover:text-slate-200 transition-transform" />
+              </div>
+              <span className="text-[10px] text-slate-400 font-medium block">
+                {currentOrg.publicOrgId || `#${currentOrg.orgCode}`}
+              </span>
+            </div>
           </button>
-        </div>
-      )}
+        ) : (
+          <div className="flex items-center space-x-2.5">
+            {activeLogoUrl ? (
+              <img
+                src={activeLogoUrl}
+                alt={currentOrg.name}
+                className="w-8 h-8 rounded-xl object-contain bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-0.5 shadow-2xs shrink-0"
+              />
+            ) : (
+              <div className="w-8 h-8 bg-blue-600 text-white rounded-xl flex items-center justify-center font-extrabold text-xs shadow-2xs shrink-0">
+                {currentOrg.name ? currentOrg.name.charAt(0).toUpperCase() : 'O'}
+              </div>
+            )}
+            <h1 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white leading-tight truncate max-w-[160px] sm:max-w-[220px]">
+              {currentOrg.name}
+            </h1>
+          </div>
+        )}
+      </div>
 
-      {/* Right: Quick Actions Pill & Data Tools */}
-      <div className="flex items-center space-x-2">
+      {/* Center: Global Search Bar Placeholder */}
+      <div className="hidden md:flex items-center flex-1 max-w-md mx-6">
+        <div className="relative w-full">
+          <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
+          <input
+            type="text"
+            placeholder="Search customers, invoices, bills, accounts..."
+            className="w-full bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700/80 rounded-2xl pl-9 pr-4 py-1.5 text-xs font-medium text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+          />
+        </div>
+      </div>
+
+      {/* Right: Global + New Dropdown & Theme / Utilities */}
+      <div className="flex items-center space-x-2.5">
+        {/* Global + New Dropdown Button */}
+        <div className="relative" ref={newMenuRef}>
+          <button
+            onClick={() => setIsNewMenuOpen(!isNewMenuOpen)}
+            className="bg-blue-600 hover:bg-blue-700 text-white px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-2xs cursor-pointer transition-all active:scale-95"
+            title="Create New Financial Record"
+          >
+            <Plus className="w-4 h-4" />
+            <span>+ New</span>
+            <ChevronDown className={`w-3.5 h-3.5 transition-transform ${isNewMenuOpen ? 'rotate-180' : ''}`} />
+          </button>
+
+          {isNewMenuOpen && (
+            <div className="absolute right-0 mt-2 w-56 bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 py-2 z-50 animate-fade-in text-xs space-y-1">
+              <div className="px-3 py-1 font-bold text-[10px] text-slate-400 uppercase tracking-wider">
+                Sales & AR
+              </div>
+              <button
+                onClick={() => handleQuickNew('clients', false)}
+                className="w-full text-left px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center space-x-2 text-slate-700 dark:text-slate-200 cursor-pointer"
+              >
+                <User className="w-3.5 h-3.5 text-blue-500" />
+                <span>New Customer</span>
+              </button>
+              <button
+                onClick={() => handleQuickNew('estimates', true)}
+                className="w-full text-left px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center space-x-2 text-slate-700 dark:text-slate-200 cursor-pointer"
+              >
+                <FileText className="w-3.5 h-3.5 text-blue-500" />
+                <span>New Estimate / Quote</span>
+              </button>
+              <button
+                onClick={() => handleQuickNew('sales_orders', true)}
+                className="w-full text-left px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center space-x-2 text-slate-700 dark:text-slate-200 cursor-pointer"
+              >
+                <Receipt className="w-3.5 h-3.5 text-blue-500" />
+                <span>New Sales Order</span>
+              </button>
+              <button
+                onClick={() => handleQuickNew('invoices', true)}
+                className="w-full text-left px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center space-x-2 text-slate-700 dark:text-slate-200 cursor-pointer"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5 text-blue-500" />
+                <span>New Invoice</span>
+              </button>
+              <button
+                onClick={() => handleQuickNew('payments_received', true)}
+                className="w-full text-left px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center space-x-2 text-slate-700 dark:text-slate-200 cursor-pointer"
+              >
+                <CreditCard className="w-3.5 h-3.5 text-emerald-500" />
+                <span>Payment Received</span>
+              </button>
+
+              <div className="px-3 py-1 pt-2 font-bold text-[10px] text-slate-400 uppercase tracking-wider border-t border-slate-100 dark:border-slate-800">
+                Purchases & AP
+              </div>
+              <button
+                onClick={() => handleQuickNew('expenses', true)}
+                className="w-full text-left px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center space-x-2 text-slate-700 dark:text-slate-200 cursor-pointer"
+              >
+                <ShoppingBag className="w-3.5 h-3.5 text-amber-500" />
+                <span>New Expense</span>
+              </button>
+              <button
+                onClick={() => handleQuickNew('bills', true)}
+                className="w-full text-left px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center space-x-2 text-slate-700 dark:text-slate-200 cursor-pointer"
+              >
+                <FileText className="w-3.5 h-3.5 text-rose-500" />
+                <span>New Vendor Bill</span>
+              </button>
+
+              <div className="px-3 py-1 pt-2 font-bold text-[10px] text-slate-400 uppercase tracking-wider border-t border-slate-100 dark:border-slate-800">
+                General Ledger
+              </div>
+              <button
+                onClick={() => handleQuickNew('journals', true)}
+                className="w-full text-left px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center space-x-2 text-slate-700 dark:text-slate-200 cursor-pointer"
+              >
+                <Calculator className="w-3.5 h-3.5 text-indigo-500" />
+                <span>Manual Journal Entry</span>
+              </button>
+            </div>
+          )}
+        </div>
+
         {/* Theme Toggle Button */}
         <button
           onClick={toggleTheme}
@@ -190,7 +282,7 @@ export const Header: React.FC<HeaderProps> = ({
           }}
           title="Clear All Data (Start Fresh)"
           aria-label="Clear All Data"
-          className="p-2 text-slate-500 hover:text-rose-600 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full border border-slate-200 dark:border-slate-700 cursor-pointer transition-colors"
+          className="p-2 text-slate-400 hover:text-rose-600 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 cursor-pointer transition-colors"
         >
           <RotateCcw className="w-4 h-4" />
         </button>
@@ -198,3 +290,4 @@ export const Header: React.FC<HeaderProps> = ({
     </header>
   );
 };
+

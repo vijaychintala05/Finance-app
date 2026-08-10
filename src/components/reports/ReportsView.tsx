@@ -384,64 +384,59 @@ export const ReportsView: React.FC = () => {
                 )}
               </div>
 
-              {/* Desktop Reports Table Grid (hidden lg:block) */}
-              <div className="hidden lg:block overflow-x-auto border border-slate-200 dark:border-slate-800 rounded-xl flex-1">
-                <table className="w-full text-left text-xs">
-                  <thead className="bg-slate-50 dark:bg-slate-800/80 text-slate-500 dark:text-slate-400 uppercase text-[10px] font-bold tracking-wider border-b border-slate-200 dark:border-slate-800">
-                    <tr>
-                      <th className="p-3 w-10 text-center"></th>
-                      <th className="p-3">REPORT NAME</th>
-                      <th className="p-3">REPORT CATEGORY</th>
-                      <th className="p-3">CREATED BY</th>
-                      <th className="p-3">LAST VISITED</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                    {filteredReports.length === 0 ? (
-                      <tr>
-                        <td colSpan={5} className="p-8 text-center text-slate-400 italic">
-                          No reports found matching your criteria.
-                        </td>
-                      </tr>
-                    ) : (
-                      filteredReports.map((report) => (
-                        <tr
-                          key={report.id}
-                          onClick={() => setSelectedReportId(report.id)}
-                          className="hover:bg-slate-50/80 dark:hover:bg-slate-800/50 transition-colors group cursor-pointer"
-                        >
-                          <td className="p-3 text-center" onClick={(e) => handleToggleFavorite(report.id, e)}>
-                            <button
-                              type="button"
-                              className="text-slate-300 hover:text-amber-500 transition-colors cursor-pointer"
-                              title="Toggle Favorite"
-                            >
-                              <Star
-                                className={`w-4 h-4 ${
-                                  report.isFavorite ? 'text-amber-500 fill-amber-500' : ''
-                                }`}
-                              />
-                            </button>
-                          </td>
-                          <td className="p-3 font-semibold text-blue-600 dark:text-blue-400 group-hover:underline">
-                            {report.name}
-                          </td>
-                          <td className="p-3 text-slate-600 dark:text-slate-400 font-medium">
-                            <span className="bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-2 py-0.5 rounded text-[11px]">
-                              {report.category}
-                            </span>
-                          </td>
-                          <td className="p-3 text-slate-500 dark:text-slate-400 font-medium">
-                            {report.createdBy}
-                          </td>
-                          <td className="p-3 font-mono text-slate-500 dark:text-slate-400 text-[11px]">
-                            {report.lastVisited}
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
+              {/* Desktop Reports Grid Gallery */}
+              <div className="hidden lg:grid grid-cols-2 xl:grid-cols-3 gap-4 overflow-y-auto flex-1 p-1">
+                {filteredReports.length === 0 ? (
+                  <div className="col-span-full p-12 text-center text-slate-400 italic bg-slate-50 dark:bg-slate-800/40 rounded-2xl border border-slate-200 dark:border-slate-800">
+                    No accounting reports found matching your filter criteria.
+                  </div>
+                ) : (
+                  filteredReports.map((report) => (
+                    <div
+                      key={report.id}
+                      onClick={() => setSelectedReportId(report.id)}
+                      className="group bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 shadow-2xs hover:shadow-md hover:border-blue-300 dark:hover:border-blue-700 transition-all flex flex-col justify-between cursor-pointer relative"
+                    >
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-extrabold uppercase tracking-wider bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 px-2 py-0.5 rounded-lg border border-slate-200 dark:border-slate-700">
+                            {report.category}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={(e) => handleToggleFavorite(report.id, e)}
+                            className="p-1 text-slate-300 hover:text-amber-500 transition-colors cursor-pointer"
+                            title="Toggle Favorite"
+                          >
+                            <Star
+                              className={`w-4 h-4 ${
+                                report.isFavorite ? 'text-amber-500 fill-amber-500' : ''
+                              }`}
+                            />
+                          </button>
+                        </div>
+
+                        <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                          {report.name}
+                        </h3>
+
+                        <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed line-clamp-2">
+                          {report.description || 'Generate CA-precision financial statement with full audit trail'}
+                        </p>
+                      </div>
+
+                      <div className="pt-3 mt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between">
+                        <span className="text-[10px] text-slate-400 font-medium">
+                          Period: {dateRange}
+                        </span>
+                        <span className="text-xs font-bold text-blue-600 dark:text-blue-400 flex items-center space-x-1 group-hover:translate-x-0.5 transition-transform">
+                          <span>Run Report</span>
+                          <ChevronRight className="w-3.5 h-3.5" />
+                        </span>
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
           )}

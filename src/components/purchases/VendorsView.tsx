@@ -13,12 +13,27 @@ import { useBooks } from '../../context/BooksContext';
 import { Vendor } from '../../types';
 import { formatCurrency } from '../../utils/formatters';
 
-export const VendorsView: React.FC = () => {
+interface VendorsViewProps {
+  autoOpenCreateModal?: boolean;
+  onModalClosed?: () => void;
+}
+
+export const VendorsView: React.FC<VendorsViewProps> = ({
+  autoOpenCreateModal,
+  onModalClosed,
+}) => {
   const { vendors, settings, addVendor, updateVendor, deleteVendor } = useBooks();
 
   const [search, setSearch] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedVendor, setSelectedVendor] = useState<Vendor | null>(null);
+
+  React.useEffect(() => {
+    if (autoOpenCreateModal) {
+      handleOpenCreate();
+      if (onModalClosed) onModalClosed();
+    }
+  }, [autoOpenCreateModal]);
 
   // Form state
   const [name, setName] = useState('');

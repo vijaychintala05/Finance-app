@@ -211,10 +211,31 @@ export const Header: React.FC<HeaderProps> = ({
                 <CreditCard className="w-3.5 h-3.5 text-emerald-500" />
                 <span>Payment Received</span>
               </button>
+              <button
+                onClick={() => handleQuickNew('credit_notes', true)}
+                className="w-full text-left px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center space-x-2 text-slate-700 dark:text-slate-200 cursor-pointer"
+              >
+                <FileText className="w-3.5 h-3.5 text-rose-500" />
+                <span>New Credit Note</span>
+              </button>
 
               <div className="px-3 py-1 pt-2 font-bold text-[10px] text-slate-400 uppercase tracking-wider border-t border-slate-100 dark:border-slate-800">
                 Purchases & AP
               </div>
+              <button
+                onClick={() => handleQuickNew('vendors', true)}
+                className="w-full text-left px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center space-x-2 text-slate-700 dark:text-slate-200 cursor-pointer"
+              >
+                <User className="w-3.5 h-3.5 text-amber-500" />
+                <span>New Vendor</span>
+              </button>
+              <button
+                onClick={() => handleQuickNew('purchase_orders', true)}
+                className="w-full text-left px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center space-x-2 text-slate-700 dark:text-slate-200 cursor-pointer"
+              >
+                <FileText className="w-3.5 h-3.5 text-sky-500" />
+                <span>New Purchase Order</span>
+              </button>
               <button
                 onClick={() => handleQuickNew('expenses', true)}
                 className="w-full text-left px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center space-x-2 text-slate-700 dark:text-slate-200 cursor-pointer"
@@ -226,8 +247,22 @@ export const Header: React.FC<HeaderProps> = ({
                 onClick={() => handleQuickNew('bills', true)}
                 className="w-full text-left px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center space-x-2 text-slate-700 dark:text-slate-200 cursor-pointer"
               >
-                <FileText className="w-3.5 h-3.5 text-rose-500" />
+                <FileSpreadsheet className="w-3.5 h-3.5 text-rose-500" />
                 <span>New Vendor Bill</span>
+              </button>
+              <button
+                onClick={() => handleQuickNew('payments_made', true)}
+                className="w-full text-left px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center space-x-2 text-slate-700 dark:text-slate-200 cursor-pointer"
+              >
+                <CreditCard className="w-3.5 h-3.5 text-emerald-500" />
+                <span>Payment Made</span>
+              </button>
+              <button
+                onClick={() => handleQuickNew('vendor_credits', true)}
+                className="w-full text-left px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center space-x-2 text-slate-700 dark:text-slate-200 cursor-pointer"
+              >
+                <FileText className="w-3.5 h-3.5 text-indigo-500" />
+                <span>New Vendor Credit</span>
               </button>
 
               <div className="px-3 py-1 pt-2 font-bold text-[10px] text-slate-400 uppercase tracking-wider border-t border-slate-100 dark:border-slate-800">

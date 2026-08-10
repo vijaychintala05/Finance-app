@@ -10,11 +10,26 @@ import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate } from '../../utils/formatters';
 import { PurchaseOrder } from '../../types';
 
-export const PurchaseOrdersView: React.FC = () => {
+interface PurchaseOrdersViewProps {
+  autoOpenCreateModal?: boolean;
+  onModalClosed?: () => void;
+}
+
+export const PurchaseOrdersView: React.FC<PurchaseOrdersViewProps> = ({
+  autoOpenCreateModal,
+  onModalClosed,
+}) => {
   const { purchaseOrders, addPurchaseOrder, updatePurchaseOrder, vendors, settings } = useBooks();
 
   const [search, setSearch] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
+
+  React.useEffect(() => {
+    if (autoOpenCreateModal) {
+      setIsModalOpen(true);
+      if (onModalClosed) onModalClosed();
+    }
+  }, [autoOpenCreateModal]);
 
   // Form state
   const [vendorName, setVendorName] = useState(vendors[0]?.name || 'AWS Cloud Services');

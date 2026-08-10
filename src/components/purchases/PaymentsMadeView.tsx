@@ -9,11 +9,26 @@ import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate } from '../../utils/formatters';
 import { PaymentMade } from '../../types';
 
-export const PaymentsMadeView: React.FC = () => {
+interface PaymentsMadeViewProps {
+  autoOpenCreateModal?: boolean;
+  onModalClosed?: () => void;
+}
+
+export const PaymentsMadeView: React.FC<PaymentsMadeViewProps> = ({
+  autoOpenCreateModal,
+  onModalClosed,
+}) => {
   const { paymentsMade, addPaymentMade, vendors, settings } = useBooks();
 
   const [search, setSearch] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
+
+  React.useEffect(() => {
+    if (autoOpenCreateModal) {
+      setIsModalOpen(true);
+      if (onModalClosed) onModalClosed();
+    }
+  }, [autoOpenCreateModal]);
 
   // Form state
   const [vendorName, setVendorName] = useState(vendors[0]?.name || 'AWS Cloud Services');

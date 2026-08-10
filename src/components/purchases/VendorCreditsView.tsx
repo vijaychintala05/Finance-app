@@ -9,11 +9,26 @@ import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate } from '../../utils/formatters';
 import { VendorCredit } from '../../types';
 
-export const VendorCreditsView: React.FC = () => {
+interface VendorCreditsViewProps {
+  autoOpenCreateModal?: boolean;
+  onModalClosed?: () => void;
+}
+
+export const VendorCreditsView: React.FC<VendorCreditsViewProps> = ({
+  autoOpenCreateModal,
+  onModalClosed,
+}) => {
   const { vendorCredits, addVendorCredit, updateVendorCredit, vendors, settings } = useBooks();
 
   const [search, setSearch] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
+
+  React.useEffect(() => {
+    if (autoOpenCreateModal) {
+      setIsModalOpen(true);
+      if (onModalClosed) onModalClosed();
+    }
+  }, [autoOpenCreateModal]);
 
   // Form state
   const [vendorName, setVendorName] = useState(vendors[0]?.name || 'AWS Cloud Services');

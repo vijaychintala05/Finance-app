@@ -10,12 +10,27 @@ import { formatCurrency, formatDate } from '../../utils/formatters';
 import { CreditNote } from '../../types';
 import { CreditNoteDetailsModal } from './CreditNoteDetailsModal';
 
-export const CreditNotesView: React.FC = () => {
+interface CreditNotesViewProps {
+  autoOpenCreateModal?: boolean;
+  onModalClosed?: () => void;
+}
+
+export const CreditNotesView: React.FC<CreditNotesViewProps> = ({
+  autoOpenCreateModal,
+  onModalClosed,
+}) => {
   const { creditNotes, addCreditNote, updateCreditNote, invoices, clients, settings } = useBooks();
 
   const [search, setSearch] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [viewingNote, setViewingNote] = useState<CreditNote | null>(null);
+
+  React.useEffect(() => {
+    if (autoOpenCreateModal) {
+      setIsModalOpen(true);
+      if (onModalClosed) onModalClosed();
+    }
+  }, [autoOpenCreateModal]);
 
   // Modal form
   const [clientName, setClientName] = useState(clients[0]?.name || '');

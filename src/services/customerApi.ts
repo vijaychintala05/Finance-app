@@ -20,9 +20,13 @@ export interface ProjectInput {
   code: string;
   name: string;
   clientId?: string;
+  customerId?: string;
   clientName?: string;
   description?: string;
   totalBudget?: number;
+  budgetType?: string;
+  hourlyRate?: number;
+  manager?: string;
 }
 
 export const customerApi = {

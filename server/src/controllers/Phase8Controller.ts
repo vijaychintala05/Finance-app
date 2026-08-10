@@ -84,6 +84,12 @@ export class Phase8Controller {
     try {
       const orgId = req.auth!.organizationId;
       const createdBy = (req as any).user?.name || req.auth?.userId || 'User';
+      
+      if (!req.body.customerId || typeof req.body.customerId !== 'string' || !req.body.customerId.trim()) {
+        res.status(400).json({ error: 'customerId is required for production quotations' });
+        return;
+      }
+
       const quotation = await QuotationEngine.createQuotation(orgId, req.body, createdBy);
       res.status(201).json({ quotation });
     } catch (err: any) {

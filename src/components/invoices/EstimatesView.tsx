@@ -31,6 +31,7 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
   const [backendProjects, setBackendProjects] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [customersLoading, setCustomersLoading] = useState(false);
+  const [customerError, setCustomerError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const [search, setSearch] = useState('');
@@ -60,6 +61,7 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
   // Load real backend customers & projects
   const loadCustomersAndProjects = async () => {
     setCustomersLoading(true);
+    setCustomerError(null);
     try {
       const [custs, projs] = await Promise.all([
         customerApi.listCustomers(),
@@ -68,7 +70,7 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
       setBackendCustomers(custs);
       setBackendProjects(projs);
     } catch (err: any) {
-      console.warn('Failed to load customer master data:', err);
+      setCustomerError(err.message || 'Unable to load customers from server');
     } finally {
       setCustomersLoading(false);
     }
@@ -81,7 +83,7 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
   useEffect(() => {
     const timer = setTimeout(() => {
       loadQuotations();
-    }, search ? 150 : 0);
+    }, search ? 300 : 0);
 
     return () => clearTimeout(timer);
   }, [search]);
@@ -307,6 +309,8 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
           onOpenQuickClient={() => setIsQuickClientOpen(true)}
           onOpenQuickProject={() => setIsQuickProjectOpen(true)}
           currencySymbol={settings.currencySymbol}
+          customersLoading={customersLoading}
+          customerError={customerError}
         />
       )}
 
@@ -374,6 +378,7 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
         <QuickAddProjectModal
           isOpen={isQuickProjectOpen}
           onClose={() => setIsQuickProjectOpen(false)}
+          clients={backendCustomers}
           onProjectCreated={(newProj) => {
             loadCustomersAndProjects();
           }}

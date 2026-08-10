@@ -13,17 +13,17 @@ router.post('/accounts', requirePermission('settings.manage'), FinanceController
 router.get('/accounts/:id/transactions', FinanceController.getAccountTransactions);
 
 // Clients, Customers & Vendors
-router.get('/clients', FinanceController.getClients);
-router.post('/clients', FinanceController.createClient);
-router.get('/customers', FinanceController.getCustomers);
-router.post('/customers', FinanceController.createCustomer);
-router.get('/customers/:id/summary', FinanceController.getCustomerSummary);
-router.get('/vendors', FinanceController.getVendors);
-router.post('/vendors', FinanceController.createVendor);
+router.get('/clients', requirePermission(['invoices.view', 'purchases.view']), FinanceController.getClients);
+router.post('/clients', requirePermission(['invoices.create', 'purchases.create']), FinanceController.createClient);
+router.get('/customers', requirePermission(['invoices.view', 'purchases.view']), FinanceController.getCustomers);
+router.post('/customers', requirePermission(['invoices.create', 'purchases.create']), FinanceController.createCustomer);
+router.get('/customers/:id/summary', requirePermission(['invoices.view', 'purchases.view']), FinanceController.getCustomerSummary);
+router.get('/vendors', requirePermission(['invoices.view', 'purchases.view']), FinanceController.getVendors);
+router.post('/vendors', requirePermission(['invoices.create', 'purchases.create']), FinanceController.createVendor);
 
 // Projects
-router.get('/projects', FinanceController.getProjects);
-router.post('/projects', requirePermission('invoices.create'), FinanceController.createProject);
+router.get('/projects', requirePermission(['invoices.view', 'purchases.view']), FinanceController.getProjects);
+router.post('/projects', requirePermission(['invoices.create', 'purchases.create']), FinanceController.createProject);
 
 // Estimates
 router.get('/estimates', FinanceController.getEstimates);

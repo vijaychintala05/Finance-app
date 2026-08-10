@@ -1,5 +1,5 @@
-import React from 'react';
-import { User, Building, Plus, Calendar, FileText, AlertCircle } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { User, Building, Plus, Calendar, FileText, AlertCircle, Loader2, Search } from 'lucide-react';
 
 interface Client {
   id: string;
@@ -7,7 +7,10 @@ interface Client {
   displayName?: string;
   companyName?: string;
   legalName?: string;
+  customerCode?: string;
+  code?: string;
   email?: string;
+  phone?: string;
   gstin?: string;
   taxId?: string;
 }
@@ -35,6 +38,9 @@ interface QuotationHeaderFormProps {
   setExpiryDate: (d: string) => void;
   isGstInclusive: boolean;
   setIsGstInclusive: (v: boolean) => void;
+  customersLoading?: boolean;
+  customerError?: string | null;
+  onSearchCustomers?: (query: string) => void;
 }
 
 export const QuotationHeaderForm: React.FC<QuotationHeaderFormProps> = ({
@@ -54,12 +60,48 @@ export const QuotationHeaderForm: React.FC<QuotationHeaderFormProps> = ({
   setExpiryDate,
   isGstInclusive,
   setIsGstInclusive,
+  customersLoading = false,
+  customerError = null,
+  onSearchCustomers,
 }) => {
+  const [searchQuery, setSearchQuery] = useState('');
+  const requestIdRef = useRef(0);
+
   const selectedClient = clients.find((c) => c.id === customerId);
 
   const getClientDisplayName = (c: Client) => {
     return c.displayName || c.name || c.companyName || c.legalName || 'Customer';
   };
+
+  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const q = e.target.value;
+    setSearchQuery(q);
+    if (onSearchCustomers) {
+      const currentReqId = ++requestIdRef.current;
+      setTimeout(() => {
+        if (currentReqId === requestIdRef.current) {
+          onSearchCustomers(q);
+        }
+      }, 300);
+    }
+  };
+
+  const filteredClients = clients.filter((c) => {
+    if (!searchQuery.trim()) return true;
+    const term = searchQuery.toLowerCase();
+    const nameStr = (c.displayName || c.name || c.companyName || c.legalName || '').toLowerCase();
+    const codeStr = (c.customerCode || c.code || '').toLowerCase();
+    const emailStr = (c.email || '').toLowerCase();
+    const phoneStr = (c.phone || '').toLowerCase();
+    const gstinStr = (c.gstin || c.taxId || '').toLowerCase();
+    return (
+      nameStr.includes(term) ||
+      codeStr.includes(term) ||
+      emailStr.includes(term) ||
+      phoneStr.includes(term) ||
+      gstinStr.includes(term)
+    );
+  });
 
   const isDateInvalid = Boolean(issueDate && expiryDate && new Date(expiryDate) < new Date(issueDate));
 
@@ -82,25 +124,74 @@ export const QuotationHeaderForm: React.FC<QuotationHeaderFormProps> = ({
               <span>New Client</span>
             </button>
           </div>
-          <select
-            id="customer-select"
-            value={customerId}
-            onChange={(e) => {
-              const val = e.target.value;
-              setCustomerId(val);
-              const cli = clients.find((c) => c.id === val);
-              if (cli) setCustomerName(getClientDisplayName(cli));
-            }}
-            required
-            className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-2.5 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium"
-          >
-            <option value="">Select a customer...</option>
-            {clients.map((c) => (
-              <option key={c.id} value={c.id}>
-                {getClientDisplayName(c)} {c.companyName && c.companyName !== getClientDisplayName(c) ? `(${c.companyName})` : ''}
-              </option>
-            ))}
-          </select>
+
+          {/* Search Filter input */}
+          <div className="relative">
+            <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-slate-400" />
+            <input
+              type="text"
+              placeholder="Search by customer name, code, GSTIN, email..."
+              value={searchQuery}
+              onChange={handleSearchChange}
+              className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl pl-8 pr-3 py-1.5 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 mb-1"
+            />
+          </div>
+
+          {customersLoading ? (
+            <div className="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-xl text-blue-600 dark:text-blue-400 flex items-center space-x-2">
+              <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+              <span>Loading customers...</span>
+            </div>
+          ) : customerError ? (
+            <div className="p-3 bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-800 rounded-xl text-rose-600 dark:text-rose-400 flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>Unable to load customers. {customerError}</span>
+              </div>
+              <button
+                type="button"
+                onClick={onOpenQuickClient}
+                className="text-xs font-bold underline cursor-pointer"
+              >
+                + Quick Add
+              </button>
+            </div>
+          ) : (
+            <>
+              <select
+                id="customer-select"
+                value={customerId}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setCustomerId(val);
+                  const cli = clients.find((c) => c.id === val);
+                  if (cli) setCustomerName(getClientDisplayName(cli));
+                }}
+                required
+                className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-2.5 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium"
+              >
+                <option value="">Select a customer...</option>
+                {filteredClients.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {getClientDisplayName(c)} {c.companyName && c.companyName !== getClientDisplayName(c) ? `(${c.companyName})` : ''}
+                  </option>
+                ))}
+              </select>
+
+              {filteredClients.length === 0 && (
+                <div className="p-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl text-amber-700 dark:text-amber-400 text-xs flex items-center justify-between mt-1">
+                  <span>No customers found.</span>
+                  <button
+                    type="button"
+                    onClick={onOpenQuickClient}
+                    className="font-bold underline cursor-pointer"
+                  >
+                    + Quick Add Customer
+                  </button>
+                </div>
+              )}
+            </>
+          )}
 
           {selectedClient && (
             <div className="text-[11px] text-slate-500 dark:text-slate-400 space-x-3 pt-0.5">

@@ -1,14 +1,22 @@
 import React, { useState } from 'react';
-import { X, FolderPlus, Plus } from 'lucide-react';
-import { useBooks } from '../../context/BooksContext';
-import { Project, ProjectBudgetType, ProjectStatus } from '../../types';
+import { X, FolderPlus, Plus, Loader2, AlertCircle } from 'lucide-react';
+import { ProjectBudgetType, ProjectStatus } from '../../types';
+import { customerApi } from '../../services/customerApi';
 import { QuickAddClientModal } from './QuickAddClientModal';
+
+interface ClientItem {
+  id: string;
+  name?: string;
+  displayName?: string;
+  companyName?: string;
+}
 
 interface QuickAddProjectModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onProjectCreated: (project: Project) => void;
+  onProjectCreated: (project: any) => void;
   defaultClientId?: string;
+  clients?: ClientItem[];
 }
 
 export const QuickAddProjectModal: React.FC<QuickAddProjectModalProps> = ({
@@ -16,9 +24,8 @@ export const QuickAddProjectModal: React.FC<QuickAddProjectModalProps> = ({
   onClose,
   onProjectCreated,
   defaultClientId,
+  clients = [],
 }) => {
-  const { clients, addProject } = useBooks();
-
   const [code, setCode] = useState(`PRJ-${Math.floor(100 + Math.random() * 900)}`);
   const [name, setName] = useState('');
   const [clientId, setClientId] = useState(defaultClientId || clients[0]?.id || '');
@@ -27,35 +34,45 @@ export const QuickAddProjectModal: React.FC<QuickAddProjectModalProps> = ({
   const [budgetType, setBudgetType] = useState<ProjectBudgetType>('Fixed Cost');
   const [totalBudget, setTotalBudget] = useState('25000');
   const [hourlyRate, setHourlyRate] = useState('150');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const [isQuickClientOpen, setIsQuickClientOpen] = useState(false);
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || !clientId) return;
+    if (!name.trim() || !code.trim()) return;
+
+    setLoading(true);
+    setError(null);
 
     const selectedClient = clients.find((c) => c.id === clientId);
 
-    const created = addProject({
-      code: code.trim(),
-      name: name.trim(),
-      clientId,
-      clientName: selectedClient?.companyName || selectedClient?.name || 'Client',
-      description: description.trim(),
-      status,
-      budgetType,
-      totalBudget: Number(totalBudget) || 0,
-      hourlyRate: Number(hourlyRate) || 0,
-      startDate: new Date().toISOString().split('T')[0],
-      manager: 'Project Manager',
-    });
+    try {
+      const created = await customerApi.createProject({
+        code: code.trim(),
+        name: name.trim(),
+        clientId: clientId || undefined,
+        customerId: clientId || undefined,
+        clientName: selectedClient?.displayName || selectedClient?.companyName || selectedClient?.name || '',
+        description: description.trim(),
+        budgetType,
+        totalBudget: Number(totalBudget) || 0,
+        hourlyRate: Number(hourlyRate) || 0,
+        manager: 'Project Manager',
+      });
 
-    onProjectCreated(created);
-    setName('');
-    setDescription('');
-    onClose();
+      onProjectCreated(created);
+      setName('');
+      setDescription('');
+      onClose();
+    } catch (err: any) {
+      setError(err.message || 'Failed to create project on server');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (

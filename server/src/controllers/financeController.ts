@@ -143,17 +143,60 @@ export class FinanceController {
 
   public static async createProject(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
-    const { code, name, clientId, clientName, description, budgetType, totalBudget, hourlyRate, manager } = req.body;
+    const { code, name, clientId, customerId, clientName, description, budgetType, totalBudget, hourlyRate, manager } = req.body;
+
+    if (!code || typeof code !== 'string' || !code.trim()) {
+      res.status(400).json({ error: 'Project code is required' });
+      return;
+    }
+
+    if (!name || typeof name !== 'string' || !name.trim()) {
+      res.status(400).json({ error: 'Project name is required' });
+      return;
+    }
+
+    const targetCustId = customerId || clientId;
+    let resolvedClientName = clientName || '';
+
+    if (targetCustId && typeof targetCustId === 'string' && targetCustId.trim()) {
+      const custRes = await db.query(
+        `SELECT id, display_name, legal_name FROM customers WHERE organization_id = $1 AND id = $2`,
+        [orgId, targetCustId.trim()]
+      );
+      if (custRes.rows.length === 0) {
+        const otherOrgRes = await db.query(`SELECT organization_id FROM customers WHERE id = $1`, [targetCustId.trim()]);
+        if (otherOrgRes.rows.length > 0) {
+          res.status(400).json({ error: `Customer ${targetCustId} does not belong to organization ${orgId}` });
+          return;
+        }
+        res.status(400).json({ error: `Customer ${targetCustId} not found` });
+        return;
+      }
+      resolvedClientName = custRes.rows[0].display_name || custRes.rows[0].legal_name || resolvedClientName;
+    }
 
     const prjId = `prj-${Date.now()}`;
     await db.query(
       `INSERT INTO projects (id, organization_id, code, name, client_id, client_name, description, status, budget_type, total_budget, hourly_rate, manager)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-      [prjId, orgId, code, name, clientId || null, clientName || '', description || '', 'Active', budgetType || 'Fixed Cost', totalBudget || 0, hourlyRate || 0, manager || '']
+      [
+        prjId,
+        orgId,
+        code.trim(),
+        name.trim(),
+        targetCustId || null,
+        resolvedClientName,
+        description || '',
+        'Active',
+        budgetType || 'Fixed Cost',
+        totalBudget || 0,
+        hourlyRate || 0,
+        manager || '',
+      ]
     );
 
-    await FinanceController.logAudit(orgId, req.auth!.userId, 'PROJECT_CREATED', 'Project', prjId, { name, totalBudget });
-    res.status(201).json({ id: prjId, code, name, totalBudget });
+    await FinanceController.logAudit(orgId, req.auth!.userId, 'PROJECT_CREATED', 'Project', prjId, { name: name.trim(), totalBudget });
+    res.status(201).json({ id: prjId, code: code.trim(), name: name.trim(), totalBudget });
   }
 
   // --- INVOICES ---
@@ -566,6 +609,19 @@ export class FinanceController {
   // --- PHASE 4: CUSTOMERS & VENDORS ---
   public static async getCustomers(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
+    const search = req.query.search as string;
+    if (search && typeof search === 'string' && search.trim()) {
+      const q = `%${search.trim()}%`;
+      const result = await db.query(
+        `SELECT * FROM customers 
+         WHERE organization_id = $1 
+           AND (display_name ILIKE $2 OR legal_name ILIKE $2 OR customer_code ILIKE $2 OR gstin ILIKE $2 OR tax_id ILIKE $2 OR email ILIKE $2 OR phone ILIKE $2)
+         ORDER BY display_name ASC LIMIT 50`,
+        [orgId, q]
+      );
+      res.json(result.rows);
+      return;
+    }
     const result = await db.query('SELECT * FROM customers WHERE organization_id = $1 ORDER BY display_name ASC', [orgId]);
     res.json(result.rows);
   }

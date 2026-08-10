@@ -6,10 +6,10 @@ const router = Router();
 
 // Master Items API
 router.get('/items', requirePermission(['invoices.view', 'purchases.view']), Phase8Controller.getItems);
-router.post('/items', requirePermission('invoices.create'), Phase8Controller.createItem);
+router.post('/items', requirePermission(['invoices.create', 'purchases.create']), Phase8Controller.createItem);
 router.get('/items/:id', requirePermission(['invoices.view', 'purchases.view']), Phase8Controller.getItem);
-router.put('/items/:id', requirePermission('invoices.edit'), Phase8Controller.updateItem);
-router.delete('/items/:id', requirePermission('invoices.delete'), Phase8Controller.deleteItem);
+router.put('/items/:id', requirePermission(['invoices.edit', 'purchases.edit']), Phase8Controller.updateItem);
+router.delete('/items/:id', requirePermission(['invoices.delete', 'purchases.delete']), Phase8Controller.deleteItem);
 
 // Quotation API — Static routes MUST come before parametric /quotations/:id routes
 router.get('/quotations', requirePermission('invoices.view'), Phase8Controller.getQuotations);

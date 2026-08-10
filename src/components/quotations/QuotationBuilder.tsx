@@ -18,6 +18,8 @@ interface QuotationBuilderProps {
   onOpenQuickClient: () => void;
   onOpenQuickProject: () => void;
   currencySymbol?: string;
+  customersLoading?: boolean;
+  customerError?: string | null;
 }
 
 export const QuotationBuilder: React.FC<QuotationBuilderProps> = ({
@@ -30,6 +32,8 @@ export const QuotationBuilder: React.FC<QuotationBuilderProps> = ({
   onOpenQuickClient,
   onOpenQuickProject,
   currencySymbol = '₹',
+  customersLoading = false,
+  customerError = null,
 }) => {
   const [isItemPickerOpen, setIsItemPickerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -204,6 +208,8 @@ export const QuotationBuilder: React.FC<QuotationBuilderProps> = ({
             setExpiryDate={builder.setExpiryDate}
             isGstInclusive={builder.isGstInclusive}
             setIsGstInclusive={builder.setIsGstInclusive}
+            customersLoading={customersLoading}
+            customerError={customerError}
           />
 
           {/* Line Items */}

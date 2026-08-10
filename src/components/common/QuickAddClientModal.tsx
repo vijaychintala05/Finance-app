@@ -1,21 +1,20 @@
 import React, { useState } from 'react';
 import { X, UserPlus, Loader2, AlertCircle } from 'lucide-react';
-import { useBooks } from '../../context/BooksContext';
 import { customerApi } from '../../services/customerApi';
 
 interface QuickAddClientModalProps {
   isOpen: boolean;
   onClose: () => void;
   onClientCreated: (client: any) => void;
+  currencyCode?: string;
 }
 
 export const QuickAddClientModal: React.FC<QuickAddClientModalProps> = ({
   isOpen,
   onClose,
   onClientCreated,
+  currencyCode = 'INR',
 }) => {
-  const { addClient, settings } = useBooks();
-
   const [companyName, setCompanyName] = useState('');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -45,12 +44,8 @@ export const QuickAddClientModal: React.FC<QuickAddClientModalProps> = ({
         email: email.trim(),
         phone: phone.trim(),
         gstin: gstin.trim(),
-        currency: settings.currencyCode || 'INR',
+        currency: currencyCode,
       });
-
-      try {
-        addClient(created);
-      } catch {}
 
       onClientCreated(created);
       setCompanyName('');
@@ -94,10 +89,11 @@ export const QuickAddClientModal: React.FC<QuickAddClientModalProps> = ({
           )}
 
           <div className="space-y-1">
-            <label className="font-semibold text-slate-700 dark:text-slate-300">
+            <label htmlFor="customer-name-input" className="font-semibold text-slate-700 dark:text-slate-300">
               Customer / Contact Name *
             </label>
             <input
+              id="customer-name-input"
               type="text"
               required
               placeholder="e.g. John Doe"

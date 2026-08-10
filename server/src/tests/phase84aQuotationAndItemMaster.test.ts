@@ -3,13 +3,13 @@ import supertest from 'supertest';
 import app from '../index';
 import { db } from '../database/db';
 import { MigrationRunner } from '../database/migrationRunner';
-import { ItemMasterService } from '../services/ItemMasterService';
+import { ItemMasterService, ITEM_REFERENCE_REGISTRY } from '../services/ItemMasterService';
 import { QuotationEngine, QuotationLineItem } from '../sales/QuotationEngine';
 import { SalesEngine } from '../sales/SalesEngine';
 
 const request = supertest(app);
 
-describe('Phase 8.4A.3 — Quotation & Item Master Full Regression & Integrity Test Suite', () => {
+describe('Phase 8.4A.4 — Quotation & Item Master Registry Schema Integrity Test Suite', () => {
   const originalEnv = process.env.NODE_ENV;
   let tokenOrgA: string;
   let orgIdA: string;
@@ -21,7 +21,7 @@ describe('Phase 8.4A.3 — Quotation & Item Master Full Regression & Integrity T
 
     // Register Org A
     const regA = await request.post('/api/v1/auth/register').send({
-      email: `owner-orga-p84a3-${Date.now()}@test.com`,
+      email: `owner-orga-p84a4-${Date.now()}@test.com`,
       password: 'Password123!',
       fullName: 'Owner Org A',
       organizationName: 'Quotation Testing Org A',
@@ -35,7 +35,7 @@ describe('Phase 8.4A.3 — Quotation & Item Master Full Regression & Integrity T
 
     // Register Org B
     const regB = await request.post('/api/v1/auth/register').send({
-      email: `owner-orgb-p84a3-${Date.now()}@test.com`,
+      email: `owner-orgb-p84a4-${Date.now()}@test.com`,
       password: 'Password123!',
       fullName: 'Owner Org B',
       organizationName: 'Quotation Testing Org B',
@@ -53,7 +53,7 @@ describe('Phase 8.4A.3 — Quotation & Item Master Full Regression & Integrity T
     vi.restoreAllMocks();
   });
 
-  // --- RESTORED PHASE 8.4A.1 INTEGRATION TESTS (1 to 35) ---
+  // --- RESTORED INTEGRATION TESTS (1 to 50) ---
 
   it('1. Create valid item', async () => {
     const itemData = {
@@ -675,8 +675,6 @@ describe('Phase 8.4A.3 — Quotation & Item Master Full Regression & Integrity T
     ).rejects.toThrow('GST rate must be between 0 and 100');
   });
 
-  // --- ADDITIONAL PHASE 8.4A.3 INTEGRATION TESTS (36 to 50) ---
-
   it('36. Item referenced in Invoice archives item safely and preserves invoice rendering', async () => {
     const invItem = await ItemMasterService.createItem(orgIdA, {
       name: 'Invoice Reference Item',
@@ -970,5 +968,75 @@ describe('Phase 8.4A.3 — Quotation & Item Master Full Regression & Integrity T
     expect(items[1].taxableAmount).toBe(2.68);
     expect(totals.subtotal).toBeGreaterThan(0);
     expect(totals.totalAmount).toBe(QuotationEngine.calculateQuotationTotals(items).totalAmount);
+  });
+
+  // --- NEW PHASE 8.4A.4 INTEGRITY & SCHEMA DRIFT TESTS (51 to 54) ---
+
+  it('51. ITEM_REFERENCE_REGISTRY entries exist and are queryable in migrated database schema', async () => {
+    expect(ITEM_REFERENCE_REGISTRY.length).toBeGreaterThan(0);
+
+    for (const src of ITEM_REFERENCE_REGISTRY) {
+      let querySql = `SELECT ${src.column} FROM ${src.table} LIMIT 1`;
+      if (src.format === 'RELATIONAL_ID') {
+        querySql = `SELECT ii.${src.column} FROM ${src.table} ii JOIN invoices i ON ii.invoice_id = i.id LIMIT 1`;
+      }
+      const res = await db.query(querySql);
+      expect(res).toBeDefined();
+      expect(res.rows).toBeDefined();
+    }
+  });
+
+  it('52. Missing registered table schema-drift fails closed (archives safely)', async () => {
+    const testItem = await ItemMasterService.createItem(orgIdA, {
+      name: 'Missing Table Fail Closed Item',
+      salesRate: 1000,
+    });
+
+    const origQuery = db.query.bind(db);
+    vi.spyOn(db, 'query').mockImplementation(async (sql: string, params?: any[]) => {
+      if (sql.includes('sales_orders')) {
+        throw new Error('relation "sales_orders" does not exist');
+      }
+      return origQuery(sql, params);
+    });
+
+    const delRes = await ItemMasterService.deleteItem(orgIdA, testItem.id);
+    expect(delRes.archived).toBe(true);
+
+    const fetched = await ItemMasterService.getItem(orgIdA, testItem.id);
+    expect(fetched.isActive).toBe(false);
+  });
+
+  it('53. Missing registered column schema-drift fails closed (archives safely)', async () => {
+    const testItem = await ItemMasterService.createItem(orgIdA, {
+      name: 'Missing Column Fail Closed Item',
+      salesRate: 1000,
+    });
+
+    const origQuery = db.query.bind(db);
+    vi.spyOn(db, 'query').mockImplementation(async (sql: string, params?: any[]) => {
+      if (sql.includes('SELECT line_items FROM invoices')) {
+        throw new Error('column "line_items" does not exist');
+      }
+      return origQuery(sql, params);
+    });
+
+    const delRes = await ItemMasterService.deleteItem(orgIdA, testItem.id);
+    expect(delRes.archived).toBe(true);
+
+    const fetched = await ItemMasterService.getItem(orgIdA, testItem.id);
+    expect(fetched.isActive).toBe(false);
+  });
+
+  it('54. Normal unused item with healthy complete schema is permanently deleted', async () => {
+    const unusedItem = await ItemMasterService.createItem(orgIdA, {
+      name: 'Healthy Schema Unused Item',
+      salesRate: 500,
+    });
+
+    const delRes = await ItemMasterService.deleteItem(orgIdA, unusedItem.id);
+    expect(delRes.archived).toBe(false);
+
+    await expect(ItemMasterService.getItem(orgIdA, unusedItem.id)).rejects.toThrow('not found');
   });
 });

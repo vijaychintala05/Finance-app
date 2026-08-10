@@ -26,18 +26,17 @@ export interface ItemModel {
  * - Credit Notes and Vendor Credits in FirmBooks are currently amount/adjustment-level financial documents
  *   and do not persist Item Master item_id references.
  */
-interface ItemReferenceSource {
+export interface ItemReferenceSource {
   table: string;
   column: string;
   format: 'RELATIONAL_ID' | 'JSONB_ARRAY';
 }
 
-const ITEM_REFERENCE_REGISTRY: ItemReferenceSource[] = [
+export const ITEM_REFERENCE_REGISTRY: ItemReferenceSource[] = [
   { table: 'invoice_items', column: 'item_id', format: 'RELATIONAL_ID' },
   { table: 'estimates', column: 'line_items', format: 'JSONB_ARRAY' },
   { table: 'estimates', column: 'items', format: 'JSONB_ARRAY' },
   { table: 'invoices', column: 'line_items', format: 'JSONB_ARRAY' },
-  { table: 'invoices', column: 'items', format: 'JSONB_ARRAY' },
   { table: 'sales_orders', column: 'line_items', format: 'JSONB_ARRAY' },
   { table: 'purchase_orders', column: 'line_items', format: 'JSONB_ARRAY' },
   { table: 'bills', column: 'line_items', format: 'JSONB_ARRAY' },
@@ -267,12 +266,9 @@ export class ItemMasterService {
           if (isReferenced) break;
         }
       } catch (err: any) {
-        const msg = (err && err.message) ? err.message.toLowerCase() : '';
-        // If query fails on a registered production source for any reason, FAIL CLOSED
-        if (!msg.includes('does not exist') && !msg.includes('undefined') && err.code !== '42P01') {
-          checkErrorEncountered = true;
-          break;
-        }
+        // ANY query error on ANY registered production source MUST fail closed
+        checkErrorEncountered = true;
+        break;
       }
     }
 

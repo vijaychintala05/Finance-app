@@ -18,11 +18,15 @@ export type AccountingSubTab = 'journals' | 'bulk_updates' | 'coa' | 'transactio
 interface AccountingViewProps {
   initialSubTab?: AccountingSubTab;
   onSubTabChange?: (subTab: AccountingSubTab) => void;
+  autoOpenJournalModal?: boolean;
+  onJournalModalClosed?: () => void;
 }
 
 export const AccountingView: React.FC<AccountingViewProps> = ({
   initialSubTab = 'journals',
   onSubTabChange,
+  autoOpenJournalModal,
+  onJournalModalClosed,
 }) => {
   const [subTab, setSubTab] = useState<AccountingSubTab>(initialSubTab);
 
@@ -101,7 +105,12 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
 
       {/* Sub-View Content */}
       <div className="focus:outline-none">
-        {subTab === 'journals' && <JournalEntriesView />}
+        {subTab === 'journals' && (
+          <JournalEntriesView
+            autoOpenCreateModal={autoOpenJournalModal}
+            onModalClosed={onJournalModalClosed}
+          />
+        )}
         {subTab === 'bulk_updates' && <BulkUpdatesView />}
         {subTab === 'coa' && <ChartOfAccountsView />}
         {subTab === 'transaction_locking' && <TransactionLockingView />}

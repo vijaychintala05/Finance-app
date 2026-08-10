@@ -25,6 +25,8 @@ import {
 import { NavigationTab } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 
+import { GlobalSearchBar } from '../common/GlobalSearchBar';
+
 interface HeaderProps {
   currentTab?: NavigationTab;
   onNavigate?: (tab: string, options?: { autoCreate?: boolean }) => void;
@@ -150,16 +152,9 @@ export const Header: React.FC<HeaderProps> = ({
         )}
       </div>
 
-      {/* Center: Global Search Bar Placeholder */}
+      {/* Center: Global Search Bar */}
       <div className="hidden md:flex items-center flex-1 max-w-md mx-6">
-        <div className="relative w-full">
-          <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
-          <input
-            type="text"
-            placeholder="Search customers, invoices, bills, accounts..."
-            className="w-full bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700/80 rounded-2xl pl-9 pr-4 py-1.5 text-xs font-medium text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-          />
-        </div>
+        <GlobalSearchBar onNavigate={(tab) => onNavigate && onNavigate(tab)} />
       </div>
 
       {/* Right: Global + New Dropdown & Theme / Utilities */}
@@ -182,7 +177,7 @@ export const Header: React.FC<HeaderProps> = ({
                 Sales & AR
               </div>
               <button
-                onClick={() => handleQuickNew('clients', false)}
+                onClick={() => handleQuickNew('clients', true)}
                 className="w-full text-left px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center space-x-2 text-slate-700 dark:text-slate-200 cursor-pointer"
               >
                 <User className="w-3.5 h-3.5 text-blue-500" />

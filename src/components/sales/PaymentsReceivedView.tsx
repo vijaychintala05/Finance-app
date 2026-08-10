@@ -10,12 +10,27 @@ import { formatCurrency, formatDate } from '../../utils/formatters';
 import { PaymentReceipt } from '../../types';
 import { PaymentReceivedDetailsModal } from './PaymentReceivedDetailsModal';
 
-export const PaymentsReceivedView: React.FC = () => {
+interface PaymentsReceivedViewProps {
+  autoOpenCreateModal?: boolean;
+  onModalClosed?: () => void;
+}
+
+export const PaymentsReceivedView: React.FC<PaymentsReceivedViewProps> = ({
+  autoOpenCreateModal,
+  onModalClosed,
+}) => {
   const { paymentsReceived, addPaymentReceived, invoices, settings } = useBooks();
 
   const [search, setSearch] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [viewingPayment, setViewingPayment] = useState<PaymentReceipt | null>(null);
+
+  React.useEffect(() => {
+    if (autoOpenCreateModal) {
+      setIsModalOpen(true);
+      if (onModalClosed) onModalClosed();
+    }
+  }, [autoOpenCreateModal, onModalClosed]);
 
   // Modal
   const [invoiceId, setInvoiceId] = useState(invoices[0]?.id || '');

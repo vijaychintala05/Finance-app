@@ -8,7 +8,15 @@ import { EstimateDetailsModal } from './EstimateDetailsModal';
 import { QuickAddClientModal } from '../common/QuickAddClientModal';
 import { QuickAddProjectModal } from '../common/QuickAddProjectModal';
 
-export const EstimatesView: React.FC = () => {
+interface EstimatesViewProps {
+  autoOpenCreateModal?: boolean;
+  onModalClosed?: () => void;
+}
+
+export const EstimatesView: React.FC<EstimatesViewProps> = ({
+  autoOpenCreateModal,
+  onModalClosed,
+}) => {
   const { estimates, clients, projects, settings, addEstimate, convertEstimateToInvoice } =
     useBooks();
 
@@ -16,6 +24,13 @@ export const EstimatesView: React.FC = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [previewInvoice, setPreviewInvoice] = useState<Invoice | null>(null);
   const [viewingEstimate, setViewingEstimate] = useState<Estimate | null>(null);
+
+  React.useEffect(() => {
+    if (autoOpenCreateModal) {
+      setIsModalOpen(true);
+      if (onModalClosed) onModalClosed();
+    }
+  }, [autoOpenCreateModal, onModalClosed]);
 
   const [isQuickClientOpen, setIsQuickClientOpen] = useState(false);
   const [isQuickProjectOpen, setIsQuickProjectOpen] = useState(false);

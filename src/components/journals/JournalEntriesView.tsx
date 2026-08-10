@@ -4,11 +4,26 @@ import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate } from '../../utils/formatters';
 import { JournalModal } from './JournalModal';
 
-export const JournalEntriesView: React.FC = () => {
+interface JournalEntriesViewProps {
+  autoOpenCreateModal?: boolean;
+  onModalClosed?: () => void;
+}
+
+export const JournalEntriesView: React.FC<JournalEntriesViewProps> = ({
+  autoOpenCreateModal,
+  onModalClosed,
+}) => {
   const { journalEntries, settings } = useBooks();
 
   const [search, setSearch] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
+
+  React.useEffect(() => {
+    if (autoOpenCreateModal) {
+      setIsModalOpen(true);
+      if (onModalClosed) onModalClosed();
+    }
+  }, [autoOpenCreateModal, onModalClosed]);
 
   const filteredJournals = journalEntries.filter(
     (j) =>

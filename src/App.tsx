@@ -39,16 +39,27 @@ function MainAppLayout() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [isOrgWizardOpen, setIsOrgWizardOpen] = useState(false);
   const [isOrgSwitcherOpen, setIsOrgSwitcherOpen] = useState(false);
-  const [autoOpenExpenseModal, setAutoOpenExpenseModal] = useState(false);
+
+  // Quick Create Modal Flags
+  const [autoOpenClientModal, setAutoOpenClientModal] = useState(false);
+  const [autoOpenEstimateModal, setAutoOpenEstimateModal] = useState(false);
+  const [autoOpenSalesOrderModal, setAutoOpenSalesOrderModal] = useState(false);
   const [autoOpenInvoiceModal, setAutoOpenInvoiceModal] = useState(false);
+  const [autoOpenPaymentReceivedModal, setAutoOpenPaymentReceivedModal] = useState(false);
+  const [autoOpenExpenseModal, setAutoOpenExpenseModal] = useState(false);
+  const [autoOpenBillModal, setAutoOpenBillModal] = useState(false);
+  const [autoOpenJournalModal, setAutoOpenJournalModal] = useState(false);
 
   const handleNavigate = (tab: string, options?: { autoCreate?: boolean }) => {
-    if (tab === 'expenses' && options?.autoCreate) {
-      setAutoOpenExpenseModal(true);
-    }
-    if (tab === 'invoices' && options?.autoCreate) {
-      setAutoOpenInvoiceModal(true);
-    }
+    if (tab === 'clients' && options?.autoCreate) setAutoOpenClientModal(true);
+    if (tab === 'estimates' && options?.autoCreate) setAutoOpenEstimateModal(true);
+    if (tab === 'sales_orders' && options?.autoCreate) setAutoOpenSalesOrderModal(true);
+    if (tab === 'invoices' && options?.autoCreate) setAutoOpenInvoiceModal(true);
+    if (tab === 'payments_received' && options?.autoCreate) setAutoOpenPaymentReceivedModal(true);
+    if (tab === 'expenses' && options?.autoCreate) setAutoOpenExpenseModal(true);
+    if (tab === 'bills' && options?.autoCreate) setAutoOpenBillModal(true);
+    if ((tab === 'journals' || tab === 'accounting') && options?.autoCreate) setAutoOpenJournalModal(true);
+
     setActiveTab(tab);
   };
 
@@ -70,11 +81,26 @@ function MainAppLayout() {
       case 'sales_overview':
         return <SalesOverview onNavigate={handleNavigate} />;
       case 'clients':
-        return <ClientsView />;
+        return (
+          <ClientsView
+            autoOpenCreateModal={autoOpenClientModal}
+            onModalClosed={() => setAutoOpenClientModal(false)}
+          />
+        );
       case 'estimates':
-        return <EstimatesView />;
+        return (
+          <EstimatesView
+            autoOpenCreateModal={autoOpenEstimateModal}
+            onModalClosed={() => setAutoOpenEstimateModal(false)}
+          />
+        );
       case 'sales_orders':
-        return <SalesOrdersView />;
+        return (
+          <SalesOrdersView
+            autoOpenCreateModal={autoOpenSalesOrderModal}
+            onModalClosed={() => setAutoOpenSalesOrderModal(false)}
+          />
+        );
       case 'invoices':
         return (
           <InvoicesView
@@ -87,7 +113,12 @@ function MainAppLayout() {
       case 'delivery_challans':
         return <DeliveryChallansView />;
       case 'payments_received':
-        return <PaymentsReceivedView />;
+        return (
+          <PaymentsReceivedView
+            autoOpenCreateModal={autoOpenPaymentReceivedModal}
+            onModalClosed={() => setAutoOpenPaymentReceivedModal(false)}
+          />
+        );
       case 'credit_notes':
         return <CreditNotesView />;
       case 'salespersons':
@@ -102,9 +133,7 @@ function MainAppLayout() {
         return (
           <ExpensesView
             autoOpenCreateModal={autoOpenExpenseModal}
-            onModalClosed={() => {
-              setAutoOpenExpenseModal(false);
-            }}
+            onModalClosed={() => setAutoOpenExpenseModal(false)}
             onExit={() => setActiveTab('dashboard')}
           />
         );
@@ -113,7 +142,12 @@ function MainAppLayout() {
       case 'purchase_orders':
         return <PurchaseOrdersView />;
       case 'bills':
-        return <BillsView />;
+        return (
+          <BillsView
+            autoOpenCreateModal={autoOpenBillModal}
+            onModalClosed={() => setAutoOpenBillModal(false)}
+          />
+        );
       case 'recurring_bills':
         return <RecurringBillsView />;
       case 'payments_made':
@@ -125,7 +159,14 @@ function MainAppLayout() {
       case 'accounting_overview':
       case 'accounting':
       case 'journals':
-        return <AccountingView initialSubTab="journals" onSubTabChange={(st) => setActiveTab(st)} />;
+        return (
+          <AccountingView
+            initialSubTab="journals"
+            autoOpenJournalModal={autoOpenJournalModal}
+            onJournalModalClosed={() => setAutoOpenJournalModal(false)}
+            onSubTabChange={(st) => setActiveTab(st)}
+          />
+        );
       case 'bulk_updates':
         return <AccountingView initialSubTab="bulk_updates" onSubTabChange={(st) => setActiveTab(st)} />;
       case 'coa':

@@ -6,13 +6,29 @@ import { formatCurrency } from '../../utils/formatters';
 import { ClientModal } from './ClientModal';
 import { ClientDetailsModal } from './ClientDetailsModal';
 
-export const ClientsView: React.FC = () => {
+interface ClientsViewProps {
+  autoOpenCreateModal?: boolean;
+  onModalClosed?: () => void;
+}
+
+export const ClientsView: React.FC<ClientsViewProps> = ({
+  autoOpenCreateModal,
+  onModalClosed,
+}) => {
   const { clients, invoices, projects, settings, deleteClient } = useBooks();
 
   const [search, setSearch] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [clientToEdit, setClientToEdit] = useState<Client | null>(null);
   const [viewingClient, setViewingClient] = useState<Client | null>(null);
+
+  React.useEffect(() => {
+    if (autoOpenCreateModal) {
+      setClientToEdit(null);
+      setIsModalOpen(true);
+      if (onModalClosed) onModalClosed();
+    }
+  }, [autoOpenCreateModal, onModalClosed]);
 
   const filteredClients = clients.filter(
     (c) =>

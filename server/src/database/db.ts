@@ -3,10 +3,6 @@ import { newDb, IMemoryDb } from 'pg-mem';
 
 const { Pool } = pg;
 
-if (!process.env.DATABASE_URL && process.env.USE_PG_MEM === undefined && process.env.VITEST !== 'true') {
-  process.env.USE_PG_MEM = 'true';
-}
-
 export interface DbQueryResult<T = any> {
   rows: T[];
   rowCount: number;
@@ -23,10 +19,22 @@ class DatabaseService {
   }
 
   public isMemoryAllowed(): boolean {
-    if (process.env.NODE_ENV === 'production' && process.env.USE_PG_MEM !== 'true') {
-      return false;
+    if (process.env.NODE_ENV === 'production') {
+      return process.env.USE_PG_MEM === 'true' && process.env.ALLOW_PROD_MEMORY === 'true';
     }
-    return process.env.NODE_ENV === 'test' || process.env.DATABASE_MODE === 'memory' || process.env.USE_PG_MEM === 'true' || process.env.VITEST === 'true';
+    return (
+      process.env.NODE_ENV === 'test' ||
+      process.env.DATABASE_MODE === 'memory' ||
+      process.env.USE_PG_MEM === 'true' ||
+      process.env.VITEST === 'true'
+    );
+  }
+
+  public resetPool(): void {
+    this.pool = null;
+    this.memDbInstance = null;
+    this.isUsingMemoryFallback = false;
+    this.initPool();
   }
 
   public async checkHealth(): Promise<{ isConnected: boolean; isMemoryMode: boolean }> {
@@ -86,7 +94,7 @@ class DatabaseService {
           console.warn('Falling back to pg-mem because memory mode is allowed.');
           this.initPgMem();
         } else {
-          throw new Error(`Database connection unavailable: Failed to initialize PostgreSQL pool`);
+          throw new Error(`Database connection unavailable: Failed to initialize PostgreSQL pool in production.`);
         }
       }
     } else if (this.isMemoryAllowed()) {

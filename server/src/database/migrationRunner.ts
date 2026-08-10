@@ -876,7 +876,12 @@ export class MigrationRunner {
       try {
         await db.query(sql);
       } catch (err) {
-        console.error('[Migration Error]', err);
+        if (!db.isMemoryAllowed() || process.env.NODE_ENV === 'production') {
+          console.error('[Migration Fatal Error]', err);
+          throw new Error(`Migration failed on statement: ${sql.slice(0, 80)}... Details: ${err instanceof Error ? err.message : String(err)}`);
+        } else {
+          console.warn('[Migration Warning (Memory Mode)]', err instanceof Error ? err.message : err);
+        }
       }
     }
 

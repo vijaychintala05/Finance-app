@@ -18,10 +18,22 @@ import { Phase8Controller } from './controllers/Phase8Controller';
 const app = express();
 app.use(express.json());
 
-// Run Database Migrations and Seed Defaults
-MigrationRunner.runMigrations()
-  .then(() => SeedDataRunner.seedDefaults())
-  .catch((err) => console.error('[Database Init Error]', err));
+export async function initDatabase(): Promise<void> {
+  try {
+    await MigrationRunner.runMigrations();
+    await SeedDataRunner.seedDefaults();
+  } catch (err) {
+    console.error('[Database Init Fatal Error]', err);
+    throw err;
+  }
+}
+
+// Auto-run for test/server environment if not in isolated unit test runner
+if (process.env.VITEST !== 'true' && process.env.NODE_ENV !== 'production') {
+  initDatabase().catch((err) => {
+    console.error('[Database Init Warning]', err);
+  });
+}
 
 // Auth Routes (unprotected for login/register, protected internally)
 app.use('/api/v1/auth', authRoutes);

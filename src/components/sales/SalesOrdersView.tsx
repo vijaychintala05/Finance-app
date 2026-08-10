@@ -14,7 +14,15 @@ import { Invoice, SalesOrder } from '../../types';
 import { SalesOrderDetailsModal } from './SalesOrderDetailsModal';
 import { InvoicePreviewModal } from '../invoices/InvoicePreviewModal';
 
-export const SalesOrdersView: React.FC = () => {
+interface SalesOrdersViewProps {
+  autoOpenCreateModal?: boolean;
+  onModalClosed?: () => void;
+}
+
+export const SalesOrdersView: React.FC<SalesOrdersViewProps> = ({
+  autoOpenCreateModal,
+  onModalClosed,
+}) => {
   const { salesOrders, addSalesOrder, convertSalesOrderToInvoice, clients, settings } = useBooks();
 
   const [search, setSearch] = useState('');
@@ -22,6 +30,13 @@ export const SalesOrdersView: React.FC = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [viewingOrder, setViewingOrder] = useState<SalesOrder | null>(null);
   const [previewInvoice, setPreviewInvoice] = useState<Invoice | null>(null);
+
+  React.useEffect(() => {
+    if (autoOpenCreateModal) {
+      setIsModalOpen(true);
+      if (onModalClosed) onModalClosed();
+    }
+  }, [autoOpenCreateModal, onModalClosed]);
 
   // Form state
   const [clientName, setClientName] = useState(clients[0]?.name || '');

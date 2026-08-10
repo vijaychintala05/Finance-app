@@ -10,12 +10,27 @@ import { formatCurrency, formatDate } from '../../utils/formatters';
 import { Bill } from '../../types';
 import { BillDetailsModal } from './BillDetailsModal';
 
-export const BillsView: React.FC = () => {
+interface BillsViewProps {
+  autoOpenCreateModal?: boolean;
+  onModalClosed?: () => void;
+}
+
+export const BillsView: React.FC<BillsViewProps> = ({
+  autoOpenCreateModal,
+  onModalClosed,
+}) => {
   const { bills, addBill, updateBill, vendors, settings } = useBooks();
 
   const [search, setSearch] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [viewingBill, setViewingBill] = useState<Bill | null>(null);
+
+  React.useEffect(() => {
+    if (autoOpenCreateModal) {
+      setIsModalOpen(true);
+      if (onModalClosed) onModalClosed();
+    }
+  }, [autoOpenCreateModal, onModalClosed]);
 
   // Form
   const [vendorName, setVendorName] = useState(vendors[0]?.name || 'AWS Cloud Services');

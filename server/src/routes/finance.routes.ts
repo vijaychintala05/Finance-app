@@ -21,6 +21,10 @@ router.get('/customers/:id/summary', FinanceController.getCustomerSummary);
 router.get('/vendors', FinanceController.getVendors);
 router.post('/vendors', FinanceController.createVendor);
 
+// Projects
+router.get('/projects', FinanceController.getProjects);
+router.post('/projects', requirePermission('invoices.create'), FinanceController.createProject);
+
 // Estimates
 router.get('/estimates', FinanceController.getEstimates);
 router.post('/estimates', requirePermission('invoice.create'), FinanceController.createEstimate);

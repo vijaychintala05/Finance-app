@@ -1,12 +1,12 @@
 import React, { useState } from 'react';
-import { X, UserPlus, Building2 } from 'lucide-react';
+import { X, UserPlus, Loader2, AlertCircle } from 'lucide-react';
 import { useBooks } from '../../context/BooksContext';
-import { Client } from '../../types';
+import { customerApi } from '../../services/customerApi';
 
 interface QuickAddClientModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onClientCreated: (client: Client) => void;
+  onClientCreated: (client: any) => void;
 }
 
 export const QuickAddClientModal: React.FC<QuickAddClientModalProps> = ({
@@ -20,32 +20,50 @@ export const QuickAddClientModal: React.FC<QuickAddClientModalProps> = ({
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
+  const [gstin, setGstin] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim() && !companyName.trim()) return;
 
     const finalCompany = companyName.trim() || name.trim();
     const finalName = name.trim() || companyName.trim();
 
-    const created = addClient({
-      companyName: finalCompany,
-      name: finalName,
-      email: email.trim(),
-      phone: phone.trim(),
-      billingAddress: '',
-      currency: settings.currencyCode || 'USD',
-      paymentTerms: 'Net 30',
-    });
+    setLoading(true);
+    setError(null);
 
-    onClientCreated(created);
-    setCompanyName('');
-    setName('');
-    setEmail('');
-    setPhone('');
-    onClose();
+    try {
+      const created = await customerApi.createCustomer({
+        companyName: finalCompany,
+        name: finalName,
+        displayName: finalName,
+        legalName: finalCompany,
+        email: email.trim(),
+        phone: phone.trim(),
+        gstin: gstin.trim(),
+        currency: settings.currencyCode || 'INR',
+      });
+
+      try {
+        addClient(created);
+      } catch {}
+
+      onClientCreated(created);
+      setCompanyName('');
+      setName('');
+      setEmail('');
+      setPhone('');
+      setGstin('');
+      onClose();
+    } catch (err: any) {
+      setError(err.message || 'Failed to create customer on server');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -55,53 +73,56 @@ export const QuickAddClientModal: React.FC<QuickAddClientModalProps> = ({
           <div className="flex items-center space-x-2">
             <UserPlus className="w-4 h-4 text-emerald-600" />
             <h3 className="font-bold text-slate-900 dark:text-slate-100 text-sm">
-              Quick Add Client
+              Quick Add Customer Master
             </h3>
           </div>
           <button
-            type="button"
             onClick={onClose}
-            className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+            aria-label="Close modal"
+            className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg transition-colors cursor-pointer"
           >
-            <X className="w-5 h-5" />
+            <X className="w-4 h-4" />
           </button>
         </div>
 
         <form onSubmit={handleSubmit} className="p-5 space-y-4 text-xs">
-          <div>
-            <label className="block text-slate-600 dark:text-slate-300 font-medium mb-1">
-              Company / Business Name *
-            </label>
-            <div className="relative">
-              <Building2 className="w-4 h-4 absolute left-2.5 top-2.5 text-slate-400" />
-              <input
-                type="text"
-                placeholder="e.g. Acme Corporation"
-                value={companyName}
-                onChange={(e) => setCompanyName(e.target.value)}
-                required
-                className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg pl-9 pr-3 py-2 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-              />
+          {error && (
+            <div className="p-3 bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-800 rounded-xl text-rose-600 dark:text-rose-400 flex items-center space-x-2">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>{error}</span>
             </div>
-          </div>
+          )}
 
-          <div>
-            <label className="block text-slate-600 dark:text-slate-300 font-medium mb-1">
-              Primary Contact Person Name *
+          <div className="space-y-1">
+            <label className="font-semibold text-slate-700 dark:text-slate-300">
+              Customer / Contact Name *
             </label>
             <input
               type="text"
+              required
               placeholder="e.g. John Doe"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              required
-              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-2 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-2.5 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            />
+          </div>
+
+          <div className="space-y-1">
+            <label className="font-semibold text-slate-700 dark:text-slate-300">
+              Company / Legal Name
+            </label>
+            <input
+              type="text"
+              placeholder="e.g. Acme Technologies Private Limited"
+              value={companyName}
+              onChange={(e) => setCompanyName(e.target.value)}
+              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-2.5 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500"
             />
           </div>
 
           <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-slate-600 dark:text-slate-300 font-medium mb-1">
+            <div className="space-y-1">
+              <label className="font-semibold text-slate-700 dark:text-slate-300">
                 Email Address
               </label>
               <input
@@ -109,36 +130,57 @@ export const QuickAddClientModal: React.FC<QuickAddClientModalProps> = ({
                 placeholder="john@acme.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-2 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-2 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500"
               />
             </div>
-            <div>
-              <label className="block text-slate-600 dark:text-slate-300 font-medium mb-1">
+            <div className="space-y-1">
+              <label className="font-semibold text-slate-700 dark:text-slate-300">
                 Phone Number
               </label>
               <input
                 type="text"
-                placeholder="+1 (555) 019-2834"
+                placeholder="+91 98765 43210"
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
-                className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-2 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-2 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500"
               />
             </div>
           </div>
 
-          <div className="pt-3 flex justify-end space-x-2 border-t border-slate-100 dark:border-slate-800">
+          <div className="space-y-1">
+            <label className="font-semibold text-slate-700 dark:text-slate-300">
+              GSTIN / Tax ID
+            </label>
+            <input
+              type="text"
+              placeholder="e.g. 27AAAAA0000A1Z5"
+              value={gstin}
+              onChange={(e) => setGstin(e.target.value)}
+              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-2 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            />
+          </div>
+
+          <div className="pt-2 flex justify-end space-x-2">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 border border-slate-200 dark:border-slate-700 rounded-xl font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+              className="px-3 py-2 text-slate-500 hover:text-slate-700 font-semibold cursor-pointer"
             >
               Cancel
             </button>
             <button
               type="submit"
-              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-bold shadow-xs transition-colors cursor-pointer"
+              disabled={loading}
+              className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-xl font-semibold flex items-center space-x-1.5 shadow-sm transition-all cursor-pointer disabled:opacity-50"
             >
-              Save & Select Client
+              {loading ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Saving Customer...</span>
+                </>
+              ) : (
+                <span>Save Customer</span>
+              )}
             </button>
           </div>
         </form>

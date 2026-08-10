@@ -32,26 +32,31 @@ export const ItemPicker: React.FC<ItemPickerProps> = ({
   useEffect(() => {
     if (!isOpen) return;
     let isMounted = true;
-    setLoading(true);
-    setError(null);
+    const currentReq = Date.now();
 
-    quotationApi
-      .listItems(search)
-      .then((data) => {
-        if (isMounted) {
-          setItems(data.filter((i) => i.isActive !== false));
-          setLoading(false);
-        }
-      })
-      .catch((err) => {
-        if (isMounted) {
-          setError(err.message || 'Failed to load items');
-          setLoading(false);
-        }
-      });
+    const timer = setTimeout(() => {
+      setLoading(true);
+      setError(null);
+
+      quotationApi
+        .listItems(search)
+        .then((data) => {
+          if (isMounted) {
+            setItems(data.filter((i) => i.isActive !== false));
+            setLoading(false);
+          }
+        })
+        .catch((err) => {
+          if (isMounted) {
+            setError(err.message || 'Failed to load items');
+            setLoading(false);
+          }
+        });
+    }, search ? 150 : 0);
 
     return () => {
       isMounted = false;
+      clearTimeout(timer);
     };
   }, [isOpen, search]);
 

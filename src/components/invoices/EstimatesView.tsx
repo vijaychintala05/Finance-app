@@ -9,6 +9,7 @@ import { QuickAddClientModal } from '../common/QuickAddClientModal';
 import { QuickAddProjectModal } from '../common/QuickAddProjectModal';
 import { QuotationBuilder } from '../quotations/QuotationBuilder';
 import { quotationApi } from '../../services/quotationApi';
+import { customerApi } from '../../services/customerApi';
 
 interface EstimatesViewProps {
   autoOpenCreateModal?: boolean;
@@ -23,10 +24,13 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
   selectedEntityId,
   onSelectedEntityClosed,
 }) => {
-  const { clients, projects, settings } = useBooks();
+  const { settings } = useBooks();
 
   const [backendQuotations, setBackendQuotations] = useState<any[]>([]);
+  const [backendCustomers, setBackendCustomers] = useState<any[]>([]);
+  const [backendProjects, setBackendProjects] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [customersLoading, setCustomersLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [search, setSearch] = useState('');
@@ -39,7 +43,7 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
   const [isQuickClientOpen, setIsQuickClientOpen] = useState(false);
   const [isQuickProjectOpen, setIsQuickProjectOpen] = useState(false);
 
-  // Load real backend quotations
+  // Load real backend quotations with search debounce
   const loadQuotations = async () => {
     setLoading(true);
     setError(null);
@@ -53,8 +57,33 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
     }
   };
 
+  // Load real backend customers & projects
+  const loadCustomersAndProjects = async () => {
+    setCustomersLoading(true);
+    try {
+      const [custs, projs] = await Promise.all([
+        customerApi.listCustomers(),
+        customerApi.listProjects(),
+      ]);
+      setBackendCustomers(custs);
+      setBackendProjects(projs);
+    } catch (err: any) {
+      console.warn('Failed to load customer master data:', err);
+    } finally {
+      setCustomersLoading(false);
+    }
+  };
+
   useEffect(() => {
-    loadQuotations();
+    loadCustomersAndProjects();
+  }, []);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      loadQuotations();
+    }, search ? 150 : 0);
+
+    return () => clearTimeout(timer);
   }, [search]);
 
   useEffect(() => {
@@ -242,7 +271,7 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
                             className="bg-emerald-600 hover:bg-emerald-500 text-white px-2.5 py-1 rounded text-[11px] font-semibold flex items-center space-x-1 ml-auto cursor-pointer shadow-xs"
                           >
                             <FileCheck className="w-3.5 h-3.5" />
-                            <span>Convert & View Bill</span>
+                            <span>Convert to Invoice</span>
                           </button>
                         ) : (
                           <span className="text-[11px] text-emerald-600 font-semibold">
@@ -273,8 +302,8 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
             loadQuotations();
           }}
           initialQuotation={editingQuotation}
-          clients={clients}
-          projects={projects}
+          clients={backendCustomers}
+          projects={backendProjects}
           onOpenQuickClient={() => setIsQuickClientOpen(true)}
           onOpenQuickProject={() => setIsQuickProjectOpen(true)}
           currencySymbol={settings.currencySymbol}
@@ -334,6 +363,9 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
         <QuickAddClientModal
           isOpen={isQuickClientOpen}
           onClose={() => setIsQuickClientOpen(false)}
+          onClientCreated={(newCust) => {
+            loadCustomersAndProjects();
+          }}
         />
       )}
 
@@ -342,6 +374,9 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
         <QuickAddProjectModal
           isOpen={isQuickProjectOpen}
           onClose={() => setIsQuickProjectOpen(false)}
+          onProjectCreated={(newProj) => {
+            loadCustomersAndProjects();
+          }}
         />
       )}
     </div>

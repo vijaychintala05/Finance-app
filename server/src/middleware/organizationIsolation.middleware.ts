@@ -133,7 +133,7 @@ export const organizationIsolationMiddleware = async (
   next();
 };
 
-export const requirePermission = (permissionCode: string) => {
+export const requirePermission = (permissionCode: string | string[]) => {
   return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
     if (!req.auth) {
       res.status(401).json({ error: 'Unauthorized: Authentication required' });
@@ -144,19 +144,24 @@ export const requirePermission = (permissionCode: string) => {
       return next();
     }
 
-    // Map legacy alias codes if needed (e.g. invoice.create -> invoices.create)
-    const normalizedCode = permissionCode.includes('.')
-      ? (permissionCode.endsWith('s') ? permissionCode : permissionCode.replace(/^([a-z]+)\.(.+)$/, '$1s.$2'))
-      : permissionCode;
+    const codes = Array.isArray(permissionCode) ? permissionCode : [permissionCode];
 
-    const hasDirect = req.auth.permissions.includes(permissionCode as PermissionCode) ||
-      req.auth.permissions.includes(normalizedCode as PermissionCode) ||
-      RbacService.hasPermission(req.auth.role, permissionCode as PermissionCode) ||
-      RbacService.hasPermission(req.auth.role, normalizedCode as PermissionCode);
+    const hasAny = codes.some((code) => {
+      const normalizedCode = code.includes('.')
+        ? (code.endsWith('s') ? code : code.replace(/^([a-z]+)\.(.+)$/, '$1s.$2'))
+        : code;
 
-    if (!hasDirect) {
+      return (
+        req.auth!.permissions.includes(code as PermissionCode) ||
+        req.auth!.permissions.includes(normalizedCode as PermissionCode) ||
+        RbacService.hasPermission(req.auth!.role, code as PermissionCode) ||
+        RbacService.hasPermission(req.auth!.role, normalizedCode as PermissionCode)
+      );
+    });
+
+    if (!hasAny) {
       res.status(403).json({
-        error: `Forbidden: Missing required permission [${permissionCode}] for role [${req.auth.role}]`,
+        error: `Forbidden: Missing required permission [${Array.isArray(permissionCode) ? permissionCode.join(', ') : permissionCode}] for role [${req.auth.role}]`,
       });
       return;
     }

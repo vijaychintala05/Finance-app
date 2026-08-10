@@ -88,7 +88,8 @@ export class Phase8Controller {
       res.status(201).json({ quotation });
     } catch (err: any) {
       const msg = err.message || 'Failed to create quotation';
-      const status = msg.includes('required') || msg.includes('cannot exceed') || msg.includes('must be') || msg.includes('inactive') ? 400 : 500;
+      const isValidation = msg.includes('required') || msg.includes('cannot exceed') || msg.includes('must be') || msg.includes('inactive') || msg.includes('not found') || msg.includes('does not belong') || msg.includes('cannot precede') || msg.includes('invalid');
+      const status = isValidation ? 400 : 500;
       res.status(status).json({ error: msg });
     }
   }
@@ -119,7 +120,16 @@ export class Phase8Controller {
       res.json({ quotation });
     } catch (err: any) {
       const msg = err.message || 'Failed to update quotation';
-      const status = msg.includes('not found') ? 404 : msg.includes('required') || msg.includes('cannot exceed') || msg.includes('must be') ? 400 : 500;
+      let status = 500;
+      if (msg.startsWith('Quotation ') && msg.includes('not found')) {
+        status = 404;
+      } else if (
+        msg.includes('required') || msg.includes('cannot exceed') || msg.includes('must be') ||
+        msg.includes('inactive') || msg.includes('not found') || msg.includes('does not belong') ||
+        msg.includes('cannot precede') || msg.includes('invalid')
+      ) {
+        status = 400;
+      }
       res.status(status).json({ error: msg });
     }
   }

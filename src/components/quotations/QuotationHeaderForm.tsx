@@ -1,17 +1,21 @@
 import React from 'react';
-import { User, Building, Plus, Calendar, FileText } from 'lucide-react';
+import { User, Building, Plus, Calendar, FileText, AlertCircle } from 'lucide-react';
 
 interface Client {
   id: string;
-  name: string;
+  name?: string;
+  displayName?: string;
   companyName?: string;
+  legalName?: string;
   email?: string;
   gstin?: string;
+  taxId?: string;
 }
 
 interface Project {
   id: string;
   name: string;
+  code?: string;
 }
 
 interface QuotationHeaderFormProps {
@@ -53,6 +57,12 @@ export const QuotationHeaderForm: React.FC<QuotationHeaderFormProps> = ({
 }) => {
   const selectedClient = clients.find((c) => c.id === customerId);
 
+  const getClientDisplayName = (c: Client) => {
+    return c.displayName || c.name || c.companyName || c.legalName || 'Customer';
+  };
+
+  const isDateInvalid = Boolean(issueDate && expiryDate && new Date(expiryDate) < new Date(issueDate));
+
   return (
     <div className="bg-slate-50/70 dark:bg-slate-800/40 p-4 sm:p-5 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-4">
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
@@ -79,7 +89,7 @@ export const QuotationHeaderForm: React.FC<QuotationHeaderFormProps> = ({
               const val = e.target.value;
               setCustomerId(val);
               const cli = clients.find((c) => c.id === val);
-              if (cli) setCustomerName(cli.name || cli.companyName || '');
+              if (cli) setCustomerName(getClientDisplayName(cli));
             }}
             required
             className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-2.5 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium"
@@ -87,16 +97,16 @@ export const QuotationHeaderForm: React.FC<QuotationHeaderFormProps> = ({
             <option value="">Select a customer...</option>
             {clients.map((c) => (
               <option key={c.id} value={c.id}>
-                {c.companyName ? `${c.companyName} (${c.name})` : c.name}
+                {getClientDisplayName(c)} {c.companyName && c.companyName !== getClientDisplayName(c) ? `(${c.companyName})` : ''}
               </option>
             ))}
           </select>
 
           {selectedClient && (
             <div className="text-[11px] text-slate-500 dark:text-slate-400 space-x-3 pt-0.5">
-              <span>{selectedClient.companyName || selectedClient.name}</span>
+              <span>{getClientDisplayName(selectedClient)}</span>
               {selectedClient.email && <span>• {selectedClient.email}</span>}
-              {selectedClient.gstin && <span>• GSTIN: {selectedClient.gstin}</span>}
+              {(selectedClient.gstin || selectedClient.taxId) && <span>• GSTIN: {selectedClient.gstin || selectedClient.taxId}</span>}
             </div>
           )}
         </div>
@@ -104,7 +114,7 @@ export const QuotationHeaderForm: React.FC<QuotationHeaderFormProps> = ({
         {/* Project Link */}
         <div className="space-y-1.5">
           <div className="flex justify-between items-center">
-            <label className="font-semibold text-slate-700 dark:text-slate-300 flex items-center space-x-1">
+            <label htmlFor="project-select" className="font-semibold text-slate-700 dark:text-slate-300 flex items-center space-x-1">
               <Building className="w-3.5 h-3.5 text-slate-400" />
               <span>Project (Optional)</span>
             </label>
@@ -118,6 +128,7 @@ export const QuotationHeaderForm: React.FC<QuotationHeaderFormProps> = ({
             </button>
           </div>
           <select
+            id="project-select"
             value={projectId}
             onChange={(e) => setProjectId(e.target.value)}
             className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-2.5 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -125,7 +136,7 @@ export const QuotationHeaderForm: React.FC<QuotationHeaderFormProps> = ({
             <option value="">No linked project</option>
             {projects.map((p) => (
               <option key={p.id} value={p.id}>
-                {p.name}
+                {p.name} {p.code ? `(${p.code})` : ''}
               </option>
             ))}
           </select>
@@ -149,11 +160,12 @@ export const QuotationHeaderForm: React.FC<QuotationHeaderFormProps> = ({
       {/* Date & Tax Settings */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs pt-2 border-t border-slate-200/60 dark:border-slate-800">
         <div className="space-y-1">
-          <label className="font-semibold text-slate-700 dark:text-slate-300 flex items-center space-x-1">
+          <label htmlFor="issue-date-input" className="font-semibold text-slate-700 dark:text-slate-300 flex items-center space-x-1">
             <Calendar className="w-3.5 h-3.5 text-slate-400" />
             <span>Issue Date</span>
           </label>
           <input
+            id="issue-date-input"
             type="date"
             value={issueDate}
             onChange={(e) => setIssueDate(e.target.value)}
@@ -163,17 +175,26 @@ export const QuotationHeaderForm: React.FC<QuotationHeaderFormProps> = ({
         </div>
 
         <div className="space-y-1">
-          <label className="font-semibold text-slate-700 dark:text-slate-300 flex items-center space-x-1">
+          <label htmlFor="expiry-date-input" className="font-semibold text-slate-700 dark:text-slate-300 flex items-center space-x-1">
             <Calendar className="w-3.5 h-3.5 text-slate-400" />
             <span>Expiry / Valid Until</span>
           </label>
           <input
+            id="expiry-date-input"
             type="date"
             value={expiryDate}
             onChange={(e) => setExpiryDate(e.target.value)}
             required
-            className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-2 text-slate-800 dark:text-slate-200"
+            className={`w-full bg-white dark:bg-slate-800 border ${
+              isDateInvalid ? 'border-rose-500 ring-1 ring-rose-500' : 'border-slate-200 dark:border-slate-700'
+            } rounded-xl p-2 text-slate-800 dark:text-slate-200`}
           />
+          {isDateInvalid && (
+            <p className="text-[11px] text-rose-600 flex items-center space-x-1 mt-0.5">
+              <AlertCircle className="w-3 h-3 shrink-0" />
+              <span>Expiry date cannot precede issue date</span>
+            </p>
+          )}
         </div>
 
         <div className="flex items-center justify-between sm:justify-start sm:space-x-3 pt-4 sm:pt-6">

@@ -35,6 +35,8 @@ export interface DetailedQuotationModel extends EstimateModel {
   templateId?: string;
   validityDays?: number;
   customerResponseNotes?: string;
+  projectId?: string;
+  customerSnapshot?: any;
 }
 
 export interface QuotationTemplateModel {
@@ -58,6 +60,98 @@ export interface QuotationTemplateModel {
 export class QuotationEngine {
   private static roundMoney(val: number): number {
     return Math.round((Number(val) + Number.EPSILON) * 100) / 100;
+  }
+
+  /**
+   * Validate customer reference in PostgreSQL
+   */
+  public static async validateCustomerReference(orgId: string, customerId?: string): Promise<any> {
+    if (!customerId || typeof customerId !== 'string' || !customerId.trim()) {
+      return {
+        customerId: '',
+        displayName: 'Valued Customer',
+        legalName: 'Valued Customer',
+        gstin: '',
+        billingAddress: '',
+        shippingAddress: '',
+        email: '',
+        phone: '',
+        placeOfSupply: '',
+        paymentTerms: 'Net 30',
+        currency: 'INR',
+      };
+    }
+    const trimmedId = customerId.trim();
+    const res = await db.query(`SELECT * FROM customers WHERE organization_id = $1 AND id = $2`, [orgId, trimmedId]);
+    if (res.rows.length === 0) {
+      const otherOrgRes = await db.query(`SELECT organization_id FROM customers WHERE id = $1`, [trimmedId]);
+      if (otherOrgRes.rows.length > 0) {
+        throw new Error(`Customer ${trimmedId} does not belong to organization ${orgId}`);
+      }
+      throw new Error(`Customer ${trimmedId} not found`);
+    }
+    const c = res.rows[0];
+    return {
+      customerId: c.id,
+      displayName: c.display_name || c.name || '',
+      legalName: c.legal_name || c.company_name || c.display_name || '',
+      gstin: c.gstin || c.tax_id || '',
+      billingAddress: c.billing_address || '',
+      shippingAddress: c.shipping_addresses || c.shipping_address || '',
+      email: c.email || '',
+      phone: c.phone || '',
+      placeOfSupply: c.place_of_supply || '',
+      paymentTerms: c.payment_terms || 'Net 30',
+      currency: c.currency || 'INR',
+    };
+  }
+
+  /**
+   * Validate project reference in PostgreSQL if provided
+   */
+  public static async validateProjectReference(orgId: string, projectId?: string): Promise<any> {
+    if (!projectId || typeof projectId !== 'string' || !projectId.trim()) {
+      return null;
+    }
+    const trimmedId = projectId.trim();
+    const res = await db.query(`SELECT * FROM projects WHERE organization_id = $1 AND id = $2`, [orgId, trimmedId]);
+    if (res.rows.length === 0) {
+      const otherOrgRes = await db.query(`SELECT organization_id FROM projects WHERE id = $1`, [trimmedId]);
+      if (otherOrgRes.rows.length > 0) {
+        throw new Error(`Project ${trimmedId} does not belong to organization ${orgId}`);
+      }
+      throw new Error(`Project ${trimmedId} not found`);
+    }
+    return res.rows[0];
+  }
+
+  public static formatDateStr(d: any): string {
+    if (!d) return '';
+    if (d instanceof Date) {
+      return d.toISOString().split('T')[0];
+    }
+    const str = String(d);
+    return str.includes('T') ? str.split('T')[0] : str;
+  }
+
+  /**
+   * Validate issue and expiry dates
+   */
+  public static validateDates(rawIssueDate: any, rawExpiryDate: any) {
+    const issueDate = this.formatDateStr(rawIssueDate);
+    const expiryDate = this.formatDateStr(rawExpiryDate);
+
+    if (!issueDate || isNaN(Date.parse(issueDate))) {
+      throw new Error('Valid issue date is required');
+    }
+    if (!expiryDate || isNaN(Date.parse(expiryDate))) {
+      throw new Error('Valid expiry date is required');
+    }
+    const issueTime = new Date(issueDate).getTime();
+    const expiryTime = new Date(expiryDate).getTime();
+    if (expiryTime < issueTime) {
+      throw new Error('Expiry date cannot precede issue date');
+    }
   }
 
   /**
@@ -98,7 +192,7 @@ export class QuotationEngine {
       const gross = qty * rate;
       const discAmt = Number(item.discountAmount || 0);
       if (isNaN(discAmt) || discAmt < 0) {
-        throw new Error(`Line ${i + 1}: Discount amount cannot be negative`);
+        throw new Error(`Line ${i + 1}: Discount amount must be a non-negative number`);
       }
       if (discAmt > gross) {
         throw new Error(`Line ${i + 1}: Discount amount cannot exceed line gross value`);
@@ -112,31 +206,27 @@ export class QuotationEngine {
   }
 
   /**
-   * Validate cross-organization item references and active status
+   * Validate Item Master references in quotation lines
    */
-  public static async validateItemReferences(orgId: string, items: QuotationLineItem[], isNewQuotation: boolean = true) {
+  public static async validateItemReferences(
+    orgId: string,
+    items: QuotationLineItem[],
+    requireActive: boolean = true
+  ) {
     for (const item of items) {
       if (item.itemId) {
-        let masterItem;
-        try {
-          masterItem = await ItemMasterService.getItem(orgId, item.itemId);
-        } catch {
-          throw new Error(`Item ${item.itemId} does not belong to organization ${orgId}`);
-        }
-
-        if (masterItem.organizationId !== orgId) {
-          throw new Error(`Item ${item.itemId} does not belong to organization ${orgId}`);
-        }
-
-        if (isNewQuotation && !masterItem.isActive) {
-          throw new Error(`Item ${item.itemId} ("${masterItem.name}") is inactive and cannot be selected for new quotations`);
+        const itemMaster = await ItemMasterService.getItem(orgId, item.itemId);
+        if (requireActive && !itemMaster.isActive) {
+          throw new Error(
+            `Item ${item.itemId} ("${itemMaster.name}") is inactive and cannot be selected for new quotations`
+          );
         }
       }
     }
   }
 
   /**
-   * Calculate totals with support for line discount, robust pre-tax overall discount allocation, GST inclusive/exclusive, and rounding
+   * Calculate Quotation Totals with pre-tax document overall discount
    */
   public static calculateQuotationTotals(
     items: QuotationLineItem[],
@@ -146,143 +236,73 @@ export class QuotationEngine {
   ) {
     this.validateQuotationLines(items);
 
-    const ovDisc = this.roundMoney(overallDiscount);
-    if (ovDisc < 0) {
-      throw new Error('Overall discount cannot be negative');
-    }
-
-    // Step 1: Pre-calculate line gross and line discounts
-    const linePreTotals: Array<{
-      qty: number;
-      rate: number;
-      gross: number;
-      lineDiscAmt: number;
-      lineTaxablePreDocDisc: number;
-      taxRate: number;
-      allocatedDocDisc: number;
-    }> = [];
-
-    let subtotalPreDocDisc = 0;
-    let lineDiscountsTotal = 0;
+    let rawSubtotal = 0;
+    let totalLineDiscounts = 0;
 
     for (const item of items) {
-      if (!item.id) item.id = `qitem-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-      if (!item.itemName && item.name) item.itemName = item.name;
-      if (!item.name && item.itemName) item.name = item.itemName;
-      if (!item.unit) item.unit = 'Pcs';
-
-      const qty = this.roundMoney(item.quantity);
-      const rate = this.roundMoney(item.rate);
+      const qty = Number(item.quantity);
+      const rate = Number(item.rate);
       const gross = this.roundMoney(qty * rate);
 
-      const discPct = Math.max(0, Math.min(100, Number(item.discountPercent) || 0));
-      let discAmt = 0;
-      if (item.discountAmount !== undefined && Number(item.discountAmount) > 0) {
-        discAmt = this.roundMoney(item.discountAmount);
-      } else if (discPct > 0) {
-        discAmt = this.roundMoney(gross * (discPct / 100));
+      let discAmt = Number(item.discountAmount || 0);
+      if (discAmt === 0 && item.discountPercent && item.discountPercent > 0) {
+        discAmt = this.roundMoney(gross * (Number(item.discountPercent) / 100));
       }
-      discAmt = Math.min(discAmt, gross);
+      if (discAmt > gross) discAmt = gross;
 
-      const lineTaxablePreDocDisc = this.roundMoney(gross - discAmt);
-      const taxRate = Math.max(0, Number(item.taxRate) || 0);
+      item.discountAmount = discAmt;
+      const netLine = this.roundMoney(gross - discAmt);
 
-      subtotalPreDocDisc += lineTaxablePreDocDisc;
-      lineDiscountsTotal += discAmt;
-
-      linePreTotals.push({
-        qty,
-        rate,
-        gross,
-        lineDiscAmt: discAmt,
-        lineTaxablePreDocDisc,
-        taxRate,
-        allocatedDocDisc: 0,
-      });
+      rawSubtotal += gross;
+      totalLineDiscounts += discAmt;
+      (item as any)._netLine = netLine;
     }
 
-    subtotalPreDocDisc = this.roundMoney(subtotalPreDocDisc);
-    lineDiscountsTotal = this.roundMoney(lineDiscountsTotal);
+    rawSubtotal = this.roundMoney(rawSubtotal);
+    totalLineDiscounts = this.roundMoney(totalLineDiscounts);
+    const subtotalPreDocDisc = this.roundMoney(rawSubtotal - totalLineDiscounts);
 
+    const ovDisc = this.roundMoney(Math.max(0, Number(overallDiscount || 0)));
     if (ovDisc > subtotalPreDocDisc) {
       throw new Error(`Overall discount (${ovDisc}) cannot exceed quotation subtotal (${subtotalPreDocDisc})`);
     }
 
-    // Step 2: Deterministic, robust overall discount allocation
-    if (ovDisc > 0 && subtotalPreDocDisc > 0) {
-      let allocatedSum = 0;
-
-      // Initial proportional allocation across positive taxable lines
-      for (const pre of linePreTotals) {
-        if (pre.lineTaxablePreDocDisc > 0) {
-          const rawAlloc = this.roundMoney((pre.lineTaxablePreDocDisc / subtotalPreDocDisc) * ovDisc);
-          const clamped = Math.min(rawAlloc, pre.lineTaxablePreDocDisc);
-          pre.allocatedDocDisc = clamped;
-          allocatedSum += clamped;
-        }
-      }
-      allocatedSum = this.roundMoney(allocatedSum);
-
-      // Distribute residual rounding amount to eligible positive lines
-      let residual = this.roundMoney(ovDisc - allocatedSum);
-      if (residual !== 0) {
-        const step = residual > 0 ? 0.01 : -0.01;
-        let count = Math.round(Math.abs(residual) * 100);
-
-        while (count > 0) {
-          const candidate = linePreTotals.find((p) => {
-            if (step > 0) {
-              return p.lineTaxablePreDocDisc - p.allocatedDocDisc >= 0.01;
-            } else {
-              return p.allocatedDocDisc >= 0.01;
-            }
-          });
-
-          if (!candidate) break;
-
-          candidate.allocatedDocDisc = this.roundMoney(candidate.allocatedDocDisc + step);
-          count--;
-        }
-      }
-    }
-
-    // Step 3: Compute final line totals and tax
+    let allocatedDiscountSum = 0;
     let taxTotal = 0;
 
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
-      const pre = linePreTotals[i];
-      const lineAllocatedDocDisc = pre.allocatedDocDisc;
+      const netLine = (item as any)._netLine;
 
-      const netLineTaxable = this.roundMoney(pre.lineTaxablePreDocDisc - lineAllocatedDocDisc);
-
-      item.quantity = pre.qty;
-      item.rate = pre.rate;
-      item.discountAmount = pre.lineDiscAmt;
-      item.discountPercent = pre.gross > 0 ? this.roundMoney((pre.lineDiscAmt / pre.gross) * 100) : 0;
-      item.allocatedOverallDiscount = lineAllocatedDocDisc;
-      item.taxRate = pre.taxRate;
-
-      if (isGstInclusive) {
-        const baseAmount = netLineTaxable / (1 + pre.taxRate / 100);
-        const itemTax = netLineTaxable - baseAmount;
-        const roundBase = this.roundMoney(baseAmount);
-        const roundTax = this.roundMoney(itemTax);
-        taxTotal += roundTax;
-        item.taxableAmount = roundBase;
-        item.taxAmount = roundTax;
-        item.totalAmount = this.roundMoney(netLineTaxable);
-        item.lineTotal = item.totalAmount;
-      } else {
-        const itemTax = netLineTaxable * (pre.taxRate / 100);
-        const roundTax = this.roundMoney(itemTax);
-        const roundTotal = this.roundMoney(netLineTaxable + roundTax);
-        taxTotal += roundTax;
-        item.taxableAmount = netLineTaxable;
-        item.taxAmount = roundTax;
-        item.totalAmount = roundTotal;
-        item.lineTotal = roundTotal;
+      let linePropDisc = 0;
+      if (subtotalPreDocDisc > 0) {
+        if (i === items.length - 1) {
+          linePropDisc = this.roundMoney(ovDisc - allocatedDiscountSum);
+        } else {
+          linePropDisc = this.roundMoney((netLine / subtotalPreDocDisc) * ovDisc);
+          allocatedDiscountSum = this.roundMoney(allocatedDiscountSum + linePropDisc);
+        }
       }
+
+      item.allocatedOverallDiscount = linePropDisc;
+      const netLineTaxableBase = Math.max(0, this.roundMoney(netLine - linePropDisc));
+      const taxRate = Number(item.taxRate || 0);
+
+      if (isGstInclusive && taxRate > 0) {
+        const taxable = this.roundMoney(netLineTaxableBase / (1 + taxRate / 100));
+        const tax = this.roundMoney(netLineTaxableBase - taxable);
+        item.taxableAmount = taxable;
+        item.taxAmount = tax;
+        item.totalAmount = netLineTaxableBase;
+      } else {
+        const tax = this.roundMoney(netLineTaxableBase * (taxRate / 100));
+        item.taxableAmount = netLineTaxableBase;
+        item.taxAmount = tax;
+        item.totalAmount = this.roundMoney(netLineTaxableBase + tax);
+      }
+
+      taxTotal += item.taxAmount;
+      delete (item as any)._netLine;
     }
 
     taxTotal = this.roundMoney(taxTotal);
@@ -290,13 +310,14 @@ export class QuotationEngine {
     const taxableTotal = isGstInclusive
       ? this.roundMoney(items.reduce((sum, it) => sum + (it.taxableAmount || 0), 0))
       : this.roundMoney(subtotalPreDocDisc - ovDisc);
+
     const finalTotal = isGstInclusive
-      ? this.roundMoney(items.reduce((sum, it) => sum + (it.totalAmount || 0), 0) + roundOffAmount)
+      ? this.roundMoney(subtotalPreDocDisc - ovDisc + roundOffAmount)
       : this.roundMoney(taxableTotal + taxTotal + roundOffAmount);
 
     return {
       subtotal: subtotalPreDocDisc,
-      lineDiscountsTotal,
+      lineDiscounts: totalLineDiscounts,
       overallDiscount: ovDisc,
       taxableTotal,
       taxTotal,
@@ -317,9 +338,27 @@ export class QuotationEngine {
     this.validateQuotationLines(items);
     await this.validateItemReferences(orgId, items, true);
 
+    const rawCustomerId = data.customerId || (data as any).clientId;
+    const customerSnapshot = await this.validateCustomerReference(orgId, rawCustomerId);
+    const targetCustomerId = customerSnapshot.customerId;
+    const targetCustomerName = data.customerName || (data as any).clientName || customerSnapshot.displayName || 'Valued Customer';
+    if (!customerSnapshot.displayName || customerSnapshot.displayName === 'Valued Customer') {
+      customerSnapshot.displayName = targetCustomerName;
+      customerSnapshot.legalName = targetCustomerName;
+    }
+
+    const rawProjectId = data.projectId;
+    if (rawProjectId) {
+      await this.validateProjectReference(orgId, rawProjectId);
+    }
+    const targetProjectId = rawProjectId || null;
+
     const id = data.id || `est-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
     const now = new Date().toISOString();
     const issueDate = data.issueDate || now.split('T')[0];
+    const expiryDate = data.expiryDate || new Date(new Date(issueDate).getTime() + (data.validityDays || 30) * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+    this.validateDates(issueDate, expiryDate);
 
     const estNumber = data.estimateNumber || (await DocumentNumberingEngine.getNextNumber(orgId, 'QUOTATION', issueDate));
     const publicToken = data.publicToken || crypto.randomBytes(24).toString('hex');
@@ -331,24 +370,24 @@ export class QuotationEngine {
       data.roundOffAmount || 0
     );
 
-    const expiryDate = data.expiryDate || new Date(new Date(issueDate).getTime() + (data.validityDays || 30) * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-
     await db.query(
       `INSERT INTO estimates (
         id, organization_id, estimate_number, revision_number, client_id, customer_id, client_name,
-        issue_date, expiry_date, subtotal, tax_total, discount, overall_discount, total_amount,
-        round_off_amount, is_gst_inclusive, status, terms, notes, public_token, items, line_items,
-        template_id, validity_days, created_at
+        customer_snapshot, project_id, issue_date, expiry_date, subtotal, tax_total, discount,
+        overall_discount, total_amount, round_off_amount, is_gst_inclusive, status, terms, notes,
+        public_token, items, line_items, template_id, validity_days, created_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)`,
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)`,
       [
         id,
         orgId,
         estNumber,
         0,
-        data.customerId || (data as any).clientId || null,
-        data.customerId || (data as any).clientId || null,
-        data.customerName || (data as any).clientName || 'Valued Customer',
+        targetCustomerId,
+        targetCustomerId,
+        targetCustomerName,
+        JSON.stringify(customerSnapshot),
+        targetProjectId,
         issueDate,
         expiryDate,
         totals.subtotal,
@@ -370,6 +409,25 @@ export class QuotationEngine {
       ]
     );
 
+    const revisionSnapshot = {
+      estimateNumber: estNumber,
+      revisionNumber: 0,
+      customerId: targetCustomerId,
+      customerName: targetCustomerName,
+      customerSnapshot,
+      projectId: targetProjectId,
+      issueDate,
+      expiryDate,
+      items,
+      overallDiscount: totals.overallDiscount,
+      isGstInclusive: Boolean(data.isGstInclusive),
+      totals,
+      terms: data.terms || 'Standard payment terms apply.',
+      notes: data.notes || '',
+      status: data.status || 'DRAFT',
+      changeSummary: 'Initial Quotation Created',
+    };
+
     // Initial Revision 0 snapshot
     await db.query(
       `INSERT INTO quotation_revisions (id, organization_id, quotation_id, revision_number, revision_data, total_amount, status, change_summary, created_by, created_at)
@@ -379,7 +437,7 @@ export class QuotationEngine {
         orgId,
         id,
         0,
-        JSON.stringify({ estimateNumber: estNumber, items, totals, terms: data.terms, notes: data.notes }),
+        JSON.stringify(revisionSnapshot),
         totals.totalAmount,
         data.status || 'DRAFT',
         'Initial Quotation Created',
@@ -393,8 +451,10 @@ export class QuotationEngine {
       organizationId: orgId,
       estimateNumber: estNumber,
       revisionNumber: 0,
-      customerId: data.customerId || '',
-      customerName: data.customerName || (data as any).clientName || 'Valued Customer',
+      customerId: targetCustomerId,
+      customerName: targetCustomerName,
+      customerSnapshot,
+      projectId: targetProjectId || undefined,
       issueDate,
       expiryDate,
       subtotal: totals.subtotal,
@@ -432,6 +492,40 @@ export class QuotationEngine {
     const nextRev = (q.revision_number || 0) + 1;
     const now = new Date().toISOString();
 
+    let targetCustomerId = q.customer_id || q.client_id;
+    let targetCustomerSnapshot = q.customer_snapshot;
+    if (typeof targetCustomerSnapshot === 'string') {
+      try { targetCustomerSnapshot = JSON.parse(targetCustomerSnapshot); } catch { targetCustomerSnapshot = null; }
+    }
+
+    const inputCustomerId = newData.customerId || (newData as any).clientId;
+    if (inputCustomerId && inputCustomerId !== targetCustomerId) {
+      targetCustomerSnapshot = await this.validateCustomerReference(orgId, inputCustomerId);
+      targetCustomerId = inputCustomerId;
+    } else if (!targetCustomerSnapshot && targetCustomerId) {
+      try {
+        targetCustomerSnapshot = await this.validateCustomerReference(orgId, targetCustomerId);
+      } catch {
+        // preserve existing if lookup fails
+      }
+    }
+
+    let targetProjectId = q.project_id;
+    if (newData.projectId !== undefined) {
+      if (newData.projectId) {
+        await this.validateProjectReference(orgId, newData.projectId);
+        targetProjectId = newData.projectId;
+      } else {
+        targetProjectId = null;
+      }
+    }
+
+    const issueDate = newData.issueDate ? this.formatDateStr(newData.issueDate) : this.formatDateStr(q.issue_date);
+    const expiryDate = newData.expiryDate ? this.formatDateStr(newData.expiryDate) : this.formatDateStr(q.expiry_date);
+    this.validateDates(issueDate, expiryDate);
+
+    const targetCustomerName = newData.customerName || (newData as any).clientName || targetCustomerSnapshot?.displayName || q.client_name || 'Valued Customer';
+
     const rawStored = q.items || q.line_items;
     let storedItems: QuotationLineItem[] = [];
     if (typeof rawStored === 'string') {
@@ -444,21 +538,22 @@ export class QuotationEngine {
     this.validateQuotationLines(items);
     await this.validateItemReferences(orgId, items, false);
 
-    const totals = this.calculateQuotationTotals(
-      items,
-      newData.overallDiscount !== undefined ? newData.overallDiscount : (q.overall_discount || q.discount || 0),
-      newData.isGstInclusive !== undefined ? newData.isGstInclusive : Boolean(q.is_gst_inclusive),
-      newData.roundOffAmount !== undefined ? newData.roundOffAmount : Number(q.round_off_amount || 0)
-    );
+    const targetIsGstInclusive = newData.isGstInclusive !== undefined ? Boolean(newData.isGstInclusive) : Boolean(q.is_gst_inclusive);
+    const targetRoundOff = newData.roundOffAmount !== undefined ? Number(newData.roundOffAmount) : Number(q.round_off_amount || 0);
+    const targetOverallDiscount = newData.overallDiscount !== undefined ? Number(newData.overallDiscount) : (q.overall_discount || q.discount || 0);
 
+    const totals = this.calculateQuotationTotals(items, targetOverallDiscount, targetIsGstInclusive, targetRoundOff);
     const targetStatus = newData.status || q.status || 'DRAFT';
+    const targetTerms = newData.terms !== undefined ? newData.terms : q.terms;
+    const targetNotes = newData.notes !== undefined ? newData.notes : q.notes;
 
     await db.query(
       `UPDATE estimates
        SET revision_number = $1, subtotal = $2, tax_total = $3, discount = $4, overall_discount = $5,
            total_amount = $6, round_off_amount = $7, is_gst_inclusive = $8, items = $9, line_items = $9,
-           terms = COALESCE($10, terms), notes = COALESCE($11, notes), status = $12
-       WHERE organization_id = $13 AND id = $14`,
+           terms = $10, notes = $11, status = $12, customer_id = $13, client_id = $13, client_name = $14,
+           customer_snapshot = $15, project_id = $16, issue_date = $17, expiry_date = $18
+       WHERE organization_id = $19 AND id = $20`,
       [
         nextRev,
         totals.subtotal,
@@ -467,15 +562,40 @@ export class QuotationEngine {
         totals.overallDiscount,
         totals.totalAmount,
         totals.roundOffAmount,
-        newData.isGstInclusive !== undefined ? newData.isGstInclusive : Boolean(q.is_gst_inclusive),
+        targetIsGstInclusive,
         JSON.stringify(items),
-        newData.terms,
-        newData.notes,
+        targetTerms,
+        targetNotes,
         targetStatus,
+        targetCustomerId,
+        targetCustomerName,
+        JSON.stringify(targetCustomerSnapshot),
+        targetProjectId,
+        issueDate,
+        expiryDate,
         orgId,
         quotationId,
       ]
     );
+
+    const revisionSnapshot = {
+      estimateNumber: q.estimate_number,
+      revisionNumber: nextRev,
+      customerId: targetCustomerId,
+      customerName: targetCustomerName,
+      customerSnapshot: targetCustomerSnapshot,
+      projectId: targetProjectId,
+      issueDate,
+      expiryDate,
+      items,
+      overallDiscount: totals.overallDiscount,
+      isGstInclusive: targetIsGstInclusive,
+      totals,
+      terms: targetTerms,
+      notes: targetNotes,
+      status: targetStatus,
+      changeSummary,
+    };
 
     await db.query(
       `INSERT INTO quotation_revisions (id, organization_id, quotation_id, revision_number, revision_data, total_amount, status, change_summary, created_by, created_at)
@@ -485,7 +605,7 @@ export class QuotationEngine {
         orgId,
         quotationId,
         nextRev,
-        JSON.stringify({ estimateNumber: q.estimate_number, items, totals, changeSummary }),
+        JSON.stringify(revisionSnapshot),
         totals.totalAmount,
         targetStatus,
         changeSummary,
@@ -513,6 +633,11 @@ export class QuotationEngine {
       items = rawItems;
     }
 
+    let customerSnapshot = q.customer_snapshot;
+    if (typeof customerSnapshot === 'string') {
+      try { customerSnapshot = JSON.parse(customerSnapshot); } catch { customerSnapshot = null; }
+    }
+
     return {
       id: q.id,
       organizationId: q.organization_id,
@@ -520,8 +645,10 @@ export class QuotationEngine {
       revisionNumber: q.revision_number || 0,
       customerId: q.customer_id || q.client_id,
       customerName: q.client_name,
-      issueDate: q.issue_date,
-      expiryDate: q.expiry_date,
+      customerSnapshot,
+      projectId: q.project_id || undefined,
+      issueDate: this.formatDateStr(q.issue_date),
+      expiryDate: this.formatDateStr(q.expiry_date),
       subtotal: Number(q.subtotal || 0),
       taxTotal: Number(q.tax_total || 0),
       discount: Number(q.discount || 0),
@@ -574,6 +701,11 @@ export class QuotationEngine {
         items = rawItems;
       }
 
+      let customerSnapshot = q.customer_snapshot;
+      if (typeof customerSnapshot === 'string') {
+        try { customerSnapshot = JSON.parse(customerSnapshot); } catch { customerSnapshot = null; }
+      }
+
       return {
         id: q.id,
         organizationId: q.organization_id,
@@ -581,6 +713,8 @@ export class QuotationEngine {
         revisionNumber: q.revision_number || 0,
         customerId: q.customer_id || q.client_id || '',
         customerName: q.client_name || q.customer_name || 'Valued Customer',
+        customerSnapshot,
+        projectId: q.project_id || undefined,
         issueDate: q.issue_date,
         expiryDate: q.expiry_date,
         subtotal: Number(q.subtotal || 0),
@@ -624,6 +758,11 @@ export class QuotationEngine {
       items = rawItems;
     }
 
+    let customerSnapshot = q.customer_snapshot;
+    if (typeof customerSnapshot === 'string') {
+      try { customerSnapshot = JSON.parse(customerSnapshot); } catch { customerSnapshot = null; }
+    }
+
     return {
       id: q.id,
       organizationId: q.organization_id,
@@ -631,12 +770,14 @@ export class QuotationEngine {
       revisionNumber: q.revision_number || 0,
       customerId: q.customer_id || q.client_id,
       customerName: q.client_name,
+      customerSnapshot,
+      projectId: q.project_id || undefined,
       issueDate: q.issue_date,
       expiryDate: q.expiry_date,
       subtotal: Number(q.subtotal || 0),
       taxTotal: Number(q.tax_total || 0),
       discount: Number(q.discount || 0),
-      overallDiscount: Number(q.overall_discount || 0),
+      overallDiscount: Number(q.overall_discount || q.discount || 0),
       totalAmount: Number(q.total_amount || 0),
       roundOffAmount: Number(q.round_off_amount || 0),
       isGstInclusive: Boolean(q.is_gst_inclusive),
@@ -653,104 +794,12 @@ export class QuotationEngine {
   }
 
   /**
-   * Update quotation status via public token (ACCEPT, DECLINE, REQUEST_REVISION)
-   */
-  public static async updatePublicStatus(
-    token: string,
-    status: 'ACCEPTED' | 'DECLINED' | 'REVISION_REQUESTED',
-    notes?: string
-  ): Promise<any> {
-    const q = await this.getPublicQuotationByToken(token);
-    await db.query(
-      `UPDATE estimates SET status = $1, customer_response_notes = $2 WHERE public_token = $3`,
-      [status, notes || '', token]
-    );
-    return { quotationId: q.id, status, notes };
-  }
-
-  /**
-   * Get all revisions for a quotation
-   */
-  public static async getQuotationRevisions(orgId: string, quotationId: string): Promise<any[]> {
-    const res = await db.query(
-      `SELECT * FROM quotation_revisions WHERE organization_id = $1 AND quotation_id = $2 ORDER BY revision_number ASC`,
-      [orgId, quotationId]
-    );
-    return res.rows.map((r) => ({
-      id: r.id,
-      revisionNumber: r.revision_number,
-      totalAmount: Number(r.total_amount),
-      status: r.status,
-      changeSummary: r.change_summary,
-      createdBy: r.created_by,
-      createdAt: r.created_at,
-      data: typeof r.revision_data === 'string' ? JSON.parse(r.revision_data) : r.revision_data,
-    }));
-  }
-
-  /**
-   * Convert quotation to Sales Order
-   */
-  public static async convertToSalesOrder(orgId: string, quotationId: string): Promise<SalesOrderModel> {
-    const q = await this.getQuotation(orgId, quotationId);
-    
-    const soNumber = await DocumentNumberingEngine.getNextNumber(orgId, 'SALES_ORDER', new Date().toISOString().split('T')[0]);
-
-    const so = await SalesEngine.createSalesOrder(orgId, {
-      salesOrderNumber: soNumber,
-      estimateId: q.id,
-      customerId: q.customerId,
-      customerName: q.customerName,
-      orderDate: new Date().toISOString().split('T')[0],
-      subtotal: q.subtotal,
-      taxTotal: q.taxTotal,
-      discount: q.overallDiscount,
-      totalAmount: q.totalAmount,
-      lineItems: q.lineItems,
-      notes: `Converted from Quotation ${q.estimateNumber}`,
-    });
-
-    await db.query(`UPDATE estimates SET status = 'CONVERTED' WHERE organization_id = $1 AND id = $2`, [orgId, quotationId]);
-
-    return so;
-  }
-
-  /**
-   * Convert quotation directly to Invoice
-   */
-  public static async convertToInvoice(orgId: string, quotationId: string): Promise<InvoiceModel> {
-    const q = await this.getQuotation(orgId, quotationId);
-
-    const invNumber = await DocumentNumberingEngine.getNextNumber(orgId, 'INVOICE', new Date().toISOString().split('T')[0]);
-
-    const inv = await SalesEngine.createAndPostInvoice(orgId, {
-      invoiceNumber: invNumber,
-      estimateId: q.id,
-      customerId: q.customerId,
-      customerName: q.customerName,
-      issueDate: new Date().toISOString().split('T')[0],
-      dueDate: new Date(Date.now() + 15 * 24 * 3600 * 1000).toISOString().split('T')[0],
-      subtotal: q.subtotal,
-      taxTotal: q.taxTotal,
-      discount: q.overallDiscount,
-      totalAmount: q.totalAmount,
-      balanceDue: q.totalAmount,
-      status: 'POSTED',
-      lineItems: q.lineItems,
-      notes: `Converted from Quotation ${q.estimateNumber}`,
-    });
-
-    await db.query(`UPDATE estimates SET status = 'CONVERTED' WHERE organization_id = $1 AND id = $2`, [orgId, quotationId]);
-
-    return inv;
-  }
-
-  /**
-   * Save / update quotation visual template
+   * Save a quotation visual template
    */
   public static async saveTemplate(orgId: string, data: Partial<QuotationTemplateModel>): Promise<QuotationTemplateModel> {
-    const id = data.id || `tpl-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-    const now = new Date().toISOString();
+    const id = data.id || `tmpl-${Date.now()}`;
+    const name = data.name || 'Custom Template';
+    const type = data.templateType || 'Classic';
 
     if (data.isDefault) {
       await db.query(`UPDATE quotation_templates SET is_default = FALSE WHERE organization_id = $1`, [orgId]);
@@ -759,52 +808,59 @@ export class QuotationEngine {
     await db.query(
       `INSERT INTO quotation_templates (
         id, organization_id, name, template_type, primary_color, font_family, show_logo,
-        logo_url, company_info, show_tax_breakdown, show_signature, terms_and_conditions, bank_details, footer_note, is_default, created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
-      ON CONFLICT (id) DO UPDATE SET
-        name = EXCLUDED.name, template_type = EXCLUDED.template_type, primary_color = EXCLUDED.primary_color,
-        font_family = EXCLUDED.font_family, show_logo = EXCLUDED.show_logo, logo_url = EXCLUDED.logo_url,
-        company_info = EXCLUDED.company_info, show_tax_breakdown = EXCLUDED.show_tax_breakdown,
-        show_signature = EXCLUDED.show_signature, terms_and_conditions = EXCLUDED.terms_and_conditions,
-        bank_details = EXCLUDED.bank_details, footer_note = EXCLUDED.footer_note, is_default = EXCLUDED.is_default,
-        updated_at = EXCLUDED.updated_at`,
+        logo_url, company_info, show_tax_breakdown, show_signature, terms_and_conditions,
+        bank_details, footer_note, is_default
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+      ON CONFLICT (id) DO UPDATE
+      SET name = EXCLUDED.name,
+          template_type = EXCLUDED.template_type,
+          primary_color = EXCLUDED.primary_color,
+          font_family = EXCLUDED.font_family,
+          show_logo = EXCLUDED.show_logo,
+          logo_url = EXCLUDED.logo_url,
+          company_info = EXCLUDED.company_info,
+          show_tax_breakdown = EXCLUDED.show_tax_breakdown,
+          show_signature = EXCLUDED.show_signature,
+          terms_and_conditions = EXCLUDED.terms_and_conditions,
+          bank_details = EXCLUDED.bank_details,
+          footer_note = EXCLUDED.footer_note,
+          is_default = EXCLUDED.is_default`,
       [
         id,
         orgId,
-        data.name || 'Standard Quotation Template',
-        data.templateType || 'Classic',
-        data.primaryColor || '#1e293b',
+        name,
+        type,
+        data.primaryColor || '#1e40af',
         data.fontFamily || 'Inter',
-        data.showLogo !== undefined ? data.showLogo : true,
+        data.showLogo !== undefined ? Boolean(data.showLogo) : true,
         data.logoUrl || '',
         JSON.stringify(data.companyInfo || {}),
-        data.showTaxBreakdown !== undefined ? data.showTaxBreakdown : true,
-        data.showSignature !== undefined ? data.showSignature : true,
-        data.termsAndConditions || 'Payment terms: 30 days net.',
-        data.bankDetails || 'Bank Name: HDFC Bank | Account #: 1234567890 | IFSC: HDFC0001234',
-        data.footerNote || 'Thank you for your business!',
-        Boolean(data.isDefault),
-        now,
-        now,
+        data.showTaxBreakdown !== undefined ? Boolean(data.showTaxBreakdown) : true,
+        data.showSignature !== undefined ? Boolean(data.showSignature) : true,
+        data.termsAndConditions || '',
+        data.bankDetails || '',
+        data.footerNote || '',
+        data.isDefault !== undefined ? Boolean(data.isDefault) : false,
       ]
     );
 
     return {
       id,
       organizationId: orgId,
-      name: data.name || 'Standard Quotation Template',
-      templateType: data.templateType || 'Classic',
-      primaryColor: data.primaryColor || '#1e293b',
+      name,
+      templateType: type,
+      primaryColor: data.primaryColor || '#1e40af',
       fontFamily: data.fontFamily || 'Inter',
-      showLogo: data.showLogo !== undefined ? data.showLogo : true,
+      showLogo: data.showLogo !== undefined ? Boolean(data.showLogo) : true,
       logoUrl: data.logoUrl,
       companyInfo: data.companyInfo,
-      showTaxBreakdown: data.showTaxBreakdown !== undefined ? data.showTaxBreakdown : true,
-      showSignature: data.showSignature !== undefined ? data.showSignature : true,
+      showTaxBreakdown: data.showTaxBreakdown !== undefined ? Boolean(data.showTaxBreakdown) : true,
+      showSignature: data.showSignature !== undefined ? Boolean(data.showSignature) : true,
       termsAndConditions: data.termsAndConditions,
       bankDetails: data.bankDetails,
       footerNote: data.footerNote,
-      isDefault: Boolean(data.isDefault),
+      isDefault: data.isDefault !== undefined ? Boolean(data.isDefault) : false,
     };
   }
 
@@ -812,7 +868,7 @@ export class QuotationEngine {
    * List templates for an organization
    */
   public static async getTemplates(orgId: string): Promise<QuotationTemplateModel[]> {
-    const res = await db.query(`SELECT * FROM quotation_templates WHERE organization_id = $1 ORDER BY is_default DESC, name ASC`, [orgId]);
+    const res = await db.query(`SELECT * FROM quotation_templates WHERE organization_id = $1 ORDER BY name ASC`, [orgId]);
     return res.rows.map((r) => ({
       id: r.id,
       organizationId: r.organization_id,
@@ -830,5 +886,125 @@ export class QuotationEngine {
       footerNote: r.footer_note,
       isDefault: r.is_default,
     }));
+  }
+
+  /**
+   * Update quotation status when customer responds via portal
+   */
+  public static async updatePublicStatus(
+    token: string,
+    status: 'ACCEPTED' | 'DECLINED' | 'REVISION_REQUESTED',
+    notes?: string
+  ): Promise<{ quotationId: string; status: string }> {
+    const qRes = await db.query(`SELECT * FROM estimates WHERE public_token = $1`, [token]);
+    if (qRes.rows.length === 0) throw new Error('Quotation not found for public token');
+    const q = qRes.rows[0];
+
+    await db.query(
+      `UPDATE estimates SET status = $1, customer_response_notes = COALESCE($2, customer_response_notes) WHERE id = $3`,
+      [status, notes || null, q.id]
+    );
+
+    await db.query(
+      `INSERT INTO quotation_revisions (id, organization_id, quotation_id, revision_number, revision_data, total_amount, status, change_summary, created_by, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [
+        `qrev-${Date.now()}-${(q.revision_number || 0) + 1}`,
+        q.organization_id,
+        q.id,
+        (q.revision_number || 0) + 1,
+        JSON.stringify({ status, responseNotes: notes }),
+        q.total_amount,
+        status,
+        `Customer response: ${status}`,
+        'Customer Portal',
+        new Date().toISOString(),
+      ]
+    );
+
+    return { quotationId: q.id, status };
+  }
+
+  /**
+   * Fetch revision history for a quotation
+   */
+  public static async getQuotationRevisions(orgId: string, quotationId: string): Promise<any[]> {
+    const res = await db.query(
+      `SELECT * FROM quotation_revisions WHERE organization_id = $1 AND quotation_id = $2 ORDER BY revision_number DESC`,
+      [orgId, quotationId]
+    );
+    return res.rows.map((r) => ({
+      id: r.id,
+      quotationId: r.quotation_id,
+      revisionNumber: r.revision_number,
+      revisionData: typeof r.revision_data === 'string' ? JSON.parse(r.revision_data) : r.revision_data,
+      totalAmount: Number(r.total_amount),
+      status: r.status,
+      changeSummary: r.change_summary,
+      createdBy: r.created_by,
+      createdAt: r.created_at,
+    }));
+  }
+
+  /**
+   * Convert quotation to Sales Order using stored commercial snapshot
+   */
+  public static async convertToSalesOrder(orgId: string, quotationId: string): Promise<SalesOrderModel> {
+    const q = await this.getQuotation(orgId, quotationId);
+    if (!q) throw new Error(`Quotation ${quotationId} not found`);
+
+    const soNumber = await DocumentNumberingEngine.getNextNumber(orgId, 'SALES_ORDER', new Date().toISOString().split('T')[0]);
+
+    const salesOrder = await SalesEngine.createSalesOrder(orgId, {
+      salesOrderNumber: soNumber,
+      customerId: q.customerId,
+      customerName: q.customerName,
+      customerSnapshot: q.customerSnapshot,
+      orderDate: new Date().toISOString().split('T')[0],
+      subtotal: q.subtotal,
+      taxTotal: q.taxTotal,
+      totalAmount: q.totalAmount,
+      notes: q.notes,
+      lineItems: q.lineItems,
+    });
+
+    await db.query(`UPDATE estimates SET status = 'CONVERTED' WHERE organization_id = $1 AND id = $2`, [orgId, quotationId]);
+
+    return salesOrder;
+  }
+
+  /**
+   * Convert quotation directly to Invoice using stored commercial snapshot
+   */
+  public static async convertToInvoice(orgId: string, quotationId: string): Promise<InvoiceModel> {
+    const q = await this.getQuotation(orgId, quotationId);
+    if (!q) throw new Error(`Quotation ${quotationId} not found`);
+
+    const invNumber = await DocumentNumberingEngine.getNextNumber(orgId, 'INVOICE', new Date().toISOString().split('T')[0]);
+
+    const invoice = await SalesEngine.createAndPostInvoice(orgId, {
+      invoiceNumber: invNumber,
+      customerId: q.customerId,
+      customerName: q.customerName,
+      customerSnapshot: q.customerSnapshot,
+      issueDate: new Date().toISOString().split('T')[0],
+      dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+      subtotal: q.subtotal,
+      taxTotal: q.taxTotal,
+      totalAmount: q.totalAmount,
+      notes: q.notes,
+      lineItems: (q.lineItems || []).map((it) => ({
+        itemId: it.itemId,
+        description: it.name || it.description || '',
+        quantity: it.quantity,
+        unitPrice: it.rate,
+        amount: it.lineTotal || (it.quantity * it.rate),
+        taxRate: it.taxRate || 0,
+      })),
+    });
+
+    await db.query(`UPDATE estimates SET status = 'CONVERTED' WHERE organization_id = $1 AND id = $2`, [orgId, quotationId]);
+
+    return invoice;
   }
 }

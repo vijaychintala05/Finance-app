@@ -5,9 +5,9 @@ import { requirePermission } from '../middleware/organizationIsolation.middlewar
 const router = Router();
 
 // Master Items API
-router.get('/items', requirePermission('invoices.view'), Phase8Controller.getItems);
+router.get('/items', requirePermission(['invoices.view', 'purchases.view']), Phase8Controller.getItems);
 router.post('/items', requirePermission('invoices.create'), Phase8Controller.createItem);
-router.get('/items/:id', requirePermission('invoices.view'), Phase8Controller.getItem);
+router.get('/items/:id', requirePermission(['invoices.view', 'purchases.view']), Phase8Controller.getItem);
 router.put('/items/:id', requirePermission('invoices.edit'), Phase8Controller.updateItem);
 router.delete('/items/:id', requirePermission('invoices.delete'), Phase8Controller.deleteItem);
 

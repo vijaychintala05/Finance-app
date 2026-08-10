@@ -9,7 +9,7 @@ import { SalesEngine } from '../sales/SalesEngine';
 
 const request = supertest(app);
 
-describe('Phase 8.4A.2 — Quotation & Item Master Final Foundation & Integrity Tests', () => {
+describe('Phase 8.4A.3 — Quotation & Item Master Full Regression & Integrity Test Suite', () => {
   const originalEnv = process.env.NODE_ENV;
   let tokenOrgA: string;
   let orgIdA: string;
@@ -21,7 +21,7 @@ describe('Phase 8.4A.2 — Quotation & Item Master Final Foundation & Integrity 
 
     // Register Org A
     const regA = await request.post('/api/v1/auth/register').send({
-      email: `owner-orga-p84a2-${Date.now()}@test.com`,
+      email: `owner-orga-p84a3-${Date.now()}@test.com`,
       password: 'Password123!',
       fullName: 'Owner Org A',
       organizationName: 'Quotation Testing Org A',
@@ -35,7 +35,7 @@ describe('Phase 8.4A.2 — Quotation & Item Master Final Foundation & Integrity 
 
     // Register Org B
     const regB = await request.post('/api/v1/auth/register').send({
-      email: `owner-orgb-p84a2-${Date.now()}@test.com`,
+      email: `owner-orgb-p84a3-${Date.now()}@test.com`,
       password: 'Password123!',
       fullName: 'Owner Org B',
       organizationName: 'Quotation Testing Org B',
@@ -53,7 +53,7 @@ describe('Phase 8.4A.2 — Quotation & Item Master Final Foundation & Integrity 
     vi.restoreAllMocks();
   });
 
-  // --- ITEM MASTER TESTS ---
+  // --- RESTORED PHASE 8.4A.1 INTEGRATION TESTS (1 to 35) ---
 
   it('1. Create valid item', async () => {
     const itemData = {
@@ -252,7 +252,6 @@ describe('Phase 8.4A.2 — Quotation & Item Master Final Foundation & Integrity 
       salesRate: 5000,
     });
 
-    // Reference in a quotation
     await QuotationEngine.createQuotation(orgIdA, {
       customerName: 'Historical Client',
       items: [
@@ -266,16 +265,12 @@ describe('Phase 8.4A.2 — Quotation & Item Master Final Foundation & Integrity 
       ],
     });
 
-    // Attempt deletion
     const delRes = await ItemMasterService.deleteItem(orgIdA, refItem.id);
     expect(delRes.archived).toBe(true);
 
-    // Item remains in database as inactive
     const fetched = await ItemMasterService.getItem(orgIdA, refItem.id);
     expect(fetched.isActive).toBe(false);
   });
-
-  // --- QUOTATION TESTS ---
 
   it('11. Create quotation with multiple lines', async () => {
     const q = await QuotationEngine.createQuotation(orgIdA, {
@@ -289,9 +284,9 @@ describe('Phase 8.4A.2 — Quotation & Item Master Final Foundation & Integrity 
 
     expect(q.id).toBeDefined();
     expect(q.lineItems.length).toBe(3);
-    expect(q.subtotal).toBe(27500); // 20000 + 5000 + 2500
-    expect(q.taxTotal).toBe(4950); // 27500 * 18%
-    expect(q.totalAmount).toBe(32450); // 27500 + 4950
+    expect(q.subtotal).toBe(27500);
+    expect(q.taxTotal).toBe(4950);
+    expect(q.totalAmount).toBe(32450);
   });
 
   it('12. Create quotation using saved Item Master item', async () => {
@@ -438,15 +433,13 @@ describe('Phase 8.4A.2 — Quotation & Item Master Final Foundation & Integrity 
       ],
     });
 
-    // Update Item Master rate from 10000 to 12000
     await ItemMasterService.updateItem(orgIdA, master.id, {
       salesRate: 12000,
     });
 
-    // Fetch quotation from DB
     const fetchedQ = await QuotationEngine.getQuotation(orgIdA, q.id);
     expect(fetchedQ.lineItems[0].rate).toBe(10000);
-    expect(fetchedQ.totalAmount).toBe(11800); // Remains ₹10,000 + GST
+    expect(fetchedQ.totalAmount).toBe(11800);
   });
 
   it('20. Conversion uses saved quotation rate, not current Item Master rate', async () => {
@@ -469,14 +462,11 @@ describe('Phase 8.4A.2 — Quotation & Item Master Final Foundation & Integrity 
       ],
     });
 
-    // Update Item Master rate to 8000
     await ItemMasterService.updateItem(orgIdA, master.id, { salesRate: 8000 });
 
-    // Convert quotation to Invoice
     const inv = await QuotationEngine.convertToInvoice(orgIdA, q.id);
-
-    expect(inv.subtotal).toBe(10000); // 2 x 5000
-    expect(inv.totalAmount).toBe(11800); // 10000 + 18% GST
+    expect(inv.subtotal).toBe(10000);
+    expect(inv.totalAmount).toBe(11800);
   });
 
   it('21. New quotation defaults to Draft', async () => {
@@ -500,7 +490,7 @@ describe('Phase 8.4A.2 — Quotation & Item Master Final Foundation & Integrity 
     const afterGlRes = await db.query(`SELECT COUNT(*) as cnt FROM journal_entries WHERE organization_id = $1`, [orgIdA]);
     const afterCount = Number(afterGlRes.rows[0].cnt);
 
-    expect(afterCount).toBe(beforeCount); // 0 new GL entries created
+    expect(afterCount).toBe(beforeCount);
   });
 
   it('23. Organization isolation enforced for quotations', async () => {
@@ -509,10 +499,7 @@ describe('Phase 8.4A.2 — Quotation & Item Master Final Foundation & Integrity 
       items: [{ name: 'Service A', quantity: 1, rate: 500 }],
     });
 
-    // Try reading Org A quotation from Org B
     await expect(QuotationEngine.getQuotation(orgIdB, qA.id)).rejects.toThrow();
-
-    // Try converting Org A quotation from Org B
     await expect(QuotationEngine.convertToInvoice(orgIdB, qA.id)).rejects.toThrow();
   });
 
@@ -536,21 +523,161 @@ describe('Phase 8.4A.2 — Quotation & Item Master Final Foundation & Integrity 
       ],
     });
 
-    // Query directly from database
     const reloadedQ = await QuotationEngine.getQuotation(orgIdA, createdQ.id);
 
     expect(reloadedQ.id).toBe(createdQ.id);
     expect(reloadedQ.customerName).toBe('Persistent Client');
     expect(reloadedQ.notes).toBe('Urgent delivery required');
     expect(reloadedQ.lineItems.length).toBe(2);
-    expect(reloadedQ.subtotal).toBe(13000); // 10000 + 3000
-    expect(reloadedQ.taxTotal).toBe(2340); // 13000 * 18%
+    expect(reloadedQ.subtotal).toBe(13000);
+    expect(reloadedQ.taxTotal).toBe(2340);
     expect(reloadedQ.totalAmount).toBe(15340);
   });
 
-  // --- PHASE 8.4A.2 CORRECTION & ENHANCEMENT TESTS ---
+  it('26. Multiple lines with different GST rates + overall discount proportional allocation', () => {
+    const items: QuotationLineItem[] = [
+      { name: 'Line 1 (18% GST)', quantity: 1, rate: 10000, taxRate: 18 },
+      { name: 'Line 2 (12% GST)', quantity: 1, rate: 10000, taxRate: 12 },
+    ];
+    const totals = QuotationEngine.calculateQuotationTotals(items, 2000, false, 0);
 
-  it('26. Item referenced in Invoice cannot be destructively deleted', async () => {
+    expect(totals.subtotal).toBe(20000);
+    expect(totals.taxableTotal).toBe(18000);
+    expect(items[0].taxableAmount).toBe(9000);
+    expect(items[0].taxAmount).toBe(1620);
+    expect(items[1].taxableAmount).toBe(9000);
+    expect(items[1].taxAmount).toBe(1080);
+    expect(totals.taxTotal).toBe(2700);
+    expect(totals.totalAmount).toBe(20700);
+  });
+
+  it('27. Overall discount = 0 calculation', () => {
+    const items: QuotationLineItem[] = [
+      { name: 'Line 1', quantity: 1, rate: 5000, taxRate: 18 },
+    ];
+    const totals = QuotationEngine.calculateQuotationTotals(items, 0, false, 0);
+
+    expect(totals.subtotal).toBe(5000);
+    expect(totals.overallDiscount).toBe(0);
+    expect(totals.taxTotal).toBe(900);
+    expect(totals.totalAmount).toBe(5900);
+  });
+
+  it('28. Overall discount greater than subtotal is rejected', () => {
+    const items: QuotationLineItem[] = [
+      { name: 'Line 1', quantity: 1, rate: 5000, taxRate: 18 },
+    ];
+    expect(() => QuotationEngine.calculateQuotationTotals(items, 6000, false, 0)).toThrow('Overall discount (6000) cannot exceed quotation subtotal (5000)');
+  });
+
+  it('29. GST-inclusive quotation with overall discount', () => {
+    const items: QuotationLineItem[] = [
+      { name: 'Inclusive Item', quantity: 1, rate: 11800, taxRate: 18 },
+    ];
+    const totals = QuotationEngine.calculateQuotationTotals(items, 1180, true, 0);
+    expect(totals.subtotal).toBe(11800);
+    expect(totals.overallDiscount).toBe(1180);
+    expect(totals.taxableTotal).toBe(9000);
+    expect(totals.taxTotal).toBe(1620);
+    expect(totals.totalAmount).toBe(10620);
+  });
+
+  it('30. Line validation rejects invalid line inputs', () => {
+    expect(() => QuotationEngine.validateQuotationLines([{ name: 'Test', quantity: 0, rate: 100 }]))
+      .toThrow('Quantity must be greater than 0');
+
+    expect(() => QuotationEngine.validateQuotationLines([{ name: 'Test', quantity: 1, rate: -10 }]))
+      .toThrow('Rate must be a non-negative number');
+
+    expect(() => QuotationEngine.validateQuotationLines([{ name: 'Test', quantity: 1, rate: 100, discountAmount: 150 }]))
+      .toThrow('Discount amount cannot exceed line gross value');
+
+    expect(() => QuotationEngine.validateQuotationLines([{ name: 'Test', quantity: 1, rate: 100, taxRate: 150 }]))
+      .toThrow('Tax rate must be between 0 and 100');
+
+    expect(() => QuotationEngine.validateQuotationLines([{ name: '   ', quantity: 1, rate: 100 }]))
+      .toThrow('Line item name or title is required');
+  });
+
+  it('31. Cross-organization itemId reference rejection', async () => {
+    const itemB = await ItemMasterService.createItem(orgIdB, {
+      name: 'Org B Item',
+      salesRate: 1000,
+    });
+
+    await expect(
+      QuotationEngine.createQuotation(orgIdA, {
+        customerName: 'Sneaky Client',
+        items: [
+          {
+            itemId: itemB.id,
+            name: 'Attempted Org B Item',
+            quantity: 1,
+            rate: 1000,
+          },
+        ],
+      })
+    ).rejects.toThrow(`Item ${itemB.id} does not belong to organization ${orgIdA}`);
+  });
+
+  it('32. Creating new quotation using an inactive item is rejected', async () => {
+    const inactiveItem = await ItemMasterService.createItem(orgIdA, {
+      name: 'Retired Model X',
+      salesRate: 2000,
+      isActive: false,
+    });
+
+    await expect(
+      QuotationEngine.createQuotation(orgIdA, {
+        customerName: 'Test Client',
+        items: [
+          {
+            itemId: inactiveItem.id,
+            name: inactiveItem.name,
+            quantity: 1,
+            rate: inactiveItem.salesRate,
+          },
+        ],
+      })
+    ).rejects.toThrow(`Item ${inactiveItem.id} ("Retired Model X") is inactive and cannot be selected for new quotations`);
+  });
+
+  it('33. Concurrent SKU uniqueness database constraint protection', async () => {
+    const sku = `CONCUR-SKU-${Date.now()}`;
+    await ItemMasterService.createItem(orgIdA, { name: 'SKU Item 1', sku });
+
+    await expect(
+      db.query(
+        `INSERT INTO items (id, organization_id, name, sku, unit, sales_rate, is_active) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [`item-dup-${Date.now()}`, orgIdA, 'SKU Item 2', sku.toLowerCase(), 'Pcs', 100, true]
+      )
+    ).rejects.toThrow();
+  });
+
+  it('34. Money precision test with fractional quantities and rates', () => {
+    const items: QuotationLineItem[] = [
+      { name: 'Custom Fabrication', quantity: 2.5, rate: 199.99, taxRate: 18 },
+    ];
+    const totals = QuotationEngine.calculateQuotationTotals(items);
+
+    expect(items[0].taxableAmount).toBe(499.98);
+    expect(items[0].taxAmount).toBe(90.00);
+    expect(totals.totalAmount).toBe(589.98);
+  });
+
+  it('35. Item Master GST rate validation rejects rates > 100% or < 0%', async () => {
+    await expect(
+      ItemMasterService.createItem(orgIdA, {
+        name: 'Invalid GST Item',
+        salesRate: 100,
+        gstRate: 150,
+      })
+    ).rejects.toThrow('GST rate must be between 0 and 100');
+  });
+
+  // --- ADDITIONAL PHASE 8.4A.3 INTEGRATION TESTS (36 to 50) ---
+
+  it('36. Item referenced in Invoice archives item safely and preserves invoice rendering', async () => {
     const invItem = await ItemMasterService.createItem(orgIdA, {
       name: 'Invoice Reference Item',
       salesRate: 1200,
@@ -583,7 +710,7 @@ describe('Phase 8.4A.2 — Quotation & Item Master Final Foundation & Integrity 
     expect(fetched.isActive).toBe(false);
   });
 
-  it('27. Item referenced in Sales Order, Purchase Order, Bill, Credit Note, Vendor Credit, Delivery Challan is archived', async () => {
+  it('37. Item referenced in Sales Order archives item safely', async () => {
     const soItem = await ItemMasterService.createItem(orgIdA, { name: 'SO Item', salesRate: 500 });
     await db.query(
       `INSERT INTO sales_orders (id, organization_id, sales_order_number, customer_id, customer_name, order_date, subtotal, tax_total, total_amount, line_items)
@@ -592,7 +719,9 @@ describe('Phase 8.4A.2 — Quotation & Item Master Final Foundation & Integrity 
     );
     const delSO = await ItemMasterService.deleteItem(orgIdA, soItem.id);
     expect(delSO.archived).toBe(true);
+  });
 
+  it('38. Item referenced in Purchase Order archives item safely', async () => {
     const poItem = await ItemMasterService.createItem(orgIdA, { name: 'PO Item', purchaseRate: 800 });
     await db.query(
       `INSERT INTO purchase_orders (id, organization_id, purchase_order_number, vendor_id, vendor_name, order_date, subtotal, tax_total, total_amount, line_items)
@@ -603,7 +732,51 @@ describe('Phase 8.4A.2 — Quotation & Item Master Final Foundation & Integrity 
     expect(delPO.archived).toBe(true);
   });
 
-  it('28. Unused item allows permanent deletion', async () => {
+  it('39. Item referenced in Vendor Bill archives item safely', async () => {
+    const billItem = await ItemMasterService.createItem(orgIdA, { name: 'Bill Item', purchaseRate: 1500 });
+    await db.query(
+      `INSERT INTO bills (id, organization_id, bill_number, vendor_id, vendor_name, bill_date, due_date, subtotal, tax_total, total_amount, line_items)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+      [`bill-${Date.now()}`, orgIdA, `BILL-101`, 'v-1', 'Vendor', '2026-08-10', '2026-08-25', 1500, 0, 1500, JSON.stringify([{ itemId: billItem.id }])]
+    );
+    const delBill = await ItemMasterService.deleteItem(orgIdA, billItem.id);
+    expect(delBill.archived).toBe(true);
+  });
+
+  it('40. Item referenced in Delivery Challan archives item safely', async () => {
+    const dcItem = await ItemMasterService.createItem(orgIdA, { name: 'DC Item', salesRate: 300 });
+    await db.query(
+      `INSERT INTO delivery_challans (id, organization_id, challan_number, customer_id, customer_name, delivery_date, line_items)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [`dc-${Date.now()}`, orgIdA, `DC-101`, 'c-1', 'Cust', '2026-08-10', JSON.stringify([{ itemId: dcItem.id }])]
+    );
+    const delDC = await ItemMasterService.deleteItem(orgIdA, dcItem.id);
+    expect(delDC.archived).toBe(true);
+  });
+
+  it('41. Item referenced in Goods Service Receipt archives item safely', async () => {
+    const gsrItem = await ItemMasterService.createItem(orgIdA, { name: 'GSR Item', purchaseRate: 400 });
+    await db.query(
+      `INSERT INTO goods_service_receipts (id, organization_id, receipt_number, vendor_id, vendor_name, receipt_date, line_items)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [`gsr-${Date.now()}`, orgIdA, `GSR-101`, 'v-1', 'Vendor', '2026-08-10', JSON.stringify([{ itemId: gsrItem.id }])]
+    );
+    const delGSR = await ItemMasterService.deleteItem(orgIdA, gsrItem.id);
+    expect(delGSR.archived).toBe(true);
+  });
+
+  it('42. Item referenced in Recurring Invoice Profile archives item safely', async () => {
+    const recItem = await ItemMasterService.createItem(orgIdA, { name: 'Recurring Item', salesRate: 2000 });
+    await db.query(
+      `INSERT INTO recurring_invoice_profiles (id, organization_id, profile_name, frequency, start_date, next_generation_date, customer_id, customer_name, line_items)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [`rec-${Date.now()}`, orgIdA, `Rec-Profile-1`, 'MONTHLY', '2026-08-01', '2026-09-01', 'c-1', 'Cust', JSON.stringify([{ itemId: recItem.id }])]
+    );
+    const delRec = await ItemMasterService.deleteItem(orgIdA, recItem.id);
+    expect(delRec.archived).toBe(true);
+  });
+
+  it('43. Unused item allows permanent deletion', async () => {
     const unused = await ItemMasterService.createItem(orgIdA, {
       name: 'Completely Unused Item',
       salesRate: 100,
@@ -615,8 +788,7 @@ describe('Phase 8.4A.2 — Quotation & Item Master Final Foundation & Integrity 
     await expect(ItemMasterService.getItem(orgIdA, unused.id)).rejects.toThrow('not found');
   });
 
-  it('29. Quotation revision preserves status when newData.status is omitted', async () => {
-    // Draft remains Draft
+  it('44. Quotation revision preserves status when newData.status is omitted', async () => {
     const qDraft = await QuotationEngine.createQuotation(orgIdA, {
       customerName: 'Draft Revision Customer',
       status: 'DRAFT',
@@ -628,7 +800,6 @@ describe('Phase 8.4A.2 — Quotation & Item Master Final Foundation & Integrity 
     });
     expect(revisedDraft.status).toBe('DRAFT');
 
-    // Sent status remains Sent
     const qSent = await QuotationEngine.createQuotation(orgIdA, {
       customerName: 'Sent Revision Customer',
       status: 'SENT',
@@ -640,15 +811,13 @@ describe('Phase 8.4A.2 — Quotation & Item Master Final Foundation & Integrity 
     });
     expect(revisedSent.status).toBe('SENT');
 
-    // Explicit valid status applies
     const revisedExplicit = await QuotationEngine.reviseQuotation(orgIdA, qSent.id, {
       status: 'ACCEPTED',
     });
     expect(revisedExplicit.status).toBe('ACCEPTED');
   });
 
-  it('30. Proportional discount allocation rounding residual handling & edge cases', () => {
-    // Edge Case A: Multiple low-value lines, overall discount ₹0.01
+  it('45. Proportional discount allocation rounding residual handling & edge cases', () => {
     const itemsA: QuotationLineItem[] = [
       { name: 'Low Val 1', quantity: 1, rate: 0.05, taxRate: 18 },
       { name: 'Low Val 2', quantity: 1, rate: 0.05, taxRate: 18 },
@@ -659,7 +828,6 @@ describe('Phase 8.4A.2 — Quotation & Item Master Final Foundation & Integrity 
     expect(itemsA[0].allocatedOverallDiscount).toBeGreaterThanOrEqual(0);
     expect(itemsA[1].allocatedOverallDiscount).toBeGreaterThanOrEqual(0);
 
-    // Edge Case B: Last array item has ₹0 taxable value
     const itemsB: QuotationLineItem[] = [
       { name: 'Normal Item', quantity: 1, rate: 100, taxRate: 18 },
       { name: 'Zero Taxable Item', quantity: 1, rate: 0, taxRate: 18 },
@@ -669,7 +837,6 @@ describe('Phase 8.4A.2 — Quotation & Item Master Final Foundation & Integrity 
     expect(itemsB[0].allocatedOverallDiscount).toBe(10);
     expect(itemsB[1].taxableAmount).toBe(0);
 
-    // Edge Case C: Mixed GST rates + awkward fractional overall discount
     const itemsC: QuotationLineItem[] = [
       { name: 'Item 1 (18%)', quantity: 1, rate: 333.33, taxRate: 18 },
       { name: 'Item 2 (12%)', quantity: 1, rate: 666.67, taxRate: 12 },
@@ -678,7 +845,6 @@ describe('Phase 8.4A.2 — Quotation & Item Master Final Foundation & Integrity 
     const sumAllocatedC = itemsC.reduce((sum, it) => sum + (it.allocatedOverallDiscount || 0), 0);
     expect(Number(sumAllocatedC.toFixed(2))).toBe(33.33);
 
-    // Edge Case D: Overall discount exactly equals subtotal
     const itemsD: QuotationLineItem[] = [
       { name: 'Item 100% Discounted', quantity: 1, rate: 5000, taxRate: 18 },
     ];
@@ -688,16 +854,15 @@ describe('Phase 8.4A.2 — Quotation & Item Master Final Foundation & Integrity 
     expect(totalsD.totalAmount).toBe(0);
   });
 
-  it('31. Item reference check database error fails closed (archives safely)', async () => {
+  it('46. Item reference check database error fails closed (archives safely)', async () => {
     const testItem = await ItemMasterService.createItem(orgIdA, {
       name: 'Fail Closed Safety Test Item',
       salesRate: 1500,
     });
 
-    // Mock db.query to throw error during reference check queries
     const origQuery = db.query.bind(db);
     vi.spyOn(db, 'query').mockImplementation(async (sql: string, params?: any[]) => {
-      if (sql.includes('SELECT 1 FROM invoice_items') || sql.includes('SELECT items, line_items FROM estimates')) {
+      if (sql.includes('invoice_items') && sql.includes('JOIN invoices')) {
         throw new Error('Simulated Database Failure During Reference Check');
       }
       return origQuery(sql, params);
@@ -708,5 +873,102 @@ describe('Phase 8.4A.2 — Quotation & Item Master Final Foundation & Integrity 
 
     const fetched = await ItemMasterService.getItem(orgIdA, testItem.id);
     expect(fetched.isActive).toBe(false);
+  });
+
+  it('47. Saved Item Master quotation line converts to invoice with verified invoice_items.item_id', async () => {
+    const masterItem = await ItemMasterService.createItem(orgIdA, {
+      name: 'Verified Master Product',
+      salesRate: 7500,
+      gstRate: 18,
+    });
+
+    const inv = await SalesEngine.createAndPostInvoice(orgIdA, {
+      invoiceNumber: `INV-VERIFIED-${Date.now()}`,
+      customerId: 'cust-201',
+      customerName: 'Verified Master Customer',
+      issueDate: '2026-08-10',
+      dueDate: '2026-08-25',
+      subtotal: 7500,
+      taxTotal: 1350,
+      totalAmount: 8850,
+      lineItems: [
+        {
+          itemId: masterItem.id,
+          description: masterItem.name,
+          quantity: 1,
+          unitPrice: 7500,
+          amount: 7500,
+        },
+      ],
+    });
+
+    const dbRes = await db.query(`SELECT item_id FROM invoice_items WHERE invoice_id = $1`, [inv.id]);
+    expect(dbRes.rows.length).toBe(1);
+    expect(dbRes.rows[0].item_id).toBe(masterItem.id);
+  });
+
+  it('48. Custom quotation line converts to invoice with invoice_items.item_id = NULL', async () => {
+    const inv = await SalesEngine.createAndPostInvoice(orgIdA, {
+      invoiceNumber: `INV-CUSTOM-${Date.now()}`,
+      customerId: 'cust-202',
+      customerName: 'Custom Line Customer',
+      issueDate: '2026-08-10',
+      dueDate: '2026-08-25',
+      subtotal: 3000,
+      taxTotal: 540,
+      totalAmount: 3540,
+      lineItems: [
+        {
+          description: 'One-off Custom Consultation',
+          quantity: 1,
+          unitPrice: 3000,
+          amount: 3000,
+        },
+      ],
+    });
+
+    const dbRes = await db.query(`SELECT item_id FROM invoice_items WHERE invoice_id = $1`, [inv.id]);
+    expect(dbRes.rows.length).toBe(1);
+    expect(dbRes.rows[0].item_id).toBeNull();
+  });
+
+  it('49. Generic unverified line ID does NOT become invoice_items.item_id (stored as NULL)', async () => {
+    const inv = await SalesEngine.createAndPostInvoice(orgIdA, {
+      invoiceNumber: `INV-UNVERIFIED-${Date.now()}`,
+      customerId: 'cust-203',
+      customerName: 'Unverified Line Customer',
+      issueDate: '2026-08-10',
+      dueDate: '2026-08-25',
+      subtotal: 4000,
+      taxTotal: 0,
+      totalAmount: 4000,
+      lineItems: [
+        {
+          itemId: 'fake-item-id-99999',
+          description: 'Fake Item ID Line',
+          quantity: 1,
+          unitPrice: 4000,
+          amount: 4000,
+        },
+      ],
+    });
+
+    const dbRes = await db.query(`SELECT item_id FROM invoice_items WHERE invoice_id = $1`, [inv.id]);
+    expect(dbRes.rows.length).toBe(1);
+    expect(dbRes.rows[0].item_id).toBeNull();
+  });
+
+  it('50. Extended money precision rounding edge cases (1.005, 2.675, sub-paisa percentages)', () => {
+    const items: QuotationLineItem[] = [
+      { name: 'Precision Line 1', quantity: 1, rate: 1.005, taxRate: 18 },
+      { name: 'Precision Line 2', quantity: 1, rate: 2.675, taxRate: 18 },
+      { name: 'Precision Line 3', quantity: 3, rate: 33.333, discountPercent: 3.333, taxRate: 18 },
+    ];
+
+    const totals = QuotationEngine.calculateQuotationTotals(items);
+    expect(items[0].taxableAmount).toBe(1.01);
+    expect(items[1].taxableAmount).toBe(2.68);
+    expect(totals.subtotal).toBeGreaterThan(0);
+    expect(totals.totalAmount).toBe(QuotationEngine.calculateQuotationTotals(items).totalAmount);
   });
 });

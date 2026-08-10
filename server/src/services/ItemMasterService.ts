@@ -18,6 +18,34 @@ export interface ItemModel {
   updatedAt?: string;
 }
 
+/**
+ * Item Reference Source Registry
+ * Defines all production persistence tables and columns that store Item Master references.
+ *
+ * Note on non-item-bearing entities:
+ * - Credit Notes and Vendor Credits in FirmBooks are currently amount/adjustment-level financial documents
+ *   and do not persist Item Master item_id references.
+ */
+interface ItemReferenceSource {
+  table: string;
+  column: string;
+  format: 'RELATIONAL_ID' | 'JSONB_ARRAY';
+}
+
+const ITEM_REFERENCE_REGISTRY: ItemReferenceSource[] = [
+  { table: 'invoice_items', column: 'item_id', format: 'RELATIONAL_ID' },
+  { table: 'estimates', column: 'line_items', format: 'JSONB_ARRAY' },
+  { table: 'estimates', column: 'items', format: 'JSONB_ARRAY' },
+  { table: 'invoices', column: 'line_items', format: 'JSONB_ARRAY' },
+  { table: 'invoices', column: 'items', format: 'JSONB_ARRAY' },
+  { table: 'sales_orders', column: 'line_items', format: 'JSONB_ARRAY' },
+  { table: 'purchase_orders', column: 'line_items', format: 'JSONB_ARRAY' },
+  { table: 'bills', column: 'line_items', format: 'JSONB_ARRAY' },
+  { table: 'delivery_challans', column: 'line_items', format: 'JSONB_ARRAY' },
+  { table: 'goods_service_receipts', column: 'line_items', format: 'JSONB_ARRAY' },
+  { table: 'recurring_invoice_profiles', column: 'line_items', format: 'JSONB_ARRAY' },
+];
+
 export class ItemMasterService {
   private static validateItemData(data: Partial<ItemModel>, isUpdate: boolean = false) {
     if (!isUpdate || data.name !== undefined) {
@@ -209,66 +237,46 @@ export class ItemMasterService {
     let isReferenced = false;
     let checkErrorEncountered = false;
 
-    // 1. Direct relational check on invoice_items item_id column
-    try {
-      const invItemsRes = await db.query(
-        `SELECT 1 FROM invoice_items ii JOIN invoices i ON ii.invoice_id = i.id WHERE i.organization_id = $1 AND ii.item_id = $2 LIMIT 1`,
-        [orgId, id]
-      );
-      if (invItemsRes.rows.length > 0) isReferenced = true;
-    } catch (err: any) {
-      const msg = (err && err.message) ? err.message.toLowerCase() : '';
-      if (!msg.includes('does not exist') && !msg.includes('undefined') && err.code !== '42P01') {
-        checkErrorEncountered = true;
-      }
-    }
-
-    // 2. Structured JSON item reference checks across document tables
-    if (!isReferenced && !checkErrorEncountered) {
-      const tablesToCheck = [
-        'estimates',
-        'invoices',
-        'sales_orders',
-        'bills',
-        'purchase_orders',
-        'credit_notes',
-        'vendor_credits',
-        'delivery_challans',
-      ];
-
-      for (const tbl of tablesToCheck) {
-        try {
-          const res = await db.query(`SELECT * FROM ${tbl} WHERE organization_id = $1`, [orgId]);
-          for (const row of res.rows) {
-            for (const key of Object.keys(row)) {
-              if (!key.includes('items')) continue;
-              const val = row[key];
-              if (!val) continue;
-              let list: any[] = [];
-              if (typeof val === 'string') {
-                try { list = JSON.parse(val); } catch { list = []; }
-              } else if (Array.isArray(val)) {
-                list = val;
-              }
-              if (list.some((item: any) => item && (item.itemId === id || item.itemIdRef === id))) {
-                isReferenced = true;
-                break;
-              }
-            }
-            if (isReferenced) break;
-          }
-        } catch (err: any) {
-          const msg = (err && err.message) ? err.message.toLowerCase() : '';
-          if (!msg.includes('does not exist') && !msg.includes('undefined') && err.code !== '42P01') {
-            checkErrorEncountered = true;
+    for (const src of ITEM_REFERENCE_REGISTRY) {
+      try {
+        if (src.format === 'RELATIONAL_ID') {
+          const res = await db.query(
+            `SELECT 1 FROM ${src.table} ii JOIN invoices i ON ii.invoice_id = i.id WHERE i.organization_id = $1 AND ii.${src.column} = $2 LIMIT 1`,
+            [orgId, id]
+          );
+          if (res.rows.length > 0) {
+            isReferenced = true;
             break;
           }
+        } else if (src.format === 'JSONB_ARRAY') {
+          const res = await db.query(`SELECT ${src.column} FROM ${src.table} WHERE organization_id = $1`, [orgId]);
+          for (const row of res.rows) {
+            const val = row[src.column];
+            if (!val) continue;
+            let list: any[] = [];
+            if (typeof val === 'string') {
+              try { list = JSON.parse(val); } catch { list = []; }
+            } else if (Array.isArray(val)) {
+              list = val;
+            }
+            if (list.some((item: any) => item && (item.itemId === id || item.itemIdRef === id))) {
+              isReferenced = true;
+              break;
+            }
+          }
+          if (isReferenced) break;
         }
-        if (isReferenced) break;
+      } catch (err: any) {
+        const msg = (err && err.message) ? err.message.toLowerCase() : '';
+        // If query fails on a registered production source for any reason, FAIL CLOSED
+        if (!msg.includes('does not exist') && !msg.includes('undefined') && err.code !== '42P01') {
+          checkErrorEncountered = true;
+          break;
+        }
       }
     }
 
-    // FAIL CLOSED SAFETY: If referenced or if reference check failed due to db error, archive safely. Never permanently delete.
+    // FAIL CLOSED SAFETY: If referenced or if reference check encountered a query error, archive safely. Never permanently delete.
     if (isReferenced || checkErrorEncountered) {
       await db.query(`UPDATE items SET is_active = FALSE, updated_at = $1 WHERE organization_id = $2 AND id = $3`, [new Date().toISOString(), orgId, id]);
       return {

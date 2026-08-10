@@ -1,4 +1,5 @@
 import { db } from '../database/db';
+import { ItemMasterService } from '../services/ItemMasterService';
 import { ServerPostingEngine } from '../accounting/postingEngine';
 import { AccountingService } from '../../../src/services/accountingService';
 import { SalesService } from '../../../src/services/salesService';
@@ -663,7 +664,19 @@ export class SalesEngine {
 
     // Save line items
     for (const item of items) {
-      const itemIdRef = item.itemId || item.itemIdRef || item.id || null;
+      let verifiedItemId: string | null = null;
+      const candidateId = item.itemId || item.itemIdRef;
+      if (candidateId) {
+        try {
+          const master = await ItemMasterService.getItem(orgId, candidateId);
+          if (master && master.organizationId === orgId) {
+            verifiedItemId = master.id;
+          }
+        } catch {
+          verifiedItemId = null;
+        }
+      }
+
       await db.query(
         `INSERT INTO invoice_items (id, organization_id, invoice_id, description, account_id, quantity, unit_price, tax_rate, amount, item_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
@@ -677,7 +690,7 @@ export class SalesEngine {
           item.unitPrice || item.rate || 0,
           item.taxRate || 0,
           item.amount || (item.quantity || 1) * (item.unitPrice || item.rate || 0),
-          itemIdRef,
+          verifiedItemId,
         ]
       );
     }

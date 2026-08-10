@@ -55,7 +55,11 @@ function MainAppLayout() {
   const [autoOpenVendorCreditModal, setAutoOpenVendorCreditModal] = useState(false);
   const [autoOpenJournalModal, setAutoOpenJournalModal] = useState(false);
 
-  const handleNavigate = (tab: string, options?: { autoCreate?: boolean }) => {
+  const [selectedEntityId, setSelectedEntityId] = useState<string | undefined>(undefined);
+
+  const handleNavigate = (tab: string, options?: { autoCreate?: boolean; entityId?: string }) => {
+    setSelectedEntityId(options?.entityId);
+
     if (tab === 'clients' && options?.autoCreate) setAutoOpenClientModal(true);
     if (tab === 'estimates' && options?.autoCreate) setAutoOpenEstimateModal(true);
     if (tab === 'sales_orders' && options?.autoCreate) setAutoOpenSalesOrderModal(true);
@@ -95,6 +99,7 @@ function MainAppLayout() {
           <ClientsView
             autoOpenCreateModal={autoOpenClientModal}
             onModalClosed={() => setAutoOpenClientModal(false)}
+            selectedEntityId={selectedEntityId}
           />
         );
       case 'estimates':
@@ -102,6 +107,7 @@ function MainAppLayout() {
           <EstimatesView
             autoOpenCreateModal={autoOpenEstimateModal}
             onModalClosed={() => setAutoOpenEstimateModal(false)}
+            selectedEntityId={selectedEntityId}
           />
         );
       case 'sales_orders':
@@ -109,6 +115,7 @@ function MainAppLayout() {
           <SalesOrdersView
             autoOpenCreateModal={autoOpenSalesOrderModal}
             onModalClosed={() => setAutoOpenSalesOrderModal(false)}
+            selectedEntityId={selectedEntityId}
           />
         );
       case 'invoices':
@@ -116,6 +123,7 @@ function MainAppLayout() {
           <InvoicesView
             autoOpenCreateModal={autoOpenInvoiceModal}
             onModalClosed={() => setAutoOpenInvoiceModal(false)}
+            selectedEntityId={selectedEntityId}
           />
         );
       case 'recurring_invoices':
@@ -134,6 +142,7 @@ function MainAppLayout() {
           <CreditNotesView
             autoOpenCreateModal={autoOpenCreditNoteModal}
             onModalClosed={() => setAutoOpenCreditNoteModal(false)}
+            selectedEntityId={selectedEntityId}
           />
         );
       case 'salespersons':
@@ -171,6 +180,7 @@ function MainAppLayout() {
           <BillsView
             autoOpenCreateModal={autoOpenBillModal}
             onModalClosed={() => setAutoOpenBillModal(false)}
+            selectedEntityId={selectedEntityId}
           />
         );
       case 'recurring_bills':

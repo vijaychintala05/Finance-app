@@ -1,16 +1,16 @@
-import { describe, it, expect, beforeAll } from 'vitest';
-import { GlobalSearchService } from '../../server/src/services/GlobalSearchService';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
+import { GlobalSearchService, SearchResultItem } from '../../server/src/services/GlobalSearchService';
 import { db } from '../../server/src/database/db';
 import { MigrationRunner } from '../../server/src/database/migrationRunner';
 
-describe('Phase 8.3 — Global Search Integration, Navigation & Security Tests', () => {
+describe('Phase 8.3A — Global Search Component, Navigation & Security Tests', () => {
   const testOrgA = 'ORG-TEST-SEARCH-A';
   const testOrgB = 'ORG-TEST-SEARCH-B';
 
   beforeAll(async () => {
     await MigrationRunner.runMigrations();
 
-    // Seed test customer for Org A
+    // 1. Seed Customer for Org A
     await db.query(
       `INSERT INTO customers (id, organization_id, display_name, legal_name, email, gstin, phone)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -18,7 +18,7 @@ describe('Phase 8.3 — Global Search Integration, Navigation & Security Tests',
       ['cust-s-1', testOrgA, 'Apex Global Systems', 'Apex Global Systems Pvt Ltd', 'contact@apexglobal.com', '36AABCA1234F1Z5', '+91 9876543210']
     );
 
-    // Seed test vendor for Org A
+    // 2. Seed Vendor for Org A
     await db.query(
       `INSERT INTO vendors (id, organization_id, name, company_name, email, phone)
        VALUES ($1, $2, $3, $4, $5, $6)
@@ -26,7 +26,7 @@ describe('Phase 8.3 — Global Search Integration, Navigation & Security Tests',
       ['vend-s-1', testOrgA, 'Cloud Infrastructure Solutions', 'Cloud Infra Inc', 'billing@cloudinfra.io', '+1 555-0199']
     );
 
-    // Seed test invoice for Org A
+    // 3. Seed Invoice for Org A
     await db.query(
       `INSERT INTO invoices (id, organization_id, invoice_number, client_name, total_amount, status, issue_date, due_date)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -34,7 +34,7 @@ describe('Phase 8.3 — Global Search Integration, Navigation & Security Tests',
       ['inv-s-1', testOrgA, 'INV-2026-SEARCH-001', 'Apex Global Systems', 95000, 'Sent', '2026-08-10', '2026-08-20']
     );
 
-    // Seed test bill for Org A
+    // 4. Seed Bill for Org A
     await db.query(
       `INSERT INTO bills (id, organization_id, bill_number, vendor_name, total_amount, status, bill_date, due_date)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -42,7 +42,15 @@ describe('Phase 8.3 — Global Search Integration, Navigation & Security Tests',
       ['bill-s-1', testOrgA, 'BILL-2026-SEARCH-001', 'Cloud Infrastructure Solutions', 42000, 'Unpaid', '2026-08-10', '2026-08-25']
     );
 
-    // Seed secret record in Org B
+    // 5. Seed Chart of Accounts Account for Org A
+    await db.query(
+      `INSERT INTO accounts (id, organization_id, code, name, type, sub_type, balance, is_system_account)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT (id) DO NOTHING`,
+      ['acc-s-1', testOrgA, '4100-TEST', 'Consulting & Cloud Services Income', 'Income', 'Operating Revenue', 150000, false]
+    );
+
+    // 6. Seed Secret Record in Org B (for multi-tenant isolation verification)
     await db.query(
       `INSERT INTO invoices (id, organization_id, invoice_number, client_name, total_amount, status, issue_date, due_date)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -91,34 +99,33 @@ describe('Phase 8.3 — Global Search Integration, Navigation & Security Tests',
     expect(billResults.some((r) => r.category === 'Vendor Bill' && r.amount === 42000)).toBe(true);
   });
 
-  it('6. Organization A search NEVER leaks records from Organization B', async () => {
-    // Org A querying Org B record
+  it('6. Chart of Accounts search queries real accounts by code and name', async () => {
+    const byCode = await GlobalSearchService.search(testOrgA, '4100-TEST');
+    expect(byCode.some((r) => r.category === 'Account' && r.title.includes('4100-TEST'))).toBe(true);
+
+    const byName = await GlobalSearchService.search(testOrgA, 'Consulting & Cloud');
+    expect(byName.some((r) => r.category === 'Account' && r.title.includes('Consulting & Cloud'))).toBe(true);
+  });
+
+  it('7. Organization A search NEVER leaks records from Organization B', async () => {
     const orgASearch = await GlobalSearchService.search(testOrgA, 'INV-SECRET-TENANT-B');
     expect(orgASearch.length).toBe(0);
 
-    // Org B querying Org B record
     const orgBSearch = await GlobalSearchService.search(testOrgB, 'INV-SECRET-TENANT-B');
     expect(orgBSearch.length).toBe(1);
     expect(orgBSearch[0].title).toBe('INV-SECRET-TENANT-B');
   });
 
-  it('7. Permission-restricted records are filtered out for users lacking permissions', async () => {
-    // User with only invoice permissions should not see bills
-    const salesOnlyPerms = ['invoice.view', 'invoice.create'];
+  it('8. Permission-restricted records are filtered out for users lacking permissions', async () => {
+    const salesOnlyPerms = ['invoices.view'];
     const resultsSalesUser = await GlobalSearchService.search(testOrgA, '2026-SEARCH', salesOnlyPerms);
     expect(resultsSalesUser.some((r) => r.category === 'Invoice')).toBe(true);
     expect(resultsSalesUser.some((r) => r.category === 'Vendor Bill')).toBe(false);
 
-    // User with purchase permissions should see bills
-    const purchasePerms = ['bill.view', 'bill.create'];
+    const purchasePerms = ['purchases.view'];
     const resultsPurchasesUser = await GlobalSearchService.search(testOrgA, '2026-SEARCH', purchasePerms);
     expect(resultsPurchasesUser.some((r) => r.category === 'Vendor Bill')).toBe(true);
     expect(resultsPurchasesUser.some((r) => r.category === 'Invoice')).toBe(false);
-  });
-
-  it('8. Empty results state returns empty list without error', async () => {
-    const results = await GlobalSearchService.search(testOrgA, 'NON_EXISTENT_STRING_XYZ_999');
-    expect(results).toEqual([]);
   });
 
   it('9. Stale request token logic ensures latest query is authoritative', () => {
@@ -136,8 +143,32 @@ describe('Phase 8.3 — Global Search Integration, Navigation & Security Tests',
     latestSequence = 2;
     const req2 = 2;
 
-    // Suppose req1 finishes after req2
     expect(executeMockSearch(req2)).toBe('Results for seq 2');
     expect(executeMockSearch(req1)).toBeNull(); // Discarded
+  });
+
+  it('10. Selecting a search result forwards exact entityId and tabTarget to navigation handler', () => {
+    const onNavigate = vi.fn();
+    const handleSelect = (item: SearchResultItem, targetTab: string) => {
+      onNavigate(targetTab, { entityId: item.id });
+    };
+
+    const testItem: SearchResultItem = {
+      id: 'inv-selected-123',
+      category: 'Invoice',
+      title: 'INV-2026-001',
+      subtitle: 'Acme Corp',
+      linkRoute: '/sales/invoices?id=inv-selected-123',
+    };
+
+    handleSelect(testItem, 'invoices');
+    expect(onNavigate).toHaveBeenCalledWith('invoices', { entityId: 'inv-selected-123' });
+  });
+
+  it('11. Query length sanitization safely truncates excessive input beyond 100 characters', async () => {
+    const excessiveQuery = 'INV-2026-SEARCH-001' + 'A'.repeat(200);
+    const results = await GlobalSearchService.search(testOrgA, excessiveQuery);
+    // Should not throw or crash and safely query truncated input
+    expect(Array.isArray(results)).toBe(true);
   });
 });

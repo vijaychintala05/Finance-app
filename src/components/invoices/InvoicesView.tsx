@@ -18,11 +18,13 @@ import { InvoicePreviewModal } from './InvoicePreviewModal';
 interface InvoicesViewProps {
   autoOpenCreateModal?: boolean;
   onModalClosed?: () => void;
+  selectedEntityId?: string;
 }
 
 export const InvoicesView: React.FC<InvoicesViewProps> = ({
   autoOpenCreateModal = false,
   onModalClosed,
+  selectedEntityId,
 }) => {
   const { invoices, settings, deleteInvoice } = useBooks();
 
@@ -38,6 +40,15 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
       setIsEditorOpen(true);
     }
   }, [autoOpenCreateModal]);
+
+  useEffect(() => {
+    if (selectedEntityId) {
+      const found = invoices.find((i) => i.id === selectedEntityId || i.invoiceNumber === selectedEntityId);
+      if (found) {
+        setPreviewInvoice(found);
+      }
+    }
+  }, [selectedEntityId, invoices]);
 
   const filteredInvoices = invoices.filter((inv) => {
     const matchesSearch =

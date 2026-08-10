@@ -13,11 +13,13 @@ import { CreditNoteDetailsModal } from './CreditNoteDetailsModal';
 interface CreditNotesViewProps {
   autoOpenCreateModal?: boolean;
   onModalClosed?: () => void;
+  selectedEntityId?: string;
 }
 
 export const CreditNotesView: React.FC<CreditNotesViewProps> = ({
   autoOpenCreateModal,
   onModalClosed,
+  selectedEntityId,
 }) => {
   const { creditNotes, addCreditNote, updateCreditNote, invoices, clients, settings } = useBooks();
 
@@ -31,6 +33,15 @@ export const CreditNotesView: React.FC<CreditNotesViewProps> = ({
       if (onModalClosed) onModalClosed();
     }
   }, [autoOpenCreateModal]);
+
+  React.useEffect(() => {
+    if (selectedEntityId) {
+      const found = creditNotes.find((cn) => cn.id === selectedEntityId || cn.cnNumber === selectedEntityId);
+      if (found) {
+        setViewingNote(found);
+      }
+    }
+  }, [selectedEntityId, creditNotes]);
 
   // Modal form
   const [clientName, setClientName] = useState(clients[0]?.name || '');

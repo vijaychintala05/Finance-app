@@ -11,11 +11,13 @@ import { QuickAddProjectModal } from '../common/QuickAddProjectModal';
 interface EstimatesViewProps {
   autoOpenCreateModal?: boolean;
   onModalClosed?: () => void;
+  selectedEntityId?: string;
 }
 
 export const EstimatesView: React.FC<EstimatesViewProps> = ({
   autoOpenCreateModal,
   onModalClosed,
+  selectedEntityId,
 }) => {
   const { estimates, clients, projects, settings, addEstimate, convertEstimateToInvoice } =
     useBooks();
@@ -31,6 +33,15 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
       if (onModalClosed) onModalClosed();
     }
   }, [autoOpenCreateModal, onModalClosed]);
+
+  React.useEffect(() => {
+    if (selectedEntityId) {
+      const found = estimates.find((e) => e.id === selectedEntityId || e.estimateNumber === selectedEntityId);
+      if (found) {
+        setViewingEstimate(found);
+      }
+    }
+  }, [selectedEntityId, estimates]);
 
   const [isQuickClientOpen, setIsQuickClientOpen] = useState(false);
   const [isQuickProjectOpen, setIsQuickProjectOpen] = useState(false);

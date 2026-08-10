@@ -1,11 +1,22 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Search, FileText, User, ShoppingBag, CreditCard, ArrowRight, X, Layers, BookOpen } from 'lucide-react';
+import { Search, FileText, User, ShoppingBag, CreditCard, ArrowRight, X, Layers, BookOpen, AlertCircle } from 'lucide-react';
 import { ApiClient } from '../../api/client';
 import { useBooks } from '../../context/BooksContext';
 
 export interface SearchResultItem {
   id: string;
-  category: 'Invoice' | 'Quotation' | 'Sales Order' | 'Customer' | 'Vendor' | 'Vendor Bill' | 'Purchase Order' | 'Payment Received' | 'Payment Made' | 'Bank Transaction' | 'Account';
+  category:
+    | 'Invoice'
+    | 'Quotation'
+    | 'Sales Order'
+    | 'Customer'
+    | 'Vendor'
+    | 'Vendor Bill'
+    | 'Purchase Order'
+    | 'Payment Received'
+    | 'Payment Made'
+    | 'Bank Transaction'
+    | 'Account';
   title: string;
   subtitle: string;
   status?: string;
@@ -27,20 +38,7 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, is
   const [error, setError] = useState<string | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
 
-  const {
-    invoices,
-    estimates,
-    salesOrders,
-    clients,
-    vendors,
-    bills,
-    purchaseOrders,
-    paymentsReceived,
-    paymentsMade,
-    bankTransactions,
-    accounts,
-    currentOrg,
-  } = useBooks();
+  const { currentOrg } = useBooks();
 
   const apiClient = useMemo(() => new ApiClient(), []);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -63,7 +61,7 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, is
 
   // Debounced search with stale request protection
   useEffect(() => {
-    const trimmed = query.trim();
+    const trimmed = query.trim().slice(0, 100);
     if (!trimmed || trimmed.length < 2) {
       setResults([]);
       setSelectedIndex(0);
@@ -77,16 +75,12 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, is
     setLoading(true);
 
     const timer = setTimeout(async () => {
-      const q = trimmed.toLowerCase();
-      const numQ = Number(trimmed.replace(/[^0-9.]/g, '')) || -999999;
-
       try {
-        // Try backend search first
         const res = await apiClient.get<{ results: any[] }>(`/search?q=${encodeURIComponent(trimmed)}`);
-        // If newer request occurred, discard
+        // If a newer request occurred, discard
         if (currentSeq !== requestSeqRef.current) return;
 
-        if (res.data?.results && res.data.results.length > 0) {
+        if (res.data?.results && Array.isArray(res.data.results)) {
           const mapped: SearchResultItem[] = res.data.results.map((r: any) => {
             let tabTarget = 'dashboard';
             if (r.category === 'Invoice') tabTarget = 'invoices';
@@ -99,6 +93,7 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, is
             else if (r.category === 'Payment Received') tabTarget = 'payments_received';
             else if (r.category === 'Payment Made') tabTarget = 'payments_made';
             else if (r.category === 'Bank Transaction') tabTarget = 'banking';
+            else if (r.category === 'Account') tabTarget = 'coa';
 
             return {
               id: r.id,
@@ -112,210 +107,25 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, is
             };
           });
           setResults(mapped);
+          setError(null);
           setLoading(false);
-          return;
+          setSelectedIndex(0);
+        } else {
+          setResults([]);
+          setError(null);
+          setLoading(false);
         }
       } catch (err) {
-        // If newer request occurred, discard
+        // If a newer request occurred, discard
         if (currentSeq !== requestSeqRef.current) return;
-        console.warn('[GlobalSearch UI] Backend search failed, utilizing local cache fallback');
+        setResults([]);
+        setError('Search is temporarily unavailable.');
+        setLoading(false);
       }
-
-      // Local In-Memory Search Fallback
-      if (currentSeq !== requestSeqRef.current) return;
-      const localResults: SearchResultItem[] = [];
-
-      // 1. Invoices
-      invoices.forEach((inv) => {
-        if (
-          inv.invoiceNumber.toLowerCase().includes(q) ||
-          inv.clientName.toLowerCase().includes(q) ||
-          inv.total === numQ
-        ) {
-          localResults.push({
-            id: inv.id,
-            category: 'Invoice',
-            title: inv.invoiceNumber,
-            subtitle: `${inv.clientName} • ₹${inv.total.toLocaleString('en-IN')}`,
-            status: inv.status,
-            amount: inv.total,
-            date: inv.date,
-            tabTarget: 'invoices',
-          });
-        }
-      });
-
-      // 2. Estimates / Quotes
-      estimates.forEach((est) => {
-        if (
-          est.estimateNumber.toLowerCase().includes(q) ||
-          est.clientName.toLowerCase().includes(q) ||
-          est.amount === numQ
-        ) {
-          localResults.push({
-            id: est.id,
-            category: 'Quotation',
-            title: est.estimateNumber,
-            subtitle: `${est.clientName} • ₹${est.amount.toLocaleString('en-IN')}`,
-            status: est.status,
-            amount: est.amount,
-            date: est.date,
-            tabTarget: 'estimates',
-          });
-        }
-      });
-
-      // 3. Sales Orders
-      salesOrders.forEach((so) => {
-        if (
-          so.orderNumber.toLowerCase().includes(q) ||
-          so.clientName.toLowerCase().includes(q) ||
-          so.total === numQ
-        ) {
-          localResults.push({
-            id: so.id,
-            category: 'Sales Order',
-            title: so.orderNumber,
-            subtitle: `${so.clientName} • ₹${so.total.toLocaleString('en-IN')}`,
-            status: so.status,
-            amount: so.total,
-            date: so.date,
-            tabTarget: 'sales_orders',
-          });
-        }
-      });
-
-      // 4. Clients / Customers
-      clients.forEach((c) => {
-        if (
-          c.name.toLowerCase().includes(q) ||
-          c.companyName.toLowerCase().includes(q) ||
-          c.email.toLowerCase().includes(q)
-        ) {
-          localResults.push({
-            id: c.id,
-            category: 'Customer',
-            title: c.name,
-            subtitle: `${c.companyName || c.email || 'Customer'}`,
-            tabTarget: 'clients',
-          });
-        }
-      });
-
-      // 5. Vendors
-      vendors.forEach((v) => {
-        if (
-          v.name.toLowerCase().includes(q) ||
-          v.companyName.toLowerCase().includes(q) ||
-          v.email.toLowerCase().includes(q)
-        ) {
-          localResults.push({
-            id: v.id,
-            category: 'Vendor',
-            title: v.name,
-            subtitle: `${v.companyName || v.email || 'Vendor'}`,
-            tabTarget: 'vendors',
-          });
-        }
-      });
-
-      // 6. Bills
-      bills.forEach((b) => {
-        if (
-          b.billNumber.toLowerCase().includes(q) ||
-          b.vendorName.toLowerCase().includes(q) ||
-          b.total === numQ
-        ) {
-          localResults.push({
-            id: b.id,
-            category: 'Vendor Bill',
-            title: b.billNumber,
-            subtitle: `${b.vendorName} • ₹${b.total.toLocaleString('en-IN')}`,
-            status: b.status,
-            amount: b.total,
-            date: b.billDate,
-            tabTarget: 'bills',
-          });
-        }
-      });
-
-      // 7. Purchase Orders
-      purchaseOrders.forEach((po) => {
-        if (
-          po.poNumber.toLowerCase().includes(q) ||
-          po.vendorName.toLowerCase().includes(q) ||
-          po.total === numQ
-        ) {
-          localResults.push({
-            id: po.id,
-            category: 'Purchase Order',
-            title: po.poNumber,
-            subtitle: `${po.vendorName} • ₹${po.total.toLocaleString('en-IN')}`,
-            status: po.status,
-            amount: po.total,
-            date: po.date,
-            tabTarget: 'purchase_orders',
-          });
-        }
-      });
-
-      // 8. Payments Received
-      paymentsReceived.forEach((p) => {
-        if (
-          p.paymentNumber.toLowerCase().includes(q) ||
-          p.clientName.toLowerCase().includes(q) ||
-          p.referenceNumber.toLowerCase().includes(q) ||
-          p.amount === numQ
-        ) {
-          localResults.push({
-            id: p.id,
-            category: 'Payment Received',
-            title: p.paymentNumber,
-            subtitle: `${p.clientName} • ₹${p.amount.toLocaleString('en-IN')}`,
-            amount: p.amount,
-            date: p.date,
-            tabTarget: 'payments_received',
-          });
-        }
-      });
-
-      // 9. Accounts (COA)
-      accounts.forEach((acc) => {
-        if (
-          acc.code.toLowerCase().includes(q) ||
-          acc.name.toLowerCase().includes(q) ||
-          acc.category.toLowerCase().includes(q)
-        ) {
-          localResults.push({
-            id: acc.id,
-            category: 'Account',
-            title: `${acc.code} - ${acc.name}`,
-            subtitle: `${acc.category} • Balance: ₹${acc.balance.toLocaleString('en-IN')}`,
-            amount: acc.balance,
-            tabTarget: 'coa',
-          });
-        }
-      });
-
-      setResults(localResults.slice(0, 30));
-      setSelectedIndex(0);
-      setLoading(false);
     }, 300);
 
     return () => clearTimeout(timer);
-  }, [
-    query,
-    apiClient,
-    invoices,
-    estimates,
-    salesOrders,
-    clients,
-    vendors,
-    bills,
-    purchaseOrders,
-    paymentsReceived,
-    accounts,
-  ]);
+  }, [query, apiClient]);
 
   // Group results by category
   const groupedResults = useMemo(() => {
@@ -422,14 +232,14 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, is
               {query && (
                 <button
                   onClick={() => setQuery('')}
-                  className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 mr-1"
+                  className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 mr-1 cursor-pointer"
                 >
                   <X className="w-4 h-4" />
                 </button>
               )}
               <button
                 onClick={() => setIsOpen(false)}
-                className="px-2 py-1 text-xs font-bold text-slate-500 bg-slate-200 dark:bg-slate-700 rounded-lg hover:bg-slate-300 dark:hover:bg-slate-600 transition-colors"
+                className="px-2 py-1 text-xs font-bold text-slate-500 bg-slate-200 dark:bg-slate-700 rounded-lg hover:bg-slate-300 dark:hover:bg-slate-600 transition-colors cursor-pointer"
               >
                 ESC
               </button>
@@ -440,17 +250,24 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, is
               {loading && (
                 <div className="p-8 text-center text-xs font-medium text-slate-400">
                   <div className="inline-block w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin mr-2 align-middle"></div>
-                  Searching {currentOrg.name} database...
+                  Searching {currentOrg?.name || 'workspace'} database...
                 </div>
               )}
 
-              {!loading && query && results.length === 0 && (
+              {error && !loading && (
+                <div className="p-8 text-center text-xs text-rose-500 font-medium space-y-2">
+                  <AlertCircle className="w-6 h-6 mx-auto text-rose-500" />
+                  <p>{error}</p>
+                </div>
+              )}
+
+              {!loading && !error && query.trim().length >= 2 && results.length === 0 && (
                 <div className="p-8 text-center text-xs text-slate-500">
                   No matching records found for "<span className="font-semibold text-slate-800 dark:text-slate-200">{query}</span>" in this workspace.
                 </div>
               )}
 
-              {!loading && !query && (
+              {!loading && !error && query.trim().length < 2 && (
                 <div className="p-8 text-center space-y-2">
                   <div className="text-xs font-semibold text-slate-700 dark:text-slate-300">
                     Search Organization Workspace
@@ -461,7 +278,7 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, is
                 </div>
               )}
 
-              {!loading && results.length > 0 && (
+              {!loading && !error && results.length > 0 && (
                 <div className="space-y-4">
                   {(Object.entries(groupedResults) as [string, SearchResultItem[]][]).map(([category, items]) => (
                     <div key={category} className="space-y-1">
@@ -524,7 +341,7 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, is
                   <kbd className="px-1 py-0.5 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded text-[10px]">↵</kbd> Select
                 </span>
               </div>
-              <span>Organization: <strong className="text-slate-600 dark:text-slate-300 font-semibold">{currentOrg.name}</strong></span>
+              <span>Organization: <strong className="text-slate-600 dark:text-slate-300 font-semibold">{currentOrg?.name || 'Workspace'}</strong></span>
             </div>
           </div>
         </div>
@@ -532,4 +349,3 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, is
     </>
   );
 };
-

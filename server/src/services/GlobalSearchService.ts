@@ -2,7 +2,18 @@ import { db } from '../database/db';
 
 export interface SearchResultItem {
   id: string;
-  category: 'Invoice' | 'Quotation' | 'Sales Order' | 'Customer' | 'Vendor' | 'Vendor Bill' | 'Purchase Order' | 'Payment Received' | 'Payment Made' | 'Bank Transaction';
+  category:
+    | 'Invoice'
+    | 'Quotation'
+    | 'Sales Order'
+    | 'Customer'
+    | 'Vendor'
+    | 'Vendor Bill'
+    | 'Purchase Order'
+    | 'Payment Received'
+    | 'Payment Made'
+    | 'Bank Transaction'
+    | 'Account';
   title: string;
   subtitle: string;
   status?: string;
@@ -17,27 +28,28 @@ export class GlobalSearchService {
     queryStr: string,
     permissions?: string[]
   ): Promise<SearchResultItem[]> {
-    if (!queryStr || queryStr.trim().length < 2) return [];
+    const sanitized = (queryStr || '').trim().slice(0, 100);
+    if (!sanitized || sanitized.length < 2) return [];
 
-    const q = `%${queryStr.trim().toLowerCase()}%`;
-    const numQ = Number(queryStr.replace(/[^0-9.]/g, '')) || -999999;
+    const q = `%${sanitized.toLowerCase()}%`;
+    const numQ = Number(sanitized.replace(/[^0-9.]/g, '')) || -999999;
 
     const hasSalesPerm =
       !permissions ||
       permissions.includes('invoices.view') ||
       permissions.includes('invoice.view') ||
-      permissions.includes('invoices.create') ||
-      permissions.includes('invoice.create') ||
       permissions.includes('admin') ||
+      permissions.includes('Super Admin') ||
+      permissions.includes('Owner') ||
       permissions.includes('*');
 
     const hasPurchasesPerm =
       !permissions ||
       permissions.includes('purchases.view') ||
       permissions.includes('bill.view') ||
-      permissions.includes('purchases.create') ||
-      permissions.includes('bill.create') ||
       permissions.includes('admin') ||
+      permissions.includes('Super Admin') ||
+      permissions.includes('Owner') ||
       permissions.includes('*');
 
     const hasBankPerm =
@@ -46,6 +58,18 @@ export class GlobalSearchService {
       permissions.includes('banking.reconcile') ||
       permissions.includes('bank.reconcile') ||
       permissions.includes('admin') ||
+      permissions.includes('Super Admin') ||
+      permissions.includes('Owner') ||
+      permissions.includes('*');
+
+    const hasAccountingPerm =
+      !permissions ||
+      permissions.includes('reports.view') ||
+      permissions.includes('accounting.post') ||
+      permissions.includes('settings.manage_taxes') ||
+      permissions.includes('admin') ||
+      permissions.includes('Super Admin') ||
+      permissions.includes('Owner') ||
       permissions.includes('*');
 
     const [
@@ -59,6 +83,7 @@ export class GlobalSearchService {
       payRecRes,
       payMadeRes,
       bankTxRes,
+      accRes,
     ] = await Promise.all([
       hasSalesPerm
         ? db.query(
@@ -128,6 +153,13 @@ export class GlobalSearchService {
             `SELECT id, narration, reference, amount, direction, reconciliation_status, transaction_date FROM bank_statement_transactions
              WHERE organization_id = $1 AND (LOWER(narration) LIKE $2 OR LOWER(reference) LIKE $2 OR amount = $3) LIMIT 10`,
             [organizationId, q, numQ]
+          )
+        : Promise.resolve({ rows: [], rowCount: 0 }),
+      hasAccountingPerm
+        ? db.query(
+            `SELECT id, code, name, type, sub_type FROM accounts
+             WHERE organization_id = $1 AND (LOWER(code) LIKE $2 OR LOWER(name) LIKE $2) LIMIT 10`,
+            [organizationId, q]
           )
         : Promise.resolve({ rows: [], rowCount: 0 }),
     ]);
@@ -253,6 +285,16 @@ export class GlobalSearchService {
         amount: Number(r.amount),
         date: r.transaction_date,
         linkRoute: `/banking/reconciliation?tx=${r.id}`,
+      });
+    }
+
+    for (const r of accRes.rows) {
+      results.push({
+        id: r.id,
+        category: 'Account',
+        title: `${r.code} - ${r.name}`,
+        subtitle: `${r.type}${r.sub_type ? ' • ' + r.sub_type : ''}`,
+        linkRoute: `/accounting/coa?id=${r.id}`,
       });
     }
 

@@ -36,7 +36,13 @@ export const authMiddleware = async (
     }
   }
 
-  // Dev mode fallback header
+  // In production, reject missing or invalid credentials immediately
+  if (process.env.NODE_ENV === 'production') {
+    res.status(401).json({ error: 'Unauthorized: Authentication required' });
+    return;
+  }
+
+  // Dev mode fallback header ONLY permitted when NODE_ENV !== 'production'
   const devUserId = (req.headers['x-user-id'] as string) || 'usr-identity-101';
   const devEmail = (req.headers['x-user-email'] as string) || 's.jenkins@apexgrowth.com';
 
@@ -73,9 +79,12 @@ export const organizationIsolationMiddleware = async (
 
     if (userOrgsRes.rows.length > 0) {
       requestedOrgId = userOrgsRes.rows[0].organization_id || userOrgsRes.rows[0].organizationId;
-    } else {
-      // Fallback to default organization
+    } else if (process.env.NODE_ENV !== 'production') {
+      // Fallback to default organization in non-production only
       requestedOrgId = 'ORG-2026-PRIMARY';
+    } else {
+      res.status(400).json({ error: 'Bad Request: No organization context provided or available for user' });
+      return;
     }
   }
 
@@ -95,7 +104,7 @@ export const organizationIsolationMiddleware = async (
 
     if (orgRes.rows.length > 0 && orgRes.rows[0].owner_user_id === req.user.userId) {
       userRole = 'Owner';
-    } else if (requestedOrgId === 'ORG-2026-PRIMARY') {
+    } else if (process.env.NODE_ENV !== 'production' && requestedOrgId === 'ORG-2026-PRIMARY') {
       // Auto-grant access to primary default org in dev mode
       userRole = 'Super Admin';
     } else {

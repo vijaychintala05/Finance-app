@@ -13,11 +13,13 @@ import { BillDetailsModal } from './BillDetailsModal';
 interface BillsViewProps {
   autoOpenCreateModal?: boolean;
   onModalClosed?: () => void;
+  selectedEntityId?: string;
 }
 
 export const BillsView: React.FC<BillsViewProps> = ({
   autoOpenCreateModal,
   onModalClosed,
+  selectedEntityId,
 }) => {
   const { bills, addBill, updateBill, vendors, settings } = useBooks();
 
@@ -31,6 +33,15 @@ export const BillsView: React.FC<BillsViewProps> = ({
       if (onModalClosed) onModalClosed();
     }
   }, [autoOpenCreateModal, onModalClosed]);
+
+  React.useEffect(() => {
+    if (selectedEntityId) {
+      const found = bills.find((b) => b.id === selectedEntityId || b.billNumber === selectedEntityId);
+      if (found) {
+        setViewingBill(found);
+      }
+    }
+  }, [selectedEntityId, bills]);
 
   // Form
   const [vendorName, setVendorName] = useState(vendors[0]?.name || 'AWS Cloud Services');

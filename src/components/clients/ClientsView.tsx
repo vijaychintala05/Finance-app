@@ -9,11 +9,13 @@ import { ClientDetailsModal } from './ClientDetailsModal';
 interface ClientsViewProps {
   autoOpenCreateModal?: boolean;
   onModalClosed?: () => void;
+  selectedEntityId?: string;
 }
 
 export const ClientsView: React.FC<ClientsViewProps> = ({
   autoOpenCreateModal,
   onModalClosed,
+  selectedEntityId,
 }) => {
   const { clients, invoices, projects, settings, deleteClient } = useBooks();
 
@@ -29,6 +31,15 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
       if (onModalClosed) onModalClosed();
     }
   }, [autoOpenCreateModal, onModalClosed]);
+
+  React.useEffect(() => {
+    if (selectedEntityId) {
+      const found = clients.find((c) => c.id === selectedEntityId || c.name === selectedEntityId);
+      if (found) {
+        setViewingClient(found);
+      }
+    }
+  }, [selectedEntityId, clients]);
 
   const filteredClients = clients.filter(
     (c) =>

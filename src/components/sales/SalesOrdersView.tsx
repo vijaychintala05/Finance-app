@@ -17,11 +17,13 @@ import { InvoicePreviewModal } from '../invoices/InvoicePreviewModal';
 interface SalesOrdersViewProps {
   autoOpenCreateModal?: boolean;
   onModalClosed?: () => void;
+  selectedEntityId?: string;
 }
 
 export const SalesOrdersView: React.FC<SalesOrdersViewProps> = ({
   autoOpenCreateModal,
   onModalClosed,
+  selectedEntityId,
 }) => {
   const { salesOrders, addSalesOrder, convertSalesOrderToInvoice, clients, settings } = useBooks();
 
@@ -37,6 +39,15 @@ export const SalesOrdersView: React.FC<SalesOrdersViewProps> = ({
       if (onModalClosed) onModalClosed();
     }
   }, [autoOpenCreateModal, onModalClosed]);
+
+  React.useEffect(() => {
+    if (selectedEntityId) {
+      const found = salesOrders.find((so) => so.id === selectedEntityId || so.orderNumber === selectedEntityId);
+      if (found) {
+        setViewingOrder(found);
+      }
+    }
+  }, [selectedEntityId, salesOrders]);
 
   // Form state
   const [clientName, setClientName] = useState(clients[0]?.name || '');

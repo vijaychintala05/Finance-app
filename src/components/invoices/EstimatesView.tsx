@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { FileCheck, FileSpreadsheet, Plus, Search } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { FileCheck, FileSpreadsheet, Plus, Search, Loader2, Edit3, AlertCircle } from 'lucide-react';
 import { Estimate, Invoice } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate, getStatusBadgeStyle } from '../../utils/formatters';
@@ -7,6 +7,8 @@ import { InvoicePreviewModal } from './InvoicePreviewModal';
 import { EstimateDetailsModal } from './EstimateDetailsModal';
 import { QuickAddClientModal } from '../common/QuickAddClientModal';
 import { QuickAddProjectModal } from '../common/QuickAddProjectModal';
+import { QuotationBuilder } from '../quotations/QuotationBuilder';
+import { quotationApi } from '../../services/quotationApi';
 
 interface EstimatesViewProps {
   autoOpenCreateModal?: boolean;
@@ -21,78 +23,93 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
   selectedEntityId,
   onSelectedEntityClosed,
 }) => {
-  const { estimates, clients, projects, settings, addEstimate, convertEstimateToInvoice } =
-    useBooks();
+  const { clients, projects, settings } = useBooks();
+
+  const [backendQuotations, setBackendQuotations] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const [search, setSearch] = useState('');
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isBuilderOpen, setIsBuilderOpen] = useState(false);
+  const [editingQuotation, setEditingQuotation] = useState<any | null>(null);
+
   const [previewInvoice, setPreviewInvoice] = useState<Invoice | null>(null);
-  const [viewingEstimate, setViewingEstimate] = useState<Estimate | null>(null);
-
-  React.useEffect(() => {
-    if (autoOpenCreateModal) {
-      setIsModalOpen(true);
-      if (onModalClosed) onModalClosed();
-    }
-  }, [autoOpenCreateModal, onModalClosed]);
-
-  React.useEffect(() => {
-    if (selectedEntityId) {
-      const found = estimates.find((e) => e.id === selectedEntityId || e.estimateNumber === selectedEntityId);
-      if (found) {
-        setViewingEstimate(found);
-      }
-    }
-  }, [selectedEntityId, estimates]);
+  const [viewingEstimate, setViewingEstimate] = useState<any | null>(null);
 
   const [isQuickClientOpen, setIsQuickClientOpen] = useState(false);
   const [isQuickProjectOpen, setIsQuickProjectOpen] = useState(false);
 
-  const [clientId, setClientId] = useState(clients[0]?.id || '');
-  const [projectId, setProjectId] = useState('');
-  const [amount, setAmount] = useState('25000');
-  const [description, setDescription] = useState('Scope proposal & milestone quotation');
+  // Load real backend quotations
+  const loadQuotations = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await quotationApi.listQuotations(search);
+      setBackendQuotations(data);
+    } catch (err: any) {
+      setError(err.message || 'Failed to load quotations from server');
+    } finally {
+      setLoading(false);
+    }
+  };
 
-  const filteredEstimates = estimates.filter(
-    (e) =>
-      e.estimateNumber.toLowerCase().includes(search.toLowerCase()) ||
-      e.clientName.toLowerCase().includes(search.toLowerCase())
-  );
+  useEffect(() => {
+    loadQuotations();
+  }, [search]);
 
-  const handleCreateEstimate = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!clientId) return;
+  useEffect(() => {
+    if (autoOpenCreateModal) {
+      setEditingQuotation(null);
+      setIsBuilderOpen(true);
+      if (onModalClosed) onModalClosed();
+    }
+  }, [autoOpenCreateModal, onModalClosed]);
 
-    const cli = clients.find((c) => c.id === clientId);
-    const prj = projects.find((p) => p.id === projectId);
-    const numAmt = Number(amount) || 0;
-    const taxAmt = Math.round(numAmt * (settings.defaultTaxRate / 100));
+  useEffect(() => {
+    if (selectedEntityId && backendQuotations.length > 0) {
+      const found = backendQuotations.find(
+        (e) => e.id === selectedEntityId || e.estimateNumber === selectedEntityId
+      );
+      if (found) {
+        setViewingEstimate(found);
+      }
+    }
+  }, [selectedEntityId, backendQuotations]);
 
-    addEstimate({
-      clientId,
-      clientName: cli?.name || 'Client',
-      projectId: projectId || undefined,
-      issueDate: new Date().toISOString().split('T')[0],
-      expiryDate: new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0],
-      items: [
-        {
-          id: `eitem-${Date.now()}`,
-          description,
-          accountId: 'acc-4000',
-          quantity: 1,
-          unitPrice: numAmt,
-          taxRate: settings.defaultTaxRate,
-          amount: numAmt,
-        },
-      ],
-      subtotal: numAmt,
-      taxTotal: taxAmt,
-      totalAmount: numAmt + taxAmt,
-      status: 'Sent',
-      notes: 'Estimate valid for 30 days.',
-    });
-
-    setIsModalOpen(false);
+  const handleConvert = async (est: any, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    try {
+      const result = await quotationApi.convertQuotationToInvoice(est.id);
+      if (result) {
+        setPreviewInvoice({
+          id: result.id,
+          invoiceNumber: result.invoiceNumber,
+          clientId: result.customerId || result.clientId,
+          clientName: result.customerName || result.clientName,
+          issueDate: result.issueDate,
+          dueDate: result.dueDate,
+          items: (result.lineItems || []).map((it: any, i: number) => ({
+            id: it.id || `inv-item-${i}`,
+            description: it.description || it.name || '',
+            accountId: 'acc-4000',
+            quantity: it.quantity || 1,
+            unitPrice: it.unitPrice || it.rate || 0,
+            taxRate: it.taxRate || 0,
+            amount: it.amount || (it.quantity * it.unitPrice) || 0,
+          })),
+          subtotal: result.subtotal,
+          taxTotal: result.taxTotal,
+          totalAmount: result.totalAmount,
+          paidAmount: result.paidAmount || 0,
+          balance: result.totalAmount - (result.paidAmount || 0),
+          status: result.status || 'Unpaid',
+          notes: result.notes,
+        });
+        await loadQuotations();
+      }
+    } catch (err: any) {
+      alert(`Conversion failed: ${err.message}`);
+    }
   };
 
   return (
@@ -110,7 +127,10 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
         </div>
 
         <button
-          onClick={() => setIsModalOpen(true)}
+          onClick={() => {
+            setEditingQuotation(null);
+            setIsBuilderOpen(true);
+          }}
           className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-xl text-xs font-semibold flex items-center space-x-1.5 shadow-sm transition-all cursor-pointer"
         >
           <Plus className="w-4 h-4" />
@@ -132,226 +152,198 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
         </div>
       </div>
 
-      {/* Estimates Table */}
-      <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xs">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-500 uppercase text-[10px] tracking-wider border-b border-slate-200 dark:border-slate-800">
-              <tr>
-                <th className="p-3 pl-4">Quote #</th>
-                <th className="p-3">Client</th>
-                <th className="p-3">Issue Date</th>
-                <th className="p-3">Expiry Date</th>
-                <th className="p-3">Total Amount</th>
-                <th className="p-3">Status</th>
-                <th className="p-3 text-right pr-4">Convert Action</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {filteredEstimates.map((est) => (
-                <tr
-                  key={est.id}
-                  onClick={() => setViewingEstimate(est)}
-                  className="hover:bg-slate-50/50 dark:hover:bg-slate-800/40 transition-colors cursor-pointer"
-                >
-                  <td className="p-3 pl-4 font-mono font-bold text-blue-600 dark:text-blue-400">
-                    {est.estimateNumber}
-                  </td>
-                  <td className="p-3 font-semibold text-slate-800 dark:text-slate-200">
-                    {est.clientName}
-                  </td>
-                  <td className="p-3 text-slate-500">{formatDate(est.issueDate)}</td>
-                  <td className="p-3 text-slate-500">{formatDate(est.expiryDate)}</td>
-                  <td className="p-3 font-bold text-slate-900 dark:text-slate-100">
-                    {formatCurrency(est.totalAmount, settings.currencySymbol)}
-                  </td>
-                  <td className="p-3">
-                    <span
-                      className={`text-[10px] px-2 py-0.5 rounded border font-semibold ${getStatusBadgeStyle(
-                        est.status
-                      )}`}
-                    >
-                      {est.status}
-                    </span>
-                  </td>
-                  <td className="p-3 pr-4 text-right" onClick={(e) => e.stopPropagation()}>
-                    {est.status !== 'Converted' ? (
-                      <button
-                        onClick={() => {
-                          const inv = convertEstimateToInvoice(est.id);
-                          if (inv) setPreviewInvoice(inv);
-                        }}
-                        className="bg-emerald-600 hover:bg-emerald-500 text-white px-2.5 py-1 rounded text-[11px] font-semibold flex items-center space-x-1 ml-auto cursor-pointer shadow-xs"
-                      >
-                        <FileCheck className="w-3.5 h-3.5" />
-                        <span>Convert & View Bill</span>
-                      </button>
-                    ) : (
-                      <span className="text-[11px] text-emerald-600 font-semibold">
-                        ✓ Invoiced
-                      </span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Modal to Create New Quote */}
-      {isModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 w-full max-w-md overflow-hidden shadow-xl">
-            <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center">
-              <h3 className="font-bold text-slate-900 dark:text-slate-100 text-sm">
-                Create Client Quote / Estimate
-              </h3>
-              <button onClick={() => setIsModalOpen(false)} className="p-1 text-slate-400">
-                ✕
-              </button>
-            </div>
-
-            <form onSubmit={handleCreateEstimate} className="p-5 space-y-4 text-xs">
-              <div>
-                <div className="flex justify-between items-center mb-1">
-                  <label className="block text-slate-600 dark:text-slate-300 font-medium">
-                    Select Client
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => setIsQuickClientOpen(true)}
-                    className="text-emerald-600 dark:text-emerald-400 font-bold hover:underline text-[11px] flex items-center space-x-0.5 cursor-pointer"
-                  >
-                    <Plus className="w-3 h-3" />
-                    <span>New Client</span>
-                  </button>
-                </div>
-                <select
-                  value={clientId}
-                  onChange={(e) => setClientId(e.target.value)}
-                  required
-                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-2 text-slate-800 dark:text-slate-200"
-                >
-                  {clients.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.companyName} ({c.name})
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <div className="flex justify-between items-center mb-1">
-                  <label className="block text-slate-600 dark:text-slate-300 font-medium">
-                    Link Project (Optional)
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => setIsQuickProjectOpen(true)}
-                    className="text-blue-600 dark:text-blue-400 font-bold hover:underline text-[11px] flex items-center space-x-0.5 cursor-pointer"
-                  >
-                    <Plus className="w-3 h-3" />
-                    <span>New Project</span>
-                  </button>
-                </div>
-                <select
-                  value={projectId}
-                  onChange={(e) => setProjectId(e.target.value)}
-                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-2 text-slate-800 dark:text-slate-200"
-                >
-                  <option value="">-- No Project --</option>
-                  {projects.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      [{p.code}] {p.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-slate-600 dark:text-slate-300 font-medium mb-1">
-                  Proposal Scope / Item Detail
-                </label>
-                <input
-                  type="text"
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  required
-                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-2 text-slate-800 dark:text-slate-200"
-                />
-              </div>
-
-              <div>
-                <label className="block text-slate-600 dark:text-slate-300 font-medium mb-1">
-                  Quoted Subtotal Amount ($)
-                </label>
-                <input
-                  type="number"
-                  value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
-                  required
-                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-2 text-slate-800 dark:text-slate-200 font-bold"
-                />
-              </div>
-
-              <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex justify-end space-x-2">
-                <button
-                  type="button"
-                  onClick={() => setIsModalOpen(false)}
-                  className="px-4 py-2 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-100"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-semibold shadow-sm cursor-pointer"
-                >
-                  Save Quote
-                </button>
-              </div>
-            </form>
-          </div>
+      {/* Error Message */}
+      {error && (
+        <div className="p-4 bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-800 rounded-xl text-xs text-rose-600 dark:text-rose-400 flex items-center space-x-2">
+          <AlertCircle className="w-4 h-4 shrink-0" />
+          <span>{error}</span>
         </div>
       )}
 
-      <InvoicePreviewModal
-        invoice={previewInvoice}
-        onClose={() => setPreviewInvoice(null)}
-      />
+      {/* Estimates Table / States */}
+      <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xs">
+        {loading ? (
+          <div className="py-16 text-center text-slate-400 flex flex-col items-center space-y-2">
+            <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
+            <span className="text-xs">Loading production quotations...</span>
+          </div>
+        ) : backendQuotations.length === 0 ? (
+          <div className="py-16 text-center text-slate-400 space-y-3">
+            <p className="text-sm font-medium">No quotations yet</p>
+            <button
+              onClick={() => {
+                setEditingQuotation(null);
+                setIsBuilderOpen(true);
+              }}
+              className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-xl text-xs font-semibold inline-flex items-center space-x-1.5 shadow-sm transition-all cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Create your first quotation</span>
+            </button>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-500 uppercase text-[10px] tracking-wider border-b border-slate-200 dark:border-slate-800">
+                <tr>
+                  <th className="p-3 pl-4">Quote #</th>
+                  <th className="p-3">Client</th>
+                  <th className="p-3">Issue Date</th>
+                  <th className="p-3">Expiry Date</th>
+                  <th className="p-3">Total Amount</th>
+                  <th className="p-3">Status</th>
+                  <th className="p-3 text-right pr-4">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {backendQuotations.map((est) => (
+                  <tr
+                    key={est.id}
+                    onClick={() => setViewingEstimate(est)}
+                    className="hover:bg-slate-50/50 dark:hover:bg-slate-800/40 transition-colors cursor-pointer"
+                  >
+                    <td className="p-3 pl-4 font-mono font-bold text-blue-600 dark:text-blue-400">
+                      {est.estimateNumber}
+                    </td>
+                    <td className="p-3 font-semibold text-slate-800 dark:text-slate-200">
+                      {est.customerName || est.clientName}
+                    </td>
+                    <td className="p-3 text-slate-500">{formatDate(est.issueDate)}</td>
+                    <td className="p-3 text-slate-500">{formatDate(est.expiryDate)}</td>
+                    <td className="p-3 font-bold text-slate-900 dark:text-slate-100">
+                      {formatCurrency(est.totalAmount, settings.currencySymbol)}
+                    </td>
+                    <td className="p-3">
+                      <span
+                        className={`text-[10px] px-2 py-0.5 rounded border font-semibold ${getStatusBadgeStyle(
+                          est.status
+                        )}`}
+                      >
+                        {est.status}
+                      </span>
+                    </td>
+                    <td className="p-3 pr-4 text-right" onClick={(e) => e.stopPropagation()}>
+                      <div className="flex items-center justify-end space-x-2">
+                        {est.status === 'DRAFT' && (
+                          <button
+                            onClick={() => {
+                              setEditingQuotation(est);
+                              setIsBuilderOpen(true);
+                            }}
+                            className="p-1 text-slate-400 hover:text-blue-600 transition-colors"
+                            title="Edit Draft"
+                          >
+                            <Edit3 className="w-4 h-4" />
+                          </button>
+                        )}
+                        {est.status !== 'CONVERTED' && est.status !== 'Converted' ? (
+                          <button
+                            onClick={(e) => handleConvert(est, e)}
+                            className="bg-emerald-600 hover:bg-emerald-500 text-white px-2.5 py-1 rounded text-[11px] font-semibold flex items-center space-x-1 ml-auto cursor-pointer shadow-xs"
+                          >
+                            <FileCheck className="w-3.5 h-3.5" />
+                            <span>Convert & View Bill</span>
+                          </button>
+                        ) : (
+                          <span className="text-[11px] text-emerald-600 font-semibold">
+                            ✓ Invoiced
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
 
-      <EstimateDetailsModal
-        isOpen={!!viewingEstimate}
-        onClose={() => {
-          setViewingEstimate(null);
-          if (onSelectedEntityClosed) onSelectedEntityClosed();
-        }}
-        estimate={viewingEstimate}
-        onConverted={(inv) => {
-          setViewingEstimate(null);
-          setPreviewInvoice(inv);
-        }}
-      />
+      {/* Production Quotation Builder Modal */}
+      {isBuilderOpen && (
+        <QuotationBuilder
+          isOpen={isBuilderOpen}
+          onClose={() => {
+            setIsBuilderOpen(false);
+            setEditingQuotation(null);
+          }}
+          onSuccess={(savedQuotation) => {
+            setIsBuilderOpen(false);
+            setEditingQuotation(null);
+            loadQuotations();
+          }}
+          initialQuotation={editingQuotation}
+          clients={clients}
+          projects={projects}
+          onOpenQuickClient={() => setIsQuickClientOpen(true)}
+          onOpenQuickProject={() => setIsQuickProjectOpen(true)}
+          currencySymbol={settings.currencySymbol}
+        />
+      )}
 
-      <QuickAddClientModal
-        isOpen={isQuickClientOpen}
-        onClose={() => setIsQuickClientOpen(false)}
-        onClientCreated={(newCli) => {
-          setClientId(newCli.id);
-        }}
-      />
+      {/* Estimate Details Modal */}
+      {viewingEstimate && (
+        <EstimateDetailsModal
+          isOpen={!!viewingEstimate}
+          onClose={() => {
+            setViewingEstimate(null);
+            if (onSelectedEntityClosed) onSelectedEntityClosed();
+          }}
+          estimate={{
+            id: viewingEstimate.id,
+            estimateNumber: viewingEstimate.estimateNumber,
+            clientId: viewingEstimate.customerId || viewingEstimate.clientId || '',
+            clientName: viewingEstimate.customerName || viewingEstimate.clientName || 'Customer',
+            projectId: viewingEstimate.projectId,
+            issueDate: viewingEstimate.issueDate,
+            expiryDate: viewingEstimate.expiryDate,
+            items: (viewingEstimate.items || viewingEstimate.lineItems || []).map((it: any, idx: number) => ({
+              id: it.id || `view-item-${idx}`,
+              description: it.name || it.itemName || it.description || 'Line Item',
+              accountId: 'acc-4000',
+              quantity: Number(it.quantity) || 1,
+              unitPrice: Number(it.rate || it.unitPrice || 0),
+              taxRate: Number(it.taxRate || 0),
+              amount: Number(it.lineTotal || it.amount || (it.quantity * it.rate) || 0),
+            })),
+            subtotal: viewingEstimate.subtotal,
+            taxTotal: viewingEstimate.taxTotal,
+            totalAmount: viewingEstimate.totalAmount,
+            status: viewingEstimate.status,
+            notes: viewingEstimate.notes,
+          }}
+          onConverted={(inv) => {
+            setViewingEstimate(null);
+            setPreviewInvoice(inv);
+            loadQuotations();
+          }}
+        />
+      )}
 
-      <QuickAddProjectModal
-        isOpen={isQuickProjectOpen}
-        onClose={() => setIsQuickProjectOpen(false)}
-        defaultClientId={clientId}
-        onProjectCreated={(newPrj) => {
-          setProjectId(newPrj.id);
-          if (newPrj.clientId) {
-            setClientId(newPrj.clientId);
-          }
-        }}
-      />
+      {/* Invoice Preview Modal */}
+      {previewInvoice && (
+        <InvoicePreviewModal
+          isOpen={!!previewInvoice}
+          onClose={() => setPreviewInvoice(null)}
+          invoice={previewInvoice}
+        />
+      )}
+
+      {/* Quick Add Client Modal */}
+      {isQuickClientOpen && (
+        <QuickAddClientModal
+          isOpen={isQuickClientOpen}
+          onClose={() => setIsQuickClientOpen(false)}
+        />
+      )}
+
+      {/* Quick Add Project Modal */}
+      {isQuickProjectOpen && (
+        <QuickAddProjectModal
+          isOpen={isQuickProjectOpen}
+          onClose={() => setIsQuickProjectOpen(false)}
+        />
+      )}
     </div>
   );
 };

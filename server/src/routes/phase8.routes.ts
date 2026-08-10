@@ -1,21 +1,27 @@
 import { Router } from 'express';
 import { Phase8Controller } from '../controllers/Phase8Controller';
+import { requirePermission } from '../middleware/organizationIsolation.middleware';
 
 const router = Router();
 
 // Master Items API
-router.get('/items', Phase8Controller.getItems);
-router.post('/items', Phase8Controller.createItem);
-router.get('/items/:id', Phase8Controller.getItem);
-router.put('/items/:id', Phase8Controller.updateItem);
-router.delete('/items/:id', Phase8Controller.deleteItem);
+router.get('/items', requirePermission('invoices.view'), Phase8Controller.getItems);
+router.post('/items', requirePermission('invoices.create'), Phase8Controller.createItem);
+router.get('/items/:id', requirePermission('invoices.view'), Phase8Controller.getItem);
+router.put('/items/:id', requirePermission('invoices.edit'), Phase8Controller.updateItem);
+router.delete('/items/:id', requirePermission('invoices.delete'), Phase8Controller.deleteItem);
 
-// Quotation Templates & Revisions & Conversions
-router.get('/quotations/templates', Phase8Controller.getTemplates);
-router.post('/quotations/templates', Phase8Controller.saveTemplate);
-router.get('/quotations/:id/revisions', Phase8Controller.getQuotationRevisions);
-router.post('/quotations/:id/convert-so', Phase8Controller.convertQuotationToSO);
-router.post('/quotations/:id/convert-inv', Phase8Controller.convertQuotationToInvoice);
+// Quotation API — Static routes MUST come before parametric /quotations/:id routes
+router.get('/quotations', requirePermission('invoices.view'), Phase8Controller.getQuotations);
+router.post('/quotations', requirePermission('invoices.create'), Phase8Controller.createQuotation);
+router.get('/quotations/templates', requirePermission('invoices.view'), Phase8Controller.getTemplates);
+router.post('/quotations/templates', requirePermission('invoices.edit'), Phase8Controller.saveTemplate);
+router.get('/quotations/:id', requirePermission('invoices.view'), Phase8Controller.getQuotation);
+router.put('/quotations/:id', requirePermission('invoices.edit'), Phase8Controller.updateQuotation);
+router.patch('/quotations/:id', requirePermission('invoices.edit'), Phase8Controller.updateQuotation);
+router.get('/quotations/:id/revisions', requirePermission('invoices.view'), Phase8Controller.getQuotationRevisions);
+router.post('/quotations/:id/convert-so', requirePermission('invoices.create'), Phase8Controller.convertQuotationToSO);
+router.post('/quotations/:id/convert-inv', requirePermission('invoices.create'), Phase8Controller.convertQuotationToInvoice);
 
 // Document Numbering API
 router.get('/document-numbering/next', Phase8Controller.getNextDocumentNumber);

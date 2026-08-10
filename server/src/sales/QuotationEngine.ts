@@ -542,6 +542,68 @@ export class QuotationEngine {
   }
 
   /**
+   * List organization-scoped quotations with optional search & status filter
+   */
+  public static async listQuotations(
+    orgId: string,
+    filter?: { search?: string; status?: string }
+  ): Promise<DetailedQuotationModel[]> {
+    let sql = `SELECT * FROM estimates WHERE organization_id = $1`;
+    const params: any[] = [orgId];
+
+    if (filter?.status && filter.status.trim()) {
+      params.push(filter.status.trim());
+      sql += ` AND UPPER(status) = UPPER($${params.length})`;
+    }
+
+    if (filter?.search && filter.search.trim()) {
+      params.push(`%${filter.search.trim().toLowerCase()}%`);
+      const idx = params.length;
+      sql += ` AND (LOWER(estimate_number) LIKE $${idx} OR LOWER(client_name) LIKE $${idx} OR LOWER(customer_name) LIKE $${idx})`;
+    }
+
+    sql += ` ORDER BY created_at DESC, estimate_number DESC`;
+
+    const res = await db.query(sql, params);
+    return res.rows.map((q) => {
+      const rawItems = q.items || q.line_items;
+      let items = [];
+      if (typeof rawItems === 'string') {
+        try { items = JSON.parse(rawItems); } catch { items = []; }
+      } else if (Array.isArray(rawItems)) {
+        items = rawItems;
+      }
+
+      return {
+        id: q.id,
+        organizationId: q.organization_id,
+        estimateNumber: q.estimate_number,
+        revisionNumber: q.revision_number || 0,
+        customerId: q.customer_id || q.client_id || '',
+        customerName: q.client_name || q.customer_name || 'Valued Customer',
+        issueDate: q.issue_date,
+        expiryDate: q.expiry_date,
+        subtotal: Number(q.subtotal || 0),
+        taxTotal: Number(q.tax_total || 0),
+        discount: Number(q.overall_discount || q.discount || 0),
+        overallDiscount: Number(q.overall_discount || q.discount || 0),
+        totalAmount: Number(q.total_amount || 0),
+        roundOffAmount: Number(q.round_off_amount || 0),
+        isGstInclusive: Boolean(q.is_gst_inclusive),
+        status: q.status || 'DRAFT',
+        lineItems: items,
+        items,
+        terms: q.terms,
+        notes: q.notes,
+        publicToken: q.public_token,
+        validityDays: q.validity_days || 30,
+        customerResponseNotes: q.customer_response_notes,
+        createdAt: q.created_at,
+      };
+    });
+  }
+
+  /**
    * Get public quotation by token (for customer approval portal)
    */
   public static async getPublicQuotationByToken(token: string): Promise<DetailedQuotationModel> {

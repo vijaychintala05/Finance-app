@@ -65,6 +65,65 @@ export class Phase8Controller {
     }
   }
 
+  // --- QUOTATION CRUD API ---
+  public static async getQuotations(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const orgId = req.auth!.organizationId;
+      const { search, status } = req.query;
+      const quotations = await QuotationEngine.listQuotations(orgId, {
+        search: search as string,
+        status: status as string,
+      });
+      res.json({ quotations });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to list quotations' });
+    }
+  }
+
+  public static async createQuotation(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const orgId = req.auth!.organizationId;
+      const createdBy = (req as any).user?.name || req.auth?.userId || 'User';
+      const quotation = await QuotationEngine.createQuotation(orgId, req.body, createdBy);
+      res.status(201).json({ quotation });
+    } catch (err: any) {
+      const msg = err.message || 'Failed to create quotation';
+      const status = msg.includes('required') || msg.includes('cannot exceed') || msg.includes('must be') || msg.includes('inactive') ? 400 : 500;
+      res.status(status).json({ error: msg });
+    }
+  }
+
+  public static async getQuotation(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const orgId = req.auth!.organizationId;
+      const quotation = await QuotationEngine.getQuotation(orgId, req.params.id);
+      res.json({ quotation });
+    } catch (err: any) {
+      const msg = err.message || 'Quotation not found';
+      const status = msg.includes('not found') ? 404 : 500;
+      res.status(status).json({ error: msg });
+    }
+  }
+
+  public static async updateQuotation(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const orgId = req.auth!.organizationId;
+      const createdBy = (req as any).user?.name || req.auth?.userId || 'User';
+      const quotation = await QuotationEngine.reviseQuotation(
+        orgId,
+        req.params.id,
+        req.body,
+        req.body.changeSummary || 'Updated quotation',
+        createdBy
+      );
+      res.json({ quotation });
+    } catch (err: any) {
+      const msg = err.message || 'Failed to update quotation';
+      const status = msg.includes('not found') ? 404 : msg.includes('required') || msg.includes('cannot exceed') || msg.includes('must be') ? 400 : 500;
+      res.status(status).json({ error: msg });
+    }
+  }
+
   // --- QUOTATION TEMPLATES & REVISIONS API ---
   public static async getTemplates(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {

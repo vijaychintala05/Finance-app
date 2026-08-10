@@ -3,7 +3,7 @@ import { GlobalSearchService, SearchResultItem } from '../../server/src/services
 import { db } from '../../server/src/database/db';
 import { MigrationRunner } from '../../server/src/database/migrationRunner';
 
-describe('Phase 8.3A — Global Search Component, Navigation & Security Tests', () => {
+describe('Phase 8.3B — Global Search Component, Navigation & Security Tests', () => {
   const testOrgA = 'ORG-TEST-SEARCH-A';
   const testOrgB = 'ORG-TEST-SEARCH-B';
 
@@ -18,12 +18,12 @@ describe('Phase 8.3A — Global Search Component, Navigation & Security Tests', 
       ['cust-s-1', testOrgA, 'Apex Global Systems', 'Apex Global Systems Pvt Ltd', 'contact@apexglobal.com', '36AABCA1234F1Z5', '+91 9876543210']
     );
 
-    // 2. Seed Vendor for Org A
+    // 2. Seed Vendor for Org A (with tax_id / GSTIN)
     await db.query(
-      `INSERT INTO vendors (id, organization_id, name, company_name, email, phone)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO vendors (id, organization_id, name, company_name, email, phone, tax_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        ON CONFLICT (id) DO NOTHING`,
-      ['vend-s-1', testOrgA, 'Cloud Infrastructure Solutions', 'Cloud Infra Inc', 'billing@cloudinfra.io', '+1 555-0199']
+      ['vend-s-1', testOrgA, 'Cloud Infrastructure Solutions', 'Cloud Infra Inc', 'billing@cloudinfra.io', '+1 555-0199', '27AABCV8901D1Z2']
     );
 
     // 3. Seed Invoice for Org A
@@ -50,7 +50,23 @@ describe('Phase 8.3A — Global Search Component, Navigation & Security Tests', 
       ['acc-s-1', testOrgA, '4100-TEST', 'Consulting & Cloud Services Income', 'Income', 'Operating Revenue', 150000, false]
     );
 
-    // 6. Seed Secret Record in Org B (for multi-tenant isolation verification)
+    // 6. Seed Credit Note for Org A
+    await db.query(
+      `INSERT INTO credit_notes (id, organization_id, credit_note_number, client_id, client_name, date, total_amount, remaining_credit, status, reason)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       ON CONFLICT (id) DO NOTHING`,
+      ['cn-s-1', testOrgA, 'CN-2026-SEARCH-001', 'cust-s-1', 'Apex Global Systems', '2026-08-10', 12500, 12500, 'Open', 'Pricing adjustment']
+    );
+
+    // 7. Seed Vendor Credit for Org A
+    await db.query(
+      `INSERT INTO vendor_credits (id, organization_id, credit_number, vendor_id, vendor_name, date, total_amount, remaining_credit, status, reason)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       ON CONFLICT (id) DO NOTHING`,
+      ['vc-s-1', testOrgA, 'VCR-2026-SEARCH-001', 'vend-s-1', 'Cloud Infrastructure Solutions', '2026-08-10', 8500, 8500, 'Open', 'Server outage rebate']
+    );
+
+    // 8. Seed Secret Record in Org B (for multi-tenant isolation verification)
     await db.query(
       `INSERT INTO invoices (id, organization_id, invoice_number, client_name, total_amount, status, issue_date, due_date)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -83,12 +99,15 @@ describe('Phase 8.3A — Global Search Component, Navigation & Security Tests', 
     expect(byEmail.some((r) => r.category === 'Customer')).toBe(true);
   });
 
-  it('4. Vendor search matches vendor name, company name, and email', async () => {
+  it('4. Vendor search matches vendor name, company name, email, and tax_id/GSTIN', async () => {
     const byVendorName = await GlobalSearchService.search(testOrgA, 'Cloud Infrastructure');
     expect(byVendorName.some((r) => r.category === 'Vendor' && r.title === 'Cloud Infrastructure Solutions')).toBe(true);
 
     const byEmail = await GlobalSearchService.search(testOrgA, 'cloudinfra.io');
     expect(byEmail.some((r) => r.category === 'Vendor')).toBe(true);
+
+    const byTaxId = await GlobalSearchService.search(testOrgA, '27AABCV8901D1Z2');
+    expect(byTaxId.some((r) => r.category === 'Vendor')).toBe(true);
   });
 
   it('5. Document number search matches invoices, quotes, bills, and purchase orders', async () => {
@@ -99,7 +118,15 @@ describe('Phase 8.3A — Global Search Component, Navigation & Security Tests', 
     expect(billResults.some((r) => r.category === 'Vendor Bill' && r.amount === 42000)).toBe(true);
   });
 
-  it('6. Chart of Accounts search queries real accounts by code and name', async () => {
+  it('6. Credit Notes and Vendor Credits are searchable across document numbers and amounts', async () => {
+    const cnResults = await GlobalSearchService.search(testOrgA, 'CN-2026-SEARCH-001');
+    expect(cnResults.some((r) => r.category === 'Credit Note' && r.amount === 12500)).toBe(true);
+
+    const vcResults = await GlobalSearchService.search(testOrgA, 'VCR-2026-SEARCH-001');
+    expect(vcResults.some((r) => r.category === 'Vendor Credit' && r.amount === 8500)).toBe(true);
+  });
+
+  it('7. Chart of Accounts search queries real accounts by code and name', async () => {
     const byCode = await GlobalSearchService.search(testOrgA, '4100-TEST');
     expect(byCode.some((r) => r.category === 'Account' && r.title.includes('4100-TEST'))).toBe(true);
 
@@ -107,7 +134,7 @@ describe('Phase 8.3A — Global Search Component, Navigation & Security Tests', 
     expect(byName.some((r) => r.category === 'Account' && r.title.includes('Consulting & Cloud'))).toBe(true);
   });
 
-  it('7. Organization A search NEVER leaks records from Organization B', async () => {
+  it('8. Organization A search NEVER leaks records from Organization B', async () => {
     const orgASearch = await GlobalSearchService.search(testOrgA, 'INV-SECRET-TENANT-B');
     expect(orgASearch.length).toBe(0);
 
@@ -116,7 +143,7 @@ describe('Phase 8.3A — Global Search Component, Navigation & Security Tests', 
     expect(orgBSearch[0].title).toBe('INV-SECRET-TENANT-B');
   });
 
-  it('8. Permission-restricted records are filtered out for users lacking permissions', async () => {
+  it('9. Permission-restricted records are filtered out for users lacking permissions', async () => {
     const salesOnlyPerms = ['invoices.view'];
     const resultsSalesUser = await GlobalSearchService.search(testOrgA, '2026-SEARCH', salesOnlyPerms);
     expect(resultsSalesUser.some((r) => r.category === 'Invoice')).toBe(true);
@@ -128,7 +155,7 @@ describe('Phase 8.3A — Global Search Component, Navigation & Security Tests', 
     expect(resultsPurchasesUser.some((r) => r.category === 'Invoice')).toBe(false);
   });
 
-  it('9. Stale request token logic ensures latest query is authoritative', () => {
+  it('10. Stale request token logic ensures latest query is authoritative', () => {
     let latestSequence = 0;
     const executeMockSearch = (seq: number) => {
       if (seq < latestSequence) {
@@ -147,7 +174,7 @@ describe('Phase 8.3A — Global Search Component, Navigation & Security Tests', 
     expect(executeMockSearch(req1)).toBeNull(); // Discarded
   });
 
-  it('10. Selecting a search result forwards exact entityId and tabTarget to navigation handler', () => {
+  it('11. Selecting a search result forwards exact entityId and tabTarget to navigation handler', () => {
     const onNavigate = vi.fn();
     const handleSelect = (item: SearchResultItem, targetTab: string) => {
       onNavigate(targetTab, { entityId: item.id });
@@ -165,10 +192,9 @@ describe('Phase 8.3A — Global Search Component, Navigation & Security Tests', 
     expect(onNavigate).toHaveBeenCalledWith('invoices', { entityId: 'inv-selected-123' });
   });
 
-  it('11. Query length sanitization safely truncates excessive input beyond 100 characters', async () => {
+  it('12. Query length sanitization safely truncates excessive input beyond 100 characters', async () => {
     const excessiveQuery = 'INV-2026-SEARCH-001' + 'A'.repeat(200);
     const results = await GlobalSearchService.search(testOrgA, excessiveQuery);
-    // Should not throw or crash and safely query truncated input
     expect(Array.isArray(results)).toBe(true);
   });
 });

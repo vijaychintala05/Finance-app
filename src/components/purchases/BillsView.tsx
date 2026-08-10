@@ -14,12 +14,14 @@ interface BillsViewProps {
   autoOpenCreateModal?: boolean;
   onModalClosed?: () => void;
   selectedEntityId?: string;
+  onSelectedEntityClosed?: () => void;
 }
 
 export const BillsView: React.FC<BillsViewProps> = ({
   autoOpenCreateModal,
   onModalClosed,
   selectedEntityId,
+  onSelectedEntityClosed,
 }) => {
   const { bills, addBill, updateBill, vendors, settings } = useBooks();
 
@@ -262,7 +264,10 @@ export const BillsView: React.FC<BillsViewProps> = ({
       {/* Bill Details Modal */}
       <BillDetailsModal
         isOpen={!!viewingBill}
-        onClose={() => setViewingBill(null)}
+        onClose={() => {
+          setViewingBill(null);
+          if (onSelectedEntityClosed) onSelectedEntityClosed();
+        }}
         bill={viewingBill}
       />
     </div>

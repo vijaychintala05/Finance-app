@@ -5,7 +5,7 @@ import { MigrationRunner } from '../database/migrationRunner';
 
 const request = supertest(app);
 
-describe('Phase 8.3A — Production Authentication & Security Hardening Tests', () => {
+describe('Phase 8.3B — Production Authentication & Security Hardening Tests', () => {
   const originalEnv = process.env.NODE_ENV;
   let validToken: string;
   let testOrgId: string;
@@ -92,7 +92,7 @@ describe('Phase 8.3A — Production Authentication & Security Hardening Tests', 
     expect(res.status).toBe(401);
   });
 
-  it('6. Production financial APIs require valid JWT authentication', async () => {
+  it('6. Production financial APIs across all modules require valid JWT authentication', async () => {
     process.env.NODE_ENV = 'production';
 
     const itemsRes = await request.get('/api/v1/items');
@@ -100,5 +100,8 @@ describe('Phase 8.3A — Production Authentication & Security Hardening Tests', 
 
     const quotesRes = await request.get('/api/v1/quotations/templates');
     expect(quotesRes.status).toBe(401);
+
+    const auditRes = await request.get('/api/v1/security/audit-trail');
+    expect(auditRes.status).toBe(401);
   });
 });

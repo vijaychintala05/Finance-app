@@ -12,9 +12,15 @@ import { BankTransactionsFeed } from './BankTransactionsFeed';
 
 interface BankingViewProps {
   autoOpenReconcile?: boolean;
+  selectedEntityId?: string;
+  onSelectedEntityClosed?: () => void;
 }
 
-export const BankingView: React.FC<BankingViewProps> = ({ autoOpenReconcile }) => {
+export const BankingView: React.FC<BankingViewProps> = ({
+  autoOpenReconcile,
+  selectedEntityId,
+  onSelectedEntityClosed,
+}) => {
   const { accounts, journalEntries, expenses, updateAccount, settings } = useBooks();
 
   // Screen 2 visibility toggle ("More Details" button)
@@ -54,6 +60,15 @@ export const BankingView: React.FC<BankingViewProps> = ({ autoOpenReconcile }) =
       setIsReconcileOpen(true);
     }
   }, [autoOpenReconcile]);
+
+  React.useEffect(() => {
+    if (selectedEntityId) {
+      const foundAccount = accounts.find((a) => a.id === selectedEntityId || a.code === selectedEntityId);
+      if (foundAccount) {
+        setSelectedAccountId(foundAccount.id);
+      }
+    }
+  }, [selectedEntityId, accounts]);
 
   // Categorized account collections
   const bankAccountsList = useMemo(() => {
@@ -405,7 +420,10 @@ export const BankingView: React.FC<BankingViewProps> = ({ autoOpenReconcile }) =
         <BankTransactionDetailsModal
           isOpen={!!selectedTx}
           transaction={selectedTx}
-          onClose={() => setSelectedTx(null)}
+          onClose={() => {
+            setSelectedTx(null);
+            if (onSelectedEntityClosed) onSelectedEntityClosed();
+          }}
         />
       )}
     </div>

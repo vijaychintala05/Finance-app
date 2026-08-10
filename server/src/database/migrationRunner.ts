@@ -869,7 +869,8 @@ export class MigrationRunner {
       `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS is_gst_inclusive BOOLEAN DEFAULT FALSE`,
       `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS template_id VARCHAR(64)`,
       `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS validity_days INT DEFAULT 30`,
-      `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS customer_response_notes TEXT`
+      `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS customer_response_notes TEXT`,
+      `ALTER TABLE vendors ADD COLUMN IF NOT EXISTS tax_id VARCHAR(50)`
     ];
 
     for (const sql of tables) {

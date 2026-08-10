@@ -107,7 +107,15 @@ export const CATEGORY_TREE_SPECIFICATION: CategoryTreeSection[] = [
   },
 ];
 
-export const ChartOfAccountsView: React.FC = () => {
+export interface ChartOfAccountsViewProps {
+  selectedEntityId?: string;
+  onSelectedEntityClosed?: () => void;
+}
+
+export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
+  selectedEntityId,
+  onSelectedEntityClosed,
+}) => {
   const { accounts, settings } = useBooks();
 
   const [search, setSearch] = useState('');
@@ -134,6 +142,15 @@ export const ChartOfAccountsView: React.FC = () => {
   const [modalSubCat, setModalSubCat] = useState<string>('');
   const [accountToEdit, setAccountToEdit] = useState<Account | null>(null);
   const [isQuickAccountModalOpen, setIsQuickAccountModalOpen] = useState(false);
+
+  React.useEffect(() => {
+    if (selectedEntityId) {
+      const found = accounts.find((a) => a.id === selectedEntityId || a.code === selectedEntityId);
+      if (found) {
+        setSelectedLedgerAccount(found);
+      }
+    }
+  }, [selectedEntityId, accounts]);
 
   // Extract unique custom sub-categories (e.g. "Ply", "Laminates")
   const subCategoriesList = Array.from(
@@ -719,7 +736,10 @@ export const ChartOfAccountsView: React.FC = () => {
       <AccountLedgerModal
         account={selectedLedgerAccount}
         isOpen={!!selectedLedgerAccount}
-        onClose={() => setSelectedLedgerAccount(null)}
+        onClose={() => {
+          setSelectedLedgerAccount(null);
+          if (onSelectedEntityClosed) onSelectedEntityClosed();
+        }}
         onAddSubAccount={handleOpenAddSubAccount}
         onEditAccount={handleOpenEditModal}
       />

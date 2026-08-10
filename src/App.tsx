@@ -86,10 +86,21 @@ function MainAppLayout() {
         return <ProjectsView />;
       case 'banking_overview':
       case 'banking':
-        return <BankingView />;
+        return (
+          <BankingView
+            selectedEntityId={selectedEntityId}
+            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
+          />
+        );
       case 'bank_reconciliation':
       case 'reconciliation':
-        return <BankingView autoOpenReconcile={true} />;
+        return (
+          <BankingView
+            autoOpenReconcile={true}
+            selectedEntityId={selectedEntityId}
+            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
+          />
+        );
 
       // Sales Sub-Tabs
       case 'sales_overview':
@@ -100,6 +111,7 @@ function MainAppLayout() {
             autoOpenCreateModal={autoOpenClientModal}
             onModalClosed={() => setAutoOpenClientModal(false)}
             selectedEntityId={selectedEntityId}
+            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
           />
         );
       case 'estimates':
@@ -108,6 +120,7 @@ function MainAppLayout() {
             autoOpenCreateModal={autoOpenEstimateModal}
             onModalClosed={() => setAutoOpenEstimateModal(false)}
             selectedEntityId={selectedEntityId}
+            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
           />
         );
       case 'sales_orders':
@@ -116,6 +129,7 @@ function MainAppLayout() {
             autoOpenCreateModal={autoOpenSalesOrderModal}
             onModalClosed={() => setAutoOpenSalesOrderModal(false)}
             selectedEntityId={selectedEntityId}
+            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
           />
         );
       case 'invoices':
@@ -124,6 +138,7 @@ function MainAppLayout() {
             autoOpenCreateModal={autoOpenInvoiceModal}
             onModalClosed={() => setAutoOpenInvoiceModal(false)}
             selectedEntityId={selectedEntityId}
+            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
           />
         );
       case 'recurring_invoices':
@@ -135,6 +150,8 @@ function MainAppLayout() {
           <PaymentsReceivedView
             autoOpenCreateModal={autoOpenPaymentReceivedModal}
             onModalClosed={() => setAutoOpenPaymentReceivedModal(false)}
+            selectedEntityId={selectedEntityId}
+            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
           />
         );
       case 'credit_notes':
@@ -143,6 +160,7 @@ function MainAppLayout() {
             autoOpenCreateModal={autoOpenCreditNoteModal}
             onModalClosed={() => setAutoOpenCreditNoteModal(false)}
             selectedEntityId={selectedEntityId}
+            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
           />
         );
       case 'salespersons':
@@ -156,6 +174,8 @@ function MainAppLayout() {
           <VendorsView
             autoOpenCreateModal={autoOpenVendorModal}
             onModalClosed={() => setAutoOpenVendorModal(false)}
+            selectedEntityId={selectedEntityId}
+            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
           />
         );
       case 'expenses':
@@ -173,6 +193,8 @@ function MainAppLayout() {
           <PurchaseOrdersView
             autoOpenCreateModal={autoOpenPurchaseOrderModal}
             onModalClosed={() => setAutoOpenPurchaseOrderModal(false)}
+            selectedEntityId={selectedEntityId}
+            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
           />
         );
       case 'bills':
@@ -181,6 +203,7 @@ function MainAppLayout() {
             autoOpenCreateModal={autoOpenBillModal}
             onModalClosed={() => setAutoOpenBillModal(false)}
             selectedEntityId={selectedEntityId}
+            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
           />
         );
       case 'recurring_bills':
@@ -190,6 +213,8 @@ function MainAppLayout() {
           <PaymentsMadeView
             autoOpenCreateModal={autoOpenPaymentMadeModal}
             onModalClosed={() => setAutoOpenPaymentMadeModal(false)}
+            selectedEntityId={selectedEntityId}
+            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
           />
         );
       case 'vendor_credits':
@@ -197,6 +222,8 @@ function MainAppLayout() {
           <VendorCreditsView
             autoOpenCreateModal={autoOpenVendorCreditModal}
             onModalClosed={() => setAutoOpenVendorCreditModal(false)}
+            selectedEntityId={selectedEntityId}
+            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
           />
         );
 
@@ -210,12 +237,21 @@ function MainAppLayout() {
             autoOpenJournalModal={autoOpenJournalModal}
             onJournalModalClosed={() => setAutoOpenJournalModal(false)}
             onSubTabChange={(st) => setActiveTab(st)}
+            selectedEntityId={selectedEntityId}
+            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
           />
         );
       case 'bulk_updates':
         return <AccountingView initialSubTab="bulk_updates" onSubTabChange={(st) => setActiveTab(st)} />;
       case 'coa':
-        return <AccountingView initialSubTab="coa" onSubTabChange={(st) => setActiveTab(st)} />;
+        return (
+          <AccountingView
+            initialSubTab="coa"
+            onSubTabChange={(st) => setActiveTab(st)}
+            selectedEntityId={selectedEntityId}
+            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
+          />
+        );
       case 'transaction_locking':
         return <AccountingView initialSubTab="transaction_locking" onSubTabChange={(st) => setActiveTab(st)} />;
 

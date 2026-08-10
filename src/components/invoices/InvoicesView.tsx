@@ -19,12 +19,14 @@ interface InvoicesViewProps {
   autoOpenCreateModal?: boolean;
   onModalClosed?: () => void;
   selectedEntityId?: string;
+  onSelectedEntityClosed?: () => void;
 }
 
 export const InvoicesView: React.FC<InvoicesViewProps> = ({
   autoOpenCreateModal = false,
   onModalClosed,
   selectedEntityId,
+  onSelectedEntityClosed,
 }) => {
   const { invoices, settings, deleteInvoice } = useBooks();
 
@@ -351,7 +353,10 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
       />
       <InvoicePreviewModal
         invoice={previewInvoice}
-        onClose={() => setPreviewInvoice(null)}
+        onClose={() => {
+          setPreviewInvoice(null);
+          if (onSelectedEntityClosed) onSelectedEntityClosed();
+        }}
         onEditRequested={(invToEdit) => setEditingInvoice(invToEdit)}
       />
     </div>

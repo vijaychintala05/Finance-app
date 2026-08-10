@@ -13,7 +13,9 @@ export interface SearchResultItem {
     | 'Payment Received'
     | 'Payment Made'
     | 'Bank Transaction'
-    | 'Account';
+    | 'Account'
+    | 'Credit Note'
+    | 'Vendor Credit';
   title: string;
   subtitle: string;
   status?: string;
@@ -34,6 +36,7 @@ export class GlobalSearchService {
     const q = `%${sanitized.toLowerCase()}%`;
     const numQ = Number(sanitized.replace(/[^0-9.]/g, '')) || -999999;
 
+    // Strict VIEW permission gating
     const hasSalesPerm =
       !permissions ||
       permissions.includes('invoices.view') ||
@@ -84,6 +87,8 @@ export class GlobalSearchService {
       payMadeRes,
       bankTxRes,
       accRes,
+      cnRes,
+      vcRes,
     ] = await Promise.all([
       hasSalesPerm
         ? db.query(
@@ -115,8 +120,8 @@ export class GlobalSearchService {
         : Promise.resolve({ rows: [], rowCount: 0 }),
       hasPurchasesPerm
         ? db.query(
-            `SELECT id, name, company_name, email, phone FROM vendors
-             WHERE organization_id = $1 AND (LOWER(name) LIKE $2 OR LOWER(company_name) LIKE $2 OR LOWER(email) LIKE $2 OR LOWER(phone) LIKE $2) LIMIT 10`,
+            `SELECT id, name, company_name, email, phone, tax_id FROM vendors
+             WHERE organization_id = $1 AND (LOWER(name) LIKE $2 OR LOWER(company_name) LIKE $2 OR LOWER(email) LIKE $2 OR LOWER(phone) LIKE $2 OR LOWER(COALESCE(tax_id, '')) LIKE $2) LIMIT 10`,
             [organizationId, q]
           )
         : Promise.resolve({ rows: [], rowCount: 0 }),
@@ -160,6 +165,20 @@ export class GlobalSearchService {
             `SELECT id, code, name, type, sub_type FROM accounts
              WHERE organization_id = $1 AND (LOWER(code) LIKE $2 OR LOWER(name) LIKE $2) LIMIT 10`,
             [organizationId, q]
+          )
+        : Promise.resolve({ rows: [], rowCount: 0 }),
+      hasSalesPerm
+        ? db.query(
+            `SELECT id, credit_note_number, client_name, total_amount, status, date FROM credit_notes
+             WHERE organization_id = $1 AND (LOWER(credit_note_number) LIKE $2 OR LOWER(client_name) LIKE $2 OR total_amount = $3) LIMIT 10`,
+            [organizationId, q, numQ]
+          )
+        : Promise.resolve({ rows: [], rowCount: 0 }),
+      hasPurchasesPerm
+        ? db.query(
+            `SELECT id, credit_number, vendor_name, total_amount, status, date FROM vendor_credits
+             WHERE organization_id = $1 AND (LOWER(credit_number) LIKE $2 OR LOWER(vendor_name) LIKE $2 OR total_amount = $3) LIMIT 10`,
+            [organizationId, q, numQ]
           )
         : Promise.resolve({ rows: [], rowCount: 0 }),
     ]);
@@ -220,7 +239,7 @@ export class GlobalSearchService {
         id: r.id,
         category: 'Vendor',
         title: r.name || r.company_name || 'Vendor',
-        subtitle: `${r.email || r.phone || 'Vendor Record'}`,
+        subtitle: `${r.email || r.phone || 'Vendor Record'}${r.tax_id ? ' • Tax ID: ' + r.tax_id : ''}`,
         linkRoute: `/purchases/vendors?id=${r.id}`,
       });
     }
@@ -256,7 +275,7 @@ export class GlobalSearchService {
         id: r.id,
         category: 'Payment Received',
         title: r.payment_number || 'Customer Payment',
-        subtitle: `${r.client_name || r.customer_name || 'Customer'} • ₹${Number(r.amount).toLocaleString('en-IN')} (${r.payment_mode || 'Cash'})`,
+        subtitle: `${r.client_name || 'Customer'} • ₹${Number(r.amount).toLocaleString('en-IN')} (${r.payment_mode || 'Cash'})`,
         amount: Number(r.amount),
         date: r.payment_date,
         linkRoute: `/sales/payments?id=${r.id}`,
@@ -268,7 +287,7 @@ export class GlobalSearchService {
         id: r.id,
         category: 'Payment Made',
         title: r.payment_number || 'Vendor Payment',
-        subtitle: `${r.vendor_name} • ₹${Number(r.amount).toLocaleString('en-IN')} (${r.payment_mode || 'Cash'})`,
+        subtitle: `${r.vendor_name || 'Vendor'} • ₹${Number(r.amount).toLocaleString('en-IN')} (${r.payment_mode || 'Cash'})`,
         amount: Number(r.amount),
         date: r.payment_date,
         linkRoute: `/purchases/payments?id=${r.id}`,
@@ -295,6 +314,32 @@ export class GlobalSearchService {
         title: `${r.code} - ${r.name}`,
         subtitle: `${r.type}${r.sub_type ? ' • ' + r.sub_type : ''}`,
         linkRoute: `/accounting/coa?id=${r.id}`,
+      });
+    }
+
+    for (const r of cnRes.rows) {
+      results.push({
+        id: r.id,
+        category: 'Credit Note',
+        title: r.credit_note_number,
+        subtitle: `${r.client_name} • ₹${Number(r.total_amount).toLocaleString('en-IN')}`,
+        status: r.status,
+        amount: Number(r.total_amount),
+        date: r.date,
+        linkRoute: `/sales/credit_notes?id=${r.id}`,
+      });
+    }
+
+    for (const r of vcRes.rows) {
+      results.push({
+        id: r.id,
+        category: 'Vendor Credit',
+        title: r.credit_number,
+        subtitle: `${r.vendor_name} • ₹${Number(r.total_amount).toLocaleString('en-IN')}`,
+        status: r.status,
+        amount: Number(r.total_amount),
+        date: r.date,
+        linkRoute: `/purchases/vendor_credits?id=${r.id}`,
       });
     }
 

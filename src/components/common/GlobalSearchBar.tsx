@@ -94,6 +94,8 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, is
             else if (r.category === 'Payment Made') tabTarget = 'payments_made';
             else if (r.category === 'Bank Transaction') tabTarget = 'banking';
             else if (r.category === 'Account') tabTarget = 'coa';
+            else if (r.category === 'Credit Note') tabTarget = 'credit_notes';
+            else if (r.category === 'Vendor Credit') tabTarget = 'vendor_credits';
 
             return {
               id: r.id,
@@ -110,6 +112,10 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, is
           setError(null);
           setLoading(false);
           setSelectedIndex(0);
+        } else if (res.error) {
+          setResults([]);
+          setError('Failed to load search results.');
+          setLoading(false);
         } else {
           setResults([]);
           setError(null);
@@ -119,7 +125,7 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, is
         // If a newer request occurred, discard
         if (currentSeq !== requestSeqRef.current) return;
         setResults([]);
-        setError('Search is temporarily unavailable.');
+        setError('Failed to load search results.');
         setLoading(false);
       }
     }, 300);

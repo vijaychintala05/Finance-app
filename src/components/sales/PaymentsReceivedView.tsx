@@ -13,11 +13,15 @@ import { PaymentReceivedDetailsModal } from './PaymentReceivedDetailsModal';
 interface PaymentsReceivedViewProps {
   autoOpenCreateModal?: boolean;
   onModalClosed?: () => void;
+  selectedEntityId?: string;
+  onSelectedEntityClosed?: () => void;
 }
 
 export const PaymentsReceivedView: React.FC<PaymentsReceivedViewProps> = ({
   autoOpenCreateModal,
   onModalClosed,
+  selectedEntityId,
+  onSelectedEntityClosed,
 }) => {
   const { paymentsReceived, addPaymentReceived, invoices, settings } = useBooks();
 
@@ -31,6 +35,17 @@ export const PaymentsReceivedView: React.FC<PaymentsReceivedViewProps> = ({
       if (onModalClosed) onModalClosed();
     }
   }, [autoOpenCreateModal, onModalClosed]);
+
+  React.useEffect(() => {
+    if (selectedEntityId) {
+      const found = paymentsReceived.find(
+        (p) => p.id === selectedEntityId || p.paymentNumber === selectedEntityId
+      );
+      if (found) {
+        setViewingPayment(found);
+      }
+    }
+  }, [selectedEntityId, paymentsReceived]);
 
   // Modal
   const [invoiceId, setInvoiceId] = useState(invoices[0]?.id || '');
@@ -223,7 +238,10 @@ export const PaymentsReceivedView: React.FC<PaymentsReceivedViewProps> = ({
 
       <PaymentReceivedDetailsModal
         isOpen={!!viewingPayment}
-        onClose={() => setViewingPayment(null)}
+        onClose={() => {
+          setViewingPayment(null);
+          if (onSelectedEntityClosed) onSelectedEntityClosed();
+        }}
         payment={viewingPayment}
       />
     </div>

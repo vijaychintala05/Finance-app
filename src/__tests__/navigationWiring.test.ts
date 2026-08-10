@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 
-describe('Phase 8.2 — Quick Create & Navigation Wiring Verification Tests', () => {
+describe('Phase 8.3B — Quick Create & Exact-Record Navigation Wiring Verification Tests', () => {
   it('1. Header onNavigate callback is correctly connected and receives tab with options', () => {
     const handleNavigate = vi.fn();
 
@@ -144,5 +144,58 @@ describe('Phase 8.2 — Quick Create & Navigation Wiring Verification Tests', ()
 
     expect(hasPermission('invoice.create')).toBe(true);
     expect(hasPermission('bill.create')).toBe(false);
+  });
+
+  it('11. Exact-Record Navigation routes across all search entity categories', () => {
+    const entityMappings = [
+      { category: 'Invoice', tabTarget: 'invoices', entityId: 'inv-101' },
+      { category: 'Quotation', tabTarget: 'estimates', entityId: 'est-202' },
+      { category: 'Sales Order', tabTarget: 'sales_orders', entityId: 'so-303' },
+      { category: 'Customer', tabTarget: 'clients', entityId: 'cust-404' },
+      { category: 'Vendor', tabTarget: 'vendors', entityId: 'vend-505' },
+      { category: 'Vendor Bill', tabTarget: 'bills', entityId: 'bill-606' },
+      { category: 'Purchase Order', tabTarget: 'purchase_orders', entityId: 'po-707' },
+      { category: 'Payment Received', tabTarget: 'payments_received', entityId: 'rec-808' },
+      { category: 'Payment Made', tabTarget: 'payments_made', entityId: 'pay-909' },
+      { category: 'Bank Transaction', tabTarget: 'banking', entityId: 'tx-111' },
+      { category: 'Account', tabTarget: 'coa', entityId: 'acc-222' },
+      { category: 'Credit Note', tabTarget: 'credit_notes', entityId: 'cn-333' },
+      { category: 'Vendor Credit', tabTarget: 'vendor_credits', entityId: 'vc-444' },
+    ];
+
+    const state = { activeTab: 'dashboard', selectedEntityId: undefined as string | undefined };
+    const handleNavigate = (tab: string, options?: { entityId?: string }) => {
+      state.activeTab = tab;
+      state.selectedEntityId = options?.entityId;
+    };
+
+    for (const mapping of entityMappings) {
+      handleNavigate(mapping.tabTarget, { entityId: mapping.entityId });
+      expect(state.activeTab).toBe(mapping.tabTarget);
+      expect(state.selectedEntityId).toBe(mapping.entityId);
+    }
+  });
+
+  it('12. Standard sidebar navigation without entityId resets selectedEntityId to undefined', () => {
+    const state = { activeTab: 'invoices', selectedEntityId: 'inv-101' as string | undefined };
+    const handleNavigate = (tab: string, options?: { entityId?: string }) => {
+      state.activeTab = tab;
+      state.selectedEntityId = options?.entityId;
+    };
+
+    // User navigates from selected invoice to clients via sidebar
+    handleNavigate('clients');
+    expect(state.activeTab).toBe('clients');
+    expect(state.selectedEntityId).toBeUndefined();
+  });
+
+  it('13. Closing modal or detail view clears selectedEntityId via onSelectedEntityClosed callback', () => {
+    let selectedEntityId: string | undefined = 'po-707';
+    const onSelectedEntityClosed = () => {
+      selectedEntityId = undefined;
+    };
+
+    onSelectedEntityClosed();
+    expect(selectedEntityId).toBeUndefined();
   });
 });

@@ -14,12 +14,14 @@ interface CreditNotesViewProps {
   autoOpenCreateModal?: boolean;
   onModalClosed?: () => void;
   selectedEntityId?: string;
+  onSelectedEntityClosed?: () => void;
 }
 
 export const CreditNotesView: React.FC<CreditNotesViewProps> = ({
   autoOpenCreateModal,
   onModalClosed,
   selectedEntityId,
+  onSelectedEntityClosed,
 }) => {
   const { creditNotes, addCreditNote, updateCreditNote, invoices, clients, settings } = useBooks();
 
@@ -256,7 +258,10 @@ export const CreditNotesView: React.FC<CreditNotesViewProps> = ({
 
       <CreditNoteDetailsModal
         isOpen={!!viewingNote}
-        onClose={() => setViewingNote(null)}
+        onClose={() => {
+          setViewingNote(null);
+          if (onSelectedEntityClosed) onSelectedEntityClosed();
+        }}
         note={viewingNote}
       />
     </div>

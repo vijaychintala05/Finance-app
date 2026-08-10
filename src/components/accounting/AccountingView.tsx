@@ -20,6 +20,8 @@ interface AccountingViewProps {
   onSubTabChange?: (subTab: AccountingSubTab) => void;
   autoOpenJournalModal?: boolean;
   onJournalModalClosed?: () => void;
+  selectedEntityId?: string;
+  onSelectedEntityClosed?: () => void;
 }
 
 export const AccountingView: React.FC<AccountingViewProps> = ({
@@ -27,6 +29,8 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
   onSubTabChange,
   autoOpenJournalModal,
   onJournalModalClosed,
+  selectedEntityId,
+  onSelectedEntityClosed,
 }) => {
   const [subTab, setSubTab] = useState<AccountingSubTab>(initialSubTab);
 
@@ -112,7 +116,12 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
           />
         )}
         {subTab === 'bulk_updates' && <BulkUpdatesView />}
-        {subTab === 'coa' && <ChartOfAccountsView />}
+        {subTab === 'coa' && (
+          <ChartOfAccountsView
+            selectedEntityId={selectedEntityId}
+            onSelectedEntityClosed={onSelectedEntityClosed}
+          />
+        )}
         {subTab === 'transaction_locking' && <TransactionLockingView />}
       </div>
     </div>

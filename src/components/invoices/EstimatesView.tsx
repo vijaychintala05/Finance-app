@@ -12,12 +12,14 @@ interface EstimatesViewProps {
   autoOpenCreateModal?: boolean;
   onModalClosed?: () => void;
   selectedEntityId?: string;
+  onSelectedEntityClosed?: () => void;
 }
 
 export const EstimatesView: React.FC<EstimatesViewProps> = ({
   autoOpenCreateModal,
   onModalClosed,
   selectedEntityId,
+  onSelectedEntityClosed,
 }) => {
   const { estimates, clients, projects, settings, addEstimate, convertEstimateToInvoice } =
     useBooks();
@@ -320,7 +322,10 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
 
       <EstimateDetailsModal
         isOpen={!!viewingEstimate}
-        onClose={() => setViewingEstimate(null)}
+        onClose={() => {
+          setViewingEstimate(null);
+          if (onSelectedEntityClosed) onSelectedEntityClosed();
+        }}
         estimate={viewingEstimate}
         onConverted={(inv) => {
           setViewingEstimate(null);

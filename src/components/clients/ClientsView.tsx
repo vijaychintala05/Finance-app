@@ -10,12 +10,14 @@ interface ClientsViewProps {
   autoOpenCreateModal?: boolean;
   onModalClosed?: () => void;
   selectedEntityId?: string;
+  onSelectedEntityClosed?: () => void;
 }
 
 export const ClientsView: React.FC<ClientsViewProps> = ({
   autoOpenCreateModal,
   onModalClosed,
   selectedEntityId,
+  onSelectedEntityClosed,
 }) => {
   const { clients, invoices, projects, settings, deleteClient } = useBooks();
 
@@ -283,7 +285,10 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
 
       <ClientDetailsModal
         isOpen={!!viewingClient}
-        onClose={() => setViewingClient(null)}
+        onClose={() => {
+          setViewingClient(null);
+          if (onSelectedEntityClosed) onSelectedEntityClosed();
+        }}
         client={viewingClient}
         onEdit={(client) => {
           setClientToEdit(client);

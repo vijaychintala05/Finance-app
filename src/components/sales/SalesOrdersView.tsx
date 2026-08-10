@@ -18,12 +18,14 @@ interface SalesOrdersViewProps {
   autoOpenCreateModal?: boolean;
   onModalClosed?: () => void;
   selectedEntityId?: string;
+  onSelectedEntityClosed?: () => void;
 }
 
 export const SalesOrdersView: React.FC<SalesOrdersViewProps> = ({
   autoOpenCreateModal,
   onModalClosed,
   selectedEntityId,
+  onSelectedEntityClosed,
 }) => {
   const { salesOrders, addSalesOrder, convertSalesOrderToInvoice, clients, settings } = useBooks();
 
@@ -279,7 +281,10 @@ export const SalesOrdersView: React.FC<SalesOrdersViewProps> = ({
       {/* Sales Order Details Modal */}
       <SalesOrderDetailsModal
         isOpen={!!viewingOrder}
-        onClose={() => setViewingOrder(null)}
+        onClose={() => {
+          setViewingOrder(null);
+          if (onSelectedEntityClosed) onSelectedEntityClosed();
+        }}
         order={viewingOrder}
       />
 

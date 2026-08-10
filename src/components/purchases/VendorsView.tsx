@@ -16,11 +16,15 @@ import { formatCurrency } from '../../utils/formatters';
 interface VendorsViewProps {
   autoOpenCreateModal?: boolean;
   onModalClosed?: () => void;
+  selectedEntityId?: string;
+  onSelectedEntityClosed?: () => void;
 }
 
 export const VendorsView: React.FC<VendorsViewProps> = ({
   autoOpenCreateModal,
   onModalClosed,
+  selectedEntityId,
+  onSelectedEntityClosed,
 }) => {
   const { vendors, settings, addVendor, updateVendor, deleteVendor } = useBooks();
 
@@ -34,6 +38,15 @@ export const VendorsView: React.FC<VendorsViewProps> = ({
       if (onModalClosed) onModalClosed();
     }
   }, [autoOpenCreateModal]);
+
+  React.useEffect(() => {
+    if (selectedEntityId) {
+      const found = vendors.find((v) => v.id === selectedEntityId || v.name === selectedEntityId);
+      if (found) {
+        handleOpenEdit(found);
+      }
+    }
+  }, [selectedEntityId, vendors]);
 
   // Form state
   const [name, setName] = useState('');
@@ -76,6 +89,11 @@ export const VendorsView: React.FC<VendorsViewProps> = ({
     setIsModalOpen(true);
   };
 
+  const handleCloseModal = () => {
+    setIsModalOpen(false);
+    if (onSelectedEntityClosed) onSelectedEntityClosed();
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
@@ -104,7 +122,7 @@ export const VendorsView: React.FC<VendorsViewProps> = ({
       });
     }
 
-    setIsModalOpen(false);
+    handleCloseModal();
   };
 
   return (
@@ -317,7 +335,7 @@ export const VendorsView: React.FC<VendorsViewProps> = ({
               <div className="flex justify-end gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => setIsModalOpen(false)}
+                  onClick={handleCloseModal}
                   className="px-4 py-2 border border-slate-300 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-50 cursor-pointer"
                 >
                   Cancel

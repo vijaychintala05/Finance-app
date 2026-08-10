@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
 import {
   CheckCircle2,
+  Eye,
   FileCheck,
   Plus,
   Search,
   ShoppingBag,
+  X,
 } from 'lucide-react';
 import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate } from '../../utils/formatters';
@@ -13,16 +15,21 @@ import { PurchaseOrder } from '../../types';
 interface PurchaseOrdersViewProps {
   autoOpenCreateModal?: boolean;
   onModalClosed?: () => void;
+  selectedEntityId?: string;
+  onSelectedEntityClosed?: () => void;
 }
 
 export const PurchaseOrdersView: React.FC<PurchaseOrdersViewProps> = ({
   autoOpenCreateModal,
   onModalClosed,
+  selectedEntityId,
+  onSelectedEntityClosed,
 }) => {
   const { purchaseOrders, addPurchaseOrder, updatePurchaseOrder, vendors, settings } = useBooks();
 
   const [search, setSearch] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [viewingPO, setViewingPO] = useState<PurchaseOrder | null>(null);
 
   React.useEffect(() => {
     if (autoOpenCreateModal) {
@@ -30,6 +37,17 @@ export const PurchaseOrdersView: React.FC<PurchaseOrdersViewProps> = ({
       if (onModalClosed) onModalClosed();
     }
   }, [autoOpenCreateModal]);
+
+  React.useEffect(() => {
+    if (selectedEntityId) {
+      const found = purchaseOrders.find(
+        (po) => po.id === selectedEntityId || po.poNumber === selectedEntityId
+      );
+      if (found) {
+        setViewingPO(found);
+      }
+    }
+  }, [selectedEntityId, purchaseOrders]);
 
   // Form state
   const [vendorName, setVendorName] = useState(vendors[0]?.name || 'AWS Cloud Services');
@@ -42,6 +60,16 @@ export const PurchaseOrdersView: React.FC<PurchaseOrdersViewProps> = ({
       po.vendorName.toLowerCase().includes(search.toLowerCase()) ||
       po.notes.toLowerCase().includes(search.toLowerCase())
   );
+
+  const handleCloseCreateModal = () => {
+    setIsModalOpen(false);
+    if (onSelectedEntityClosed) onSelectedEntityClosed();
+  };
+
+  const handleCloseDetailModal = () => {
+    setViewingPO(null);
+    if (onSelectedEntityClosed) onSelectedEntityClosed();
+  };
 
   const handleCreatePO = (e: React.FormEvent) => {
     e.preventDefault();
@@ -59,6 +87,7 @@ export const PurchaseOrdersView: React.FC<PurchaseOrdersViewProps> = ({
 
     setIsModalOpen(false);
     setNotes('');
+    if (onSelectedEntityClosed) onSelectedEntityClosed();
   };
 
   const getStatusBadge = (status: PurchaseOrder['status']) => {
@@ -126,14 +155,19 @@ export const PurchaseOrdersView: React.FC<PurchaseOrdersViewProps> = ({
                 <th className="p-3 text-right pr-4">Action</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {filtered.map((po) => (
-                <tr key={po.id} className="hover:bg-slate-50 transition-colors">
-                  <td className="p-3 pl-4 font-mono font-bold text-sky-600">{po.poNumber}</td>
-                  <td className="p-3 font-bold text-slate-800">{po.vendorName}</td>
-                  <td className="p-3 text-slate-500">{formatDate(po.orderDate)}</td>
-                  <td className="p-3 text-slate-500">{formatDate(po.expectedDate)}</td>
-                  <td className="p-3 text-right font-mono font-bold text-slate-900">
+                <tr key={po.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+                  <td
+                    onClick={() => setViewingPO(po)}
+                    className="p-3 pl-4 font-mono font-bold text-sky-600 cursor-pointer hover:underline"
+                  >
+                    {po.poNumber}
+                  </td>
+                  <td className="p-3 font-bold text-slate-800 dark:text-slate-200">{po.vendorName}</td>
+                  <td className="p-3 text-slate-500 dark:text-slate-400">{formatDate(po.orderDate)}</td>
+                  <td className="p-3 text-slate-500 dark:text-slate-400">{formatDate(po.expectedDate)}</td>
+                  <td className="p-3 text-right font-mono font-bold text-slate-900 dark:text-slate-100">
                     {formatCurrency(po.totalAmount, settings.currencySymbol)}
                   </td>
                   <td className="p-3 text-center">
@@ -141,7 +175,14 @@ export const PurchaseOrdersView: React.FC<PurchaseOrdersViewProps> = ({
                       {po.status}
                     </span>
                   </td>
-                  <td className="p-3 text-right pr-4">
+                  <td className="p-3 text-right pr-4 space-x-2">
+                    <button
+                      onClick={() => setViewingPO(po)}
+                      className="text-xs font-bold text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200 cursor-pointer"
+                    >
+                      <Eye className="w-3.5 h-3.5 inline mr-1" />
+                      View
+                    </button>
                     {po.status !== 'Billed' && (
                       <button
                         onClick={() => {
@@ -160,7 +201,64 @@ export const PurchaseOrdersView: React.FC<PurchaseOrdersViewProps> = ({
         </div>
       </div>
 
-      {/* Modal */}
+      {/* PO Detail View Modal */}
+      {viewingPO && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl max-w-lg w-full p-6 space-y-4 shadow-xl border border-slate-200 dark:border-slate-800">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-2">
+                <FileCheck className="w-5 h-5 text-sky-600" />
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                  Purchase Order: <span className="font-mono">{viewingPO.poNumber}</span>
+                </h3>
+              </div>
+              <button
+                onClick={handleCloseDetailModal}
+                className="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 hover:text-slate-600 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4 text-xs">
+              <div className="p-3 bg-slate-50 dark:bg-slate-800 rounded-xl space-y-1">
+                <span className="text-slate-400 font-bold uppercase text-[10px]">Vendor Name</span>
+                <p className="font-bold text-slate-800 dark:text-slate-200">{viewingPO.vendorName}</p>
+              </div>
+              <div className="p-3 bg-slate-50 dark:bg-slate-800 rounded-xl space-y-1">
+                <span className="text-slate-400 font-bold uppercase text-[10px]">Total Amount</span>
+                <p className="font-mono font-bold text-slate-900 dark:text-slate-100">
+                  {formatCurrency(viewingPO.totalAmount, settings.currencySymbol)}
+                </p>
+              </div>
+              <div className="p-3 bg-slate-50 dark:bg-slate-800 rounded-xl space-y-1">
+                <span className="text-slate-400 font-bold uppercase text-[10px]">Order Date</span>
+                <p className="font-medium text-slate-700 dark:text-slate-300">{formatDate(viewingPO.orderDate)}</p>
+              </div>
+              <div className="p-3 bg-slate-50 dark:bg-slate-800 rounded-xl space-y-1">
+                <span className="text-slate-400 font-bold uppercase text-[10px]">Expected Delivery</span>
+                <p className="font-medium text-slate-700 dark:text-slate-300">{formatDate(viewingPO.expectedDate)}</p>
+              </div>
+            </div>
+
+            <div className="p-3 bg-slate-50 dark:bg-slate-800 rounded-xl space-y-1">
+              <span className="text-slate-400 font-bold uppercase text-[10px]">Procurement Notes & Specifications</span>
+              <p className="text-xs text-slate-700 dark:text-slate-300">{viewingPO.notes || 'No additional notes specified.'}</p>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                onClick={handleCloseDetailModal}
+                className="px-4 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-xl text-xs font-bold cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* PO Create Modal */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
           <div className="bg-white dark:bg-slate-900 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-xl border border-slate-200 dark:border-slate-800">
@@ -210,7 +308,7 @@ export const PurchaseOrdersView: React.FC<PurchaseOrdersViewProps> = ({
               <div className="flex justify-end gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => setIsModalOpen(false)}
+                  onClick={handleCloseCreateModal}
                   className="px-4 py-2 border border-slate-300 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-50 cursor-pointer"
                 >
                   Cancel

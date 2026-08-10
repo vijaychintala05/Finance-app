@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 
-describe('Phase 8.3B — Quick Create & Exact-Record Navigation Wiring Verification Tests', () => {
+describe('Phase 8.3C — Quick Create & Exact-Record Navigation Wiring Verification Tests', () => {
   it('1. Header onNavigate callback is correctly connected and receives tab with options', () => {
     const handleNavigate = vi.fn();
 
@@ -197,5 +197,110 @@ describe('Phase 8.3B — Quick Create & Exact-Record Navigation Wiring Verificat
 
     onSelectedEntityClosed();
     expect(selectedEntityId).toBeUndefined();
+  });
+
+  it('14. Full lifecycle for Invoice search exact entity -> detail closes -> subsequent navigation does not reopen', () => {
+    const appState = {
+      activeTab: 'dashboard',
+      selectedEntityId: undefined as string | undefined,
+    };
+
+    const handleNavigate = (tab: string, options?: { entityId?: string }) => {
+      appState.activeTab = tab;
+      appState.selectedEntityId = options?.entityId;
+    };
+
+    const onSelectedEntityClosed = () => {
+      appState.selectedEntityId = undefined;
+    };
+
+    // 1. Search exact Invoice
+    handleNavigate('invoices', { entityId: 'inv-search-999' });
+    expect(appState.activeTab).toBe('invoices');
+    expect(appState.selectedEntityId).toBe('inv-search-999');
+
+    // 2. User closes preview modal
+    onSelectedEntityClosed();
+    expect(appState.selectedEntityId).toBeUndefined();
+
+    // 3. User navigates to Estimates tab
+    handleNavigate('estimates');
+    expect(appState.activeTab).toBe('estimates');
+    expect(appState.selectedEntityId).toBeUndefined();
+
+    // 4. User navigates back to Invoices tab via menu
+    handleNavigate('invoices');
+    expect(appState.activeTab).toBe('invoices');
+    expect(appState.selectedEntityId).toBeUndefined(); // Does NOT reopen previous searched invoice
+  });
+
+  it('15. Full lifecycle for Vendor search exact entity -> detail closes -> subsequent navigation does not reopen', () => {
+    const appState = {
+      activeTab: 'dashboard',
+      selectedEntityId: undefined as string | undefined,
+    };
+
+    const handleNavigate = (tab: string, options?: { entityId?: string }) => {
+      appState.activeTab = tab;
+      appState.selectedEntityId = options?.entityId;
+    };
+
+    const onSelectedEntityClosed = () => {
+      appState.selectedEntityId = undefined;
+    };
+
+    // 1. Search exact Vendor
+    handleNavigate('vendors', { entityId: 'vend-search-888' });
+    expect(appState.activeTab).toBe('vendors');
+    expect(appState.selectedEntityId).toBe('vend-search-888');
+
+    // 2. User closes vendor edit modal
+    onSelectedEntityClosed();
+    expect(appState.selectedEntityId).toBeUndefined();
+
+    // 3. User navigates to Bills tab
+    handleNavigate('bills');
+    expect(appState.activeTab).toBe('bills');
+    expect(appState.selectedEntityId).toBeUndefined();
+
+    // 4. User navigates back to Vendors tab via sidebar
+    handleNavigate('vendors');
+    expect(appState.activeTab).toBe('vendors');
+    expect(appState.selectedEntityId).toBeUndefined(); // Does NOT reopen previous searched vendor
+  });
+
+  it('16. Full lifecycle for Account / Bank search exact entity -> detail closes -> subsequent navigation does not reopen', () => {
+    const appState = {
+      activeTab: 'dashboard',
+      selectedEntityId: undefined as string | undefined,
+    };
+
+    const handleNavigate = (tab: string, options?: { entityId?: string }) => {
+      appState.activeTab = tab;
+      appState.selectedEntityId = options?.entityId;
+    };
+
+    const onSelectedEntityClosed = () => {
+      appState.selectedEntityId = undefined;
+    };
+
+    // 1. Search exact Account
+    handleNavigate('coa', { entityId: 'acc-search-777' });
+    expect(appState.activeTab).toBe('coa');
+    expect(appState.selectedEntityId).toBe('acc-search-777');
+
+    // 2. User closes ledger modal
+    onSelectedEntityClosed();
+    expect(appState.selectedEntityId).toBeUndefined();
+
+    // 3. User navigates to Banking tab
+    handleNavigate('banking');
+    expect(appState.activeTab).toBe('banking');
+    expect(appState.selectedEntityId).toBeUndefined();
+
+    // 4. User navigates back to Chart of Accounts via sidebar
+    handleNavigate('coa');
+    expect(appState.activeTab).toBe('coa');
+    expect(appState.selectedEntityId).toBeUndefined(); // Does NOT reopen previous searched account ledger
   });
 });

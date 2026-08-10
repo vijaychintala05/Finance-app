@@ -5,7 +5,7 @@ import { MigrationRunner } from '../database/migrationRunner';
 
 const request = supertest(app);
 
-describe('Phase 8.3B — Production Authentication & Security Hardening Tests', () => {
+describe('Phase 8.3C — Production Authentication & Security Hardening Tests', () => {
   const originalEnv = process.env.NODE_ENV;
   let validToken: string;
   let testOrgId: string;
@@ -35,7 +35,7 @@ describe('Phase 8.3B — Production Authentication & Security Hardening Tests', 
     process.env.NODE_ENV = originalEnv;
   });
 
-  it('1. Production request without JWT returns HTTP 401 Unauthorized', async () => {
+  it('1. Production request without JWT returns HTTP 401 Unauthorized for Global Search', async () => {
     process.env.NODE_ENV = 'production';
 
     const res = await request
@@ -92,16 +92,27 @@ describe('Phase 8.3B — Production Authentication & Security Hardening Tests', 
     expect(res.status).toBe(401);
   });
 
-  it('6. Production financial APIs across all modules require valid JWT authentication', async () => {
+  it('6. Production financial APIs across Sales, Purchases, Banking, Security and Search require valid JWT authentication', async () => {
     process.env.NODE_ENV = 'production';
 
-    const itemsRes = await request.get('/api/v1/items');
-    expect(itemsRes.status).toBe(401);
-
+    // Sales
     const quotesRes = await request.get('/api/v1/quotations/templates');
     expect(quotesRes.status).toBe(401);
 
+    // Items / Inventory
+    const itemsRes = await request.get('/api/v1/items');
+    expect(itemsRes.status).toBe(401);
+
+    // Banking
+    const bankingRes = await request.get('/api/v1/banking/statements');
+    expect(bankingRes.status).toBe(401);
+
+    // Security / Audit
     const auditRes = await request.get('/api/v1/security/audit-trail');
     expect(auditRes.status).toBe(401);
+
+    // Global Search
+    const searchRes = await request.get('/api/v1/search?q=invoice');
+    expect(searchRes.status).toBe(401);
   });
 });

@@ -9,7 +9,7 @@ const renderWithProvider = (ui: React.ReactElement) => {
   return render(<BooksProvider>{ui}</BooksProvider>);
 };
 
-describe('Phase 8.3B — Real GlobalSearchBar Component & UI Regression Tests', () => {
+describe('Phase 8.3C — Real GlobalSearchBar Component & UI Comprehensive Regression Tests', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
   });
@@ -153,9 +153,7 @@ describe('Phase 8.3B — Real GlobalSearchBar Component & UI Regression Tests', 
       expect(screen.getByText('VCR-2026-001')).toBeTruthy();
     });
 
-    // Press ArrowDown on the modal input to select 2nd item (Vendor Credit)
     fireEvent.keyDown(modalInput, { key: 'ArrowDown' });
-    // Press Enter on the modal input to activate selection
     fireEvent.keyDown(modalInput, { key: 'Enter' });
 
     expect(onNavigate).toHaveBeenCalledWith('vendor_credits', { entityId: 'vc-1' });
@@ -175,7 +173,171 @@ describe('Phase 8.3B — Real GlobalSearchBar Component & UI Regression Tests', 
     });
   });
 
-  it('8. Handles API error gracefully without crashing', async () => {
+  it('8. Loading state appears while search request is pending', async () => {
+    let resolveFetch: (value: any) => void = () => {};
+    const pendingPromise = new Promise((resolve) => {
+      resolveFetch = resolve;
+    });
+
+    vi.spyOn(globalThis, 'fetch').mockImplementationOnce(() => pendingPromise as any);
+
+    renderWithProvider(<GlobalSearchBar />);
+    const trigger = screen.getByPlaceholderText(/Search invoices, customers, bills, accounts... \(⌘K\)/i);
+    fireEvent.click(trigger);
+
+    const modalInput = screen.getByPlaceholderText('Search across all invoices, quotes, bills, customers, accounts...');
+    fireEvent.change(modalInput, { target: { value: 'PendingSearch' } });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Searching .* database.../i)).toBeTruthy();
+    });
+
+    // Cleanup promise
+    resolveFetch({ ok: true, json: async () => ({ results: [] }) });
+  });
+
+  it('9. No-results state appears when backend returns an empty result list', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ results: [] }),
+    } as Response);
+
+    renderWithProvider(<GlobalSearchBar />);
+    const trigger = screen.getByPlaceholderText(/Search invoices, customers, bills, accounts... \(⌘K\)/i);
+    fireEvent.click(trigger);
+
+    const modalInput = screen.getByPlaceholderText('Search across all invoices, quotes, bills, customers, accounts...');
+    fireEvent.change(modalInput, { target: { value: 'NonExistentXYZ99' } });
+
+    await waitFor(() => {
+      expect(screen.getByText(/No matching records found for/i)).toBeTruthy();
+      expect(screen.getByText('NonExistentXYZ99')).toBeTruthy();
+    });
+  });
+
+  it('10. Clearing the input clears displayed results and returns to idle state', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        results: [
+          {
+            id: 'so-1',
+            category: 'Sales Order',
+            title: 'SO-2026-001',
+            subtitle: 'Client Order',
+            linkRoute: '/sales/orders?id=so-1',
+          },
+        ],
+      }),
+    } as Response);
+
+    renderWithProvider(<GlobalSearchBar />);
+    const trigger = screen.getByPlaceholderText(/Search invoices, customers, bills, accounts... \(⌘K\)/i);
+    fireEvent.click(trigger);
+
+    const modalInput = screen.getByPlaceholderText('Search across all invoices, quotes, bills, customers, accounts...');
+    fireEvent.change(modalInput, { target: { value: 'SO-2026' } });
+
+    await waitFor(() => {
+      expect(screen.getByText('SO-2026-001')).toBeTruthy();
+    });
+
+    // Clear input
+    fireEvent.change(modalInput, { target: { value: '' } });
+
+    await waitFor(() => {
+      expect(screen.queryByText('SO-2026-001')).toBeNull();
+      expect(screen.getByText(/Search Organization Workspace/i)).toBeTruthy();
+    });
+  });
+
+  it('11. Stale older response cannot overwrite a newer search result (controlled deferred promises)', async () => {
+    let resolveFirst: (value: any) => void = () => {};
+    const firstPromise = new Promise((resolve) => {
+      resolveFirst = resolve;
+    });
+
+    let resolveSecond: (value: any) => void = () => {};
+    const secondPromise = new Promise((resolve) => {
+      resolveSecond = resolve;
+    });
+
+    vi.spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(() => firstPromise as any)
+      .mockImplementationOnce(() => secondPromise as any);
+
+    renderWithProvider(<GlobalSearchBar />);
+    const trigger = screen.getByPlaceholderText(/Search invoices, customers, bills, accounts... \(⌘K\)/i);
+    fireEvent.click(trigger);
+
+    const modalInput = screen.getByPlaceholderText('Search across all invoices, quotes, bills, customers, accounts...');
+
+    // 1st search: "OldQuery"
+    fireEvent.change(modalInput, { target: { value: 'OldQuery' } });
+    await new Promise((r) => setTimeout(r, 350));
+
+    // 2nd search: "NewQuery"
+    fireEvent.change(modalInput, { target: { value: 'NewQuery' } });
+    await new Promise((r) => setTimeout(r, 350));
+
+    // Resolve 2nd (newer) request first
+    resolveSecond({
+      ok: true,
+      json: async () => ({
+        results: [
+          {
+            id: 'new-1',
+            category: 'Invoice',
+            title: 'INV-NEW-RESULT',
+            subtitle: 'New Client',
+            linkRoute: '/sales/invoices?id=new-1',
+          },
+        ],
+      }),
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('INV-NEW-RESULT')).toBeTruthy();
+    });
+
+    // Now resolve 1st (older) request with stale data
+    resolveFirst({
+      ok: true,
+      json: async () => ({
+        results: [
+          {
+            id: 'old-1',
+            category: 'Invoice',
+            title: 'INV-OLD-STALE-RESULT',
+            subtitle: 'Old Client',
+            linkRoute: '/sales/invoices?id=old-1',
+          },
+        ],
+      }),
+    });
+
+    // Wait and verify old stale result does NOT overwrite the new result
+    await new Promise((r) => setTimeout(r, 100));
+    expect(screen.getByText('INV-NEW-RESULT')).toBeTruthy();
+    expect(screen.queryByText('INV-OLD-STALE-RESULT')).toBeNull();
+  });
+
+  it('12. Cmd+K and Ctrl+K shortcuts open Global Search palette', () => {
+    renderWithProvider(<GlobalSearchBar />);
+
+    // Press Cmd+K
+    fireEvent.keyDown(window, { key: 'k', metaKey: true });
+    expect(screen.getByPlaceholderText('Search across all invoices, quotes, bills, customers, accounts...')).toBeTruthy();
+
+    // Close palette
+    fireEvent.keyDown(window, { key: 'Escape' });
+
+    // Press Ctrl+K
+    fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
+    expect(screen.getByPlaceholderText('Search across all invoices, quotes, bills, customers, accounts...')).toBeTruthy();
+  });
+
+  it('13. Backend failure displays "Search is temporarily unavailable." and does NOT expose BooksContext cached financial data', async () => {
     vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce(new Error('Network offline'));
 
     renderWithProvider(<GlobalSearchBar />);
@@ -186,7 +348,7 @@ describe('Phase 8.3B — Real GlobalSearchBar Component & UI Regression Tests', 
     fireEvent.change(modalInput, { target: { value: 'BrokenQuery' } });
 
     await waitFor(() => {
-      expect(screen.getByText(/Failed to load search results/i)).toBeTruthy();
+      expect(screen.getByText('Search is temporarily unavailable.')).toBeTruthy();
     });
   });
 });

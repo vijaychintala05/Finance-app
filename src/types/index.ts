@@ -1020,4 +1020,31 @@ export interface CreateOrganizationInput {
   includeSampleData?: boolean;
 }
 
+export type SearchCategory =
+  | 'Invoice'
+  | 'Quotation'
+  | 'Sales Order'
+  | 'Customer'
+  | 'Vendor'
+  | 'Vendor Bill'
+  | 'Purchase Order'
+  | 'Payment Received'
+  | 'Payment Made'
+  | 'Bank Transaction'
+  | 'Account'
+  | 'Credit Note'
+  | 'Vendor Credit';
+
+export interface SearchResultItem {
+  id: string;
+  category: SearchCategory;
+  title: string;
+  subtitle: string;
+  status?: string;
+  amount?: number;
+  date?: string;
+  linkRoute: string;
+}
+
+
 

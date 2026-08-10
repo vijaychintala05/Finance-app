@@ -2,26 +2,9 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Search, FileText, User, ShoppingBag, CreditCard, ArrowRight, X, Layers, BookOpen, AlertCircle } from 'lucide-react';
 import { ApiClient } from '../../api/client';
 import { useBooks } from '../../context/BooksContext';
+import { SearchCategory, SearchResultItem as BaseSearchResultItem } from '../../types';
 
-export interface SearchResultItem {
-  id: string;
-  category:
-    | 'Invoice'
-    | 'Quotation'
-    | 'Sales Order'
-    | 'Customer'
-    | 'Vendor'
-    | 'Vendor Bill'
-    | 'Purchase Order'
-    | 'Payment Received'
-    | 'Payment Made'
-    | 'Bank Transaction'
-    | 'Account';
-  title: string;
-  subtitle: string;
-  status?: string;
-  amount?: number;
-  date?: string;
+export interface SearchResultItem extends BaseSearchResultItem {
   tabTarget: string;
 }
 
@@ -76,12 +59,12 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, is
 
     const timer = setTimeout(async () => {
       try {
-        const res = await apiClient.get<{ results: any[] }>(`/search?q=${encodeURIComponent(trimmed)}`);
+        const res = await apiClient.get<{ results: BaseSearchResultItem[] }>(`/search?q=${encodeURIComponent(trimmed)}`);
         // If a newer request occurred, discard
         if (currentSeq !== requestSeqRef.current) return;
 
         if (res.data?.results && Array.isArray(res.data.results)) {
-          const mapped: SearchResultItem[] = res.data.results.map((r: any) => {
+          const mapped: SearchResultItem[] = res.data.results.map((r: BaseSearchResultItem) => {
             let tabTarget = 'dashboard';
             if (r.category === 'Invoice') tabTarget = 'invoices';
             else if (r.category === 'Quotation') tabTarget = 'estimates';
@@ -105,6 +88,7 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, is
               status: r.status,
               amount: r.amount,
               date: r.date,
+              linkRoute: r.linkRoute,
               tabTarget,
             };
           });
@@ -114,7 +98,7 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, is
           setSelectedIndex(0);
         } else if (res.error) {
           setResults([]);
-          setError('Failed to load search results.');
+          setError('Search is temporarily unavailable.');
           setLoading(false);
         } else {
           setResults([]);
@@ -125,7 +109,7 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, is
         // If a newer request occurred, discard
         if (currentSeq !== requestSeqRef.current) return;
         setResults([]);
-        setError('Failed to load search results.');
+        setError('Search is temporarily unavailable.');
         setLoading(false);
       }
     }, 300);
@@ -137,9 +121,10 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, is
   const groupedResults = useMemo(() => {
     const groups: { [key: string]: SearchResultItem[] } = {};
     results.forEach((item) => {
-      const cat = item.category;
-      if (!groups[cat]) groups[cat] = [];
-      groups[cat].push(item);
+      if (!groups[item.category]) {
+        groups[item.category] = [];
+      }
+      groups[item.category].push(item);
     });
     return groups;
   }, [results]);
@@ -169,16 +154,18 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, is
     }
   };
 
-  const getCategoryIcon = (category: string) => {
+  const getCategoryIcon = (category: SearchCategory | string) => {
     switch (category) {
       case 'Invoice':
       case 'Quotation':
+      case 'Credit Note':
         return <FileText className="w-4 h-4 text-blue-500" />;
       case 'Customer':
       case 'Vendor':
         return <User className="w-4 h-4 text-purple-500" />;
       case 'Vendor Bill':
       case 'Purchase Order':
+      case 'Vendor Credit':
         return <ShoppingBag className="w-4 h-4 text-amber-500" />;
       case 'Payment Received':
       case 'Payment Made':
@@ -326,7 +313,15 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, is
                                 </p>
                               </div>
                             </div>
-                            <ArrowRight className="w-4 h-4 text-slate-400 shrink-0 ml-2" />
+
+                            <div className="flex items-center gap-2 shrink-0">
+                              {item.date && (
+                                <span className="text-[10px] text-slate-400 dark:text-slate-500 hidden sm:inline">
+                                  {item.date}
+                                </span>
+                              )}
+                              <ArrowRight className={`w-3.5 h-3.5 ${isSelected ? 'text-blue-600 dark:text-blue-400' : 'text-slate-300 dark:text-slate-600'}`} />
+                            </div>
                           </div>
                         );
                       })}
@@ -336,7 +331,7 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, is
               )}
             </div>
 
-            {/* Bottom Keyboard Guide */}
+            {/* Footer Shortcut Info */}
             <div className="px-4 py-2.5 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-[11px] text-slate-400">
               <div className="flex items-center gap-3">
                 <span>
@@ -347,7 +342,9 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, is
                   <kbd className="px-1 py-0.5 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded text-[10px]">↵</kbd> Select
                 </span>
               </div>
-              <span>Organization: <strong className="text-slate-600 dark:text-slate-300 font-semibold">{currentOrg?.name || 'Workspace'}</strong></span>
+              <span>
+                Organization: <strong className="text-slate-600 dark:text-slate-300 font-semibold">{currentOrg?.name || 'Primary Organization'}</strong>
+              </span>
             </div>
           </div>
         </div>

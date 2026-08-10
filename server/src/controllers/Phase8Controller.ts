@@ -26,7 +26,7 @@ export class Phase8Controller {
       res.status(201).json({ item });
     } catch (err: any) {
       const msg = err.message || 'Failed to create item';
-      const status = msg.includes('required') || msg.includes('exists') || msg.includes('non-negative') ? 400 : 500;
+      const status = msg.includes('required') || msg.includes('exists') || msg.includes('non-negative') || msg.includes('between') || msg.includes('cannot be empty') ? 400 : 500;
       res.status(status).json({ error: msg });
     }
   }
@@ -48,7 +48,7 @@ export class Phase8Controller {
       res.json({ item });
     } catch (err: any) {
       const msg = err.message || 'Failed to update item';
-      const status = msg.includes('not found') ? 404 : msg.includes('required') || msg.includes('exists') || msg.includes('non-negative') ? 400 : 500;
+      const status = msg.includes('not found') ? 404 : msg.includes('required') || msg.includes('exists') || msg.includes('non-negative') || msg.includes('between') || msg.includes('cannot be empty') ? 400 : 500;
       res.status(status).json({ error: msg });
     }
   }

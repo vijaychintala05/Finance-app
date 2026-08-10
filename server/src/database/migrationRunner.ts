@@ -812,6 +812,8 @@ export class MigrationRunner {
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       )`,
 
+      `CREATE UNIQUE INDEX IF NOT EXISTS uk_items_org_sku ON items (organization_id, LOWER(sku)) WHERE sku IS NOT NULL AND sku != ''`,
+
       `CREATE TABLE IF NOT EXISTS quotation_revisions (
         id VARCHAR(64) PRIMARY KEY,
         organization_id VARCHAR(64) NOT NULL,

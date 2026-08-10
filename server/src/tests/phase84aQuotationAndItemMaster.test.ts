@@ -8,7 +8,7 @@ import { QuotationEngine, QuotationLineItem } from '../sales/QuotationEngine';
 
 const request = supertest(app);
 
-describe('Phase 8.4A — Quotation & Item/Service Master Production Foundation Tests', () => {
+describe('Phase 8.4A.1 — Quotation & Item Master Production Calculation & Integrity Corrections', () => {
   const originalEnv = process.env.NODE_ENV;
   let tokenOrgA: string;
   let orgIdA: string;
@@ -197,7 +197,7 @@ describe('Phase 8.4A — Quotation & Item/Service Master Production Foundation T
       });
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toContain('non-negative');
+    expect(res.body.error).toContain('between 0 and 100');
   });
 
   it('8. Inactive item excluded from default new-document selection', async () => {
@@ -256,7 +256,7 @@ describe('Phase 8.4A — Quotation & Item/Service Master Production Foundation T
       items: [
         {
           itemId: refItem.id,
-          itemName: refItem.name,
+          name: refItem.name,
           quantity: 1,
           rate: 5000,
           taxRate: 18,
@@ -306,7 +306,7 @@ describe('Phase 8.4A — Quotation & Item/Service Master Production Foundation T
       items: [
         {
           itemId: masterItem.id,
-          itemName: masterItem.name,
+          name: masterItem.name,
           hsnSac: masterItem.hsnSac,
           unit: masterItem.unit,
           quantity: 2,
@@ -356,7 +356,7 @@ describe('Phase 8.4A — Quotation & Item/Service Master Production Foundation T
     expect(totals.totalAmount).toBe(1100);
   });
 
-  it('15. Backend calculates quotation totals', () => {
+  it('15. Backend calculates quotation totals with pre-tax overall discount (Corrected Math)', () => {
     const items: QuotationLineItem[] = [
       { name: 'Service A', quantity: 2, rate: 5000, taxRate: 18 },
       { name: 'Service B', quantity: 1, rate: 10000, taxRate: 18 },
@@ -366,8 +366,8 @@ describe('Phase 8.4A — Quotation & Item/Service Master Production Foundation T
     expect(totals.subtotal).toBe(20000);
     expect(totals.overallDiscount).toBe(2000);
     expect(totals.taxableTotal).toBe(18000);
-    expect(totals.taxTotal).toBe(3600); // 18000 * 18%
-    expect(totals.totalAmount).toBe(21600);
+    expect(totals.taxTotal).toBe(3240); // 18000 * 18% = 3240
+    expect(totals.totalAmount).toBe(21240); // 18000 + 3240 = 21240
   });
 
   it('16. Line discount calculation correct', () => {
@@ -544,5 +544,164 @@ describe('Phase 8.4A — Quotation & Item/Service Master Production Foundation T
     expect(reloadedQ.subtotal).toBe(13000); // 10000 + 3000
     expect(reloadedQ.taxTotal).toBe(2340); // 13000 * 18%
     expect(reloadedQ.totalAmount).toBe(15340);
+  });
+
+  // --- PHASE 8.4A.1 CORRECTION & ENHANCEMENT TESTS ---
+
+  it('26. Multiple lines with different GST rates + overall discount proportional allocation', () => {
+    const items: QuotationLineItem[] = [
+      { name: 'Line 1 (18% GST)', quantity: 1, rate: 10000, taxRate: 18 }, // 50% of subtotal
+      { name: 'Line 2 (12% GST)', quantity: 1, rate: 10000, taxRate: 12 }, // 50% of subtotal
+    ];
+    // Subtotal: 20,000. Overall discount: 2,000.
+    // Line 1 net taxable: 9,000 @ 18% = 1,620 tax.
+    // Line 2 net taxable: 9,000 @ 12% = 1,080 tax.
+    // Total Tax: 2,700. Grand Total: 18,000 + 2,700 = 20,700.
+    const totals = QuotationEngine.calculateQuotationTotals(items, 2000, false, 0);
+
+    expect(totals.subtotal).toBe(20000);
+    expect(totals.taxableTotal).toBe(18000);
+    expect(items[0].taxableAmount).toBe(9000);
+    expect(items[0].taxAmount).toBe(1620);
+    expect(items[1].taxableAmount).toBe(9000);
+    expect(items[1].taxAmount).toBe(1080);
+    expect(totals.taxTotal).toBe(2700);
+    expect(totals.totalAmount).toBe(20700);
+  });
+
+  it('27. Overall discount = 0 calculation', () => {
+    const items: QuotationLineItem[] = [
+      { name: 'Line 1', quantity: 1, rate: 5000, taxRate: 18 },
+    ];
+    const totals = QuotationEngine.calculateQuotationTotals(items, 0, false, 0);
+
+    expect(totals.subtotal).toBe(5000);
+    expect(totals.overallDiscount).toBe(0);
+    expect(totals.taxTotal).toBe(900);
+    expect(totals.totalAmount).toBe(5900);
+  });
+
+  it('28. Overall discount greater than subtotal is rejected', () => {
+    const items: QuotationLineItem[] = [
+      { name: 'Line 1', quantity: 1, rate: 5000, taxRate: 18 },
+    ];
+    expect(() => QuotationEngine.calculateQuotationTotals(items, 6000, false, 0)).toThrow('Overall discount (6000) cannot exceed quotation subtotal (5000)');
+  });
+
+  it('29. GST-inclusive quotation with overall discount', () => {
+    const items: QuotationLineItem[] = [
+      { name: 'Inclusive Item', quantity: 1, rate: 11800, taxRate: 18 },
+    ];
+    // Gross subtotal: 11800. Overall discount: 1180.
+    // Net total payable: 10620 (Base: 9000 + Tax: 1620).
+    const totals = QuotationEngine.calculateQuotationTotals(items, 1180, true, 0);
+    expect(totals.subtotal).toBe(11800);
+    expect(totals.overallDiscount).toBe(1180);
+    expect(totals.taxableTotal).toBe(9000);
+    expect(totals.taxTotal).toBe(1620);
+    expect(totals.totalAmount).toBe(10620);
+  });
+
+  it('30. Line validation rejects invalid line inputs', () => {
+    // Zero/negative quantity
+    expect(() => QuotationEngine.validateQuotationLines([{ name: 'Test', quantity: 0, rate: 100 }]))
+      .toThrow('Quantity must be greater than 0');
+
+    // Negative rate
+    expect(() => QuotationEngine.validateQuotationLines([{ name: 'Test', quantity: 1, rate: -10 }]))
+      .toThrow('Rate must be a non-negative number');
+
+    // Discount amount exceeds line gross
+    expect(() => QuotationEngine.validateQuotationLines([{ name: 'Test', quantity: 1, rate: 100, discountAmount: 150 }]))
+      .toThrow('Discount amount cannot exceed line gross value');
+
+    // Tax rate > 100%
+    expect(() => QuotationEngine.validateQuotationLines([{ name: 'Test', quantity: 1, rate: 100, taxRate: 150 }]))
+      .toThrow('Tax rate must be between 0 and 100');
+
+    // Missing name
+    expect(() => QuotationEngine.validateQuotationLines([{ name: '   ', quantity: 1, rate: 100 }]))
+      .toThrow('Line item name or title is required');
+  });
+
+  it('31. Cross-organization itemId reference rejection', async () => {
+    const itemB = await ItemMasterService.createItem(orgIdB, {
+      name: 'Org B Item',
+      salesRate: 1000,
+    });
+
+    // Org A attempts to create quotation referencing Org B's itemId
+    await expect(
+      QuotationEngine.createQuotation(orgIdA, {
+        customerName: 'Sneaky Client',
+        items: [
+          {
+            itemId: itemB.id,
+            name: 'Attempted Org B Item',
+            quantity: 1,
+            rate: 1000,
+          },
+        ],
+      })
+    ).rejects.toThrow(`Item ${itemB.id} does not belong to organization ${orgIdA}`);
+  });
+
+  it('32. Creating new quotation using an inactive item is rejected', async () => {
+    const inactiveItem = await ItemMasterService.createItem(orgIdA, {
+      name: 'Retired Model X',
+      salesRate: 2000,
+      isActive: false,
+    });
+
+    await expect(
+      QuotationEngine.createQuotation(orgIdA, {
+        customerName: 'Test Client',
+        items: [
+          {
+            itemId: inactiveItem.id,
+            name: inactiveItem.name,
+            quantity: 1,
+            rate: inactiveItem.salesRate,
+          },
+        ],
+      })
+    ).rejects.toThrow(`Item ${inactiveItem.id} ("Retired Model X") is inactive and cannot be selected for new quotations`);
+  });
+
+  it('33. Concurrent SKU uniqueness database constraint protection', async () => {
+    const sku = `CONCUR-SKU-${Date.now()}`;
+    await ItemMasterService.createItem(orgIdA, { name: 'SKU Item 1', sku });
+
+    // Attempting direct DB insert with same SKU (case-insensitive) should trigger UK constraint violation
+    await expect(
+      db.query(
+        `INSERT INTO items (id, organization_id, name, sku, unit, sales_rate, is_active) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [`item-dup-${Date.now()}`, orgIdA, 'SKU Item 2', sku.toLowerCase(), 'Pcs', 100, true]
+      )
+    ).rejects.toThrow();
+  });
+
+  it('34. Money precision test with fractional quantities and rates', () => {
+    const items: QuotationLineItem[] = [
+      { name: 'Custom Fabrication', quantity: 2.5, rate: 199.99, taxRate: 18 },
+    ];
+    // Gross: 2.5 * 199.99 = 499.975 -> rounded 499.98
+    // Tax: 499.98 * 0.18 = 89.9964 -> rounded 90.00
+    // Total: 499.98 + 90.00 = 589.98
+    const totals = QuotationEngine.calculateQuotationTotals(items);
+
+    expect(items[0].taxableAmount).toBe(499.98);
+    expect(items[0].taxAmount).toBe(90.00);
+    expect(totals.totalAmount).toBe(589.98);
+  });
+
+  it('35. Item Master GST rate validation rejects rates > 100% or < 0%', async () => {
+    await expect(
+      ItemMasterService.createItem(orgIdA, {
+        name: 'Invalid GST Item',
+        salesRate: 100,
+        gstRate: 150,
+      })
+    ).rejects.toThrow('GST rate must be between 0 and 100');
   });
 });

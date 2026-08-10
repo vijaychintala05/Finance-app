@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { db } from '../database/db';
 import { DocumentNumberingEngine } from '../services/DocumentNumberingEngine';
+import { ItemMasterService } from '../services/ItemMasterService';
 import { SalesEngine, EstimateModel, SalesOrderModel, InvoiceModel } from './SalesEngine';
 
 export interface QuotationLineItem {
@@ -15,6 +16,7 @@ export interface QuotationLineItem {
   rate: number;
   discountPercent?: number;
   discountAmount?: number;
+  allocatedOverallDiscount?: number;
   taxableAmount?: number;
   taxRate?: number;
   taxAmount?: number;
@@ -54,8 +56,87 @@ export interface QuotationTemplateModel {
 }
 
 export class QuotationEngine {
+  private static roundMoney(val: number): number {
+    return Math.round((Number(val) + Number.EPSILON) * 100) / 100;
+  }
+
   /**
-   * Calculate totals with support for line discount, overall discount, GST inclusive/exclusive, and rounding
+   * Validate quotation line items authoritatively
+   */
+  public static validateQuotationLines(items: QuotationLineItem[]) {
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      throw new Error('Quotation must contain at least one line item');
+    }
+
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const name = item.name || item.itemName;
+      if (!name || typeof name !== 'string' || !name.trim()) {
+        throw new Error(`Line ${i + 1}: Line item name or title is required`);
+      }
+
+      const unit = item.unit;
+      if (unit !== undefined && (typeof unit !== 'string' || !unit.trim())) {
+        throw new Error(`Line ${i + 1}: Unit cannot be empty`);
+      }
+
+      const qty = Number(item.quantity);
+      if (isNaN(qty) || qty <= 0) {
+        throw new Error(`Line ${i + 1}: Quantity must be greater than 0`);
+      }
+
+      const rate = Number(item.rate);
+      if (isNaN(rate) || rate < 0) {
+        throw new Error(`Line ${i + 1}: Rate must be a non-negative number`);
+      }
+
+      const discPct = Number(item.discountPercent || 0);
+      if (isNaN(discPct) || discPct < 0 || discPct > 100) {
+        throw new Error(`Line ${i + 1}: Discount percentage must be between 0 and 100`);
+      }
+
+      const gross = qty * rate;
+      const discAmt = Number(item.discountAmount || 0);
+      if (isNaN(discAmt) || discAmt < 0) {
+        throw new Error(`Line ${i + 1}: Discount amount cannot be negative`);
+      }
+      if (discAmt > gross) {
+        throw new Error(`Line ${i + 1}: Discount amount cannot exceed line gross value`);
+      }
+
+      const taxRate = Number(item.taxRate || 0);
+      if (isNaN(taxRate) || taxRate < 0 || taxRate > 100) {
+        throw new Error(`Line ${i + 1}: Tax rate must be between 0 and 100`);
+      }
+    }
+  }
+
+  /**
+   * Validate cross-organization item references and active status
+   */
+  public static async validateItemReferences(orgId: string, items: QuotationLineItem[], isNewQuotation: boolean = true) {
+    for (const item of items) {
+      if (item.itemId) {
+        let masterItem;
+        try {
+          masterItem = await ItemMasterService.getItem(orgId, item.itemId);
+        } catch {
+          throw new Error(`Item ${item.itemId} does not belong to organization ${orgId}`);
+        }
+
+        if (masterItem.organizationId !== orgId) {
+          throw new Error(`Item ${item.itemId} does not belong to organization ${orgId}`);
+        }
+
+        if (isNewQuotation && !masterItem.isActive) {
+          throw new Error(`Item ${item.itemId} ("${masterItem.name}") is inactive and cannot be selected for new quotations`);
+        }
+      }
+    }
+  }
+
+  /**
+   * Calculate totals with support for line discount, proportional overall discount allocation, GST inclusive/exclusive, and rounding
    */
   public static calculateQuotationTotals(
     items: QuotationLineItem[],
@@ -63,8 +144,24 @@ export class QuotationEngine {
     isGstInclusive: boolean = false,
     roundOff: number = 0
   ) {
-    let subtotal = 0;
-    let taxTotal = 0;
+    this.validateQuotationLines(items);
+
+    const ovDisc = this.roundMoney(overallDiscount);
+    if (ovDisc < 0) {
+      throw new Error('Overall discount cannot be negative');
+    }
+
+    // Step 1: Pre-calculate line gross and line discounts
+    const linePreTotals: Array<{
+      qty: number;
+      rate: number;
+      gross: number;
+      lineDiscAmt: number;
+      lineTaxablePreDocDisc: number;
+      taxRate: number;
+    }> = [];
+
+    let subtotalPreDocDisc = 0;
     let lineDiscountsTotal = 0;
 
     for (const item of items) {
@@ -73,58 +170,107 @@ export class QuotationEngine {
       if (!item.name && item.itemName) item.name = item.itemName;
       if (!item.unit) item.unit = 'Pcs';
 
-      const qty = Math.max(0, Number(item.quantity) || 0);
-      const rate = Math.max(0, Number(item.rate) || 0);
+      const qty = this.roundMoney(item.quantity);
+      const rate = this.roundMoney(item.rate);
+      const gross = this.roundMoney(qty * rate);
+
       const discPct = Math.max(0, Math.min(100, Number(item.discountPercent) || 0));
-      const discAmt = Math.max(0, Number(item.discountAmount) || Math.round((qty * rate * (discPct / 100)) * 100) / 100);
-      
-      const lineGross = qty * rate;
-      const lineNet = Math.max(0, lineGross - discAmt);
+      let discAmt = 0;
+      if (item.discountAmount !== undefined && Number(item.discountAmount) > 0) {
+        discAmt = this.roundMoney(item.discountAmount);
+      } else if (discPct > 0) {
+        discAmt = this.roundMoney(gross * (discPct / 100));
+      }
+      discAmt = Math.min(discAmt, gross);
+
+      const lineTaxablePreDocDisc = this.roundMoney(gross - discAmt);
       const taxRate = Math.max(0, Number(item.taxRate) || 0);
 
-      item.quantity = qty;
-      item.rate = rate;
-      item.discountPercent = discPct;
-      item.discountAmount = Math.round(discAmt * 100) / 100;
-      item.taxableAmount = Math.round(lineNet * 100) / 100;
-      item.taxRate = taxRate;
-      lineDiscountsTotal += item.discountAmount;
+      subtotalPreDocDisc += lineTaxablePreDocDisc;
+      lineDiscountsTotal += discAmt;
+
+      linePreTotals.push({
+        qty,
+        rate,
+        gross,
+        lineDiscAmt: discAmt,
+        lineTaxablePreDocDisc,
+        taxRate,
+      });
+    }
+
+    subtotalPreDocDisc = this.roundMoney(subtotalPreDocDisc);
+    lineDiscountsTotal = this.roundMoney(lineDiscountsTotal);
+
+    if (ovDisc > subtotalPreDocDisc) {
+      throw new Error(`Overall discount (${ovDisc}) cannot exceed quotation subtotal (${subtotalPreDocDisc})`);
+    }
+
+    // Step 2: Allocate overall discount proportionally across lines
+    let allocatedSum = 0;
+    let taxTotal = 0;
+
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const pre = linePreTotals[i];
+
+      let lineAllocatedDocDisc = 0;
+      if (subtotalPreDocDisc > 0 && ovDisc > 0) {
+        if (i === items.length - 1) {
+          lineAllocatedDocDisc = this.roundMoney(ovDisc - allocatedSum);
+        } else {
+          lineAllocatedDocDisc = this.roundMoney((pre.lineTaxablePreDocDisc / subtotalPreDocDisc) * ovDisc);
+          allocatedSum += lineAllocatedDocDisc;
+        }
+      }
+
+      const netLineTaxable = this.roundMoney(pre.lineTaxablePreDocDisc - lineAllocatedDocDisc);
+
+      item.quantity = pre.qty;
+      item.rate = pre.rate;
+      item.discountAmount = pre.lineDiscAmt;
+      item.discountPercent = pre.gross > 0 ? this.roundMoney((pre.lineDiscAmt / pre.gross) * 100) : 0;
+      item.allocatedOverallDiscount = lineAllocatedDocDisc;
+      item.taxRate = pre.taxRate;
 
       if (isGstInclusive) {
-        const baseAmount = lineNet / (1 + taxRate / 100);
-        const itemTax = lineNet - baseAmount;
-        const roundBase = Math.round(baseAmount * 100) / 100;
-        const roundTax = Math.round(itemTax * 100) / 100;
-        subtotal += roundBase;
+        const baseAmount = netLineTaxable / (1 + pre.taxRate / 100);
+        const itemTax = netLineTaxable - baseAmount;
+        const roundBase = this.roundMoney(baseAmount);
+        const roundTax = this.roundMoney(itemTax);
         taxTotal += roundTax;
         item.taxableAmount = roundBase;
         item.taxAmount = roundTax;
-        item.totalAmount = Math.round(lineNet * 100) / 100;
+        item.totalAmount = this.roundMoney(netLineTaxable);
         item.lineTotal = item.totalAmount;
       } else {
-        const itemTax = lineNet * (taxRate / 100);
-        const roundTax = Math.round(itemTax * 100) / 100;
-        const roundTotal = Math.round((lineNet + roundTax) * 100) / 100;
-        subtotal += item.taxableAmount;
+        const itemTax = netLineTaxable * (pre.taxRate / 100);
+        const roundTax = this.roundMoney(itemTax);
+        const roundTotal = this.roundMoney(netLineTaxable + roundTax);
         taxTotal += roundTax;
+        item.taxableAmount = netLineTaxable;
         item.taxAmount = roundTax;
         item.totalAmount = roundTotal;
         item.lineTotal = roundTotal;
       }
     }
 
-    const ovDisc = Math.max(0, Number(overallDiscount) || 0);
-    const taxableTotal = Math.max(0, subtotal - ovDisc);
-    const grossTotal = taxableTotal + taxTotal;
-    const finalTotal = Math.round((grossTotal + (Number(roundOff) || 0)) * 100) / 100;
+    taxTotal = this.roundMoney(taxTotal);
+    const roundOffAmount = this.roundMoney(roundOff);
+    const taxableTotal = isGstInclusive
+      ? this.roundMoney(items.reduce((sum, it) => sum + (it.taxableAmount || 0), 0))
+      : this.roundMoney(subtotalPreDocDisc - ovDisc);
+    const finalTotal = isGstInclusive
+      ? this.roundMoney(items.reduce((sum, it) => sum + (it.totalAmount || 0), 0) + roundOffAmount)
+      : this.roundMoney(taxableTotal + taxTotal + roundOffAmount);
 
     return {
-      subtotal: Math.round(subtotal * 100) / 100,
-      lineDiscountsTotal: Math.round(lineDiscountsTotal * 100) / 100,
-      taxableTotal: Math.round(taxableTotal * 100) / 100,
-      taxTotal: Math.round(taxTotal * 100) / 100,
-      overallDiscount: Math.round(ovDisc * 100) / 100,
-      roundOffAmount: Math.round((Number(roundOff) || 0) * 100) / 100,
+      subtotal: subtotalPreDocDisc,
+      lineDiscountsTotal,
+      overallDiscount: ovDisc,
+      taxableTotal,
+      taxTotal,
+      roundOffAmount,
       totalAmount: finalTotal,
     };
   }
@@ -137,6 +283,10 @@ export class QuotationEngine {
     data: Partial<DetailedQuotationModel>,
     createdBy: string = 'User'
   ): Promise<DetailedQuotationModel> {
+    const items: QuotationLineItem[] = data.items || data.lineItems || [];
+    this.validateQuotationLines(items);
+    await this.validateItemReferences(orgId, items, true);
+
     const id = data.id || `est-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
     const now = new Date().toISOString();
     const issueDate = data.issueDate || now.split('T')[0];
@@ -144,7 +294,6 @@ export class QuotationEngine {
     const estNumber = data.estimateNumber || (await DocumentNumberingEngine.getNextNumber(orgId, 'QUOTATION', issueDate));
     const publicToken = data.publicToken || crypto.randomBytes(24).toString('hex');
 
-    const items: QuotationLineItem[] = data.items || data.lineItems || [];
     const totals = this.calculateQuotationTotals(
       items,
       data.overallDiscount || data.discount || 0,
@@ -215,7 +364,7 @@ export class QuotationEngine {
       estimateNumber: estNumber,
       revisionNumber: 0,
       customerId: data.customerId || '',
-      customerName: data.customerName || 'Valued Customer',
+      customerName: data.customerName || (data as any).clientName || 'Valued Customer',
       issueDate,
       expiryDate,
       subtotal: totals.subtotal,
@@ -262,6 +411,9 @@ export class QuotationEngine {
     }
 
     const items: QuotationLineItem[] = newData.items || newData.lineItems || storedItems;
+    this.validateQuotationLines(items);
+    await this.validateItemReferences(orgId, items, false);
+
     const totals = this.calculateQuotationTotals(
       items,
       newData.overallDiscount !== undefined ? newData.overallDiscount : (q.overall_discount || q.discount || 0),
@@ -293,7 +445,6 @@ export class QuotationEngine {
       ]
     );
 
-    // Record revision
     await db.query(
       `INSERT INTO quotation_revisions (id, organization_id, quotation_id, revision_number, revision_data, total_amount, status, change_summary, created_by, created_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
@@ -366,7 +517,6 @@ export class QuotationEngine {
     if (res.rows.length === 0) throw new Error(`Invalid or expired quotation token`);
     const q = res.rows[0];
 
-    // Auto mark as VIEWED if in SENT status
     if (q.status === 'SENT') {
       await db.query(`UPDATE estimates SET status = 'VIEWED' WHERE id = $1`, [q.id]);
       q.status = 'VIEWED';
@@ -466,7 +616,6 @@ export class QuotationEngine {
       notes: `Converted from Quotation ${q.estimateNumber}`,
     });
 
-    // Mark quotation as ACCEPTED / CONVERTED
     await db.query(`UPDATE estimates SET status = 'CONVERTED' WHERE organization_id = $1 AND id = $2`, [orgId, quotationId]);
 
     return so;

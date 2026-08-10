@@ -40,8 +40,11 @@ export class ItemMasterService {
       throw new Error('Purchase rate must be a non-negative number');
     }
 
-    if (data.gstRate !== undefined && (isNaN(Number(data.gstRate)) || Number(data.gstRate) < 0)) {
-      throw new Error('GST rate must be a non-negative number');
+    if (data.gstRate !== undefined) {
+      const rate = Number(data.gstRate);
+      if (isNaN(rate) || rate < 0 || rate > 100) {
+        throw new Error('GST rate must be between 0 and 100');
+      }
     }
   }
 
@@ -203,25 +206,58 @@ export class ItemMasterService {
   public static async deleteItem(orgId: string, id: string): Promise<{ success: boolean; archived: boolean; message: string }> {
     await this.getItem(orgId, id); // Verify item exists in org
 
-    // Safe reference check across estimates and other document tables
+    // Reliable structured JSON item reference check across document tables
     let isReferenced = false;
-    try {
-      const checkEstimates = await db.query(
-        `SELECT 1 FROM estimates WHERE organization_id = $1 AND (CAST(items AS TEXT) LIKE $2 OR CAST(line_items AS TEXT) LIKE $2) LIMIT 1`,
-        [orgId, `%${id}%`]
-      );
-      if (checkEstimates.rows.length > 0) isReferenced = true;
-    } catch {
-      // Ignore if table/column does not exist
+
+    const checkTableForItemId = async (tableName: string, jsonCols: string[]) => {
+      try {
+        const res = await db.query(`SELECT ${jsonCols.join(', ')} FROM ${tableName} WHERE organization_id = $1`, [orgId]);
+        for (const row of res.rows) {
+          for (const col of jsonCols) {
+            const val = row[col];
+            if (!val) continue;
+            let list: any[] = [];
+            if (typeof val === 'string') {
+              try { list = JSON.parse(val); } catch { list = []; }
+            } else if (Array.isArray(val)) {
+              list = val;
+            }
+            if (list.some((item: any) => item && (item.itemId === id || item.id === id))) {
+              return true;
+            }
+          }
+        }
+      } catch {
+        // Table or column doesn't exist in current environment schema
+      }
+      return false;
+    };
+
+    const tablesToCheck = [
+      { name: 'estimates', cols: ['items', 'line_items'] },
+      { name: 'invoices', cols: ['items', 'line_items'] },
+      { name: 'sales_orders', cols: ['line_items', 'items'] },
+      { name: 'bills', cols: ['line_items', 'items'] },
+      { name: 'purchase_orders', cols: ['line_items', 'items'] },
+      { name: 'credit_notes', cols: ['line_items', 'items'] },
+      { name: 'vendor_credits', cols: ['line_items', 'items'] },
+      { name: 'delivery_challans', cols: ['line_items', 'items'] },
+    ];
+
+    for (const tbl of tablesToCheck) {
+      if (await checkTableForItemId(tbl.name, tbl.cols)) {
+        isReferenced = true;
+        break;
+      }
     }
 
     if (!isReferenced) {
       try {
-        const checkInvoices = await db.query(
-          `SELECT 1 FROM invoice_items WHERE organization_id = $1 AND (description LIKE $2 OR id = $3) LIMIT 1`,
-          [orgId, `%${id}%`, id]
+        const invItemsRes = await db.query(
+          `SELECT 1 FROM invoice_items ii JOIN invoices i ON ii.invoice_id = i.id WHERE i.organization_id = $1 AND ii.id = $2 LIMIT 1`,
+          [orgId, id]
         );
-        if (checkInvoices.rows.length > 0) isReferenced = true;
+        if (invItemsRes.rows.length > 0) isReferenced = true;
       } catch {
         // Ignore
       }

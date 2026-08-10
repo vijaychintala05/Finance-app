@@ -11,11 +11,11 @@ export class Phase8Controller {
   public static async getItems(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const orgId = req.auth!.organizationId;
-      const { search } = req.query;
-      const items = await ItemMasterService.listItems(orgId, search as string);
+      const { search, includeInactive } = req.query;
+      const items = await ItemMasterService.listItems(orgId, search as string, includeInactive === 'true');
       res.json({ items });
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: err.message || 'Failed to list items' });
     }
   }
 
@@ -25,7 +25,9 @@ export class Phase8Controller {
       const item = await ItemMasterService.createItem(orgId, req.body);
       res.status(201).json({ item });
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      const msg = err.message || 'Failed to create item';
+      const status = msg.includes('required') || msg.includes('exists') || msg.includes('non-negative') ? 400 : 500;
+      res.status(status).json({ error: msg });
     }
   }
 
@@ -35,7 +37,7 @@ export class Phase8Controller {
       const item = await ItemMasterService.getItem(orgId, req.params.id);
       res.json({ item });
     } catch (err: any) {
-      res.status(404).json({ error: err.message });
+      res.status(404).json({ error: err.message || 'Item not found' });
     }
   }
 
@@ -45,17 +47,21 @@ export class Phase8Controller {
       const item = await ItemMasterService.updateItem(orgId, req.params.id, req.body);
       res.json({ item });
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      const msg = err.message || 'Failed to update item';
+      const status = msg.includes('not found') ? 404 : msg.includes('required') || msg.includes('exists') || msg.includes('non-negative') ? 400 : 500;
+      res.status(status).json({ error: msg });
     }
   }
 
   public static async deleteItem(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const orgId = req.auth!.organizationId;
-      await ItemMasterService.deleteItem(orgId, req.params.id);
-      res.json({ success: true, message: `Item ${req.params.id} deleted` });
+      const result = await ItemMasterService.deleteItem(orgId, req.params.id);
+      res.json(result);
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      const msg = err.message || 'Failed to delete item';
+      const status = msg.includes('not found') ? 404 : 500;
+      res.status(status).json({ error: msg });
     }
   }
 

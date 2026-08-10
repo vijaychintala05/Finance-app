@@ -4,18 +4,22 @@ import { DocumentNumberingEngine } from '../services/DocumentNumberingEngine';
 import { SalesEngine, EstimateModel, SalesOrderModel, InvoiceModel } from './SalesEngine';
 
 export interface QuotationLineItem {
+  id?: string;
   itemId?: string;
-  itemName: string;
+  itemName?: string;
+  name?: string;
   description?: string;
   hsnSac?: string;
   quantity: number;
-  unit: string;
+  unit?: string;
   rate: number;
   discountPercent?: number;
   discountAmount?: number;
+  taxableAmount?: number;
   taxRate?: number;
   taxAmount?: number;
-  totalAmount: number;
+  lineTotal?: number;
+  totalAmount?: number;
 }
 
 export interface DetailedQuotationModel extends EstimateModel {
@@ -61,42 +65,66 @@ export class QuotationEngine {
   ) {
     let subtotal = 0;
     let taxTotal = 0;
+    let lineDiscountsTotal = 0;
 
     for (const item of items) {
-      const qty = Number(item.quantity) || 0;
-      const rate = Number(item.rate) || 0;
-      const discPct = Number(item.discountPercent) || 0;
-      const discAmt = Number(item.discountAmount) || (qty * rate * (discPct / 100));
+      if (!item.id) item.id = `qitem-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+      if (!item.itemName && item.name) item.itemName = item.name;
+      if (!item.name && item.itemName) item.name = item.itemName;
+      if (!item.unit) item.unit = 'Pcs';
+
+      const qty = Math.max(0, Number(item.quantity) || 0);
+      const rate = Math.max(0, Number(item.rate) || 0);
+      const discPct = Math.max(0, Math.min(100, Number(item.discountPercent) || 0));
+      const discAmt = Math.max(0, Number(item.discountAmount) || Math.round((qty * rate * (discPct / 100)) * 100) / 100);
       
-      const lineNet = (qty * rate) - discAmt;
-      const taxRate = Number(item.taxRate) || 0;
+      const lineGross = qty * rate;
+      const lineNet = Math.max(0, lineGross - discAmt);
+      const taxRate = Math.max(0, Number(item.taxRate) || 0);
+
+      item.quantity = qty;
+      item.rate = rate;
+      item.discountPercent = discPct;
+      item.discountAmount = Math.round(discAmt * 100) / 100;
+      item.taxableAmount = Math.round(lineNet * 100) / 100;
+      item.taxRate = taxRate;
+      lineDiscountsTotal += item.discountAmount;
 
       if (isGstInclusive) {
-        // Tax is included in the line rate
         const baseAmount = lineNet / (1 + taxRate / 100);
         const itemTax = lineNet - baseAmount;
-        subtotal += baseAmount;
-        taxTotal += itemTax;
-        item.taxAmount = itemTax;
-        item.totalAmount = lineNet;
+        const roundBase = Math.round(baseAmount * 100) / 100;
+        const roundTax = Math.round(itemTax * 100) / 100;
+        subtotal += roundBase;
+        taxTotal += roundTax;
+        item.taxableAmount = roundBase;
+        item.taxAmount = roundTax;
+        item.totalAmount = Math.round(lineNet * 100) / 100;
+        item.lineTotal = item.totalAmount;
       } else {
         const itemTax = lineNet * (taxRate / 100);
-        subtotal += lineNet;
-        taxTotal += itemTax;
-        item.taxAmount = itemTax;
-        item.totalAmount = lineNet + itemTax;
+        const roundTax = Math.round(itemTax * 100) / 100;
+        const roundTotal = Math.round((lineNet + roundTax) * 100) / 100;
+        subtotal += item.taxableAmount;
+        taxTotal += roundTax;
+        item.taxAmount = roundTax;
+        item.totalAmount = roundTotal;
+        item.lineTotal = roundTotal;
       }
     }
 
-    const subtotalAfterOverallDisc = Math.max(0, subtotal - overallDiscount);
-    const grossTotal = subtotalAfterOverallDisc + taxTotal;
-    const finalTotal = Math.round((grossTotal + roundOff) * 100) / 100;
+    const ovDisc = Math.max(0, Number(overallDiscount) || 0);
+    const taxableTotal = Math.max(0, subtotal - ovDisc);
+    const grossTotal = taxableTotal + taxTotal;
+    const finalTotal = Math.round((grossTotal + (Number(roundOff) || 0)) * 100) / 100;
 
     return {
       subtotal: Math.round(subtotal * 100) / 100,
+      lineDiscountsTotal: Math.round(lineDiscountsTotal * 100) / 100,
+      taxableTotal: Math.round(taxableTotal * 100) / 100,
       taxTotal: Math.round(taxTotal * 100) / 100,
-      overallDiscount: Math.round(overallDiscount * 100) / 100,
-      roundOffAmount: Math.round(roundOff * 100) / 100,
+      overallDiscount: Math.round(ovDisc * 100) / 100,
+      roundOffAmount: Math.round((Number(roundOff) || 0) * 100) / 100,
       totalAmount: finalTotal,
     };
   }

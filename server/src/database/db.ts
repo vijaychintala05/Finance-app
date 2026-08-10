@@ -20,7 +20,7 @@ class DatabaseService {
 
   public isMemoryAllowed(): boolean {
     if (process.env.NODE_ENV === 'production') {
-      return process.env.USE_PG_MEM === 'true' && process.env.ALLOW_PROD_MEMORY === 'true';
+      return false;
     }
     return (
       process.env.NODE_ENV === 'test' ||

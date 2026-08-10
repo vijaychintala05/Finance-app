@@ -634,8 +634,8 @@ export class SalesEngine {
     const status = isPosted ? 'POSTED' : 'DRAFT';
 
     await db.query(
-      `INSERT INTO invoices (id, organization_id, invoice_number, sales_order_id, estimate_id, client_id, client_name, client_email, project_id, issue_date, due_date, subtotal, tax_total, discount, total_amount, paid_amount, balance_due, status, notes, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
+      `INSERT INTO invoices (id, organization_id, invoice_number, sales_order_id, estimate_id, client_id, client_name, client_email, project_id, issue_date, due_date, subtotal, tax_total, discount, total_amount, paid_amount, balance_due, status, notes, line_items, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
       [
         id,
         orgId,
@@ -656,25 +656,28 @@ export class SalesEngine {
         finalTotal,
         status,
         data.notes || '',
+        JSON.stringify(items),
         now,
       ]
     );
 
     // Save line items
     for (const item of items) {
+      const itemIdRef = item.itemId || item.itemIdRef || item.id || null;
       await db.query(
-        `INSERT INTO invoice_items (id, organization_id, invoice_id, description, account_id, quantity, unit_price, tax_rate, amount)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        `INSERT INTO invoice_items (id, organization_id, invoice_id, description, account_id, quantity, unit_price, tax_rate, amount, item_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
         [
           `item-${Date.now()}-${Math.random()}`,
           orgId,
           id,
-          item.description || 'Item',
+          item.description || item.name || 'Item',
           item.accountId || 'acc-sales-rev',
           item.quantity || 1,
-          item.unitPrice || 0,
+          item.unitPrice || item.rate || 0,
           item.taxRate || 0,
-          item.amount || (item.quantity || 1) * (item.unitPrice || 0),
+          item.amount || (item.quantity || 1) * (item.unitPrice || item.rate || 0),
+          itemIdRef,
         ]
       );
     }

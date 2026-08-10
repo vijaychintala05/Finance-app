@@ -866,6 +866,8 @@ export class MigrationRunner {
       `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS public_token VARCHAR(128)`,
       `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS items JSONB`,
       `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS line_items JSONB`,
+      `ALTER TABLE invoices ADD COLUMN IF NOT EXISTS line_items JSONB`,
+      `ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS item_id VARCHAR(64)`,
       `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS overall_discount NUMERIC(15, 2) DEFAULT 0.00`,
       `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS round_off_amount NUMERIC(15, 2) DEFAULT 0.00`,
       `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS is_gst_inclusive BOOLEAN DEFAULT FALSE`,

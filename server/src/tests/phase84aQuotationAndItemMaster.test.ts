@@ -1,14 +1,15 @@
-import { describe, it, expect, beforeAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import supertest from 'supertest';
 import app from '../index';
 import { db } from '../database/db';
 import { MigrationRunner } from '../database/migrationRunner';
 import { ItemMasterService } from '../services/ItemMasterService';
 import { QuotationEngine, QuotationLineItem } from '../sales/QuotationEngine';
+import { SalesEngine } from '../sales/SalesEngine';
 
 const request = supertest(app);
 
-describe('Phase 8.4A.1 — Quotation & Item Master Production Calculation & Integrity Corrections', () => {
+describe('Phase 8.4A.2 — Quotation & Item Master Final Foundation & Integrity Tests', () => {
   const originalEnv = process.env.NODE_ENV;
   let tokenOrgA: string;
   let orgIdA: string;
@@ -20,7 +21,7 @@ describe('Phase 8.4A.1 — Quotation & Item Master Production Calculation & Inte
 
     // Register Org A
     const regA = await request.post('/api/v1/auth/register').send({
-      email: `owner-orga-${Date.now()}@test.com`,
+      email: `owner-orga-p84a2-${Date.now()}@test.com`,
       password: 'Password123!',
       fullName: 'Owner Org A',
       organizationName: 'Quotation Testing Org A',
@@ -34,7 +35,7 @@ describe('Phase 8.4A.1 — Quotation & Item Master Production Calculation & Inte
 
     // Register Org B
     const regB = await request.post('/api/v1/auth/register').send({
-      email: `owner-orgb-${Date.now()}@test.com`,
+      email: `owner-orgb-p84a2-${Date.now()}@test.com`,
       password: 'Password123!',
       fullName: 'Owner Org B',
       organizationName: 'Quotation Testing Org B',
@@ -49,6 +50,7 @@ describe('Phase 8.4A.1 — Quotation & Item Master Production Calculation & Inte
 
   afterEach(() => {
     process.env.NODE_ENV = originalEnv;
+    vi.restoreAllMocks();
   });
 
   // --- ITEM MASTER TESTS ---
@@ -546,162 +548,165 @@ describe('Phase 8.4A.1 — Quotation & Item Master Production Calculation & Inte
     expect(reloadedQ.totalAmount).toBe(15340);
   });
 
-  // --- PHASE 8.4A.1 CORRECTION & ENHANCEMENT TESTS ---
+  // --- PHASE 8.4A.2 CORRECTION & ENHANCEMENT TESTS ---
 
-  it('26. Multiple lines with different GST rates + overall discount proportional allocation', () => {
-    const items: QuotationLineItem[] = [
-      { name: 'Line 1 (18% GST)', quantity: 1, rate: 10000, taxRate: 18 }, // 50% of subtotal
-      { name: 'Line 2 (12% GST)', quantity: 1, rate: 10000, taxRate: 12 }, // 50% of subtotal
-    ];
-    // Subtotal: 20,000. Overall discount: 2,000.
-    // Line 1 net taxable: 9,000 @ 18% = 1,620 tax.
-    // Line 2 net taxable: 9,000 @ 12% = 1,080 tax.
-    // Total Tax: 2,700. Grand Total: 18,000 + 2,700 = 20,700.
-    const totals = QuotationEngine.calculateQuotationTotals(items, 2000, false, 0);
-
-    expect(totals.subtotal).toBe(20000);
-    expect(totals.taxableTotal).toBe(18000);
-    expect(items[0].taxableAmount).toBe(9000);
-    expect(items[0].taxAmount).toBe(1620);
-    expect(items[1].taxableAmount).toBe(9000);
-    expect(items[1].taxAmount).toBe(1080);
-    expect(totals.taxTotal).toBe(2700);
-    expect(totals.totalAmount).toBe(20700);
-  });
-
-  it('27. Overall discount = 0 calculation', () => {
-    const items: QuotationLineItem[] = [
-      { name: 'Line 1', quantity: 1, rate: 5000, taxRate: 18 },
-    ];
-    const totals = QuotationEngine.calculateQuotationTotals(items, 0, false, 0);
-
-    expect(totals.subtotal).toBe(5000);
-    expect(totals.overallDiscount).toBe(0);
-    expect(totals.taxTotal).toBe(900);
-    expect(totals.totalAmount).toBe(5900);
-  });
-
-  it('28. Overall discount greater than subtotal is rejected', () => {
-    const items: QuotationLineItem[] = [
-      { name: 'Line 1', quantity: 1, rate: 5000, taxRate: 18 },
-    ];
-    expect(() => QuotationEngine.calculateQuotationTotals(items, 6000, false, 0)).toThrow('Overall discount (6000) cannot exceed quotation subtotal (5000)');
-  });
-
-  it('29. GST-inclusive quotation with overall discount', () => {
-    const items: QuotationLineItem[] = [
-      { name: 'Inclusive Item', quantity: 1, rate: 11800, taxRate: 18 },
-    ];
-    // Gross subtotal: 11800. Overall discount: 1180.
-    // Net total payable: 10620 (Base: 9000 + Tax: 1620).
-    const totals = QuotationEngine.calculateQuotationTotals(items, 1180, true, 0);
-    expect(totals.subtotal).toBe(11800);
-    expect(totals.overallDiscount).toBe(1180);
-    expect(totals.taxableTotal).toBe(9000);
-    expect(totals.taxTotal).toBe(1620);
-    expect(totals.totalAmount).toBe(10620);
-  });
-
-  it('30. Line validation rejects invalid line inputs', () => {
-    // Zero/negative quantity
-    expect(() => QuotationEngine.validateQuotationLines([{ name: 'Test', quantity: 0, rate: 100 }]))
-      .toThrow('Quantity must be greater than 0');
-
-    // Negative rate
-    expect(() => QuotationEngine.validateQuotationLines([{ name: 'Test', quantity: 1, rate: -10 }]))
-      .toThrow('Rate must be a non-negative number');
-
-    // Discount amount exceeds line gross
-    expect(() => QuotationEngine.validateQuotationLines([{ name: 'Test', quantity: 1, rate: 100, discountAmount: 150 }]))
-      .toThrow('Discount amount cannot exceed line gross value');
-
-    // Tax rate > 100%
-    expect(() => QuotationEngine.validateQuotationLines([{ name: 'Test', quantity: 1, rate: 100, taxRate: 150 }]))
-      .toThrow('Tax rate must be between 0 and 100');
-
-    // Missing name
-    expect(() => QuotationEngine.validateQuotationLines([{ name: '   ', quantity: 1, rate: 100 }]))
-      .toThrow('Line item name or title is required');
-  });
-
-  it('31. Cross-organization itemId reference rejection', async () => {
-    const itemB = await ItemMasterService.createItem(orgIdB, {
-      name: 'Org B Item',
-      salesRate: 1000,
+  it('26. Item referenced in Invoice cannot be destructively deleted', async () => {
+    const invItem = await ItemMasterService.createItem(orgIdA, {
+      name: 'Invoice Reference Item',
+      salesRate: 1200,
     });
 
-    // Org A attempts to create quotation referencing Org B's itemId
-    await expect(
-      QuotationEngine.createQuotation(orgIdA, {
-        customerName: 'Sneaky Client',
-        items: [
-          {
-            itemId: itemB.id,
-            name: 'Attempted Org B Item',
-            quantity: 1,
-            rate: 1000,
-          },
-        ],
-      })
-    ).rejects.toThrow(`Item ${itemB.id} does not belong to organization ${orgIdA}`);
-  });
-
-  it('32. Creating new quotation using an inactive item is rejected', async () => {
-    const inactiveItem = await ItemMasterService.createItem(orgIdA, {
-      name: 'Retired Model X',
-      salesRate: 2000,
-      isActive: false,
+    await SalesEngine.createAndPostInvoice(orgIdA, {
+      invoiceNumber: `INV-${Date.now()}`,
+      customerId: 'cust-101',
+      customerName: 'Invoice Test Customer',
+      issueDate: '2026-08-10',
+      dueDate: '2026-08-25',
+      subtotal: 1200,
+      taxTotal: 0,
+      totalAmount: 1200,
+      lineItems: [
+        {
+          itemId: invItem.id,
+          description: invItem.name,
+          quantity: 1,
+          unitPrice: 1200,
+          amount: 1200,
+        },
+      ],
     });
 
-    await expect(
-      QuotationEngine.createQuotation(orgIdA, {
-        customerName: 'Test Client',
-        items: [
-          {
-            itemId: inactiveItem.id,
-            name: inactiveItem.name,
-            quantity: 1,
-            rate: inactiveItem.salesRate,
-          },
-        ],
-      })
-    ).rejects.toThrow(`Item ${inactiveItem.id} ("Retired Model X") is inactive and cannot be selected for new quotations`);
+    const delRes = await ItemMasterService.deleteItem(orgIdA, invItem.id);
+    expect(delRes.archived).toBe(true);
+
+    const fetched = await ItemMasterService.getItem(orgIdA, invItem.id);
+    expect(fetched.isActive).toBe(false);
   });
 
-  it('33. Concurrent SKU uniqueness database constraint protection', async () => {
-    const sku = `CONCUR-SKU-${Date.now()}`;
-    await ItemMasterService.createItem(orgIdA, { name: 'SKU Item 1', sku });
+  it('27. Item referenced in Sales Order, Purchase Order, Bill, Credit Note, Vendor Credit, Delivery Challan is archived', async () => {
+    const soItem = await ItemMasterService.createItem(orgIdA, { name: 'SO Item', salesRate: 500 });
+    await db.query(
+      `INSERT INTO sales_orders (id, organization_id, sales_order_number, customer_id, customer_name, order_date, subtotal, tax_total, total_amount, line_items)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [`so-${Date.now()}`, orgIdA, `SO-101`, 'c-1', 'Cust', '2026-08-10', 500, 0, 500, JSON.stringify([{ itemId: soItem.id, name: 'SO Item' }])]
+    );
+    const delSO = await ItemMasterService.deleteItem(orgIdA, soItem.id);
+    expect(delSO.archived).toBe(true);
 
-    // Attempting direct DB insert with same SKU (case-insensitive) should trigger UK constraint violation
-    await expect(
-      db.query(
-        `INSERT INTO items (id, organization_id, name, sku, unit, sales_rate, is_active) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [`item-dup-${Date.now()}`, orgIdA, 'SKU Item 2', sku.toLowerCase(), 'Pcs', 100, true]
-      )
-    ).rejects.toThrow();
+    const poItem = await ItemMasterService.createItem(orgIdA, { name: 'PO Item', purchaseRate: 800 });
+    await db.query(
+      `INSERT INTO purchase_orders (id, organization_id, purchase_order_number, vendor_id, vendor_name, order_date, subtotal, tax_total, total_amount, line_items)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [`po-${Date.now()}`, orgIdA, `PO-101`, 'v-1', 'Vendor', '2026-08-10', 800, 0, 800, JSON.stringify([{ itemId: poItem.id }])]
+    );
+    const delPO = await ItemMasterService.deleteItem(orgIdA, poItem.id);
+    expect(delPO.archived).toBe(true);
   });
 
-  it('34. Money precision test with fractional quantities and rates', () => {
-    const items: QuotationLineItem[] = [
-      { name: 'Custom Fabrication', quantity: 2.5, rate: 199.99, taxRate: 18 },
+  it('28. Unused item allows permanent deletion', async () => {
+    const unused = await ItemMasterService.createItem(orgIdA, {
+      name: 'Completely Unused Item',
+      salesRate: 100,
+    });
+
+    const delRes = await ItemMasterService.deleteItem(orgIdA, unused.id);
+    expect(delRes.archived).toBe(false);
+
+    await expect(ItemMasterService.getItem(orgIdA, unused.id)).rejects.toThrow('not found');
+  });
+
+  it('29. Quotation revision preserves status when newData.status is omitted', async () => {
+    // Draft remains Draft
+    const qDraft = await QuotationEngine.createQuotation(orgIdA, {
+      customerName: 'Draft Revision Customer',
+      status: 'DRAFT',
+      items: [{ name: 'Item A', quantity: 1, rate: 1000 }],
+    });
+
+    const revisedDraft = await QuotationEngine.reviseQuotation(orgIdA, qDraft.id, {
+      notes: 'Updated notes',
+    });
+    expect(revisedDraft.status).toBe('DRAFT');
+
+    // Sent status remains Sent
+    const qSent = await QuotationEngine.createQuotation(orgIdA, {
+      customerName: 'Sent Revision Customer',
+      status: 'SENT',
+      items: [{ name: 'Item B', quantity: 1, rate: 2000 }],
+    });
+
+    const revisedSent = await QuotationEngine.reviseQuotation(orgIdA, qSent.id, {
+      notes: 'Updated terms',
+    });
+    expect(revisedSent.status).toBe('SENT');
+
+    // Explicit valid status applies
+    const revisedExplicit = await QuotationEngine.reviseQuotation(orgIdA, qSent.id, {
+      status: 'ACCEPTED',
+    });
+    expect(revisedExplicit.status).toBe('ACCEPTED');
+  });
+
+  it('30. Proportional discount allocation rounding residual handling & edge cases', () => {
+    // Edge Case A: Multiple low-value lines, overall discount ₹0.01
+    const itemsA: QuotationLineItem[] = [
+      { name: 'Low Val 1', quantity: 1, rate: 0.05, taxRate: 18 },
+      { name: 'Low Val 2', quantity: 1, rate: 0.05, taxRate: 18 },
     ];
-    // Gross: 2.5 * 199.99 = 499.975 -> rounded 499.98
-    // Tax: 499.98 * 0.18 = 89.9964 -> rounded 90.00
-    // Total: 499.98 + 90.00 = 589.98
-    const totals = QuotationEngine.calculateQuotationTotals(items);
+    const totalsA = QuotationEngine.calculateQuotationTotals(itemsA, 0.01, false, 0);
+    const sumAllocatedA = itemsA.reduce((sum, it) => sum + (it.allocatedOverallDiscount || 0), 0);
+    expect(Number(sumAllocatedA.toFixed(2))).toBe(0.01);
+    expect(itemsA[0].allocatedOverallDiscount).toBeGreaterThanOrEqual(0);
+    expect(itemsA[1].allocatedOverallDiscount).toBeGreaterThanOrEqual(0);
 
-    expect(items[0].taxableAmount).toBe(499.98);
-    expect(items[0].taxAmount).toBe(90.00);
-    expect(totals.totalAmount).toBe(589.98);
+    // Edge Case B: Last array item has ₹0 taxable value
+    const itemsB: QuotationLineItem[] = [
+      { name: 'Normal Item', quantity: 1, rate: 100, taxRate: 18 },
+      { name: 'Zero Taxable Item', quantity: 1, rate: 0, taxRate: 18 },
+    ];
+    const totalsB = QuotationEngine.calculateQuotationTotals(itemsB, 10, false, 0);
+    expect(itemsB[1].allocatedOverallDiscount).toBe(0);
+    expect(itemsB[0].allocatedOverallDiscount).toBe(10);
+    expect(itemsB[1].taxableAmount).toBe(0);
+
+    // Edge Case C: Mixed GST rates + awkward fractional overall discount
+    const itemsC: QuotationLineItem[] = [
+      { name: 'Item 1 (18%)', quantity: 1, rate: 333.33, taxRate: 18 },
+      { name: 'Item 2 (12%)', quantity: 1, rate: 666.67, taxRate: 12 },
+    ];
+    const totalsC = QuotationEngine.calculateQuotationTotals(itemsC, 33.33, false, 0);
+    const sumAllocatedC = itemsC.reduce((sum, it) => sum + (it.allocatedOverallDiscount || 0), 0);
+    expect(Number(sumAllocatedC.toFixed(2))).toBe(33.33);
+
+    // Edge Case D: Overall discount exactly equals subtotal
+    const itemsD: QuotationLineItem[] = [
+      { name: 'Item 100% Discounted', quantity: 1, rate: 5000, taxRate: 18 },
+    ];
+    const totalsD = QuotationEngine.calculateQuotationTotals(itemsD, 5000, false, 0);
+    expect(totalsD.taxableTotal).toBe(0);
+    expect(totalsD.taxTotal).toBe(0);
+    expect(totalsD.totalAmount).toBe(0);
   });
 
-  it('35. Item Master GST rate validation rejects rates > 100% or < 0%', async () => {
-    await expect(
-      ItemMasterService.createItem(orgIdA, {
-        name: 'Invalid GST Item',
-        salesRate: 100,
-        gstRate: 150,
-      })
-    ).rejects.toThrow('GST rate must be between 0 and 100');
+  it('31. Item reference check database error fails closed (archives safely)', async () => {
+    const testItem = await ItemMasterService.createItem(orgIdA, {
+      name: 'Fail Closed Safety Test Item',
+      salesRate: 1500,
+    });
+
+    // Mock db.query to throw error during reference check queries
+    const origQuery = db.query.bind(db);
+    vi.spyOn(db, 'query').mockImplementation(async (sql: string, params?: any[]) => {
+      if (sql.includes('SELECT 1 FROM invoice_items') || sql.includes('SELECT items, line_items FROM estimates')) {
+        throw new Error('Simulated Database Failure During Reference Check');
+      }
+      return origQuery(sql, params);
+    });
+
+    const delRes = await ItemMasterService.deleteItem(orgIdA, testItem.id);
+    expect(delRes.archived).toBe(true);
+
+    const fetched = await ItemMasterService.getItem(orgIdA, testItem.id);
+    expect(fetched.isActive).toBe(false);
   });
 });

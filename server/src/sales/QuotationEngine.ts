@@ -136,7 +136,7 @@ export class QuotationEngine {
   }
 
   /**
-   * Calculate totals with support for line discount, proportional overall discount allocation, GST inclusive/exclusive, and rounding
+   * Calculate totals with support for line discount, robust pre-tax overall discount allocation, GST inclusive/exclusive, and rounding
    */
   public static calculateQuotationTotals(
     items: QuotationLineItem[],
@@ -159,6 +159,7 @@ export class QuotationEngine {
       lineDiscAmt: number;
       lineTaxablePreDocDisc: number;
       taxRate: number;
+      allocatedDocDisc: number;
     }> = [];
 
     let subtotalPreDocDisc = 0;
@@ -196,6 +197,7 @@ export class QuotationEngine {
         lineDiscAmt: discAmt,
         lineTaxablePreDocDisc,
         taxRate,
+        allocatedDocDisc: 0,
       });
     }
 
@@ -206,23 +208,51 @@ export class QuotationEngine {
       throw new Error(`Overall discount (${ovDisc}) cannot exceed quotation subtotal (${subtotalPreDocDisc})`);
     }
 
-    // Step 2: Allocate overall discount proportionally across lines
-    let allocatedSum = 0;
+    // Step 2: Deterministic, robust overall discount allocation
+    if (ovDisc > 0 && subtotalPreDocDisc > 0) {
+      let allocatedSum = 0;
+
+      // Initial proportional allocation across positive taxable lines
+      for (const pre of linePreTotals) {
+        if (pre.lineTaxablePreDocDisc > 0) {
+          const rawAlloc = this.roundMoney((pre.lineTaxablePreDocDisc / subtotalPreDocDisc) * ovDisc);
+          const clamped = Math.min(rawAlloc, pre.lineTaxablePreDocDisc);
+          pre.allocatedDocDisc = clamped;
+          allocatedSum += clamped;
+        }
+      }
+      allocatedSum = this.roundMoney(allocatedSum);
+
+      // Distribute residual rounding amount to eligible positive lines
+      let residual = this.roundMoney(ovDisc - allocatedSum);
+      if (residual !== 0) {
+        const step = residual > 0 ? 0.01 : -0.01;
+        let count = Math.round(Math.abs(residual) * 100);
+
+        while (count > 0) {
+          const candidate = linePreTotals.find((p) => {
+            if (step > 0) {
+              return p.lineTaxablePreDocDisc - p.allocatedDocDisc >= 0.01;
+            } else {
+              return p.allocatedDocDisc >= 0.01;
+            }
+          });
+
+          if (!candidate) break;
+
+          candidate.allocatedDocDisc = this.roundMoney(candidate.allocatedDocDisc + step);
+          count--;
+        }
+      }
+    }
+
+    // Step 3: Compute final line totals and tax
     let taxTotal = 0;
 
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
       const pre = linePreTotals[i];
-
-      let lineAllocatedDocDisc = 0;
-      if (subtotalPreDocDisc > 0 && ovDisc > 0) {
-        if (i === items.length - 1) {
-          lineAllocatedDocDisc = this.roundMoney(ovDisc - allocatedSum);
-        } else {
-          lineAllocatedDocDisc = this.roundMoney((pre.lineTaxablePreDocDisc / subtotalPreDocDisc) * ovDisc);
-          allocatedSum += lineAllocatedDocDisc;
-        }
-      }
+      const lineAllocatedDocDisc = pre.allocatedDocDisc;
 
       const netLineTaxable = this.roundMoney(pre.lineTaxablePreDocDisc - lineAllocatedDocDisc);
 
@@ -386,7 +416,7 @@ export class QuotationEngine {
   }
 
   /**
-   * Save a new revision of a quotation
+   * Save a new revision of a quotation (preserves existing status if newData.status is omitted)
    */
   public static async reviseQuotation(
     orgId: string,
@@ -421,11 +451,13 @@ export class QuotationEngine {
       newData.roundOffAmount !== undefined ? newData.roundOffAmount : Number(q.round_off_amount || 0)
     );
 
+    const targetStatus = newData.status || q.status || 'DRAFT';
+
     await db.query(
       `UPDATE estimates
        SET revision_number = $1, subtotal = $2, tax_total = $3, discount = $4, overall_discount = $5,
            total_amount = $6, round_off_amount = $7, is_gst_inclusive = $8, items = $9, line_items = $9,
-           terms = COALESCE($10, terms), notes = COALESCE($11, notes), status = COALESCE($12, status)
+           terms = COALESCE($10, terms), notes = COALESCE($11, notes), status = $12
        WHERE organization_id = $13 AND id = $14`,
       [
         nextRev,
@@ -439,7 +471,7 @@ export class QuotationEngine {
         JSON.stringify(items),
         newData.terms,
         newData.notes,
-        newData.status || 'SENT',
+        targetStatus,
         orgId,
         quotationId,
       ]
@@ -455,7 +487,7 @@ export class QuotationEngine {
         nextRev,
         JSON.stringify({ estimateNumber: q.estimate_number, items, totals, changeSummary }),
         totals.totalAmount,
-        newData.status || 'SENT',
+        targetStatus,
         changeSummary,
         createdBy,
         now,

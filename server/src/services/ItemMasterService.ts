@@ -206,70 +206,75 @@ export class ItemMasterService {
   public static async deleteItem(orgId: string, id: string): Promise<{ success: boolean; archived: boolean; message: string }> {
     await this.getItem(orgId, id); // Verify item exists in org
 
-    // Reliable structured JSON item reference check across document tables
     let isReferenced = false;
+    let checkErrorEncountered = false;
 
-    const checkTableForItemId = async (tableName: string, jsonCols: string[]) => {
-      try {
-        const res = await db.query(`SELECT ${jsonCols.join(', ')} FROM ${tableName} WHERE organization_id = $1`, [orgId]);
-        for (const row of res.rows) {
-          for (const col of jsonCols) {
-            const val = row[col];
-            if (!val) continue;
-            let list: any[] = [];
-            if (typeof val === 'string') {
-              try { list = JSON.parse(val); } catch { list = []; }
-            } else if (Array.isArray(val)) {
-              list = val;
+    // 1. Direct relational check on invoice_items item_id column
+    try {
+      const invItemsRes = await db.query(
+        `SELECT 1 FROM invoice_items ii JOIN invoices i ON ii.invoice_id = i.id WHERE i.organization_id = $1 AND ii.item_id = $2 LIMIT 1`,
+        [orgId, id]
+      );
+      if (invItemsRes.rows.length > 0) isReferenced = true;
+    } catch (err: any) {
+      const msg = (err && err.message) ? err.message.toLowerCase() : '';
+      if (!msg.includes('does not exist') && !msg.includes('undefined') && err.code !== '42P01') {
+        checkErrorEncountered = true;
+      }
+    }
+
+    // 2. Structured JSON item reference checks across document tables
+    if (!isReferenced && !checkErrorEncountered) {
+      const tablesToCheck = [
+        'estimates',
+        'invoices',
+        'sales_orders',
+        'bills',
+        'purchase_orders',
+        'credit_notes',
+        'vendor_credits',
+        'delivery_challans',
+      ];
+
+      for (const tbl of tablesToCheck) {
+        try {
+          const res = await db.query(`SELECT * FROM ${tbl} WHERE organization_id = $1`, [orgId]);
+          for (const row of res.rows) {
+            for (const key of Object.keys(row)) {
+              if (!key.includes('items')) continue;
+              const val = row[key];
+              if (!val) continue;
+              let list: any[] = [];
+              if (typeof val === 'string') {
+                try { list = JSON.parse(val); } catch { list = []; }
+              } else if (Array.isArray(val)) {
+                list = val;
+              }
+              if (list.some((item: any) => item && (item.itemId === id || item.itemIdRef === id))) {
+                isReferenced = true;
+                break;
+              }
             }
-            if (list.some((item: any) => item && (item.itemId === id || item.id === id))) {
-              return true;
-            }
+            if (isReferenced) break;
+          }
+        } catch (err: any) {
+          const msg = (err && err.message) ? err.message.toLowerCase() : '';
+          if (!msg.includes('does not exist') && !msg.includes('undefined') && err.code !== '42P01') {
+            checkErrorEncountered = true;
+            break;
           }
         }
-      } catch {
-        // Table or column doesn't exist in current environment schema
-      }
-      return false;
-    };
-
-    const tablesToCheck = [
-      { name: 'estimates', cols: ['items', 'line_items'] },
-      { name: 'invoices', cols: ['items', 'line_items'] },
-      { name: 'sales_orders', cols: ['line_items', 'items'] },
-      { name: 'bills', cols: ['line_items', 'items'] },
-      { name: 'purchase_orders', cols: ['line_items', 'items'] },
-      { name: 'credit_notes', cols: ['line_items', 'items'] },
-      { name: 'vendor_credits', cols: ['line_items', 'items'] },
-      { name: 'delivery_challans', cols: ['line_items', 'items'] },
-    ];
-
-    for (const tbl of tablesToCheck) {
-      if (await checkTableForItemId(tbl.name, tbl.cols)) {
-        isReferenced = true;
-        break;
+        if (isReferenced) break;
       }
     }
 
-    if (!isReferenced) {
-      try {
-        const invItemsRes = await db.query(
-          `SELECT 1 FROM invoice_items ii JOIN invoices i ON ii.invoice_id = i.id WHERE i.organization_id = $1 AND ii.id = $2 LIMIT 1`,
-          [orgId, id]
-        );
-        if (invItemsRes.rows.length > 0) isReferenced = true;
-      } catch {
-        // Ignore
-      }
-    }
-
-    if (isReferenced) {
-      // Deactivate/archive to protect historical commercial documents
+    // FAIL CLOSED SAFETY: If referenced or if reference check failed due to db error, archive safely. Never permanently delete.
+    if (isReferenced || checkErrorEncountered) {
       await db.query(`UPDATE items SET is_active = FALSE, updated_at = $1 WHERE organization_id = $2 AND id = $3`, [new Date().toISOString(), orgId, id]);
       return {
         success: true,
         archived: true,
-        message: `Item ${id} is referenced in historical documents and has been archived instead of permanently deleted.`,
+        message: `Item ${id} was archived to protect document history.`,
       };
     } else {
       await db.query(`DELETE FROM items WHERE organization_id = $1 AND id = $2`, [orgId, id]);

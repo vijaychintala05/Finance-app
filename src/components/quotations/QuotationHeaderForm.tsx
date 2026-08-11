@@ -235,7 +235,7 @@ export const QuotationHeaderForm: React.FC<QuotationHeaderFormProps> = ({
               className="text-emerald-600 dark:text-emerald-400 font-bold hover:underline text-[11px] flex items-center space-x-0.5 cursor-pointer"
             >
               <Plus className="w-3 h-3" />
-              <span>New</span>
+              <span>New Project</span>
             </button>
           </div>
 

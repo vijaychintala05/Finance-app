@@ -5,6 +5,8 @@ import { QuotationHeaderForm } from './QuotationHeaderForm';
 import { QuotationLineItems } from './QuotationLineItems';
 import { QuotationTotals } from './QuotationTotals';
 import { QuotationTermsSection } from './QuotationTermsSection';
+import { QuickAddClientModal } from '../common/QuickAddClientModal';
+import { QuickAddProjectModal } from '../common/QuickAddProjectModal';
 import { ItemPicker } from './ItemPicker';
 import { quotationApi } from '../../services/quotationApi';
 
@@ -15,8 +17,10 @@ interface QuotationBuilderProps {
   initialQuotation?: any;
   clients: any[];
   projects: any[];
-  onOpenQuickClient: () => void;
-  onOpenQuickProject: () => void;
+  onOpenQuickClient?: () => void;
+  onOpenQuickProject?: () => void;
+  onClientCreated?: (newCust: any) => void;
+  onProjectCreated?: (newProj: any) => void;
   currencySymbol?: string;
   customersLoading?: boolean;
   customerError?: string | null;
@@ -34,6 +38,8 @@ export const QuotationBuilder: React.FC<QuotationBuilderProps> = ({
   projects,
   onOpenQuickClient,
   onOpenQuickProject,
+  onClientCreated,
+  onProjectCreated,
   currencySymbol = '₹',
   customersLoading = false,
   customerError = null,
@@ -42,6 +48,10 @@ export const QuotationBuilder: React.FC<QuotationBuilderProps> = ({
   onSearchCustomers,
 }) => {
   const [isItemPickerOpen, setIsItemPickerOpen] = useState(false);
+  const [isQuickClientOpen, setIsQuickClientOpen] = useState(false);
+  const [isQuickProjectOpen, setIsQuickProjectOpen] = useState(false);
+  const [localAddedClients, setLocalAddedClients] = useState<any[]>([]);
+  const [localAddedProjects, setLocalAddedProjects] = useState<any[]>([]);
   const [saving, setSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -161,9 +171,50 @@ export const QuotationBuilder: React.FC<QuotationBuilderProps> = ({
     }
   };
 
+  const handleOpenQuickClient = () => {
+    setIsQuickClientOpen(true);
+    if (onOpenQuickClient) onOpenQuickClient();
+  };
+
+  const handleOpenQuickProject = () => {
+    setIsQuickProjectOpen(true);
+    if (onOpenQuickProject) onOpenQuickProject();
+  };
+
+  const handleClientCreated = (newCust: any) => {
+    setLocalAddedClients((prev) => [...prev, newCust]);
+    builder.setCustomerId(newCust.id);
+    builder.setCustomerName(newCust.displayName || newCust.name || 'Customer');
+    setIsQuickClientOpen(false);
+    if (onClientCreated) onClientCreated(newCust);
+  };
+
+  const handleProjectCreated = (newProj: any) => {
+    setLocalAddedProjects((prev) => [...prev, newProj]);
+    builder.setProjectId(newProj.id);
+    setIsQuickProjectOpen(false);
+    if (onProjectCreated) onProjectCreated(newProj);
+  };
+
+  const combinedClients = [...clients];
+  localAddedClients.forEach((c) => {
+    if (!combinedClients.some((existing) => existing.id === c.id)) {
+      combinedClients.unshift(c);
+    }
+  });
+
+  const combinedProjects = [...projects];
+  localAddedProjects.forEach((p) => {
+    if (!combinedProjects.some((existing) => existing.id === p.id)) {
+      combinedProjects.unshift(p);
+    }
+  });
+
+  if (!isOpen) return null;
+
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 overflow-y-auto">
-      <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 w-full max-w-5xl my-auto overflow-hidden shadow-2xl flex flex-col max-h-[92vh]">
+      <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-200 dark:border-slate-800 w-full max-w-5xl max-h-[92vh] flex flex-col overflow-hidden">
         {/* Header */}
         <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-slate-50/60 dark:bg-slate-800/40">
           <div className="flex items-center space-x-2">
@@ -202,12 +253,12 @@ export const QuotationBuilder: React.FC<QuotationBuilderProps> = ({
             customerId={builder.customerId}
             setCustomerId={builder.setCustomerId}
             setCustomerName={builder.setCustomerName}
-            clients={clients}
-            onOpenQuickClient={onOpenQuickClient}
+            clients={combinedClients}
+            onOpenQuickClient={handleOpenQuickClient}
             projectId={builder.projectId}
             setProjectId={builder.setProjectId}
-            projects={projects}
-            onOpenQuickProject={onOpenQuickProject}
+            projects={combinedProjects}
+            onOpenQuickProject={handleOpenQuickProject}
             issueDate={builder.issueDate}
             setIssueDate={builder.setIssueDate}
             expiryDate={builder.expiryDate}
@@ -291,6 +342,25 @@ export const QuotationBuilder: React.FC<QuotationBuilderProps> = ({
           onSelectItem={(item) => builder.addSavedItem(item)}
           currencySymbol={currencySymbol}
         />
+
+        {/* Quick Add Client Modal */}
+        {isQuickClientOpen && (
+          <QuickAddClientModal
+            isOpen={isQuickClientOpen}
+            onClose={() => setIsQuickClientOpen(false)}
+            onClientCreated={handleClientCreated}
+          />
+        )}
+
+        {/* Quick Add Project Modal */}
+        {isQuickProjectOpen && (
+          <QuickAddProjectModal
+            isOpen={isQuickProjectOpen}
+            onClose={() => setIsQuickProjectOpen(false)}
+            clients={combinedClients}
+            onProjectCreated={handleProjectCreated}
+          />
+        )}
       </div>
     </div>
   );

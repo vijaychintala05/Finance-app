@@ -330,9 +330,14 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
           projects={backendProjects}
           onOpenQuickClient={() => setIsQuickClientOpen(true)}
           onOpenQuickProject={() => setIsQuickProjectOpen(true)}
+          onClientCreated={loadCustomers}
+          onProjectCreated={loadProjects}
           currencySymbol={settings.currencySymbol}
           customersLoading={customersLoading}
           customerError={customerError}
+          projectsLoading={projectsLoading}
+          projectError={projectError}
+          onSearchCustomers={loadCustomers}
         />
       )}
 
@@ -385,7 +390,7 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
       )}
 
       {/* Quick Add Client Modal */}
-      {isQuickClientOpen && (
+      {!isBuilderOpen && isQuickClientOpen && (
         <QuickAddClientModal
           isOpen={isQuickClientOpen}
           onClose={() => setIsQuickClientOpen(false)}
@@ -397,7 +402,7 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
       )}
 
       {/* Quick Add Project Modal */}
-      {isQuickProjectOpen && (
+      {!isBuilderOpen && isQuickProjectOpen && (
         <QuickAddProjectModal
           isOpen={isQuickProjectOpen}
           onClose={() => setIsQuickProjectOpen(false)}

@@ -206,6 +206,55 @@ export class FinanceController {
     res.json(result.rows);
   }
 
+  public static async getInvoice(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const orgId = req.auth!.organizationId;
+      const { id } = req.params;
+      const result = await db.query('SELECT * FROM invoices WHERE organization_id = $1 AND id = $2', [orgId, id]);
+      if (result.rows.length === 0) {
+        res.status(404).json({ error: `Invoice ${id} not found` });
+        return;
+      }
+      const inv = result.rows[0];
+      const customerSnapshot = typeof inv.customer_snapshot === 'string'
+        ? JSON.parse(inv.customer_snapshot)
+        : inv.customer_snapshot || null;
+      const lineItems = typeof inv.line_items === 'string'
+        ? JSON.parse(inv.line_items)
+        : inv.line_items || [];
+
+      res.json({
+        invoice: {
+          id: inv.id,
+          organizationId: inv.organization_id,
+          invoiceNumber: inv.invoice_number,
+          salesOrderId: inv.sales_order_id,
+          estimateId: inv.estimate_id,
+          customerId: inv.customer_id || inv.client_id || '',
+          customerName: inv.client_name || '',
+          customerEmail: inv.client_email || '',
+          customerSnapshot,
+          projectId: inv.project_id || undefined,
+          issueDate: inv.issue_date,
+          dueDate: inv.due_date,
+          subtotal: Number(inv.subtotal || 0),
+          taxTotal: Number(inv.tax_total || 0),
+          discount: Number(inv.discount || 0),
+          roundOffAmount: Number(inv.round_off_amount || 0),
+          isGstInclusive: Boolean(inv.is_gst_inclusive),
+          totalAmount: Number(inv.total_amount || 0),
+          paidAmount: Number(inv.paid_amount || 0),
+          balanceDue: Number(inv.balance_due || 0),
+          status: inv.status,
+          lineItems,
+          notes: inv.notes || '',
+        },
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to get invoice' });
+    }
+  }
+
   public static async createInvoice(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
     const { invoiceNumber, clientId, clientName, clientEmail, projectId, issueDate, dueDate, items, discount, notes } = req.body;

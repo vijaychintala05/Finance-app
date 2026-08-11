@@ -40,6 +40,7 @@ router.post('/delivery-challans', requirePermission('invoice.create'), FinanceCo
 
 // Invoices
 router.get('/invoices', FinanceController.getInvoices);
+router.get('/invoices/:id', FinanceController.getInvoice);
 router.post('/invoices', requirePermission('invoice.create'), FinanceController.createInvoice);
 
 // Payments Received & Advances

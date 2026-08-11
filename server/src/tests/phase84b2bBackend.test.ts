@@ -316,6 +316,20 @@ describe('Phase 8.4B.2B — Quotation Details & Conversion Commercial Consistenc
 
     const customLine = lineItems.find((l: any) => !l.itemId || l.name?.includes('Migration'));
     expect(customLine).toBeDefined();
+    expect(customLine.itemId).toBeNull();
     expect(customLine.hsnSac).toBe('998314');
+
+    // Section 12 strengthening assertions
+    expect(invoice.estimateId || invoice.estimate_id).toBe(quote.id);
+    expect(invoice.projectId).toBe(quote.projectId || undefined);
+    expect(invoice.customerSnapshot).toBeDefined();
+    expect(invoice.isGstInclusive).toBe(false);
+    expect(invoice.roundOffAmount).toBe(0);
+
+    expect(masterLine.discountAmount).toBe(15000);
+    expect(masterLine.taxableAmount).toBe(135000);
+    expect(masterLine.taxAmount).toBe(24300);
+    expect(masterLine.totalAmount).toBe(159300);
+    expect(masterLine.lineTotal).toBe(159300);
   });
 });

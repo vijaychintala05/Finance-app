@@ -556,10 +556,15 @@ export class SalesEngine {
     const calculated = SalesService.calculateTotals(items, data.discount || 0);
     const subtotal = data.subtotal !== undefined ? data.subtotal : calculated.subtotal;
     const taxTotal = data.taxTotal !== undefined ? data.taxTotal : calculated.taxTotal;
-    const totalAmount = data.totalAmount !== undefined ? data.totalAmount : calculated.totalAmount;
+    const isGstInclusive = Boolean(data.isGstInclusive);
+    const roundOff = Number(data.roundOffAmount || 0);
+    const preRoundTotal = isGstInclusive
+      ? Math.round((subtotal - (data.discount || 0)) * 100) / 100
+      : Math.round((subtotal - (data.discount || 0) + taxTotal) * 100) / 100;
 
-    const roundOff = data.roundOffAmount || 0;
-    const finalTotal = Math.round((totalAmount + roundOff) * 100) / 100;
+    const finalTotal = data.totalAmount !== undefined
+      ? Number(data.totalAmount)
+      : Math.round((preRoundTotal + roundOff) * 100) / 100;
     const isPosted = data.status !== 'DRAFT';
 
     let journalEntryId: string | undefined = undefined;
@@ -570,6 +575,11 @@ export class SalesEngine {
       const salesAccountId = 'acc-sales-rev';
       const taxAccountId = 'acc-gst-output';
       const roundOffAccountId = 'acc-roundoff';
+
+      const isGstInclusive = Boolean(data.isGstInclusive);
+      const preTaxRevenue = isGstInclusive
+        ? Math.round((subtotal - (data.discount || 0) - taxTotal) * 100) / 100
+        : Math.round((subtotal - (data.discount || 0)) * 100) / 100;
 
       const journalLines: any[] = [
         {
@@ -585,7 +595,7 @@ export class SalesEngine {
           accountCode: '4000',
           accountName: 'Sales Revenue',
           debit: 0,
-          credit: Math.round((finalTotal - taxTotal - roundOff) * 100) / 100,
+          credit: preTaxRevenue,
           description: `Invoice ${invNumber} Revenue`,
         },
       ];
@@ -605,19 +615,19 @@ export class SalesEngine {
         if (roundOff > 0) {
           journalLines.push({
             accountId: roundOffAccountId,
-            accountCode: '5900',
-            accountName: 'Round-Off Expense',
-            debit: roundOff,
-            credit: 0,
+            accountCode: '4900',
+            accountName: 'Round-Off Income',
+            debit: 0,
+            credit: roundOff,
             description: `Invoice ${invNumber} Rounding`,
           });
         } else {
           journalLines.push({
             accountId: roundOffAccountId,
-            accountCode: '4900',
-            accountName: 'Round-Off Income',
-            debit: 0,
-            credit: Math.abs(roundOff),
+            accountCode: '5900',
+            accountName: 'Round-Off Expense',
+            debit: Math.abs(roundOff),
+            credit: 0,
             description: `Invoice ${invNumber} Rounding`,
           });
         }
@@ -636,8 +646,8 @@ export class SalesEngine {
     const status = isPosted ? 'POSTED' : 'DRAFT';
 
     await db.query(
-      `INSERT INTO invoices (id, organization_id, invoice_number, sales_order_id, estimate_id, client_id, customer_id, client_name, client_email, project_id, issue_date, due_date, subtotal, tax_total, discount, round_off_amount, total_amount, paid_amount, balance_due, status, notes, line_items, customer_snapshot, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)`,
+      `INSERT INTO invoices (id, organization_id, invoice_number, sales_order_id, estimate_id, client_id, customer_id, client_name, client_email, project_id, issue_date, due_date, subtotal, tax_total, discount, round_off_amount, total_amount, paid_amount, balance_due, status, notes, line_items, customer_snapshot, is_gst_inclusive, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)`,
       [
         id,
         orgId,
@@ -662,6 +672,7 @@ export class SalesEngine {
         data.notes || '',
         JSON.stringify(items),
         data.customerSnapshot ? JSON.stringify(data.customerSnapshot) : null,
+        Boolean(data.isGstInclusive),
         now,
       ]
     );
@@ -725,19 +736,24 @@ export class SalesEngine {
       invoiceNumber: invNumber,
       salesOrderId: data.salesOrderId,
       estimateId: data.estimateId,
-      customerId: data.customerId || '',
-      customerName: data.customerName || '',
+      customerId: data.customerId || (data as any).clientId || '',
+      customerName: data.customerName || (data as any).clientName || '',
+      customerEmail: data.customerEmail || (data as any).clientEmail || '',
+      customerSnapshot: data.customerSnapshot || null,
+      projectId: data.projectId || undefined,
       issueDate: data.issueDate || now.split('T')[0],
       dueDate: data.dueDate || now.split('T')[0],
       subtotal,
       taxTotal,
       discount: data.discount || 0,
       roundOffAmount: roundOff,
+      isGstInclusive: Boolean(data.isGstInclusive),
       totalAmount: finalTotal,
       paidAmount: 0,
       balanceDue: finalTotal,
       status: status as any,
       lineItems: items,
+      notes: data.notes || '',
       journalEntryId,
     };
   }

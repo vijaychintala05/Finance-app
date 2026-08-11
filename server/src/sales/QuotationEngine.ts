@@ -267,22 +267,59 @@ export class QuotationEngine {
       throw new Error(`Overall discount (${ovDisc}) cannot exceed quotation subtotal (${subtotalPreDocDisc})`);
     }
 
-    let allocatedDiscountSum = 0;
+    // Deterministic Proportional Discount Allocation (Largest-Remainder Method)
+    const lineAllocatedDiscounts = new Array(items.length).fill(0);
+
+    if (ovDisc > 0 && subtotalPreDocDisc > 0) {
+      let initialSum = 0;
+      const remainders: { index: number; fracRemainder: number; capacity: number }[] = [];
+
+      for (let i = 0; i < items.length; i++) {
+        const netLine = (items[i] as any)._netLine || 0;
+        if (netLine > 0) {
+          const exactProp = (netLine / subtotalPreDocDisc) * ovDisc;
+          const floorProp = Math.floor(exactProp * 100) / 100;
+          const clampedProp = Math.min(floorProp, netLine);
+
+          lineAllocatedDiscounts[i] = clampedProp;
+          initialSum = this.roundMoney(initialSum + clampedProp);
+
+          remainders.push({
+            index: i,
+            fracRemainder: exactProp - floorProp,
+            capacity: this.roundMoney(netLine - clampedProp),
+          });
+        }
+      }
+
+      let centsToDistribute = Math.round((ovDisc - initialSum) * 100);
+
+      // Sort by fractional remainder descending, then original index ascending
+      remainders.sort((a, b) => {
+        if (Math.abs(b.fracRemainder - a.fracRemainder) > 0.000001) {
+          return b.fracRemainder - a.fracRemainder;
+        }
+        return a.index - b.index;
+      });
+
+      let remIdx = 0;
+      while (centsToDistribute > 0 && remainders.length > 0 && remIdx < remainders.length * 100) {
+        const candidate = remainders[remIdx % remainders.length];
+        if (candidate.capacity >= 0.01) {
+          lineAllocatedDiscounts[candidate.index] = this.roundMoney(lineAllocatedDiscounts[candidate.index] + 0.01);
+          candidate.capacity = this.roundMoney(candidate.capacity - 0.01);
+          centsToDistribute--;
+        }
+        remIdx++;
+      }
+    }
+
     let taxTotal = 0;
 
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
-      const netLine = (item as any)._netLine;
-
-      let linePropDisc = 0;
-      if (subtotalPreDocDisc > 0) {
-        if (i === items.length - 1) {
-          linePropDisc = this.roundMoney(ovDisc - allocatedDiscountSum);
-        } else {
-          linePropDisc = this.roundMoney((netLine / subtotalPreDocDisc) * ovDisc);
-          allocatedDiscountSum = this.roundMoney(allocatedDiscountSum + linePropDisc);
-        }
-      }
+      const netLine = (item as any)._netLine || 0;
+      const linePropDisc = lineAllocatedDiscounts[i] || 0;
 
       item.allocatedOverallDiscount = linePropDisc;
       const netLineTaxableBase = Math.max(0, this.roundMoney(netLine - linePropDisc));
@@ -294,11 +331,13 @@ export class QuotationEngine {
         item.taxableAmount = taxable;
         item.taxAmount = tax;
         item.totalAmount = netLineTaxableBase;
+        item.lineTotal = netLineTaxableBase;
       } else {
         const tax = this.roundMoney(netLineTaxableBase * (taxRate / 100));
         item.taxableAmount = netLineTaxableBase;
         item.taxAmount = tax;
         item.totalAmount = this.roundMoney(netLineTaxableBase + tax);
+        item.lineTotal = item.totalAmount;
       }
 
       taxTotal += item.taxAmount;
@@ -989,11 +1028,11 @@ export class QuotationEngine {
       const discPct = Number(it.discountPercent || 0);
       const taxable = Number(it.taxableAmount ?? Math.max(0, qty * rate - (discAmt || (discPct ? qty * rate * discPct / 100 : 0))));
       const taxAmt = Number(it.taxAmount ?? Math.round(taxable * (Number(it.taxRate || 0) / 100) * 100) / 100);
-      const lineTot = Number(it.lineTotal ?? it.totalAmount ?? (taxable + taxAmt));
+      const lineTot = Number(it.totalAmount ?? it.lineTotal ?? (taxable + taxAmt));
 
       return {
         id: it.id,
-        itemId: it.itemId,
+        itemId: it.itemId || null,
         name: it.name || it.itemName || it.description || 'Quoted Item',
         description: it.description || it.name || 'Quoted Item',
         hsnSac: it.hsnSac || it.hsn_sac || '',

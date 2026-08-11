@@ -238,7 +238,6 @@ describe('Phase 8: Complete End-to-End Business Lifecycle & Production UX Harden
     expect(soRes.body.salesOrder.salesOrderNumber).toBeDefined();
     salesOrderId = soRes.body.salesOrder.id;
 
-    // Convert to Invoice
     const invRes = await request
       .post(`/api/v1/quotations/${quotationId}/convert-inv`)
       .set(authHeader);

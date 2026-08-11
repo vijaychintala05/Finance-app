@@ -21,6 +21,7 @@ vi.mock('../services/customerApi', () => ({
 vi.mock('../services/quotationApi', () => ({
   quotationApi: {
     listQuotations: vi.fn(),
+    getQuotation: vi.fn(),
     listItems: vi.fn(),
     createQuotation: vi.fn(),
     updateQuotation: vi.fn(),
@@ -31,6 +32,26 @@ describe('Phase 8.4B.2 — Quotation Builder UX & Visual Refinement Suite', () =
   beforeEach(() => {
     vi.clearAllMocks();
     (quotationApi.listQuotations as any).mockResolvedValue([]);
+    (quotationApi.getQuotation as any).mockImplementation((id: string) =>
+      Promise.resolve({
+        id,
+        estimateNumber: 'EST-0777',
+        customerName: 'Acme Solutions Ltd',
+        clientName: 'Acme Solutions Ltd',
+        items: [
+          {
+            description: 'Custom Enterprise Software Architecture',
+            quantity: 1,
+            rate: 125000,
+            lineTotal: 125000,
+          },
+        ],
+        subtotal: 125000,
+        taxTotal: 22500,
+        totalAmount: 147500,
+        status: 'DRAFT',
+      })
+    );
     (quotationApi.listItems as any).mockResolvedValue([
       { id: 'item-101', name: 'Master Solar Panel', salesRate: 15000, hsnSac: '8541', gstRate: 18, unit: 'Pcs', isActive: true },
     ]);
@@ -615,7 +636,7 @@ describe('Phase 8.4B.2 — Quotation Builder UX & Visual Refinement Suite', () =
   });
 
   // 25. Details view shows actual saved commercial data
-  it('25. EstimateDetailsModal renders saved quotation details cleanly', () => {
+  it('25. EstimateDetailsModal renders saved quotation details cleanly', async () => {
     const sampleEstimate = {
       id: 'est-777',
       estimateNumber: 'EST-0777',
@@ -651,8 +672,10 @@ describe('Phase 8.4B.2 — Quotation Builder UX & Visual Refinement Suite', () =
       </BooksProvider>
     );
 
-    expect(screen.getByText('EST-0777')).toBeDefined();
-    expect(screen.getByText('Acme Solutions Ltd')).toBeDefined();
-    expect(screen.getByText('Custom Enterprise Software Architecture')).toBeDefined();
+    await waitFor(() => {
+      expect(screen.getByText('EST-0777')).toBeDefined();
+      expect(screen.getByText('Acme Solutions Ltd')).toBeDefined();
+      expect(screen.getByText('Custom Enterprise Software Architecture')).toBeDefined();
+    });
   });
 });

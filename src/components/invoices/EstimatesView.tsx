@@ -1,12 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { FileCheck, FileSpreadsheet, Plus, Search, Loader2, Edit3, AlertCircle } from 'lucide-react';
-import { Estimate, Invoice } from '../../types';
+import { Invoice } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate, getStatusBadgeStyle } from '../../utils/formatters';
 import { InvoicePreviewModal } from './InvoicePreviewModal';
 import { EstimateDetailsModal } from './EstimateDetailsModal';
-import { QuickAddClientModal } from '../common/QuickAddClientModal';
-import { QuickAddProjectModal } from '../common/QuickAddProjectModal';
 import { QuotationBuilder } from '../quotations/QuotationBuilder';
 import { quotationApi } from '../../services/quotationApi';
 import { customerApi } from '../../services/customerApi';
@@ -42,11 +40,8 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
   const [isBuilderOpen, setIsBuilderOpen] = useState(false);
   const [editingQuotation, setEditingQuotation] = useState<any | null>(null);
 
-  const [previewInvoice, setPreviewInvoice] = useState<Invoice | null>(null);
-  const [viewingEstimate, setViewingEstimate] = useState<any | null>(null);
-
-  const [isQuickClientOpen, setIsQuickClientOpen] = useState(false);
-  const [isQuickProjectOpen, setIsQuickProjectOpen] = useState(false);
+  const [previewInvoice, setPreviewInvoice] = useState<any | null>(null);
+  const [viewingQuotationId, setViewingQuotationId] = useState<string | null>(null);
 
   // Load real backend quotations with search debounce
   const loadQuotations = async () => {
@@ -119,15 +114,10 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
   }, [autoOpenCreateModal, onModalClosed]);
 
   useEffect(() => {
-    if (selectedEntityId && backendQuotations.length > 0) {
-      const found = backendQuotations.find(
-        (e) => e.id === selectedEntityId || e.estimateNumber === selectedEntityId
-      );
-      if (found) {
-        setViewingEstimate(found);
-      }
+    if (selectedEntityId) {
+      setViewingQuotationId(selectedEntityId);
     }
-  }, [selectedEntityId, backendQuotations]);
+  }, [selectedEntityId]);
 
   const handleConvert = async (est: any, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
@@ -138,17 +128,16 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
           id: result.id,
           invoiceNumber: result.invoiceNumber,
           clientId: result.customerId || result.clientId,
-          clientName: result.customerName || result.clientName,
+          clientName: result.customerName || result.clientName || 'Customer',
           issueDate: result.issueDate,
           dueDate: result.dueDate,
-          items: (result.lineItems || []).map((it: any, i: number) => ({
+          items: (result.lineItems || result.items || []).map((it: any, i: number) => ({
             id: it.id || `inv-item-${i}`,
-            description: it.description || it.name || '',
-            accountId: 'acc-4000',
-            quantity: it.quantity || 1,
-            unitPrice: it.unitPrice || it.rate || 0,
-            taxRate: it.taxRate || 0,
-            amount: it.amount || (it.quantity * it.unitPrice) || 0,
+            description: it.name || it.itemName || it.description || 'Line Item',
+            quantity: Number(it.quantity) || 1,
+            unitPrice: Number(it.rate || it.unitPrice || 0),
+            taxRate: Number(it.taxRate || 0),
+            amount: Number(it.amount || it.lineTotal || (it.quantity * (it.rate || it.unitPrice)) || 0),
           })),
           subtotal: result.subtotal,
           taxTotal: result.taxTotal,
@@ -249,63 +238,68 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                {backendQuotations.map((est) => (
-                  <tr
-                    key={est.id}
-                    onClick={() => setViewingEstimate(est)}
-                    className="hover:bg-slate-50/50 dark:hover:bg-slate-800/40 transition-colors cursor-pointer"
-                  >
-                    <td className="p-3 pl-4 font-mono font-bold text-blue-600 dark:text-blue-400">
-                      {est.estimateNumber}
-                    </td>
-                    <td className="p-3 font-semibold text-slate-800 dark:text-slate-200">
-                      {est.customerName || est.clientName}
-                    </td>
-                    <td className="p-3 text-slate-500">{formatDate(est.issueDate)}</td>
-                    <td className="p-3 text-slate-500">{formatDate(est.expiryDate)}</td>
-                    <td className="p-3 font-bold text-slate-900 dark:text-slate-100">
-                      {formatCurrency(est.totalAmount, settings.currencySymbol)}
-                    </td>
-                    <td className="p-3">
-                      <span
-                        className={`text-[10px] px-2 py-0.5 rounded border font-semibold ${getStatusBadgeStyle(
-                          est.status
-                        )}`}
-                      >
-                        {est.status}
-                      </span>
-                    </td>
-                    <td className="p-3 pr-4 text-right" onClick={(e) => e.stopPropagation()}>
-                      <div className="flex items-center justify-end space-x-2">
-                        {est.status === 'DRAFT' && (
-                          <button
-                            onClick={() => {
-                              setEditingQuotation(est);
-                              setIsBuilderOpen(true);
-                            }}
-                            className="p-1 text-slate-400 hover:text-blue-600 transition-colors"
-                            title="Edit Draft"
-                          >
-                            <Edit3 className="w-4 h-4" />
-                          </button>
-                        )}
-                        {est.status !== 'CONVERTED' && est.status !== 'Converted' ? (
-                          <button
-                            onClick={(e) => handleConvert(est, e)}
-                            className="bg-emerald-600 hover:bg-emerald-500 text-white px-2.5 py-1 rounded text-[11px] font-semibold flex items-center space-x-1 ml-auto cursor-pointer shadow-xs"
-                          >
-                            <FileCheck className="w-3.5 h-3.5" />
-                            <span>Convert to Invoice</span>
-                          </button>
-                        ) : (
-                          <span className="text-[11px] text-emerald-600 font-semibold">
-                            ✓ Invoiced
-                          </span>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {backendQuotations.map((est) => {
+                  const isConverted = est.status?.toUpperCase() === 'CONVERTED';
+                  const isDraft = est.status?.toUpperCase() === 'DRAFT';
+
+                  return (
+                    <tr
+                      key={est.id}
+                      onClick={() => setViewingQuotationId(est.id)}
+                      className="hover:bg-slate-50/50 dark:hover:bg-slate-800/40 transition-colors cursor-pointer"
+                    >
+                      <td className="p-3 pl-4 font-mono font-bold text-blue-600 dark:text-blue-400">
+                        {est.estimateNumber}
+                      </td>
+                      <td className="p-3 font-semibold text-slate-800 dark:text-slate-200">
+                        {est.customerName || est.clientName}
+                      </td>
+                      <td className="p-3 text-slate-500">{formatDate(est.issueDate)}</td>
+                      <td className="p-3 text-slate-500">{formatDate(est.expiryDate)}</td>
+                      <td className="p-3 font-bold text-slate-900 dark:text-slate-100">
+                        {formatCurrency(est.totalAmount, settings.currencySymbol)}
+                      </td>
+                      <td className="p-3">
+                        <span
+                          className={`text-[10px] px-2 py-0.5 rounded border font-semibold ${getStatusBadgeStyle(
+                            est.status
+                          )}`}
+                        >
+                          {est.status}
+                        </span>
+                      </td>
+                      <td className="p-3 pr-4 text-right" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center justify-end space-x-2">
+                          {isDraft && (
+                            <button
+                              onClick={() => {
+                                setEditingQuotation(est);
+                                setIsBuilderOpen(true);
+                              }}
+                              className="p-1 text-slate-400 hover:text-blue-600 transition-colors"
+                              title="Edit Draft"
+                            >
+                              <Edit3 className="w-4 h-4" />
+                            </button>
+                          )}
+                          {!isConverted ? (
+                            <button
+                              onClick={(e) => handleConvert(est, e)}
+                              className="bg-emerald-600 hover:bg-emerald-500 text-white px-2.5 py-1 rounded text-[11px] font-semibold flex items-center space-x-1 ml-auto cursor-pointer shadow-xs"
+                            >
+                              <FileCheck className="w-3.5 h-3.5" />
+                              <span>Convert to Invoice</span>
+                            </button>
+                          ) : (
+                            <span className="text-[11px] text-emerald-600 font-semibold">
+                              ✓ Invoiced
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -320,7 +314,7 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
             setIsBuilderOpen(false);
             setEditingQuotation(null);
           }}
-          onSuccess={(savedQuotation) => {
+          onSuccess={() => {
             setIsBuilderOpen(false);
             setEditingQuotation(null);
             loadQuotations();
@@ -339,76 +333,35 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
         />
       )}
 
-      {/* Estimate Details Modal */}
-      {viewingEstimate && (
+      {/* Production Authoritative Quotation Details Modal */}
+      {(viewingQuotationId || selectedEntityId) && (
         <EstimateDetailsModal
-          isOpen={!!viewingEstimate}
+          isOpen={Boolean(viewingQuotationId || selectedEntityId)}
+          quotationId={viewingQuotationId || selectedEntityId}
           onClose={() => {
-            setViewingEstimate(null);
+            setViewingQuotationId(null);
             if (onSelectedEntityClosed) onSelectedEntityClosed();
           }}
-          estimate={{
-            id: viewingEstimate.id,
-            estimateNumber: viewingEstimate.estimateNumber,
-            clientId: viewingEstimate.customerId || viewingEstimate.clientId || '',
-            clientName: viewingEstimate.customerName || viewingEstimate.clientName || 'Customer',
-            projectId: viewingEstimate.projectId,
-            issueDate: viewingEstimate.issueDate,
-            expiryDate: viewingEstimate.expiryDate,
-            items: (viewingEstimate.items || viewingEstimate.lineItems || []).map((it: any, idx: number) => ({
-              id: it.id || `view-item-${idx}`,
-              description: it.name || it.itemName || it.description || 'Line Item',
-              accountId: 'acc-4000',
-              quantity: Number(it.quantity) || 1,
-              unitPrice: Number(it.rate || it.unitPrice || 0),
-              taxRate: Number(it.taxRate || 0),
-              amount: Number(it.lineTotal || it.amount || (it.quantity * it.rate) || 0),
-            })),
-            subtotal: viewingEstimate.subtotal,
-            taxTotal: viewingEstimate.taxTotal,
-            totalAmount: viewingEstimate.totalAmount,
-            status: viewingEstimate.status,
-            notes: viewingEstimate.notes,
-          }}
           onConverted={(inv) => {
-            setViewingEstimate(null);
+            setViewingQuotationId(null);
             setPreviewInvoice(inv);
             loadQuotations();
           }}
+          onEditDraft={(q) => {
+            setViewingQuotationId(null);
+            setEditingQuotation(q);
+            setIsBuilderOpen(true);
+          }}
+          currencySymbol={settings.currencySymbol}
         />
       )}
 
       {/* Invoice Preview Modal */}
       {previewInvoice && (
         <InvoicePreviewModal
-          isOpen={!!previewInvoice}
+          isOpen={Boolean(previewInvoice)}
           onClose={() => setPreviewInvoice(null)}
           invoice={previewInvoice}
-        />
-      )}
-
-      {/* Quick Add Client Modal */}
-      {!isBuilderOpen && isQuickClientOpen && (
-        <QuickAddClientModal
-          isOpen={isQuickClientOpen}
-          onClose={() => setIsQuickClientOpen(false)}
-          onClientCreated={(newCust) => {
-            loadCustomers();
-            loadProjects();
-          }}
-        />
-      )}
-
-      {/* Quick Add Project Modal */}
-      {!isBuilderOpen && isQuickProjectOpen && (
-        <QuickAddProjectModal
-          isOpen={isQuickProjectOpen}
-          onClose={() => setIsQuickProjectOpen(false)}
-          clients={backendCustomers}
-          onProjectCreated={(newProj) => {
-            loadCustomers();
-            loadProjects();
-          }}
         />
       )}
     </div>

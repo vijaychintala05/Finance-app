@@ -991,16 +991,22 @@ export class QuotationEngine {
       dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
       subtotal: q.subtotal,
       taxTotal: q.taxTotal,
+      discount: q.overallDiscount || q.discount || 0,
       totalAmount: q.totalAmount,
       notes: q.notes,
-      lineItems: (q.lineItems || []).map((it) => ({
-        itemId: it.itemId,
-        description: it.name || it.description || '',
-        quantity: it.quantity,
-        unitPrice: it.rate,
-        amount: it.lineTotal || (it.quantity * it.rate),
-        taxRate: it.taxRate || 0,
-      })),
+      lineItems: (q.lineItems || q.items || []).map((it) => {
+        const qty = Number(it.quantity) || 1;
+        const rate = Number(it.rate ?? it.unitPrice ?? 0);
+        const amount = Number(it.lineTotal ?? it.amount ?? (qty * rate));
+        return {
+          itemId: it.itemId,
+          description: it.name || it.description || 'Quoted Item',
+          quantity: qty,
+          unitPrice: rate,
+          amount: amount,
+          taxRate: Number(it.taxRate || 0),
+        };
+      }),
     });
 
     await db.query(`UPDATE estimates SET status = 'CONVERTED' WHERE organization_id = $1 AND id = $2`, [orgId, quotationId]);

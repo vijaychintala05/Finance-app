@@ -187,7 +187,6 @@ export const QuotationHeaderForm: React.FC<QuotationHeaderFormProps> = ({
                   const cli = clients.find((c) => c.id === val);
                   if (cli) setCustomerName(getClientDisplayName(cli));
                 }}
-                required
                 className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-2.5 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium"
               >
                 <option value="">Select a customer...</option>

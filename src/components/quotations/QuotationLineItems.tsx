@@ -1,5 +1,5 @@
 import React from 'react';
-import { Plus, Package, Trash2 } from 'lucide-react';
+import { Plus, Package, Trash2, Copy } from 'lucide-react';
 import { BuilderLineItem } from '../../hooks/useQuotationBuilder';
 import { QuotationLineRow } from './QuotationLineRow';
 import { formatCurrency } from '../../utils/formatters';
@@ -8,6 +8,7 @@ interface QuotationLineItemsProps {
   items: BuilderLineItem[];
   onUpdateLine: (id: string, updates: Partial<BuilderLineItem>) => void;
   onRemoveLine: (id: string) => void;
+  onDuplicateLine?: (id: string) => void;
   onAddCustomLine: () => void;
   onOpenItemPicker: () => void;
   currencySymbol?: string;
@@ -18,6 +19,7 @@ export const QuotationLineItems: React.FC<QuotationLineItemsProps> = ({
   items,
   onUpdateLine,
   onRemoveLine,
+  onDuplicateLine,
   onAddCustomLine,
   onOpenItemPicker,
   currencySymbol = '₹',
@@ -51,68 +53,93 @@ export const QuotationLineItems: React.FC<QuotationLineItemsProps> = ({
         </div>
       </div>
 
+      {items.length === 0 && (
+        <div className="p-8 text-center bg-slate-50 dark:bg-slate-800/40 rounded-2xl border border-dashed border-slate-200 dark:border-slate-800 text-slate-500">
+          <p className="text-xs font-medium">No quotation items added yet.</p>
+          <p className="text-[11px] text-slate-400 mt-1">Click "+ Add Saved Item" or "+ Custom Line" to begin adding lines.</p>
+        </div>
+      )}
+
       {/* Desktop View: Fast Editable Table */}
-      <div className="hidden sm:block overflow-x-auto rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
-        <table className="w-full text-left text-xs">
-          <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-500 uppercase text-[10px] tracking-wider border-b border-slate-200 dark:border-slate-800">
-            <tr>
-              <th className="p-2.5 pl-3 w-8">#</th>
-              <th className="p-2.5">Item / Description</th>
-              <th className="p-2.5 w-24">HSN/SAC</th>
-              <th className="p-2.5 w-20 text-right">Qty</th>
-              <th className="p-2.5 w-24">Unit</th>
-              <th className="p-2.5 w-28 text-right">Rate</th>
-              <th className="p-2.5 w-24 text-right">Disc %</th>
-              <th className="p-2.5 w-24">GST</th>
-              <th className="p-2.5 text-right min-w-[100px]">Amount</th>
-              <th className="p-2.5 text-center w-10"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((item, idx) => (
-              <QuotationLineRow
-                key={item.id}
-                index={idx}
-                item={item}
-                onUpdate={(updates) => onUpdateLine(item.id, updates)}
-                onRemove={() => onRemoveLine(item.id)}
-                currencySymbol={currencySymbol}
-                isGstInclusive={isGstInclusive}
-              />
-            ))}
-          </tbody>
-        </table>
-      </div>
+      {items.length > 0 && (
+        <div className="hidden sm:block overflow-x-auto rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-500 uppercase text-[10px] tracking-wider border-b border-slate-200 dark:border-slate-800">
+              <tr>
+                <th className="p-2.5 pl-3 w-8">#</th>
+                <th className="p-2.5">Item / Description</th>
+                <th className="p-2.5 w-24">HSN/SAC</th>
+                <th className="p-2.5 w-20 text-right">Qty</th>
+                <th className="p-2.5 w-24">Unit</th>
+                <th className="p-2.5 w-28 text-right">Rate</th>
+                <th className="p-2.5 w-24 text-right">Disc %</th>
+                <th className="p-2.5 w-24">GST</th>
+                <th className="p-2.5 text-right min-w-[100px]">Amount</th>
+                <th className="p-2.5 text-center w-16"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((item, idx) => (
+                <QuotationLineRow
+                  key={item.id}
+                  index={idx}
+                  item={item}
+                  onUpdate={(updates) => onUpdateLine(item.id, updates)}
+                  onRemove={() => onRemoveLine(item.id)}
+                  onDuplicate={onDuplicateLine ? () => onDuplicateLine(item.id) : undefined}
+                  currencySymbol={currencySymbol}
+                  isGstInclusive={isGstInclusive}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {/* Mobile Card List View */}
-      <div className="sm:hidden space-y-3">
-        {items.map((item, idx) => {
-          const qty = Math.max(0, Number(item.quantity) || 0);
-          const rate = Math.max(0, Number(item.rate) || 0);
-          const gross = qty * rate;
-          let discAmt = Math.max(0, Number(item.discountAmount) || 0);
-          if (discAmt === 0 && item.discountPercent && item.discountPercent > 0) {
-            discAmt = Math.round(gross * (Number(item.discountPercent) / 100) * 100) / 100;
-          }
-          const netLine = gross - discAmt;
+      {items.length > 0 && (
+        <div className="sm:hidden space-y-3">
+          {items.map((item, idx) => {
+            const qty = Math.max(0, Number(item.quantity) || 0);
+            const rate = Math.max(0, Number(item.rate) || 0);
+            const gross = qty * rate;
+            let discAmt = Math.max(0, Number(item.discountAmount) || 0);
+            if (discAmt === 0 && item.discountPercent && item.discountPercent > 0) {
+              discAmt = Math.round(gross * (Number(item.discountPercent) / 100) * 100) / 100;
+            }
+            const netLine = gross - discAmt;
 
-          return (
-            <div
-              key={item.id}
-              className="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3 shadow-xs"
-            >
-              <div className="flex justify-between items-start">
-                <span className="font-bold text-xs text-blue-600 dark:text-blue-400">
-                  Line {idx + 1}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => onRemoveLine(item.id)}
-                  className="text-slate-400 hover:text-rose-600 p-1"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              </div>
+            return (
+              <div
+                key={item.id}
+                className="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3 shadow-xs"
+              >
+                <div className="flex justify-between items-start">
+                  <span className="font-bold text-xs text-blue-600 dark:text-blue-400">
+                    Line {idx + 1}
+                  </span>
+                  <div className="flex items-center space-x-1">
+                    {onDuplicateLine && (
+                      <button
+                        type="button"
+                        onClick={() => onDuplicateLine(item.id)}
+                        title="Duplicate line"
+                        aria-label="Duplicate line"
+                        className="text-slate-400 hover:text-blue-600 p-1 cursor-pointer"
+                      >
+                        <Copy className="w-4 h-4" />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => onRemoveLine(item.id)}
+                      aria-label="Delete line"
+                      className="text-slate-400 hover:text-rose-600 p-1 cursor-pointer"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
 
               <input
                 type="text"
@@ -185,6 +212,7 @@ export const QuotationLineItems: React.FC<QuotationLineItemsProps> = ({
           );
         })}
       </div>
-    </div>
-  );
+    )}
+  </div>
+);
 };

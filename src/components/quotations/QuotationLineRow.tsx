@@ -1,5 +1,5 @@
 import React from 'react';
-import { Trash2 } from 'lucide-react';
+import { Trash2, Copy } from 'lucide-react';
 import { BuilderLineItem } from '../../hooks/useQuotationBuilder';
 import { formatCurrency } from '../../utils/formatters';
 
@@ -8,6 +8,7 @@ interface QuotationLineRowProps {
   item: BuilderLineItem;
   onUpdate: (updates: Partial<BuilderLineItem>) => void;
   onRemove: () => void;
+  onDuplicate?: () => void;
   currencySymbol?: string;
   isGstInclusive?: boolean;
 }
@@ -17,6 +18,7 @@ export const QuotationLineRow: React.FC<QuotationLineRowProps> = ({
   item,
   onUpdate,
   onRemove,
+  onDuplicate,
   currencySymbol = '₹',
   isGstInclusive = false,
 }) => {
@@ -142,15 +144,29 @@ export const QuotationLineRow: React.FC<QuotationLineRowProps> = ({
         <td className="p-2.5 align-top text-right font-bold text-xs text-slate-900 dark:text-slate-100 min-w-[100px]">
           {formatCurrency(netLine, currencySymbol)}
         </td>
-        <td className="p-2.5 align-top text-center w-10">
-          <button
-            type="button"
-            onClick={onRemove}
-            title="Remove line"
-            className="p-1 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 rounded-lg transition-colors cursor-pointer"
-          >
-            <Trash2 className="w-4 h-4" />
-          </button>
+        <td className="p-2.5 align-top text-center w-16">
+          <div className="flex items-center justify-center space-x-1">
+            {onDuplicate && (
+              <button
+                type="button"
+                onClick={onDuplicate}
+                title="Duplicate line"
+                aria-label="Duplicate line"
+                className="p-1 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 rounded-lg transition-colors cursor-pointer"
+              >
+                <Copy className="w-3.5 h-3.5" />
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onRemove}
+              title="Remove line"
+              aria-label="Delete line"
+              className="p-1 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 rounded-lg transition-colors cursor-pointer"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </td>
       </tr>
     </>

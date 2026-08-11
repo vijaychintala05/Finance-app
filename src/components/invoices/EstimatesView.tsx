@@ -328,8 +328,6 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
           initialQuotation={editingQuotation}
           clients={backendCustomers}
           projects={backendProjects}
-          onOpenQuickClient={() => setIsQuickClientOpen(true)}
-          onOpenQuickProject={() => setIsQuickProjectOpen(true)}
           onClientCreated={loadCustomers}
           onProjectCreated={loadProjects}
           currencySymbol={settings.currencySymbol}

@@ -141,6 +141,23 @@ export function useQuotationBuilder(initialData?: Partial<QuotationBuilderData>)
     setIsDirty(true);
   };
 
+  // Duplicate Line Item
+  const duplicateLine = (id: string) => {
+    setItems((prev) => {
+      const idx = prev.findIndex((item) => item.id === id);
+      if (idx === -1) return prev;
+      const original = prev[idx];
+      const clone: BuilderLineItem = {
+        ...original,
+        id: `line-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      };
+      const next = [...prev];
+      next.splice(idx + 1, 0, clone);
+      return next;
+    });
+    setIsDirty(true);
+  };
+
   // Update Line Item
   const updateLine = (id: string, updates: Partial<BuilderLineItem>) => {
     setItems((prev) =>
@@ -250,6 +267,7 @@ export function useQuotationBuilder(initialData?: Partial<QuotationBuilderData>)
     addSavedItem,
     addCustomLine,
     removeLine,
+    duplicateLine,
     updateLine,
     totals,
     isDirty,

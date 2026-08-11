@@ -173,12 +173,10 @@ export const QuotationBuilder: React.FC<QuotationBuilderProps> = ({
 
   const handleOpenQuickClient = () => {
     setIsQuickClientOpen(true);
-    if (onOpenQuickClient) onOpenQuickClient();
   };
 
   const handleOpenQuickProject = () => {
     setIsQuickProjectOpen(true);
-    if (onOpenQuickProject) onOpenQuickProject();
   };
 
   const handleClientCreated = (newCust: any) => {
@@ -277,6 +275,7 @@ export const QuotationBuilder: React.FC<QuotationBuilderProps> = ({
             items={builder.items}
             onUpdateLine={builder.updateLine}
             onRemoveLine={builder.removeLine}
+            onDuplicateLine={builder.duplicateLine}
             onAddCustomLine={builder.addCustomLine}
             onOpenItemPicker={() => setIsItemPickerOpen(true)}
             currencySymbol={currencySymbol}

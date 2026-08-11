@@ -833,12 +833,42 @@ export class QuotationEngine {
   }
 
   /**
-   * Save a quotation visual template
+   * Save a quotation visual template with organization isolation & validation
    */
   public static async saveTemplate(orgId: string, data: Partial<QuotationTemplateModel>): Promise<QuotationTemplateModel> {
-    const id = data.id || `tmpl-${Date.now()}`;
-    const name = data.name || 'Custom Template';
+    if (!orgId) throw new Error('Organization ID is required');
+
+    const name = (data.name || '').trim();
+    if (!name) {
+      throw new Error('Template name is required');
+    }
+
     const type = data.templateType || 'Classic';
+    const validTypes = ['Classic', 'Modern', 'Minimalist', 'Elegance', 'Bold'];
+    if (!validTypes.includes(type)) {
+      throw new Error(`Unsupported templateType: ${type}. Must be one of: ${validTypes.join(', ')}`);
+    }
+
+    const color = data.primaryColor || '#1e40af';
+    if (!/^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/.test(color)) {
+      throw new Error(`Invalid primaryColor format: ${color}. Must be a valid hex color code like #1e40af`);
+    }
+
+    const font = data.fontFamily || 'Inter';
+    const validFonts = ['Inter', 'Roboto', 'Outfit', 'Helvetica', 'Arial', 'sans', 'serif', 'mono'];
+    if (!validFonts.includes(font)) {
+      throw new Error(`Unsupported fontFamily: ${font}`);
+    }
+
+    // Cross-organization template ID protection
+    if (data.id) {
+      const existing = await db.query(`SELECT organization_id FROM quotation_templates WHERE id = $1`, [data.id]);
+      if (existing.rows.length > 0 && existing.rows[0].organization_id !== orgId) {
+        throw new Error(`Cross-organization template access forbidden: Template ${data.id} does not belong to organization ${orgId}`);
+      }
+    }
+
+    const id = data.id || `tmpl-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 
     if (data.isDefault) {
       await db.query(`UPDATE quotation_templates SET is_default = FALSE WHERE organization_id = $1`, [orgId]);
@@ -870,16 +900,16 @@ export class QuotationEngine {
         orgId,
         name,
         type,
-        data.primaryColor || '#1e40af',
-        data.fontFamily || 'Inter',
+        color,
+        font,
         data.showLogo !== undefined ? Boolean(data.showLogo) : true,
         data.logoUrl || '',
         JSON.stringify(data.companyInfo || {}),
         data.showTaxBreakdown !== undefined ? Boolean(data.showTaxBreakdown) : true,
         data.showSignature !== undefined ? Boolean(data.showSignature) : true,
-        data.termsAndConditions || '',
-        data.bankDetails || '',
-        data.footerNote || '',
+        (data.termsAndConditions || '').substring(0, 5000),
+        (data.bankDetails || '').substring(0, 2000),
+        (data.footerNote || '').substring(0, 1000),
         data.isDefault !== undefined ? Boolean(data.isDefault) : false,
       ]
     );
@@ -889,8 +919,8 @@ export class QuotationEngine {
       organizationId: orgId,
       name,
       templateType: type,
-      primaryColor: data.primaryColor || '#1e40af',
-      fontFamily: data.fontFamily || 'Inter',
+      primaryColor: color,
+      fontFamily: font,
       showLogo: data.showLogo !== undefined ? Boolean(data.showLogo) : true,
       logoUrl: data.logoUrl,
       companyInfo: data.companyInfo,
@@ -900,6 +930,64 @@ export class QuotationEngine {
       bankDetails: data.bankDetails,
       footerNote: data.footerNote,
       isDefault: data.isDefault !== undefined ? Boolean(data.isDefault) : false,
+    };
+  }
+
+  /**
+   * Get single template by ID for an organization
+   */
+  public static async getTemplate(orgId: string, templateId: string): Promise<QuotationTemplateModel | null> {
+    const res = await db.query(
+      `SELECT * FROM quotation_templates WHERE organization_id = $1 AND id = $2`,
+      [orgId, templateId]
+    );
+    if (res.rows.length === 0) return null;
+    const r = res.rows[0];
+    return {
+      id: r.id,
+      organizationId: r.organization_id,
+      name: r.name,
+      templateType: r.template_type,
+      primaryColor: r.primary_color,
+      fontFamily: r.font_family,
+      showLogo: r.show_logo,
+      logoUrl: r.logo_url,
+      companyInfo: typeof r.company_info === 'string' ? JSON.parse(r.company_info) : r.company_info,
+      showTaxBreakdown: r.show_tax_breakdown,
+      showSignature: r.show_signature,
+      termsAndConditions: r.terms_and_conditions,
+      bankDetails: r.bank_details,
+      footerNote: r.footer_note,
+      isDefault: r.is_default,
+    };
+  }
+
+  /**
+   * Get default template for an organization
+   */
+  public static async getDefaultTemplate(orgId: string): Promise<QuotationTemplateModel | null> {
+    const res = await db.query(
+      `SELECT * FROM quotation_templates WHERE organization_id = $1 AND is_default = TRUE LIMIT 1`,
+      [orgId]
+    );
+    if (res.rows.length === 0) return null;
+    const r = res.rows[0];
+    return {
+      id: r.id,
+      organizationId: r.organization_id,
+      name: r.name,
+      templateType: r.template_type,
+      primaryColor: r.primary_color,
+      fontFamily: r.font_family,
+      showLogo: r.show_logo,
+      logoUrl: r.logo_url,
+      companyInfo: typeof r.company_info === 'string' ? JSON.parse(r.company_info) : r.company_info,
+      showTaxBreakdown: r.show_tax_breakdown,
+      showSignature: r.show_signature,
+      termsAndConditions: r.terms_and_conditions,
+      bankDetails: r.bank_details,
+      footerNote: r.footer_note,
+      isDefault: r.is_default,
     };
   }
 

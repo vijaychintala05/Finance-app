@@ -34,6 +34,8 @@ export const authMiddleware = async (
       req.user = decoded;
       return next();
     }
+    res.status(401).json({ error: 'Unauthorized: Invalid token' });
+    return;
   }
 
   // In production, reject missing or invalid credentials immediately

@@ -19,6 +19,8 @@ router.post('/quotations/templates', requirePermission('invoices.edit'), Phase8C
 router.get('/quotations/:id', requirePermission('invoices.view'), Phase8Controller.getQuotation);
 router.put('/quotations/:id', requirePermission('invoices.edit'), Phase8Controller.updateQuotation);
 router.patch('/quotations/:id', requirePermission('invoices.edit'), Phase8Controller.updateQuotation);
+router.get('/quotations/:id/pdf', requirePermission('invoices.view'), Phase8Controller.getQuotationPdf);
+router.get('/quotations/:id/revisions/:revisionNumber/pdf', requirePermission('invoices.view'), Phase8Controller.getQuotationPdf);
 router.get('/quotations/:id/revisions', requirePermission('invoices.view'), Phase8Controller.getQuotationRevisions);
 router.post('/quotations/:id/convert-so', requirePermission('invoices.create'), Phase8Controller.convertQuotationToSO);
 router.post('/quotations/:id/convert-inv', requirePermission('invoices.create'), Phase8Controller.convertQuotationToInvoice);

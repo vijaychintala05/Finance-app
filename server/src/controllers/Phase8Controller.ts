@@ -5,8 +5,31 @@ import { QuotationEngine } from '../sales/QuotationEngine';
 import { DocumentNumberingEngine } from '../services/DocumentNumberingEngine';
 import { GlobalSearchService } from '../services/GlobalSearchService';
 import { DashboardSummaryService } from '../services/DashboardSummaryService';
+import { QuotationRenderModelService } from '../sales/QuotationRenderModelService';
+import { QuotationPdfService } from '../sales/QuotationPdfService';
 
 export class Phase8Controller {
+  // --- QUOTATION PDF API ---
+  public static async getQuotationPdf(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const orgId = req.auth!.organizationId;
+      const { id, revisionNumber } = req.params;
+
+      const revNum = revisionNumber !== undefined ? parseInt(revisionNumber, 10) : undefined;
+      const renderModel = await QuotationRenderModelService.buildRenderModel(orgId, id, revNum);
+      const pdfBuffer = await QuotationPdfService.generatePdf(renderModel);
+
+      const filename = `Quotation-${renderModel.document.quotationNumber}.pdf`;
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+      res.send(pdfBuffer);
+    } catch (err: any) {
+      const msg = err.message || 'Failed to generate PDF';
+      const status = msg.includes('not found') ? 404 : msg.includes('forbidden') ? 403 : 500;
+      res.status(status).json({ error: msg });
+    }
+  }
   // --- ITEMS API ---
   public static async getItems(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {

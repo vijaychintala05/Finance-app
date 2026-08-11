@@ -14,6 +14,7 @@ import {
   Mail,
   Phone,
   MapPin,
+  Download,
 } from 'lucide-react';
 import { quotationApi } from '../../services/quotationApi';
 import { formatCurrency, formatDate, getStatusBadgeStyle } from '../../utils/formatters';
@@ -52,6 +53,33 @@ export const EstimateDetailsModal: React.FC<EstimateDetailsModalProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [converting, setConverting] = useState<boolean>(false);
   const [convertError, setConvertError] = useState<string | null>(null);
+  const [downloadingPdf, setDownloadingPdf] = useState<boolean>(false);
+  const [pdfError, setPdfError] = useState<string | null>(null);
+
+  const handleDownloadPdf = async () => {
+    const targetId = quotation?.id || quotationId || estimate?.id;
+    if (!targetId || downloadingPdf) return;
+
+    try {
+      setDownloadingPdf(true);
+      setPdfError(null);
+
+      const blob = await quotationApi.getQuotationPdf(targetId);
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const qNum = quotation?.quotationNumber || quotation?.estimate_number || 'QT-0000';
+      a.download = `Quotation-${qNum}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } catch (err: any) {
+      setPdfError(err.message || 'Failed to download quotation PDF');
+    } finally {
+      setDownloadingPdf(false);
+    }
+  };
 
   // Close on Escape key press
   useEffect(() => {
@@ -208,6 +236,21 @@ export const EstimateDetailsModal: React.FC<EstimateDetailsModalProps> = ({
 
           <div className="flex items-center space-x-2">
             <button
+              onClick={handleDownloadPdf}
+              disabled={downloadingPdf}
+              aria-label="Download Quotation PDF"
+              title="Download PDF"
+              className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-semibold flex items-center space-x-1.5 transition-colors cursor-pointer"
+            >
+              {downloadingPdf ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Download className="w-3.5 h-3.5" />
+              )}
+              <span>{downloadingPdf ? 'Generating PDF...' : 'Download PDF'}</span>
+            </button>
+
+            <button
               onClick={handlePrint}
               aria-label="Print Quote Summary"
               title="Print Summary"
@@ -229,6 +272,21 @@ export const EstimateDetailsModal: React.FC<EstimateDetailsModalProps> = ({
 
         {/* CONTENT CONTAINER */}
         <div className="p-4 sm:p-6 space-y-6 overflow-y-auto flex-1">
+          {/* PDF ERROR BANNER */}
+          {pdfError && (
+            <div className="p-3 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 rounded-xl text-xs text-rose-600 dark:text-rose-400 flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{pdfError}</span>
+              </div>
+              <button
+                onClick={() => setPdfError(null)}
+                className="text-rose-500 hover:text-rose-700 text-xs font-semibold underline cursor-pointer"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
           {/* LOADING STATE */}
           {loading && (
             <div className="py-12 text-center text-slate-400 flex flex-col items-center space-y-2">

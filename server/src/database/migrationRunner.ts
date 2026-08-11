@@ -876,6 +876,8 @@ export class MigrationRunner {
       `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS customer_response_notes TEXT`,
       `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS customer_snapshot JSONB`,
       `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS project_id VARCHAR(64)`,
+      `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS template_snapshot JSONB`,
+      `ALTER TABLE quotation_revisions ADD COLUMN IF NOT EXISTS template_snapshot JSONB`,
       `ALTER TABLE invoices ADD COLUMN IF NOT EXISTS customer_snapshot JSONB`,
       `ALTER TABLE invoices ADD COLUMN IF NOT EXISTS is_gst_inclusive BOOLEAN DEFAULT FALSE`,
       `ALTER TABLE vendors ADD COLUMN IF NOT EXISTS tax_id VARCHAR(50)`

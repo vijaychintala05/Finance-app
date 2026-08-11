@@ -78,4 +78,39 @@ export const quotationApi = {
     if (res.error) throw new Error(res.error);
     return res.data?.items || [];
   },
+
+  async getQuotationPdf(id: string, revisionNumber?: number): Promise<Blob> {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('firmbooks_token') || localStorage.getItem('token') : null;
+    const revPath = revisionNumber !== undefined ? `/revisions/${revisionNumber}` : '';
+    const res = await fetch(`/api/v1/quotations/${id}${revPath}/pdf`, {
+      method: 'GET',
+      headers: {
+        Authorization: token ? `Bearer ${token}` : '',
+      },
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      let msg = 'Failed to download PDF';
+      try {
+        const json = JSON.parse(errText);
+        msg = json.error || msg;
+      } catch {}
+      throw new Error(msg);
+    }
+
+    return await res.blob();
+  },
+
+  async listTemplates() {
+    const res = await apiClient.get<{ templates: any[] }>('/quotations/templates');
+    if (res.error) throw new Error(res.error);
+    return res.data?.templates || [];
+  },
+
+  async saveTemplate(data: any) {
+    const res = await apiClient.post<{ template: any }>('/quotations/templates', data);
+    if (res.error) throw new Error(res.error);
+    return res.data?.template;
+  },
 };

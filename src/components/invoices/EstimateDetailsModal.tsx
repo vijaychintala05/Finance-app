@@ -14,8 +14,6 @@ import {
   Mail,
   Phone,
   MapPin,
-  Tag,
-  Percent,
 } from 'lucide-react';
 import { quotationApi } from '../../services/quotationApi';
 import { formatCurrency, formatDate, getStatusBadgeStyle } from '../../utils/formatters';
@@ -93,7 +91,6 @@ export const EstimateDetailsModal: React.FC<EstimateDetailsModalProps> = ({
       })
       .catch((err) => {
         if (isMounted) {
-          // If fetch fails but estimate snapshot was passed, fallback to estimate snapshot while showing alert
           if (estimate) {
             setQuotation(estimate);
           }
@@ -121,7 +118,6 @@ export const EstimateDetailsModal: React.FC<EstimateDetailsModalProps> = ({
     try {
       const resultingInvoice = await quotationApi.convertQuotationToInvoice(quotation.id);
       
-      // Update local status representation to CONVERTED
       setQuotation((prev: any) => ({
         ...prev,
         status: 'CONVERTED',
@@ -166,11 +162,25 @@ export const EstimateDetailsModal: React.FC<EstimateDetailsModalProps> = ({
     calculatedLineDiscountsTotal += discAmt;
   });
 
+  const isGstInclusive = Boolean(quotation?.isGstInclusive);
   const overallDiscount = Math.max(0, Number(quotation?.overallDiscount ?? quotation?.discount) || 0);
   const subtotal = Number(quotation?.subtotal || 0);
-  const taxableTotal = Math.max(0, subtotal - overallDiscount);
   const taxTotal = Number(quotation?.taxTotal || 0);
+  const roundOffAmount = Number(quotation?.roundOffAmount || 0);
   const grandTotal = Number(quotation?.totalAmount || 0);
+
+  // Authoritative Taxable Amount determination
+  let authoritativeTaxableAmount = 0;
+  const hasSavedLineTaxable =
+    items.length > 0 && items.every((it: any) => typeof it.taxableAmount === 'number' && !isNaN(it.taxableAmount));
+
+  if (hasSavedLineTaxable) {
+    authoritativeTaxableAmount = Math.round(items.reduce((sum: number, it: any) => sum + Number(it.taxableAmount || 0), 0) * 100) / 100;
+  } else if (isGstInclusive) {
+    authoritativeTaxableAmount = Math.max(0, Math.round((grandTotal - taxTotal - roundOffAmount) * 100) / 100);
+  } else {
+    authoritativeTaxableAmount = Math.max(0, Math.round((subtotal - overallDiscount) * 100) / 100);
+  }
 
   return (
     <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 z-50 animate-fade-in overflow-y-auto">
@@ -309,7 +319,7 @@ export const EstimateDetailsModal: React.FC<EstimateDetailsModalProps> = ({
                 <div className="flex flex-col items-start sm:items-end space-y-2">
                   <span
                     className={`px-3 py-1 rounded-full text-xs font-extrabold border ${getStatusBadgeStyle(
-                      quotation.status
+                      quotation?.status || 'DRAFT'
                     )}`}
                   >
                     {quotation.status}
@@ -541,21 +551,30 @@ export const EstimateDetailsModal: React.FC<EstimateDetailsModalProps> = ({
                   Quotation Financial Summary
                 </h5>
 
+                {calculatedLineDiscountsTotal > 0 && (
+                  <>
+                    <div className="flex justify-between items-center text-slate-600 dark:text-slate-400">
+                      <span>Gross Amount:</span>
+                      <span className="font-semibold text-slate-800 dark:text-slate-200">
+                        {formatCurrency(subtotal + calculatedLineDiscountsTotal, currencySymbol)}
+                      </span>
+                    </div>
+
+                    <div className="flex justify-between items-center text-emerald-600 dark:text-emerald-400">
+                      <span>Line Discounts:</span>
+                      <span className="font-semibold">
+                        -{formatCurrency(calculatedLineDiscountsTotal, currencySymbol)}
+                      </span>
+                    </div>
+                  </>
+                )}
+
                 <div className="flex justify-between items-center text-slate-600 dark:text-slate-400">
-                  <span>Gross Subtotal:</span>
+                  <span>Subtotal:</span>
                   <span className="font-semibold text-slate-800 dark:text-slate-200">
                     {formatCurrency(subtotal, currencySymbol)}
                   </span>
                 </div>
-
-                {calculatedLineDiscountsTotal > 0 && (
-                  <div className="flex justify-between items-center text-emerald-600 dark:text-emerald-400">
-                    <span>Line Discounts:</span>
-                    <span className="font-semibold">
-                      -{formatCurrency(calculatedLineDiscountsTotal, currencySymbol)}
-                    </span>
-                  </div>
-                )}
 
                 {overallDiscount > 0 && (
                   <div className="flex justify-between items-center text-emerald-600 dark:text-emerald-400">
@@ -569,7 +588,7 @@ export const EstimateDetailsModal: React.FC<EstimateDetailsModalProps> = ({
                 <div className="flex justify-between items-center text-slate-600 dark:text-slate-400 border-t border-slate-200/60 dark:border-slate-800 pt-2">
                   <span>Taxable Amount:</span>
                   <span className="font-semibold text-slate-800 dark:text-slate-200">
-                    {formatCurrency(taxableTotal, currencySymbol)}
+                    {formatCurrency(authoritativeTaxableAmount, currencySymbol)}
                   </span>
                 </div>
 
@@ -579,6 +598,17 @@ export const EstimateDetailsModal: React.FC<EstimateDetailsModalProps> = ({
                     {formatCurrency(taxTotal, currencySymbol)}
                   </span>
                 </div>
+
+                {roundOffAmount !== 0 && (
+                  <div className="flex justify-between items-center text-slate-600 dark:text-slate-400">
+                    <span>Round Off:</span>
+                    <span className="font-semibold text-slate-800 dark:text-slate-200">
+                      {roundOffAmount > 0
+                        ? `+${formatCurrency(roundOffAmount, currencySymbol)}`
+                        : formatCurrency(roundOffAmount, currencySymbol)}
+                    </span>
+                  </div>
+                )}
 
                 <div className="flex justify-between items-center pt-3 border-t-2 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-extrabold text-sm">
                   <span>Grand Total:</span>
@@ -664,5 +694,4 @@ export const EstimateDetailsModal: React.FC<EstimateDetailsModalProps> = ({
   );
 };
 
-// Export alias for clean architectural naming
 export const QuotationDetailsModal = EstimateDetailsModal;

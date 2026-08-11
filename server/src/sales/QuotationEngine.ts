@@ -982,31 +982,55 @@ export class QuotationEngine {
 
     const invNumber = await DocumentNumberingEngine.getNextNumber(orgId, 'INVOICE', new Date().toISOString().split('T')[0]);
 
+    const lineItemsSnapshot = (q.lineItems || q.items || []).map((it: any) => {
+      const qty = Number(it.quantity) || 1;
+      const rate = Number(it.rate ?? it.unitPrice ?? 0);
+      const discAmt = Number(it.discountAmount || 0);
+      const discPct = Number(it.discountPercent || 0);
+      const taxable = Number(it.taxableAmount ?? Math.max(0, qty * rate - (discAmt || (discPct ? qty * rate * discPct / 100 : 0))));
+      const taxAmt = Number(it.taxAmount ?? Math.round(taxable * (Number(it.taxRate || 0) / 100) * 100) / 100);
+      const lineTot = Number(it.lineTotal ?? it.totalAmount ?? (taxable + taxAmt));
+
+      return {
+        id: it.id,
+        itemId: it.itemId,
+        name: it.name || it.itemName || it.description || 'Quoted Item',
+        description: it.description || it.name || 'Quoted Item',
+        hsnSac: it.hsnSac || it.hsn_sac || '',
+        unit: it.unit || 'Pcs',
+        quantity: qty,
+        unitPrice: rate,
+        rate: rate,
+        discountPercent: discPct,
+        discountAmount: discAmt,
+        allocatedOverallDiscount: Number(it.allocatedOverallDiscount || 0),
+        taxableAmount: taxable,
+        taxRate: Number(it.taxRate || 0),
+        taxAmount: taxAmt,
+        totalAmount: lineTot,
+        lineTotal: lineTot,
+        amount: taxable,
+      };
+    });
+
     const invoice = await SalesEngine.createAndPostInvoice(orgId, {
       invoiceNumber: invNumber,
+      estimateId: quotationId,
+      projectId: q.projectId,
       customerId: q.customerId,
       customerName: q.customerName,
+      customerEmail: q.customerSnapshot?.email || '',
       customerSnapshot: q.customerSnapshot,
       issueDate: new Date().toISOString().split('T')[0],
       dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
       subtotal: q.subtotal,
       taxTotal: q.taxTotal,
       discount: q.overallDiscount || q.discount || 0,
+      roundOffAmount: q.roundOffAmount || 0,
       totalAmount: q.totalAmount,
+      isGstInclusive: q.isGstInclusive,
       notes: q.notes,
-      lineItems: (q.lineItems || q.items || []).map((it) => {
-        const qty = Number(it.quantity) || 1;
-        const rate = Number(it.rate ?? it.unitPrice ?? 0);
-        const amount = Number(it.lineTotal ?? it.amount ?? (qty * rate));
-        return {
-          itemId: it.itemId,
-          description: it.name || it.description || 'Quoted Item',
-          quantity: qty,
-          unitPrice: rate,
-          amount: amount,
-          taxRate: Number(it.taxRate || 0),
-        };
-      }),
+      lineItems: lineItemsSnapshot,
     });
 
     await db.query(`UPDATE estimates SET status = 'CONVERTED' WHERE organization_id = $1 AND id = $2`, [orgId, quotationId]);

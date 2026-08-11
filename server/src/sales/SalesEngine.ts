@@ -107,6 +107,7 @@ export interface InvoiceModel {
   taxTotal: number;
   discount: number;
   roundOffAmount?: number;
+  isGstInclusive?: boolean;
   totalAmount: number;
   paidAmount: number;
   amountCredited?: number;
@@ -584,7 +585,7 @@ export class SalesEngine {
           accountCode: '4000',
           accountName: 'Sales Revenue',
           debit: 0,
-          credit: subtotal - (data.discount || 0),
+          credit: Math.round((finalTotal - taxTotal - roundOff) * 100) / 100,
           description: `Invoice ${invNumber} Revenue`,
         },
       ];
@@ -635,29 +636,32 @@ export class SalesEngine {
     const status = isPosted ? 'POSTED' : 'DRAFT';
 
     await db.query(
-      `INSERT INTO invoices (id, organization_id, invoice_number, sales_order_id, estimate_id, client_id, client_name, client_email, project_id, issue_date, due_date, subtotal, tax_total, discount, total_amount, paid_amount, balance_due, status, notes, line_items, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
+      `INSERT INTO invoices (id, organization_id, invoice_number, sales_order_id, estimate_id, client_id, customer_id, client_name, client_email, project_id, issue_date, due_date, subtotal, tax_total, discount, round_off_amount, total_amount, paid_amount, balance_due, status, notes, line_items, customer_snapshot, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)`,
       [
         id,
         orgId,
         invNumber,
         data.salesOrderId || null,
         data.estimateId || null,
-        data.customerId,
-        data.customerName || '',
-        data.customerEmail || '',
+        data.customerId || (data as any).clientId || null,
+        data.customerId || (data as any).clientId || null,
+        data.customerName || (data as any).clientName || '',
+        data.customerEmail || (data as any).clientEmail || '',
         data.projectId || null,
         data.issueDate || now.split('T')[0],
         data.dueDate || now.split('T')[0],
         subtotal,
         taxTotal,
         data.discount || 0,
+        roundOff,
         finalTotal,
         0,
         finalTotal,
         status,
         data.notes || '',
         JSON.stringify(items),
+        data.customerSnapshot ? JSON.stringify(data.customerSnapshot) : null,
         now,
       ]
     );

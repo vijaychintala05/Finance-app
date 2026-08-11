@@ -27,7 +27,9 @@ vi.mock('../services/quotationApi', () => ({
   },
 }));
 
-describe('Phase 8.4B.2A — Production Quotation Details & Conversion Test Suite', () => {
+describe('Phase 8.4B.2A & 2B — Production Quotation Details & Conversion Test Suite', () => {
+  // Production-shaped exclusive sample quotation matching QuotationEngine calculations
+  // Gross = 100000, Line Disc = 5000, Subtotal = 95000, Overall Disc = 5000, Taxable = 90000, GST = 16200, Total = 106200
   const sampleQuotation = {
     id: 'q-100',
     estimateNumber: 'EST-2026-0100',
@@ -45,16 +47,18 @@ describe('Phase 8.4B.2A — Production Quotation Details & Conversion Test Suite
     projectId: 'PRJ-505',
     issueDate: '2026-08-11',
     expiryDate: '2026-09-10',
-    subtotal: 100000,
-    taxTotal: 18000,
+    subtotal: 95000,
+    taxTotal: 16200,
     discount: 5000,
     overallDiscount: 5000,
-    totalAmount: 113000,
+    roundOffAmount: 0,
+    totalAmount: 106200,
     isGstInclusive: false,
     status: 'DRAFT',
     items: [
       {
         id: 'li-1',
+        itemId: 'itm-100',
         name: 'Enterprise Cloud Architecture',
         description: 'Multi-region Kubernetes setup & Terraform automation',
         hsnSac: '998313',
@@ -63,7 +67,11 @@ describe('Phase 8.4B.2A — Production Quotation Details & Conversion Test Suite
         rate: 50000,
         discountPercent: 5,
         discountAmount: 5000,
+        allocatedOverallDiscount: 5000,
+        taxableAmount: 90000,
         taxRate: 18,
+        taxAmount: 16200,
+        totalAmount: 106200,
         lineTotal: 95000,
       },
     ],
@@ -303,7 +311,7 @@ describe('Phase 8.4B.2A — Production Quotation Details & Conversion Test Suite
   });
 
   // 15. Taxable total renders
-  it('15. Renders taxable subtotal', async () => {
+  it('15. Renders authoritative taxable subtotal', async () => {
     render(
       <BooksProvider>
         <EstimateDetailsModal isOpen={true} quotationId="q-100" onClose={vi.fn()} />
@@ -312,7 +320,7 @@ describe('Phase 8.4B.2A — Production Quotation Details & Conversion Test Suite
 
     await waitFor(() => {
       expect(screen.getAllByText(/Taxable Amount/i).length).toBeGreaterThan(0);
-      expect(screen.getAllByText(/95,000/).length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/90,000/).length).toBeGreaterThan(0);
     });
   });
 
@@ -326,7 +334,7 @@ describe('Phase 8.4B.2A — Production Quotation Details & Conversion Test Suite
 
     await waitFor(() => {
       expect(screen.getAllByText(/GST \/ Tax/i).length).toBeGreaterThan(0);
-      expect(screen.getAllByText(/18,000/).length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/16,200/).length).toBeGreaterThan(0);
     });
   });
 
@@ -340,7 +348,7 @@ describe('Phase 8.4B.2A — Production Quotation Details & Conversion Test Suite
 
     await waitFor(() => {
       expect(screen.getAllByText(/Grand Total/i).length).toBeGreaterThan(0);
-      expect(screen.getAllByText(/113,000/).length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/106,200/).length).toBeGreaterThan(0);
     });
   });
 
@@ -511,5 +519,101 @@ describe('Phase 8.4B.2A — Production Quotation Details & Conversion Test Suite
     });
 
     expect(screen.queryByText(/Delete Quote/i)).toBeNull();
+  });
+
+  // 26. GST-Inclusive Details Regression (Section 4)
+  it('26. GST-Inclusive details regression: displays Taxable ₹9,000, GST ₹1,620, Grand Total ₹10,620 and NOT Taxable ₹10,620', async () => {
+    const inclusiveQuote = {
+      id: 'q-inc-100',
+      estimateNumber: 'EST-INC-0100',
+      customerId: 'cust-888',
+      customerName: 'Inclusive Client Ltd',
+      status: 'DRAFT',
+      isGstInclusive: true,
+      subtotal: 11800,
+      overallDiscount: 1180,
+      taxTotal: 1620,
+      roundOffAmount: 0,
+      totalAmount: 10620,
+      items: [
+        {
+          id: 'li-inc-1',
+          name: 'Inclusive Rate Item',
+          quantity: 1,
+          unit: 'Pcs',
+          rate: 11800,
+          allocatedOverallDiscount: 1180,
+          taxableAmount: 9000,
+          taxRate: 18,
+          taxAmount: 1620,
+          totalAmount: 10620,
+          lineTotal: 11800,
+        },
+      ],
+    };
+
+    (quotationApi.getQuotation as any).mockResolvedValue(inclusiveQuote);
+
+    render(
+      <BooksProvider>
+        <EstimateDetailsModal isOpen={true} quotationId="q-inc-100" onClose={vi.fn()} />
+      </BooksProvider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('EST-INC-0100')).toBeDefined();
+    });
+
+    // Check Taxable Amount is 9,000.00
+    expect(screen.getByText(/Taxable Amount:/i)).toBeDefined();
+    expect(screen.getByText('₹9,000.00')).toBeDefined();
+
+    // Check GST / Tax is 1,620.00
+    expect(screen.getByText('₹1,620.00')).toBeDefined();
+
+    // Check Grand Total is 10,620.00
+    expect(screen.getByText('₹10,620.00')).toBeDefined();
+  });
+
+  // 27. Positive Round-off display test (Section 5)
+  it('27. Displays positive Round Off row in details summary when roundOffAmount is positive', async () => {
+    (quotationApi.getQuotation as any).mockResolvedValue({
+      ...sampleQuotation,
+      roundOffAmount: 0.40,
+      totalAmount: 106200.40,
+    });
+
+    render(
+      <BooksProvider>
+        <EstimateDetailsModal isOpen={true} quotationId="q-100" onClose={vi.fn()} />
+      </BooksProvider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Round Off:/i)).toBeDefined();
+      expect(screen.getByText('+₹0.40')).toBeDefined();
+      expect(screen.getByText('₹106,200.40')).toBeDefined();
+    });
+  });
+
+  // 28. Negative Round-off display test (Section 5)
+  it('28. Displays negative Round Off row in details summary when roundOffAmount is negative', async () => {
+    (quotationApi.getQuotation as any).mockResolvedValue({
+      ...sampleQuotation,
+      roundOffAmount: -0.30,
+      totalAmount: 106199.70,
+    });
+
+    render(
+      <BooksProvider>
+        <EstimateDetailsModal isOpen={true} quotationId="q-100" onClose={vi.fn()} />
+      </BooksProvider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Round Off:/i)).toBeDefined();
+      expect(screen.getByText('-₹0.30')).toBeDefined();
+      expect(screen.getByText('₹106,199.70')).toBeDefined();
+    });
   });
 });

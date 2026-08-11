@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { FileCheck, FileSpreadsheet, Plus, Search, Loader2, Edit3, AlertCircle } from 'lucide-react';
 import { Estimate, Invoice } from '../../types';
 import { useBooks } from '../../context/BooksContext';
@@ -32,7 +32,11 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
   const [loading, setLoading] = useState(true);
   const [customersLoading, setCustomersLoading] = useState(false);
   const [customerError, setCustomerError] = useState<string | null>(null);
+  const [projectsLoading, setProjectsLoading] = useState(false);
+  const [projectError, setProjectError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const customerReqSeqRef = useRef(0);
 
   const [search, setSearch] = useState('');
   const [isBuilderOpen, setIsBuilderOpen] = useState(false);
@@ -58,26 +62,44 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
     }
   };
 
-  // Load real backend customers & projects
-  const loadCustomersAndProjects = async () => {
+  // Separate backend customer loading with stale response sequence protection
+  const loadCustomers = async (searchQuery?: string) => {
+    const currentSeq = ++customerReqSeqRef.current;
     setCustomersLoading(true);
     setCustomerError(null);
     try {
-      const [custs, projs] = await Promise.all([
-        customerApi.listCustomers(),
-        customerApi.listProjects(),
-      ]);
-      setBackendCustomers(custs);
+      const custs = await customerApi.listCustomers(searchQuery);
+      if (currentSeq === customerReqSeqRef.current) {
+        setBackendCustomers(custs);
+      }
+    } catch (err: any) {
+      if (currentSeq === customerReqSeqRef.current) {
+        setCustomerError(err.message || 'Unable to load customers from server');
+      }
+    } finally {
+      if (currentSeq === customerReqSeqRef.current) {
+        setCustomersLoading(false);
+      }
+    }
+  };
+
+  // Separate backend project loading
+  const loadProjects = async () => {
+    setProjectsLoading(true);
+    setProjectError(null);
+    try {
+      const projs = await customerApi.listProjects();
       setBackendProjects(projs);
     } catch (err: any) {
-      setCustomerError(err.message || 'Unable to load customers from server');
+      setProjectError(err.message || 'Unable to load projects from server');
     } finally {
-      setCustomersLoading(false);
+      setProjectsLoading(false);
     }
   };
 
   useEffect(() => {
-    loadCustomersAndProjects();
+    loadCustomers();
+    loadProjects();
   }, []);
 
   useEffect(() => {
@@ -368,7 +390,8 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
           isOpen={isQuickClientOpen}
           onClose={() => setIsQuickClientOpen(false)}
           onClientCreated={(newCust) => {
-            loadCustomersAndProjects();
+            loadCustomers();
+            loadProjects();
           }}
         />
       )}
@@ -380,7 +403,8 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
           onClose={() => setIsQuickProjectOpen(false)}
           clients={backendCustomers}
           onProjectCreated={(newProj) => {
-            loadCustomersAndProjects();
+            loadCustomers();
+            loadProjects();
           }}
         />
       )}

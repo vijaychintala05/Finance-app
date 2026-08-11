@@ -615,7 +615,7 @@ export class FinanceController {
       const result = await db.query(
         `SELECT * FROM customers 
          WHERE organization_id = $1 
-           AND (display_name ILIKE $2 OR legal_name ILIKE $2 OR customer_code ILIKE $2 OR gstin ILIKE $2 OR tax_id ILIKE $2 OR email ILIKE $2 OR phone ILIKE $2)
+           AND (display_name ILIKE $2 OR legal_name ILIKE $2 OR customer_id ILIKE $2 OR gstin ILIKE $2 OR email ILIKE $2 OR phone ILIKE $2)
          ORDER BY display_name ASC LIMIT 50`,
         [orgId, q]
       );

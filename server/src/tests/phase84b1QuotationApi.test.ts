@@ -14,6 +14,9 @@ describe('Phase 8.4B.1 — Quotation Builder API & Real Backend Integration', ()
   let tokenOrgB: string;
   let orgIdB: string;
 
+  let customerAId: string;
+  let customerBId: string;
+
   beforeAll(async () => {
     await MigrationRunner.runMigrations();
 
@@ -44,6 +47,16 @@ describe('Phase 8.4B.1 — Quotation Builder API & Real Backend Integration', ()
 
     const healthB = await request.get('/api/v1/health').set('Authorization', `Bearer ${tokenOrgB}`);
     orgIdB = healthB.body.organizationId;
+
+    const custARes = await request.post('/api/v1/finance/customers')
+      .set('Authorization', `Bearer ${tokenOrgA}`)
+      .send({ displayName: 'Customer A Org', name: 'Customer A Org' });
+    customerAId = custARes.body.id;
+
+    const custBRes = await request.post('/api/v1/finance/customers')
+      .set('Authorization', `Bearer ${tokenOrgB}`)
+      .send({ displayName: 'Customer B Org', name: 'Customer B Org' });
+    customerBId = custBRes.body.id;
   });
 
   afterEach(() => {
@@ -57,6 +70,7 @@ describe('Phase 8.4B.1 — Quotation Builder API & Real Backend Integration', ()
       .set('Authorization', `Bearer ${tokenOrgA}`)
       .set('x-organization-id', orgIdA)
       .send({
+        customerId: customerAId,
         customerName: 'Org A Isolated Client',
         items: [{ name: 'Org A Service', quantity: 1, rate: 5000 }],
       });
@@ -86,6 +100,7 @@ describe('Phase 8.4B.1 — Quotation Builder API & Real Backend Integration', ()
       .set('Authorization', `Bearer ${tokenOrgA}`)
       .set('x-organization-id', orgIdA)
       .send({
+        customerId: customerAId,
         customerName: 'Multi Line Client',
         items: [
           { name: 'Hardware Unit', quantity: 2, rate: 10000, taxRate: 18 },
@@ -108,6 +123,7 @@ describe('Phase 8.4B.1 — Quotation Builder API & Real Backend Integration', ()
       .set('Authorization', `Bearer ${tokenOrgA}`)
       .set('x-organization-id', orgIdA)
       .send({
+        customerId: customerAId,
         customerName: 'Snapshot Client',
         notes: 'Special terms applied',
         items: [{ name: 'Item Snapshot', quantity: 3, rate: 2000, taxRate: 18 }],
@@ -130,6 +146,7 @@ describe('Phase 8.4B.1 — Quotation Builder API & Real Backend Integration', ()
       .set('Authorization', `Bearer ${tokenOrgA}`)
       .set('x-organization-id', orgIdA)
       .send({
+        customerId: customerAId,
         customerName: 'Revision Client',
         items: [{ name: 'Initial Line', quantity: 1, rate: 1000 }],
       });
@@ -157,6 +174,7 @@ describe('Phase 8.4B.1 — Quotation Builder API & Real Backend Integration', ()
       .set('Authorization', `Bearer ${tokenOrgA}`)
       .set('x-organization-id', orgIdA)
       .send({
+        customerId: customerAId,
         customerName: 'Hack Attempt Client',
         items: [{ name: 'Expensive Item', quantity: 1, rate: 10000, taxRate: 18 }],
         subtotal: 10,
@@ -174,6 +192,7 @@ describe('Phase 8.4B.1 — Quotation Builder API & Real Backend Integration', ()
     process.env.NODE_ENV = 'production';
 
     const res = await request.post('/api/v1/quotations').send({
+      customerId: customerAId,
       customerName: 'Hacker',
       items: [{ name: 'Free Item', quantity: 1, rate: 0 }],
     });
@@ -187,6 +206,7 @@ describe('Phase 8.4B.1 — Quotation Builder API & Real Backend Integration', ()
       .set('Authorization', `Bearer ${tokenOrgA}`)
       .set('x-organization-id', orgIdA)
       .send({
+        customerId: customerAId,
         customerName: 'Org A Secret Client',
         items: [{ name: 'Item', quantity: 1, rate: 100 }],
       });
@@ -211,6 +231,7 @@ describe('Phase 8.4B.1 — Quotation Builder API & Real Backend Integration', ()
       .set('Authorization', `Bearer ${tokenOrgA}`)
       .set('x-organization-id', orgIdA)
       .send({
+        customerId: customerAId,
         customerName: 'Convert API Client',
         items: [{ itemId: item.id, name: item.name, quantity: 2, rate: item.salesRate, taxRate: item.gstRate }],
       });
@@ -237,6 +258,7 @@ describe('Phase 8.4B.1 — Quotation Builder API & Real Backend Integration', ()
       .set('Authorization', `Bearer ${tokenOrgA}`)
       .set('x-organization-id', orgIdA)
       .send({
+        customerId: customerAId,
         customerName: 'Requery Client',
         items: [{ name: 'Persistent Line', quantity: 4, rate: 1250, taxRate: 18 }],
       });
@@ -254,6 +276,7 @@ describe('Phase 8.4B.1 — Quotation Builder API & Real Backend Integration', ()
       .set('Authorization', `Bearer ${tokenOrgA}`)
       .set('x-organization-id', orgIdA)
       .send({
+        customerId: customerAId,
         customerName: 'GL Check Client',
         items: [{ name: 'Big Contract', quantity: 1, rate: 500000, taxRate: 18 }],
       });

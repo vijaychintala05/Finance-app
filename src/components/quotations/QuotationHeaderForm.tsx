@@ -40,6 +40,8 @@ interface QuotationHeaderFormProps {
   setIsGstInclusive: (v: boolean) => void;
   customersLoading?: boolean;
   customerError?: string | null;
+  projectsLoading?: boolean;
+  projectError?: string | null;
   onSearchCustomers?: (query: string) => void;
 }
 
@@ -62,12 +64,25 @@ export const QuotationHeaderForm: React.FC<QuotationHeaderFormProps> = ({
   setIsGstInclusive,
   customersLoading = false,
   customerError = null,
+  projectsLoading = false,
+  projectError = null,
   onSearchCustomers,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const requestIdRef = useRef(0);
 
-  const selectedClient = clients.find((c) => c.id === customerId);
+  const [prevSelectedClient, setPrevSelectedClient] = useState<Client | null>(null);
+
+  useEffect(() => {
+    if (customerId) {
+      const found = clients.find((c) => c.id === customerId);
+      if (found) {
+        setPrevSelectedClient(found);
+      }
+    }
+  }, [customerId, clients]);
+
+  const selectedClient = clients.find((c) => c.id === customerId) || prevSelectedClient;
 
   const getClientDisplayName = (c: Client) => {
     return c.displayName || c.name || c.companyName || c.legalName || 'Customer';
@@ -102,6 +117,11 @@ export const QuotationHeaderForm: React.FC<QuotationHeaderFormProps> = ({
       gstinStr.includes(term)
     );
   });
+
+  const displayClients = [...filteredClients];
+  if (selectedClient && !displayClients.some((c) => c.id === selectedClient.id)) {
+    displayClients.unshift(selectedClient);
+  }
 
   const isDateInvalid = Boolean(issueDate && expiryDate && new Date(expiryDate) < new Date(issueDate));
 
@@ -171,14 +191,14 @@ export const QuotationHeaderForm: React.FC<QuotationHeaderFormProps> = ({
                 className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-2.5 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium"
               >
                 <option value="">Select a customer...</option>
-                {filteredClients.map((c) => (
+                {displayClients.map((c) => (
                   <option key={c.id} value={c.id}>
                     {getClientDisplayName(c)} {c.companyName && c.companyName !== getClientDisplayName(c) ? `(${c.companyName})` : ''}
                   </option>
                 ))}
               </select>
 
-              {filteredClients.length === 0 && (
+              {displayClients.length === 0 && (
                 <div className="p-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl text-amber-700 dark:text-amber-400 text-xs flex items-center justify-between mt-1">
                   <span>No customers found.</span>
                   <button
@@ -218,19 +238,32 @@ export const QuotationHeaderForm: React.FC<QuotationHeaderFormProps> = ({
               <span>New</span>
             </button>
           </div>
-          <select
-            id="project-select"
-            value={projectId}
-            onChange={(e) => setProjectId(e.target.value)}
-            className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-2.5 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            <option value="">No linked project</option>
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name} {p.code ? `(${p.code})` : ''}
-              </option>
-            ))}
-          </select>
+
+          {projectsLoading ? (
+            <div className="p-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-xl text-blue-600 dark:text-blue-400 flex items-center space-x-2 text-xs">
+              <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+              <span>Loading projects...</span>
+            </div>
+          ) : projectError ? (
+            <div className="p-2 bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-800 rounded-xl text-rose-600 dark:text-rose-400 flex items-center space-x-1 text-xs">
+              <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+              <span>Unable to load projects: {projectError}</span>
+            </div>
+          ) : (
+            <select
+              id="project-select"
+              value={projectId}
+              onChange={(e) => setProjectId(e.target.value)}
+              className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-2.5 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="">No linked project</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} {p.code ? `(${p.code})` : ''}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
 
         {/* Quotation Number */}

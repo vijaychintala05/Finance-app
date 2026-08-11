@@ -30,8 +30,11 @@ export interface ProjectInput {
 }
 
 export const customerApi = {
-  async listCustomers() {
-    const res = await apiClient.get<any[]>('/finance/customers');
+  async listCustomers(search?: string) {
+    const url = search && search.trim()
+      ? `/finance/customers?search=${encodeURIComponent(search.trim())}`
+      : '/finance/customers';
+    const res = await apiClient.get<any[]>(url);
     if (res.error) throw new Error(res.error);
     return res.data || [];
   },

@@ -38,9 +38,10 @@ export class AuthController {
         [orgId, `uuid-${orgId}`, `PUB-${orgId}`, 'ORG-01', `${fullName}'s Firm`, 'Professional Services', 'United States', 'USD', '$', userId]
       );
 
+      const roleToSet = req.body.role || 'Super Admin';
       await db.query(
         'INSERT INTO organization_members (id, organization_id, user_id, role) VALUES ($1, $2, $3, $4)',
-        [`mem-${Date.now()}`, orgId, userId, 'Super Admin']
+        [`mem-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`, orgId, userId, roleToSet]
       );
 
       const token = JwtAuth.generateToken({ userId, email: email.toLowerCase() });

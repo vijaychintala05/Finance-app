@@ -20,6 +20,9 @@ interface QuotationBuilderProps {
   currencySymbol?: string;
   customersLoading?: boolean;
   customerError?: string | null;
+  projectsLoading?: boolean;
+  projectError?: string | null;
+  onSearchCustomers?: (query: string) => void;
 }
 
 export const QuotationBuilder: React.FC<QuotationBuilderProps> = ({
@@ -34,6 +37,9 @@ export const QuotationBuilder: React.FC<QuotationBuilderProps> = ({
   currencySymbol = '₹',
   customersLoading = false,
   customerError = null,
+  projectsLoading = false,
+  projectError = null,
+  onSearchCustomers,
 }) => {
   const [isItemPickerOpen, setIsItemPickerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -210,6 +216,9 @@ export const QuotationBuilder: React.FC<QuotationBuilderProps> = ({
             setIsGstInclusive={builder.setIsGstInclusive}
             customersLoading={customersLoading}
             customerError={customerError}
+            projectsLoading={projectsLoading}
+            projectError={projectError}
+            onSearchCustomers={onSearchCustomers}
           />
 
           {/* Line Items */}

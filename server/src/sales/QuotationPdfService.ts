@@ -1,244 +1,287 @@
+import PDFDocument from 'pdfkit';
 import { QuotationRenderDTO } from './QuotationRenderModelService';
 
 export class QuotationPdfService {
   /**
-   * Escape text for raw PDF stream literal strings
+   * Safe text encoder to sanitize string operands
    */
-  public static escapePdfText(text: string): string {
+  public static sanitizeText(text: string | undefined | null): string {
     if (!text) return '';
-    return text
-      .replace(/\\/g, '\\\\')
-      .replace(/\(/g, '\\(')
-      .replace(/\)/g, '\\)')
-      .replace(/[\r\n]+/g, ' ');
+    return text.toString().replace(/[\r\n]+/g, ' ').trim();
   }
 
   /**
-   * Format currency numbers
+   * Format currency numbers safely (e.g. ₹ 10,000.00 / INR 10,000.00 / Rs. 10,000.00)
    */
   public static formatAmount(amount: number, symbol: string = '₹'): string {
     const absVal = Math.abs(amount).toLocaleString('en-IN', {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     });
-    const formatted = `${symbol}${absVal}`;
+    const prefix = symbol || 'INR';
+    const formatted = `${prefix} ${absVal}`;
     return amount < 0 ? `-${formatted}` : formatted;
   }
 
   /**
-   * Generate clean %PDF-1.4 binary document Buffer from QuotationRenderDTO
+   * Generate clean, production-grade PDF document Buffer using PDFKit
    */
   public static async generatePdf(renderModel: QuotationRenderDTO): Promise<Buffer> {
-    const doc = renderModel.document;
-    const cust = renderModel.customerSnapshot;
-    const org = renderModel.organization;
-    const totals = renderModel.totals;
-    const tmpl = renderModel.template;
-    const lines = renderModel.lineItems;
+    return new Promise((resolve, reject) => {
+      try {
+        const doc = new PDFDocument({ margin: 40, size: 'A4', bufferPages: true });
+        const buffers: Buffer[] = [];
 
-    // Calculate pages required (max 10 items per page for clean pagination)
-    const itemsPerPage = 10;
-    const totalPages = Math.max(1, Math.ceil(lines.length / itemsPerPage));
+        doc.on('data', (chunk) => buffers.push(chunk));
+        doc.on('end', () => resolve(Buffer.concat(buffers)));
+        doc.on('error', (err) => reject(err));
 
-    const objects: string[] = [];
-    const pageObjRefs: string[] = [];
+        const docData = renderModel.document;
+        const cust = renderModel.customerSnapshot;
+        const org = renderModel.organization;
+        const totals = renderModel.totals;
+        const tmpl = renderModel.template;
+        const lines = renderModel.lineItems;
 
-    // Catalog & Pages placeholders (obj 1 and obj 2)
-    objects[1] = ''; // Catalog
-    objects[2] = ''; // Pages
+        const primaryColor = tmpl.primaryColor || '#1e40af';
 
-    // Font object (Helvetica / Standard Type 1 Font)
-    const fontObjId = 3;
-    objects[fontObjId] = `${fontObjId} 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>\nendobj`;
+        // --- HEADER SECTION ---
+        doc.rect(40, 40, 515, 45).fill(primaryColor);
 
-    const fontBoldObjId = 4;
-    objects[fontBoldObjId] = `${fontBoldObjId} 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>\nendobj`;
+        doc.fillColor('#ffffff').fontSize(16).font('Helvetica-Bold').text('QUOTATION', 50, 54, { width: 250 });
+        doc.fontSize(12).font('Helvetica-Bold').text(docData.quotationNumber, 340, 56, { width: 205, align: 'right' });
 
-    let nextObjId = 5;
+        let curY = 95;
 
-    for (let pageIdx = 0; pageIdx < totalPages; pageIdx++) {
-      const pageNum = pageIdx + 1;
-      const startItemIdx = pageIdx * itemsPerPage;
-      const pageItems = lines.slice(startItemIdx, startItemIdx + itemsPerPage);
-      const isLastPage = pageNum === totalPages;
-
-      const streamCommands: string[] = [];
-
-      // Primary Color Box Header
-      streamCommands.push(`0.12 0.25 0.69 rg 40 760 532 50 re f`);
-
-      // Header Text (White)
-      streamCommands.push(`BT /F2 18 Tf 1 1 1 rg 50 780 Tj ET`);
-      streamCommands.push(`BT /F2 16 Tf 1 1 1 rg 420 780 Tj ET`);
-      streamCommands.push(`(QUOTATION)`);
-
-      // Document Number & Dates Right Aligned Box
-      streamCommands.push(`BT /F1 9 Tf 0.2 0.2 0.2 rg 400 735 Tj (${this.escapePdfText(`Quote #: ${doc.quotationNumber}`)}) ET`);
-      streamCommands.push(`BT /F1 9 Tf 0.2 0.2 0.2 rg 400 722 Tj (${this.escapePdfText(`Rev #: ${doc.revisionNumber}`)}) ET`);
-      streamCommands.push(`BT /F1 9 Tf 0.2 0.2 0.2 rg 400 709 Tj (${this.escapePdfText(`Date: ${doc.issueDate}`)}) ET`);
-      streamCommands.push(`BT /F1 9 Tf 0.2 0.2 0.2 rg 400 696 Tj (${this.escapePdfText(`Valid Until: ${doc.expiryDate}`)}) ET`);
-      streamCommands.push(`BT /F1 9 Tf 0.2 0.2 0.2 rg 400 683 Tj (${this.escapePdfText(`Status: ${doc.status}`)}) ET`);
-
-      // Company Identity Box Left
-      streamCommands.push(`BT /F2 12 Tf 0.1 0.1 0.1 rg 40 735 Tj (${this.escapePdfText(org.legalName)}) ET`);
-      streamCommands.push(`BT /F1 9 Tf 0.3 0.3 0.3 rg 40 720 Tj (${this.escapePdfText(org.address)}) ET`);
-      if (org.gstin) {
-        streamCommands.push(`BT /F1 9 Tf 0.3 0.3 0.3 rg 40 707 Tj (${this.escapePdfText(`GSTIN: ${org.gstin}`)}) ET`);
-      }
-      streamCommands.push(`BT /F1 9 Tf 0.3 0.3 0.3 rg 40 694 Tj (${this.escapePdfText(`Email: ${org.email} | Phone: ${org.phone}`)}) ET`);
-
-      // Divider Line
-      streamCommands.push(`0.8 0.8 0.8 RG 0.5 w 40 670 m 572 670 l S`);
-
-      // Customer Bill To Section
-      streamCommands.push(`BT /F2 10 Tf 0.12 0.25 0.69 rg 40 655 Tj (BILL TO / CUSTOMER) ET`);
-      streamCommands.push(`BT /F2 11 Tf 0.1 0.1 0.1 rg 40 640 Tj (${this.escapePdfText(cust.displayName)}) ET`);
-      const street = cust.billingAddress?.street || '';
-      const cityState = [cust.billingAddress?.city, cust.billingAddress?.state, cust.billingAddress?.pincode].filter(Boolean).join(', ');
-      streamCommands.push(`BT /F1 9 Tf 0.3 0.3 0.3 rg 40 627 Tj (${this.escapePdfText(`${street} ${cityState}`)}) ET`);
-      if (cust.gstin) {
-        streamCommands.push(`BT /F1 9 Tf 0.3 0.3 0.3 rg 40 614 Tj (${this.escapePdfText(`GSTIN: ${cust.gstin}`)}) ET`);
-      }
-
-      // Items Table Header Box
-      const tableTopY = 590;
-      streamCommands.push(`0.92 0.94 0.98 rg 40 ${tableTopY - 20} 532 20 re f`);
-      streamCommands.push(`0.7 0.7 0.7 RG 0.5 w 40 ${tableTopY - 20} 532 20 re S`);
-
-      streamCommands.push(`BT /F2 9 Tf 0.1 0.1 0.1 rg 45 ${tableTopY - 14} Tj (#) ET`);
-      streamCommands.push(`BT /F2 9 Tf 0.1 0.1 0.1 rg 70 ${tableTopY - 14} Tj (ITEM / DESCRIPTION) ET`);
-      streamCommands.push(`BT /F2 9 Tf 0.1 0.1 0.1 rg 260 ${tableTopY - 14} Tj (HSN/SAC) ET`);
-      streamCommands.push(`BT /F2 9 Tf 0.1 0.1 0.1 rg 320 ${tableTopY - 14} Tj (QTY) ET`);
-      streamCommands.push(`BT /F2 9 Tf 0.1 0.1 0.1 rg 370 ${tableTopY - 14} Tj (RATE) ET`);
-      streamCommands.push(`BT /F2 9 Tf 0.1 0.1 0.1 rg 440 ${tableTopY - 14} Tj (TAX %) ET`);
-      streamCommands.push(`BT /F2 9 Tf 0.1 0.1 0.1 rg 500 ${tableTopY - 14} Tj (AMOUNT) ET`);
-
-      let currentY = tableTopY - 35;
-      for (const item of pageItems) {
-        streamCommands.push(`BT /F1 9 Tf 0.2 0.2 0.2 rg 45 ${currentY} Tj (${item.lineNumber}) ET`);
-        streamCommands.push(`BT /F2 9 Tf 0.1 0.1 0.1 rg 70 ${currentY} Tj (${this.escapePdfText(item.name.substring(0, 30))}) ET`);
-        if (item.description && item.description !== item.name) {
-          currentY -= 11;
-          streamCommands.push(`BT /F1 8 Tf 0.4 0.4 0.4 rg 70 ${currentY} Tj (${this.escapePdfText(item.description.substring(0, 45))}) ET`);
+        // Organization Info (Left)
+        if (org.legalName) {
+          doc.fontSize(11).font('Helvetica-Bold').fillColor('#0f172a').text(org.legalName, 40, curY, { width: 260 });
+          curY += 14;
         }
-        streamCommands.push(`BT /F1 9 Tf 0.2 0.2 0.2 rg 260 ${currentY} Tj (${this.escapePdfText(item.hsnSac || '-')}) ET`);
-        streamCommands.push(`BT /F1 9 Tf 0.2 0.2 0.2 rg 320 ${currentY} Tj (${item.quantity} ${this.escapePdfText(item.unit)}) ET`);
-        streamCommands.push(`BT /F1 9 Tf 0.2 0.2 0.2 rg 370 ${currentY} Tj (${this.escapePdfText(this.formatAmount(item.rate, doc.currencySymbol))}) ET`);
-        streamCommands.push(`BT /F1 9 Tf 0.2 0.2 0.2 rg 440 ${currentY} Tj (${item.taxRate}%) ET`);
-        streamCommands.push(`BT /F1 9 Tf 0.2 0.2 0.2 rg 500 ${currentY} Tj (${this.escapePdfText(this.formatAmount(item.lineTotal, doc.currencySymbol))}) ET`);
+        if (org.address) {
+          doc.fontSize(9).font('Helvetica').fillColor('#475569').text(org.address, 40, curY, { width: 260 });
+          curY += doc.heightOfString(org.address, { width: 260 }) + 2;
+        }
+        if (org.gstin) {
+          doc.fontSize(9).font('Helvetica').fillColor('#475569').text(`GSTIN: ${org.gstin}`, 40, curY, { width: 260 });
+          curY += 12;
+        }
+        const contactParts = [org.email ? `Email: ${org.email}` : '', org.phone ? `Phone: ${org.phone}` : ''].filter(Boolean).join(' | ');
+        if (contactParts) {
+          doc.fontSize(9).font('Helvetica').fillColor('#475569').text(contactParts, 40, curY, { width: 260 });
+          curY += 14;
+        }
 
-        currentY -= 18;
-        streamCommands.push(`0.9 0.9 0.9 RG 0.25 w 40 ${currentY + 6} m 572 ${currentY + 6} l S`);
-      }
+        // Document Metadata (Right)
+        let rightY = 95;
+        doc.fontSize(9).font('Helvetica').fillColor('#334155');
+        doc.text(`Quote #: ${docData.quotationNumber}`, 320, rightY, { width: 235, align: 'right' });
+        rightY += 13;
+        doc.text(`Revision #: ${docData.revisionNumber}`, 320, rightY, { width: 235, align: 'right' });
+        rightY += 13;
+        doc.text(`Date: ${docData.issueDate}`, 320, rightY, { width: 235, align: 'right' });
+        rightY += 13;
+        doc.text(`Valid Until: ${docData.expiryDate}`, 320, rightY, { width: 235, align: 'right' });
+        rightY += 13;
+        doc.text(`Status: ${docData.status}`, 320, rightY, { width: 235, align: 'right' });
 
-      // If last page, render Totals Breakdown Box
-      if (isLastPage) {
-        let totalsY = Math.max(160, currentY - 10);
+        curY = Math.max(curY, rightY + 10);
 
-        streamCommands.push(`0.96 0.96 0.98 rg 360 ${totalsY - 110} 212 110 re f`);
-        streamCommands.push(`0.8 0.8 0.8 RG 0.5 w 360 ${totalsY - 110} 212 110 re S`);
+        // Divider Line
+        doc.moveTo(40, curY).lineTo(555, curY).strokeColor('#cbd5e1').lineWidth(0.5).stroke();
+        curY += 10;
 
-        let ty = totalsY - 15;
+        // --- BILL TO / CUSTOMER SECTION ---
+        doc.fontSize(10).font('Helvetica-Bold').fillColor(primaryColor).text('BILL TO / CUSTOMER', 40, curY);
+        curY += 14;
+
+        if (cust.displayName) {
+          doc.fontSize(11).font('Helvetica-Bold').fillColor('#0f172a').text(cust.displayName, 40, curY);
+          curY += 14;
+        }
+
+        let addrStr = '';
+        if (cust.billingAddress) {
+          const b = cust.billingAddress;
+          addrStr = [b.street, b.city, b.state, b.pincode, b.country].filter(Boolean).join(', ');
+        }
+        if (addrStr) {
+          doc.fontSize(9).font('Helvetica').fillColor('#475569').text(addrStr, 40, curY, { width: 350 });
+          curY += doc.heightOfString(addrStr, { width: 350 }) + 3;
+        }
+
+        if (cust.gstin) {
+          doc.fontSize(9).font('Helvetica').fillColor('#475569').text(`GSTIN: ${cust.gstin}`, 40, curY);
+          curY += 13;
+        }
+
+        if (docData.projectId) {
+          doc.fontSize(9).font('Helvetica').fillColor('#475569').text(`Project: ${docData.projectId}`, 40, curY);
+          curY += 13;
+        }
+
+        curY += 10;
+
+        // --- LINE ITEMS TABLE ---
+        const drawTableHeader = (y: number) => {
+          doc.rect(40, y, 515, 20).fill(primaryColor);
+          doc.fillColor('#ffffff').fontSize(9).font('Helvetica-Bold');
+          doc.text('#', 45, y + 5, { width: 20 });
+          doc.text('ITEM / DESCRIPTION', 70, y + 5, { width: 195 });
+          doc.text('HSN/SAC', 270, y + 5, { width: 55, align: 'center' });
+          doc.text('QTY', 330, y + 5, { width: 45, align: 'right' });
+          doc.text('RATE', 380, y + 5, { width: 65, align: 'right' });
+          doc.text('TAX %', 450, y + 5, { width: 40, align: 'right' });
+          doc.text('AMOUNT', 495, y + 5, { width: 55, align: 'right' });
+        };
+
+        drawTableHeader(curY);
+        curY += 24;
+
+        if (docData.isGstInclusive) {
+          doc.fontSize(8).font('Helvetica-Oblique').fillColor('#64748b').text('* Rates are inclusive of GST', 40, curY);
+          curY += 12;
+        }
+
+        for (const item of lines) {
+          const itemTitle = item.name;
+          const itemDesc = item.description && item.description !== item.name ? item.description : '';
+
+          const nameHeight = doc.heightOfString(itemTitle, { width: 195 });
+          const descHeight = itemDesc ? doc.heightOfString(itemDesc, { width: 195 }) : 0;
+          const rowHeight = Math.max(18, nameHeight + descHeight + 6);
+
+          // Dynamic page break check (printable area max Y ~700)
+          if (curY + rowHeight > 700) {
+            doc.addPage();
+            curY = 40;
+            drawTableHeader(curY);
+            curY += 24;
+          }
+
+          doc.fontSize(9).font('Helvetica').fillColor('#334155');
+          doc.text(String(item.lineNumber), 45, curY, { width: 20 });
+
+          doc.fontSize(9).font('Helvetica-Bold').fillColor('#0f172a').text(itemTitle, 70, curY, { width: 195 });
+          if (itemDesc) {
+            doc.fontSize(8).font('Helvetica').fillColor('#64748b').text(itemDesc, 70, curY + nameHeight + 1, { width: 195 });
+          }
+
+          doc.fontSize(9).font('Helvetica').fillColor('#334155');
+          doc.text(item.hsnSac || '-', 270, curY, { width: 55, align: 'center' });
+          doc.text(`${item.quantity} ${item.unit || ''}`, 330, curY, { width: 45, align: 'right' });
+          doc.text(this.formatAmount(item.rate, docData.currencySymbol), 380, curY, { width: 65, align: 'right' });
+          doc.text(`${item.taxRate}%`, 450, curY, { width: 40, align: 'right' });
+          doc.text(this.formatAmount(item.lineTotal, docData.currencySymbol), 495, curY, { width: 55, align: 'right' });
+
+          curY += rowHeight;
+          doc.moveTo(40, curY - 2).lineTo(555, curY - 2).strokeColor('#e2e8f0').lineWidth(0.5).stroke();
+        }
+
+        curY += 10;
+
+        // --- TOTALS BREAKDOWN SECTION ---
+        if (curY + 130 > 700) {
+          doc.addPage();
+          curY = 40;
+        }
+
+        const totalsY = curY;
+        const boxX = 330;
+        const boxWidth = 225;
+
+        let ty = totalsY + 8;
+        doc.rect(boxX, totalsY, boxWidth, 125).fillAndStroke('#f8fafc', '#cbd5e1');
+
         if (totals.lineDiscounts > 0) {
-          streamCommands.push(`BT /F1 9 Tf 0.3 0.3 0.3 rg 370 ${ty} Tj (Gross Amount:) ET`);
-          streamCommands.push(`BT /F1 9 Tf 0.3 0.3 0.3 rg 480 ${ty} Tj (${this.escapePdfText(this.formatAmount(totals.grossAmount, doc.currencySymbol))}) ET`);
-          ty -= 13;
-          streamCommands.push(`BT /F1 9 Tf 0.3 0.3 0.3 rg 370 ${ty} Tj (Line Discounts:) ET`);
-          streamCommands.push(`BT /F1 9 Tf 0.3 0.3 0.3 rg 480 ${ty} Tj (-${this.escapePdfText(this.formatAmount(totals.lineDiscounts, doc.currencySymbol))}) ET`);
-          ty -= 13;
+          doc.fontSize(9).font('Helvetica').fillColor('#475569').text('Gross Amount:', boxX + 10, ty);
+          doc.text(this.formatAmount(totals.grossAmount, docData.currencySymbol), boxX + 90, ty, { width: 125, align: 'right' });
+          ty += 13;
+          doc.text('Line Discounts:', boxX + 10, ty);
+          doc.text(`-${this.formatAmount(totals.lineDiscounts, docData.currencySymbol)}`, boxX + 90, ty, { width: 125, align: 'right' });
+          ty += 13;
         }
 
-        streamCommands.push(`BT /F1 9 Tf 0.3 0.3 0.3 rg 370 ${ty} Tj (Subtotal:) ET`);
-        streamCommands.push(`BT /F1 9 Tf 0.3 0.3 0.3 rg 480 ${ty} Tj (${this.escapePdfText(this.formatAmount(totals.subtotal, doc.currencySymbol))}) ET`);
-        ty -= 13;
+        doc.fontSize(9).font('Helvetica').fillColor('#475569').text('Subtotal:', boxX + 10, ty);
+        doc.text(this.formatAmount(totals.subtotal, docData.currencySymbol), boxX + 90, ty, { width: 125, align: 'right' });
+        ty += 13;
 
         if (totals.overallDiscount > 0) {
-          streamCommands.push(`BT /F1 9 Tf 0.3 0.3 0.3 rg 370 ${ty} Tj (Overall Discount:) ET`);
-          streamCommands.push(`BT /F1 9 Tf 0.3 0.3 0.3 rg 480 ${ty} Tj (-${this.escapePdfText(this.formatAmount(totals.overallDiscount, doc.currencySymbol))}) ET`);
-          ty -= 13;
+          doc.text('Overall Discount:', boxX + 10, ty);
+          doc.text(`-${this.formatAmount(totals.overallDiscount, docData.currencySymbol)}`, boxX + 90, ty, { width: 125, align: 'right' });
+          ty += 13;
         }
 
-        streamCommands.push(`BT /F1 9 Tf 0.3 0.3 0.3 rg 370 ${ty} Tj (Taxable Amount:) ET`);
-        streamCommands.push(`BT /F1 9 Tf 0.3 0.3 0.3 rg 480 ${ty} Tj (${this.escapePdfText(this.formatAmount(totals.taxableAmount, doc.currencySymbol))}) ET`);
-        ty -= 13;
+        doc.text('Taxable Amount:', boxX + 10, ty);
+        doc.text(this.formatAmount(totals.taxableAmount, docData.currencySymbol), boxX + 90, ty, { width: 125, align: 'right' });
+        ty += 13;
 
-        streamCommands.push(`BT /F1 9 Tf 0.3 0.3 0.3 rg 370 ${ty} Tj (GST / Tax Total:) ET`);
-        streamCommands.push(`BT /F1 9 Tf 0.3 0.3 0.3 rg 480 ${ty} Tj (${this.escapePdfText(this.formatAmount(totals.taxTotal, doc.currencySymbol))}) ET`);
-        ty -= 13;
+        doc.text('GST / Tax Total:', boxX + 10, ty);
+        doc.text(this.formatAmount(totals.taxTotal, docData.currencySymbol), boxX + 90, ty, { width: 125, align: 'right' });
+        ty += 13;
 
         if (totals.roundOffAmount !== 0) {
-          streamCommands.push(`BT /F1 9 Tf 0.3 0.3 0.3 rg 370 ${ty} Tj (Round Off:) ET`);
-          streamCommands.push(`BT /F1 9 Tf 0.3 0.3 0.3 rg 480 ${ty} Tj (${this.escapePdfText(this.formatAmount(totals.roundOffAmount, doc.currencySymbol))}) ET`);
-          ty -= 13;
+          doc.text('Round Off:', boxX + 10, ty);
+          doc.text(this.formatAmount(totals.roundOffAmount, docData.currencySymbol), boxX + 90, ty, { width: 125, align: 'right' });
+          ty += 13;
         }
 
-        streamCommands.push(`0.12 0.25 0.69 RG 1 w 365 ${ty - 2} m 567 ${ty - 2} l S`);
-        ty -= 12;
-        streamCommands.push(`BT /F2 11 Tf 0.12 0.25 0.69 rg 370 ${ty} Tj (Grand Total:) ET`);
-        streamCommands.push(`BT /F2 11 Tf 0.12 0.25 0.69 rg 480 ${ty} Tj (${this.escapePdfText(this.formatAmount(totals.grandTotal, doc.currencySymbol))}) ET`);
+        doc.moveTo(boxX + 10, ty).lineTo(boxX + 215, ty).strokeColor(primaryColor).lineWidth(1).stroke();
+        ty += 6;
 
-        // Notes & Terms Left Section
-        let leftY = Math.max(140, totalsY - 15);
-        if (doc.notes) {
-          streamCommands.push(`BT /F2 9 Tf 0.12 0.25 0.69 rg 40 ${leftY} Tj (Notes:) ET`);
-          leftY -= 12;
-          streamCommands.push(`BT /F1 8 Tf 0.3 0.3 0.3 rg 40 ${leftY} Tj (${this.escapePdfText(doc.notes.substring(0, 60))}) ET`);
-          leftY -= 15;
+        doc.fontSize(10).font('Helvetica-Bold').fillColor(primaryColor).text('Grand Total:', boxX + 10, ty);
+        doc.text(this.formatAmount(totals.grandTotal, docData.currencySymbol), boxX + 90, ty, { width: 125, align: 'right' });
+
+        // Left Section: Notes, Terms & Bank Details
+        let leftY = totalsY;
+        if (docData.notes) {
+          doc.fontSize(9).font('Helvetica-Bold').fillColor(primaryColor).text('Notes:', 40, leftY);
+          leftY += 12;
+          doc.fontSize(8).font('Helvetica').fillColor('#334155').text(docData.notes, 40, leftY, { width: 270 });
+          leftY += doc.heightOfString(docData.notes, { width: 270 }) + 8;
         }
 
-        if (tmpl.termsAndConditions || doc.terms) {
-          streamCommands.push(`BT /F2 9 Tf 0.12 0.25 0.69 rg 40 ${leftY} Tj (Terms & Conditions:) ET`);
-          leftY -= 12;
-          const termsStr = (doc.terms || tmpl.termsAndConditions || '').substring(0, 90);
-          streamCommands.push(`BT /F1 8 Tf 0.3 0.3 0.3 rg 40 ${leftY} Tj (${this.escapePdfText(termsStr)}) ET`);
+        const termsStr = docData.terms || tmpl.termsAndConditions;
+        if (termsStr) {
+          doc.fontSize(9).font('Helvetica-Bold').fillColor(primaryColor).text('Terms & Conditions:', 40, leftY);
+          leftY += 12;
+          doc.fontSize(8).font('Helvetica').fillColor('#334155').text(termsStr, 40, leftY, { width: 270 });
+          leftY += doc.heightOfString(termsStr, { width: 270 }) + 8;
         }
 
-        // Signature Block Right Bottom
+        if (tmpl.bankDetails) {
+          doc.fontSize(9).font('Helvetica-Bold').fillColor(primaryColor).text('Bank Details:', 40, leftY);
+          leftY += 12;
+          doc.fontSize(8).font('Helvetica').fillColor('#334155').text(tmpl.bankDetails, 40, leftY, { width: 270 });
+          leftY += doc.heightOfString(tmpl.bankDetails, { width: 270 }) + 8;
+        }
+
+        curY = Math.max(totalsY + 135, leftY + 10);
+
+        // Signature Section
         if (tmpl.showSignature) {
-          streamCommands.push(`0.7 0.7 0.7 RG 0.5 w 400 65 m 550 65 l S`);
-          streamCommands.push(`BT /F1 8 Tf 0.4 0.4 0.4 rg 430 52 Tj (Authorized Signatory) ET`);
+          if (curY + 40 > 720) {
+            doc.addPage();
+            curY = 660;
+          }
+          doc.moveTo(400, curY + 25).lineTo(550, curY + 25).strokeColor('#94a3b8').lineWidth(0.5).stroke();
+          doc.fontSize(8).font('Helvetica').fillColor('#64748b').text('Authorized Signatory', 400, curY + 29, { width: 150, align: 'center' });
         }
+
+        // Add Footer Note & Page Numbering across all pages
+        const pages = doc.bufferedPageRange();
+        for (let i = pages.start; i < pages.start + pages.count; i++) {
+          doc.switchToPage(i);
+          doc.moveTo(40, 755).lineTo(555, 755).strokeColor('#e2e8f0').lineWidth(0.5).stroke();
+          doc.fontSize(8).font('Helvetica').fillColor('#64748b');
+          doc.text(tmpl.footerNote || 'Thank you for your business!', 40, 762, { width: 350 });
+          doc.text(`Page ${i + 1} of ${pages.count}`, 400, 762, { width: 155, align: 'right' });
+        }
+
+        doc.end();
+      } catch (err) {
+        reject(err);
       }
-
-      // Page Footer
-      streamCommands.push(`0.8 0.8 0.8 RG 0.5 w 40 40 m 572 40 l S`);
-      streamCommands.push(`BT /F1 8 Tf 0.5 0.5 0.5 rg 40 28 Tj (${this.escapePdfText(tmpl.footerNote || 'Thank you for your business!')}) ET`);
-      streamCommands.push(`BT /F1 8 Tf 0.5 0.5 0.5 rg 500 28 Tj (Page ${pageNum} of ${totalPages}) ET`);
-
-      const streamContent = streamCommands.join('\n');
-      const streamLength = Buffer.byteLength(streamContent);
-
-      const streamObjId = nextObjId++;
-      objects[streamObjId] = `${streamObjId} 0 obj\n<< /Length ${streamLength} >>\nstream\n${streamContent}\nendstream\nendobj`;
-
-      const pageObjId = nextObjId++;
-      pageObjRefs.push(`${pageObjId} 0 R`);
-      objects[pageObjId] = `${pageObjId} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents ${streamObjId} 0 R /Resources << /Font << /F1 ${fontObjId} 0 R /F2 ${fontBoldObjId} 0 R >> >> >>\nendobj`;
-    }
-
-    // Update Pages and Catalog objects
-    objects[2] = `2 0 obj\n<< /Type /Pages /Kids [${pageObjRefs.join(' ')}] /Count ${totalPages} >>\nendobj`;
-    objects[1] = `1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj`;
-
-    // Construct final PDF Buffer stream
-    let pdfString = '%PDF-1.4\n';
-    const offsets: number[] = [0];
-
-    for (let i = 1; i < objects.length; i++) {
-      offsets[i] = Buffer.byteLength(pdfString);
-      pdfString += objects[i] + '\n';
-    }
-
-    const xrefOffset = Buffer.byteLength(pdfString);
-    pdfString += `xref\n0 ${objects.length}\n0000000000 65535 f \n`;
-
-    for (let i = 1; i < objects.length; i++) {
-      const offsetStr = offsets[i].toString().padStart(10, '0');
-      pdfString += `${offsetStr} 00000 n \n`;
-    }
-
-    pdfString += `trailer\n<< /Size ${objects.length} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
-
-    return Buffer.from(pdfString, 'binary');
+    });
   }
 }

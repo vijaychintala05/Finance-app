@@ -120,37 +120,44 @@ export class QuotationRenderModelService {
 
     if (revisionNumber !== undefined) {
       const revRes = await db.query(
-        `SELECT * FROM quotation_revisions WHERE organization_id = $1 AND estimate_id = $2 AND revision_number = $3`,
+        `SELECT * FROM quotation_revisions WHERE organization_id = $1 AND quotation_id = $2 AND revision_number = $3`,
         [orgId, quotationId, revisionNumber]
       );
-      if (revRes.rows.length > 0) {
-        const row = revRes.rows[0];
-        const snapshot = typeof row.snapshot_data === 'string' ? JSON.parse(row.snapshot_data) : row.snapshot_data;
-        targetData = {
-          ...q,
-          ...snapshot,
-          revisionNumber: row.revision_number,
-          templateSnapshot: row.template_snapshot
-            ? typeof row.template_snapshot === 'string'
-              ? JSON.parse(row.template_snapshot)
-              : row.template_snapshot
-            : snapshot.templateSnapshot,
-        };
+      if (revRes.rows.length === 0) {
+        throw new Error(`Quotation revision ${revisionNumber} not found`);
       }
+      const row = revRes.rows[0];
+      const snapshot = typeof row.revision_data === 'string' ? JSON.parse(row.revision_data) : row.revision_data;
+
+      let revTmplSnapshot = row.template_snapshot || snapshot.templateSnapshot;
+      if (typeof revTmplSnapshot === 'string') {
+        try { revTmplSnapshot = JSON.parse(revTmplSnapshot); } catch { revTmplSnapshot = null; }
+      }
+
+      targetData = {
+        ...q,
+        ...snapshot,
+        revisionNumber: row.revision_number,
+        templateSnapshot: revTmplSnapshot,
+      };
     }
 
-    // Resolve Organization Branding Details
+    // Resolve Organization Branding Details (No fabricated placeholders!)
     const orgRes = await db.query(`SELECT * FROM organizations WHERE id = $1`, [orgId]);
     const orgRow = orgRes.rows[0] || {};
 
+    const rawOrgAddress = [orgRow.address, orgRow.city, orgRow.state, orgRow.country, orgRow.zip_code]
+      .filter(Boolean)
+      .join(', ');
+
     const orgSnapshot = {
-      legalName: orgRow.name || 'Your Company',
-      tradeName: orgRow.name || 'Your Company',
+      legalName: orgRow.name || '',
+      tradeName: orgRow.name || '',
       logoUrl: orgRow.logo_url || '',
-      address: [orgRow.address, orgRow.city, orgRow.state, orgRow.country, orgRow.zip_code].filter(Boolean).join(', ') || '100 Business Park, Suite 100',
+      address: rawOrgAddress || '',
       gstin: orgRow.tax_id || orgRow.gstin || '',
-      email: orgRow.email || 'contact@firmbooks.com',
-      phone: orgRow.phone || '+91 98765 43210',
+      email: orgRow.email || '',
+      phone: orgRow.phone || '',
       website: orgRow.website || '',
     };
 
@@ -229,7 +236,7 @@ export class QuotationRenderModelService {
     return {
       document: {
         quotationId: targetData.id,
-        quotationNumber: targetData.quotationNumber || targetData.estimate_number || 'QT-0000',
+        quotationNumber: targetData.quotationNumber || targetData.estimate_number || targetData.estimateNumber || 'QT-0000',
         revisionNumber: targetData.revisionNumber || 0,
         status: targetData.status || 'DRAFT',
         issueDate: targetData.issueDate || new Date().toISOString().split('T')[0],
@@ -242,19 +249,15 @@ export class QuotationRenderModelService {
         terms: targetData.terms || resolvedTemplate.termsAndConditions || '',
       },
       customerSnapshot: {
-        displayName: targetData.customerName || targetData.customerSnapshot?.displayName || 'Valued Customer',
-        legalName: targetData.customerSnapshot?.legalName || targetData.customerName || 'Valued Customer',
+        displayName: targetData.customerName || targetData.customerSnapshot?.displayName || '',
+        legalName: targetData.customerSnapshot?.legalName || targetData.customerName || '',
         gstin: targetData.customerSnapshot?.gstin || '',
         email: targetData.customerSnapshot?.email || '',
         phone: targetData.customerSnapshot?.phone || '',
         placeOfSupply: targetData.customerSnapshot?.billingAddress?.state || '',
-        billingAddress: targetData.customerSnapshot?.billingAddress || {
-          street: 'Standard Customer Address',
-          city: 'Mumbai',
-          state: 'Maharashtra',
-          pincode: '400001',
-          country: 'India',
-        },
+        billingAddress: targetData.customerSnapshot?.billingAddress && Object.values(targetData.customerSnapshot.billingAddress).some(Boolean)
+          ? targetData.customerSnapshot.billingAddress
+          : undefined,
       },
       organization: orgSnapshot,
       lineItems: mappedLines,
@@ -270,7 +273,7 @@ export class QuotationRenderModelService {
       },
       template: {
         name: resolvedTemplate.name,
-        templateType: resolvedTemplate.templateType,
+        templateType: resolvedTemplate.templateType || 'Classic',
         primaryColor: resolvedTemplate.primaryColor || '#1e40af',
         fontFamily: resolvedTemplate.fontFamily || 'Inter',
         showLogo: resolvedTemplate.showLogo !== false,

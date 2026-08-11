@@ -33,6 +33,7 @@ export interface DetailedQuotationModel extends EstimateModel {
   roundOffAmount?: number;
   isGstInclusive?: boolean;
   templateId?: string;
+  templateSnapshot?: any;
   validityDays?: number;
   customerResponseNotes?: string;
   projectId?: string;
@@ -409,14 +410,22 @@ export class QuotationEngine {
       data.roundOffAmount || 0
     );
 
+    const targetStatus = (data.status as any) || 'DRAFT';
+    const inputTemplateId = data.templateId || (data as any).template_id;
+    const isFinalized = ['SENT', 'ACCEPTED', 'DECLINED', 'REVISION_REQUESTED', 'CONVERTED'].includes(targetStatus.toUpperCase());
+    let templateSnapshot: any = null;
+    if (isFinalized || inputTemplateId) {
+      templateSnapshot = await this.resolveTemplateSnapshot(orgId, inputTemplateId);
+    }
+
     await db.query(
       `INSERT INTO estimates (
         id, organization_id, estimate_number, revision_number, client_id, customer_id, client_name,
         customer_snapshot, project_id, issue_date, expiry_date, subtotal, tax_total, discount,
         overall_discount, total_amount, round_off_amount, is_gst_inclusive, status, terms, notes,
-        public_token, items, line_items, template_id, validity_days, created_at
+        public_token, items, line_items, template_id, template_snapshot, validity_days, created_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)`,
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)`,
       [
         id,
         orgId,
@@ -426,7 +435,7 @@ export class QuotationEngine {
         targetCustomerId,
         targetCustomerName,
         JSON.stringify(customerSnapshot),
-        targetProjectId,
+        targetProjectId || null,
         issueDate,
         expiryDate,
         totals.subtotal,
@@ -436,52 +445,67 @@ export class QuotationEngine {
         totals.totalAmount,
         totals.roundOffAmount,
         Boolean(data.isGstInclusive),
-        data.status || 'DRAFT',
+        targetStatus,
         data.terms || 'Standard payment terms apply.',
         data.notes || '',
         publicToken,
         JSON.stringify(items),
         JSON.stringify(items),
-        data.templateId || null,
+        inputTemplateId || null,
+        templateSnapshot ? JSON.stringify(templateSnapshot) : null,
         data.validityDays || 30,
         now,
       ]
     );
 
-    const revisionSnapshot = {
-      estimateNumber: estNumber,
-      revisionNumber: 0,
-      customerId: targetCustomerId,
-      customerName: targetCustomerName,
-      customerSnapshot,
-      projectId: targetProjectId,
-      issueDate,
-      expiryDate,
-      items,
-      overallDiscount: totals.overallDiscount,
-      isGstInclusive: Boolean(data.isGstInclusive),
-      totals,
-      terms: data.terms || 'Standard payment terms apply.',
-      notes: data.notes || '',
-      status: data.status || 'DRAFT',
-      changeSummary: 'Initial Quotation Created',
-    };
+    const fullSnapshot = this.buildQuotationSnapshot(
+      {
+        id,
+        organizationId: orgId,
+        estimateNumber: estNumber,
+        revisionNumber: 0,
+        customerId: targetCustomerId,
+        customerName: targetCustomerName,
+        customerSnapshot,
+        projectId: targetProjectId,
+        issueDate,
+        expiryDate,
+        lineItems: items,
+        items,
+        subtotal: totals.subtotal,
+        taxTotal: totals.taxTotal,
+        overallDiscount: totals.overallDiscount,
+        roundOffAmount: totals.roundOffAmount,
+        totalAmount: totals.totalAmount,
+        isGstInclusive: Boolean(data.isGstInclusive),
+        status: targetStatus,
+        terms: data.terms || 'Standard payment terms apply.',
+        notes: data.notes || '',
+        templateId: data.templateId || undefined,
+        templateSnapshot: templateSnapshot || undefined,
+        publicToken,
+        validityDays: data.validityDays || 30,
+        createdAt: now,
+      },
+      templateSnapshot
+    );
 
     // Initial Revision 0 snapshot
     await db.query(
-      `INSERT INTO quotation_revisions (id, organization_id, quotation_id, revision_number, revision_data, total_amount, status, change_summary, created_by, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      `INSERT INTO quotation_revisions (id, organization_id, quotation_id, revision_number, revision_data, total_amount, status, change_summary, created_by, created_at, template_snapshot)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
       [
         `qrev-${Date.now()}-0`,
         orgId,
         id,
         0,
-        JSON.stringify(revisionSnapshot),
+        JSON.stringify(fullSnapshot),
         totals.totalAmount,
-        data.status || 'DRAFT',
+        targetStatus,
         'Initial Quotation Created',
         createdBy,
         now,
+        templateSnapshot ? JSON.stringify(templateSnapshot) : null,
       ]
     );
 
@@ -503,11 +527,13 @@ export class QuotationEngine {
       totalAmount: totals.totalAmount,
       roundOffAmount: totals.roundOffAmount,
       isGstInclusive: Boolean(data.isGstInclusive),
-      status: (data.status as any) || 'DRAFT',
+      status: targetStatus,
       lineItems: items,
       items,
       terms: data.terms,
       notes: data.notes,
+      templateId: data.templateId || undefined,
+      templateSnapshot: templateSnapshot || undefined,
       publicToken,
       validityDays: data.validityDays || 30,
       createdAt: now,
@@ -585,14 +611,25 @@ export class QuotationEngine {
     const targetStatus = newData.status || q.status || 'DRAFT';
     const targetTerms = newData.terms !== undefined ? newData.terms : q.terms;
     const targetNotes = newData.notes !== undefined ? newData.notes : q.notes;
+    const targetTemplateId = newData.templateId !== undefined ? newData.templateId : q.template_id;
+
+    const isFinalized = ['SENT', 'ACCEPTED', 'DECLINED', 'REVISION_REQUESTED', 'CONVERTED'].includes(targetStatus.toUpperCase());
+    let frozenTemplateSnapshot: any = q.template_snapshot;
+    if (typeof frozenTemplateSnapshot === 'string') {
+      try { frozenTemplateSnapshot = JSON.parse(frozenTemplateSnapshot); } catch { frozenTemplateSnapshot = null; }
+    }
+    if (!frozenTemplateSnapshot && (isFinalized || targetTemplateId)) {
+      frozenTemplateSnapshot = await this.resolveTemplateSnapshot(orgId, targetTemplateId);
+    }
 
     await db.query(
       `UPDATE estimates
        SET revision_number = $1, subtotal = $2, tax_total = $3, discount = $4, overall_discount = $5,
            total_amount = $6, round_off_amount = $7, is_gst_inclusive = $8, items = $9, line_items = $9,
            terms = $10, notes = $11, status = $12, customer_id = $13, client_id = $13, client_name = $14,
-           customer_snapshot = $15, project_id = $16, issue_date = $17, expiry_date = $18
-       WHERE organization_id = $19 AND id = $20`,
+           customer_snapshot = $15, project_id = $16, issue_date = $17, expiry_date = $18, template_id = $19,
+           template_snapshot = $20
+       WHERE organization_id = $21 AND id = $22`,
       [
         nextRev,
         totals.subtotal,
@@ -612,44 +649,57 @@ export class QuotationEngine {
         targetProjectId,
         issueDate,
         expiryDate,
+        targetTemplateId || null,
+        frozenTemplateSnapshot ? JSON.stringify(frozenTemplateSnapshot) : null,
         orgId,
         quotationId,
       ]
     );
 
-    const revisionSnapshot = {
-      estimateNumber: q.estimate_number,
-      revisionNumber: nextRev,
-      customerId: targetCustomerId,
-      customerName: targetCustomerName,
-      customerSnapshot: targetCustomerSnapshot,
-      projectId: targetProjectId,
-      issueDate,
-      expiryDate,
-      items,
-      overallDiscount: totals.overallDiscount,
-      isGstInclusive: targetIsGstInclusive,
-      totals,
-      terms: targetTerms,
-      notes: targetNotes,
-      status: targetStatus,
-      changeSummary,
-    };
+    const fullSnapshot = this.buildQuotationSnapshot(
+      {
+        id: quotationId,
+        organizationId: orgId,
+        estimateNumber: q.estimate_number,
+        revisionNumber: nextRev,
+        customerId: targetCustomerId,
+        customerName: targetCustomerName,
+        customerSnapshot: targetCustomerSnapshot,
+        projectId: targetProjectId,
+        issueDate,
+        expiryDate,
+        lineItems: items,
+        items,
+        subtotal: totals.subtotal,
+        taxTotal: totals.taxTotal,
+        overallDiscount: totals.overallDiscount,
+        roundOffAmount: totals.roundOffAmount,
+        totalAmount: totals.totalAmount,
+        isGstInclusive: targetIsGstInclusive,
+        status: targetStatus,
+        terms: targetTerms,
+        notes: targetNotes,
+        templateId: targetTemplateId,
+        templateSnapshot: frozenTemplateSnapshot,
+      },
+      frozenTemplateSnapshot
+    );
 
     await db.query(
-      `INSERT INTO quotation_revisions (id, organization_id, quotation_id, revision_number, revision_data, total_amount, status, change_summary, created_by, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      `INSERT INTO quotation_revisions (id, organization_id, quotation_id, revision_number, revision_data, total_amount, status, change_summary, created_by, created_at, template_snapshot)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
       [
         `qrev-${Date.now()}-${nextRev}`,
         orgId,
         quotationId,
         nextRev,
-        JSON.stringify(revisionSnapshot),
+        JSON.stringify(fullSnapshot),
         totals.totalAmount,
         targetStatus,
         changeSummary,
         createdBy,
         now,
+        frozenTemplateSnapshot ? JSON.stringify(frozenTemplateSnapshot) : null,
       ]
     );
 
@@ -677,6 +727,11 @@ export class QuotationEngine {
       try { customerSnapshot = JSON.parse(customerSnapshot); } catch { customerSnapshot = null; }
     }
 
+    let templateSnapshot = q.template_snapshot || q.templateSnapshot;
+    if (typeof templateSnapshot === 'string') {
+      try { templateSnapshot = JSON.parse(templateSnapshot); } catch { templateSnapshot = null; }
+    }
+
     return {
       id: q.id,
       organizationId: q.organization_id,
@@ -700,6 +755,8 @@ export class QuotationEngine {
       items,
       terms: q.terms,
       notes: q.notes,
+      templateId: q.template_id || undefined,
+      templateSnapshot,
       publicToken: q.public_token,
       validityDays: q.validity_days || 30,
       customerResponseNotes: q.customer_response_notes,
@@ -843,18 +900,18 @@ export class QuotationEngine {
       throw new Error('Template name is required');
     }
 
-    const type = data.templateType || 'Classic';
+    const type = data.templateType || (data as any).template_type || 'Classic';
     const validTypes = ['Classic', 'Modern', 'Minimalist', 'Elegance', 'Bold'];
     if (!validTypes.includes(type)) {
       throw new Error(`Unsupported templateType: ${type}. Must be one of: ${validTypes.join(', ')}`);
     }
 
-    const color = data.primaryColor || '#1e40af';
+    const color = data.primaryColor || (data as any).primary_color || (data as any).color || '#1e40af';
     if (!/^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/.test(color)) {
       throw new Error(`Invalid primaryColor format: ${color}. Must be a valid hex color code like #1e40af`);
     }
 
-    const font = data.fontFamily || 'Inter';
+    const font = data.fontFamily || (data as any).font_family || 'Inter';
     const validFonts = ['Inter', 'Roboto', 'Outfit', 'Helvetica', 'Arial', 'sans', 'serif', 'mono'];
     if (!validFonts.includes(font)) {
       throw new Error(`Unsupported fontFamily: ${font}`);
@@ -874,45 +931,59 @@ export class QuotationEngine {
       await db.query(`UPDATE quotation_templates SET is_default = FALSE WHERE organization_id = $1`, [orgId]);
     }
 
-    await db.query(
-      `INSERT INTO quotation_templates (
-        id, organization_id, name, template_type, primary_color, font_family, show_logo,
-        logo_url, company_info, show_tax_breakdown, show_signature, terms_and_conditions,
-        bank_details, footer_note, is_default
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-      ON CONFLICT (id) DO UPDATE
-      SET name = EXCLUDED.name,
-          template_type = EXCLUDED.template_type,
-          primary_color = EXCLUDED.primary_color,
-          font_family = EXCLUDED.font_family,
-          show_logo = EXCLUDED.show_logo,
-          logo_url = EXCLUDED.logo_url,
-          company_info = EXCLUDED.company_info,
-          show_tax_breakdown = EXCLUDED.show_tax_breakdown,
-          show_signature = EXCLUDED.show_signature,
-          terms_and_conditions = EXCLUDED.terms_and_conditions,
-          bank_details = EXCLUDED.bank_details,
-          footer_note = EXCLUDED.footer_note,
-          is_default = EXCLUDED.is_default`,
-      [
-        id,
-        orgId,
-        name,
-        type,
-        color,
-        font,
-        data.showLogo !== undefined ? Boolean(data.showLogo) : true,
-        data.logoUrl || '',
-        JSON.stringify(data.companyInfo || {}),
-        data.showTaxBreakdown !== undefined ? Boolean(data.showTaxBreakdown) : true,
-        data.showSignature !== undefined ? Boolean(data.showSignature) : true,
-        (data.termsAndConditions || '').substring(0, 5000),
-        (data.bankDetails || '').substring(0, 2000),
-        (data.footerNote || '').substring(0, 1000),
-        data.isDefault !== undefined ? Boolean(data.isDefault) : false,
-      ]
-    );
+    const existingTmpl = await db.query(`SELECT id FROM quotation_templates WHERE id = $1`, [id]);
+    if (existingTmpl.rows.length > 0) {
+      await db.query(
+        `UPDATE quotation_templates
+         SET name = $1, template_type = $2, primary_color = $3, font_family = $4, show_logo = $5,
+             logo_url = $6, company_info = $7, show_tax_breakdown = $8, show_signature = $9,
+             terms_and_conditions = $10, bank_details = $11, footer_note = $12, is_default = $13
+         WHERE id = $14 AND organization_id = $15`,
+        [
+          name,
+          type,
+          color,
+          font,
+          data.showLogo !== undefined ? Boolean(data.showLogo) : true,
+          data.logoUrl || '',
+          data.companyInfo || {},
+          data.showTaxBreakdown !== undefined ? Boolean(data.showTaxBreakdown) : true,
+          data.showSignature !== undefined ? Boolean(data.showSignature) : true,
+          (data.termsAndConditions || '').substring(0, 5000),
+          (data.bankDetails || '').substring(0, 2000),
+          (data.footerNote || '').substring(0, 1000),
+          data.isDefault !== undefined ? Boolean(data.isDefault) : false,
+          id,
+          orgId,
+        ]
+      );
+    } else {
+      await db.query(
+        `INSERT INTO quotation_templates (
+          id, organization_id, name, template_type, primary_color, font_family, show_logo,
+          logo_url, company_info, show_tax_breakdown, show_signature, terms_and_conditions,
+          bank_details, footer_note, is_default
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+        [
+          id,
+          orgId,
+          name,
+          type,
+          color,
+          font,
+          data.showLogo !== undefined ? Boolean(data.showLogo) : true,
+          data.logoUrl || '',
+          data.companyInfo || {},
+          data.showTaxBreakdown !== undefined ? Boolean(data.showTaxBreakdown) : true,
+          data.showSignature !== undefined ? Boolean(data.showSignature) : true,
+          (data.termsAndConditions || '').substring(0, 5000),
+          (data.bankDetails || '').substring(0, 2000),
+          (data.footerNote || '').substring(0, 1000),
+          data.isDefault !== undefined ? Boolean(data.isDefault) : false,
+        ]
+      );
+    }
 
     return {
       id,
@@ -938,11 +1009,13 @@ export class QuotationEngine {
    */
   public static async getTemplate(orgId: string, templateId: string): Promise<QuotationTemplateModel | null> {
     const res = await db.query(
-      `SELECT * FROM quotation_templates WHERE organization_id = $1 AND id = $2`,
-      [orgId, templateId]
+      `SELECT * FROM quotation_templates WHERE id = $1`,
+      [templateId]
     );
     if (res.rows.length === 0) return null;
     const r = res.rows[0];
+    if (r.organization_id !== orgId) return null;
+
     return {
       id: r.id,
       organizationId: r.organization_id,
@@ -1016,6 +1089,111 @@ export class QuotationEngine {
   }
 
   /**
+   * Helper to build a complete, self-contained commercial quotation snapshot
+   */
+  public static buildQuotationSnapshot(q: any, overrideTemplateSnapshot?: any): any {
+    const rawItems = q.items || q.lineItems || q.line_items || [];
+    let items = [];
+    if (typeof rawItems === 'string') {
+      try { items = JSON.parse(rawItems); } catch { items = []; }
+    } else if (Array.isArray(rawItems)) {
+      items = rawItems;
+    }
+
+    let custSnapshot = q.customerSnapshot || q.customer_snapshot;
+    if (typeof custSnapshot === 'string') {
+      try { custSnapshot = JSON.parse(custSnapshot); } catch { custSnapshot = null; }
+    }
+
+    let tmplSnapshot = overrideTemplateSnapshot || q.templateSnapshot || q.template_snapshot;
+    if (typeof tmplSnapshot === 'string') {
+      try { tmplSnapshot = JSON.parse(tmplSnapshot); } catch { tmplSnapshot = null; }
+    }
+
+    const subtotal = Number(q.subtotal || 0);
+    const taxTotal = Number(q.tax_total || q.taxTotal || 0);
+    const overallDiscount = Number(q.overall_discount || q.overallDiscount || q.discount || 0);
+    const roundOffAmount = Number(q.round_off_amount || q.roundOffAmount || 0);
+    const totalAmount = Number(q.total_amount || q.totalAmount || 0);
+    const isGstInclusive = Boolean(q.is_gst_inclusive ?? q.isGstInclusive);
+
+    const grossAmount = items.reduce((acc: number, it: any) => acc + (Number(it.quantity || 1) * Number(it.rate || it.unitPrice || 0)), 0);
+    const lineDiscounts = items.reduce((acc: number, it: any) => acc + Number(it.discountAmount || 0), 0);
+    const taxableAmount = isGstInclusive
+      ? Math.round((totalAmount - taxTotal - roundOffAmount) * 100) / 100
+      : Math.round((subtotal - overallDiscount) * 100) / 100;
+
+    return {
+      id: q.id,
+      organizationId: q.organization_id || q.organizationId,
+      quotationNumber: q.estimate_number || q.quotationNumber || q.estimateNumber || '',
+      estimateNumber: q.estimate_number || q.quotationNumber || q.estimateNumber || '',
+      revisionNumber: q.revision_number || q.revisionNumber || 0,
+      customerId: q.customer_id || q.customerId || q.client_id || '',
+      customerName: q.client_name || q.customerName || q.customer_name || 'Valued Customer',
+      customerSnapshot: custSnapshot,
+      projectId: q.project_id || q.projectId || undefined,
+      issueDate: q.issue_date || q.issueDate || new Date().toISOString().split('T')[0],
+      expiryDate: q.expiry_date || q.expiryDate || '',
+      validityDays: q.validity_days || q.validityDays || 30,
+      subtotal,
+      taxTotal,
+      overallDiscount,
+      roundOffAmount,
+      totalAmount,
+      isGstInclusive,
+      lineItems: items,
+      items,
+      totals: {
+        grossAmount: Math.round(grossAmount * 100) / 100,
+        lineDiscounts: Math.round(lineDiscounts * 100) / 100,
+        subtotal,
+        overallDiscount,
+        taxableAmount,
+        taxTotal,
+        roundOffAmount,
+        grandTotal: totalAmount,
+      },
+      terms: q.terms || '',
+      notes: q.notes || '',
+      customerResponseNotes: q.customer_response_notes || q.customerResponseNotes || null,
+      templateId: q.template_id || q.templateId || undefined,
+      templateSnapshot: tmplSnapshot || undefined,
+      publicToken: q.public_token || q.publicToken || undefined,
+    };
+  }
+
+  /**
+   * Resolve template configuration required for customer-facing documents
+   */
+  public static async resolveTemplateSnapshot(orgId: string, templateId?: string, existingSnapshot?: any): Promise<any> {
+    if (existingSnapshot) {
+      return typeof existingSnapshot === 'string' ? JSON.parse(existingSnapshot) : existingSnapshot;
+    }
+    if (templateId) {
+      const tmpl = await this.getTemplate(orgId, templateId);
+      if (tmpl) return tmpl;
+    }
+    const defTmpl = await this.getDefaultTemplate(orgId);
+    if (defTmpl) return defTmpl;
+
+    return {
+      id: 'tmpl-classic-default',
+      organizationId: orgId,
+      name: 'Classic Standard',
+      templateType: 'Classic',
+      primaryColor: '#1e40af',
+      fontFamily: 'Inter',
+      showLogo: true,
+      showTaxBreakdown: true,
+      showSignature: true,
+      termsAndConditions: '1. Payment terms: Net 30 days from invoice date.\n2. Quotation valid for 30 days from issue date.',
+      footerNote: 'Thank you for your business!',
+      isDefault: true,
+    };
+  }
+
+  /**
    * Update quotation status when customer responds via portal
    */
   public static async updatePublicStatus(
@@ -1027,25 +1205,39 @@ export class QuotationEngine {
     if (qRes.rows.length === 0) throw new Error('Quotation not found for public token');
     const q = qRes.rows[0];
 
+    const nextRev = (q.revision_number || 0) + 1;
+    const frozenTmpl = await this.resolveTemplateSnapshot(q.organization_id, q.template_id, q.template_snapshot);
+
     await db.query(
-      `UPDATE estimates SET status = $1, customer_response_notes = COALESCE($2, customer_response_notes) WHERE id = $3`,
-      [status, notes || null, q.id]
+      `UPDATE estimates SET status = $1, revision_number = $2, customer_response_notes = COALESCE($3, customer_response_notes), template_snapshot = $4 WHERE id = $5`,
+      [status, nextRev, notes || null, JSON.stringify(frozenTmpl), q.id]
+    );
+
+    const freshQ = await this.getQuotation(q.organization_id, q.id);
+    const fullSnapshot = this.buildQuotationSnapshot(
+      {
+        ...freshQ,
+        status,
+        customerResponseNotes: notes || freshQ.customerResponseNotes,
+      },
+      frozenTmpl
     );
 
     await db.query(
-      `INSERT INTO quotation_revisions (id, organization_id, quotation_id, revision_number, revision_data, total_amount, status, change_summary, created_by, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      `INSERT INTO quotation_revisions (id, organization_id, quotation_id, revision_number, revision_data, total_amount, status, change_summary, created_by, created_at, template_snapshot)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
       [
-        `qrev-${Date.now()}-${(q.revision_number || 0) + 1}`,
+        `qrev-${Date.now()}-${nextRev}`,
         q.organization_id,
         q.id,
-        (q.revision_number || 0) + 1,
-        JSON.stringify({ status, responseNotes: notes }),
-        q.total_amount,
+        nextRev,
+        JSON.stringify(fullSnapshot),
+        freshQ.totalAmount,
         status,
         `Customer response: ${status}`,
         'Customer Portal',
         new Date().toISOString(),
+        JSON.stringify(frozenTmpl),
       ]
     );
 

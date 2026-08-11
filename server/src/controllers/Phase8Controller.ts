@@ -180,7 +180,17 @@ export class Phase8Controller {
       const template = await QuotationEngine.saveTemplate(orgId, req.body);
       res.json({ template });
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      const msg = err.message || 'Failed to save template';
+      let status = 500;
+      if (msg.includes('forbidden') || msg.includes('does not belong')) {
+        status = 403;
+      } else if (
+        msg.includes('required') || msg.includes('Invalid') || msg.includes('Unsupported') ||
+        msg.includes('only have one default') || msg.includes('unique constraint')
+      ) {
+        status = 400;
+      }
+      res.status(status).json({ error: msg });
     }
   }
 

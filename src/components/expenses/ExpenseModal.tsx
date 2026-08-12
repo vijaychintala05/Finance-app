@@ -1,0 +1,275 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import { AlertTriangle, Receipt, ShieldCheck, X } from 'lucide-react';
+import { useBooks } from '../../context/BooksContext';
+import { Expense } from '../../types';
+
+interface ExpenseModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  expenseToEdit?: Expense | null;
+  defaultProjectId?: string;
+  defaultClientId?: string;
+}
+
+const today = () => new Date().toISOString().slice(0, 10);
+
+export const ExpenseModal: React.FC<ExpenseModalProps> = ({
+  isOpen,
+  onClose,
+  expenseToEdit,
+  defaultProjectId,
+  defaultClientId,
+}) => {
+  const { accounts, vendors, addExpense, settings } = useBooks();
+  const expenseAccounts = useMemo(
+    () => accounts.filter((account) => account.type === 'Expense' && account.status !== 'Inactive'),
+    [accounts]
+  );
+  const paymentAccounts = useMemo(
+    () =>
+      accounts.filter(
+        (account) =>
+          account.type === 'Asset' &&
+          account.status !== 'Inactive' &&
+          (account.code === '1000' ||
+            ['Bank', 'Cash', 'Cash & Bank', 'Digital Wallet'].includes(account.subType))
+      ),
+    [accounts]
+  );
+
+  const [date, setDate] = useState(today());
+  const [expenseAccountId, setExpenseAccountId] = useState('');
+  const [paidFromAccountId, setPaidFromAccountId] = useState('');
+  const [vendorId, setVendorId] = useState('');
+  const [amount, setAmount] = useState('');
+  const [description, setDescription] = useState('');
+  const [error, setError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setDate(today());
+    setExpenseAccountId(expenseAccounts[0]?.id || '');
+    setPaidFromAccountId(paymentAccounts[0]?.id || '');
+    setVendorId('');
+    setAmount('');
+    setDescription('');
+    setError('');
+    setIsSubmitting(false);
+  }, [isOpen, expenseAccounts, paymentAccounts]);
+
+  if (!isOpen) return null;
+
+  const isProjectLaunch = Boolean(defaultProjectId || defaultClientId);
+  const postingUnavailable = expenseAccounts.length === 0 || paymentAccounts.length === 0;
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setError('');
+
+    if (expenseToEdit) {
+      setError('Posted expenses cannot be edited. Use an audited reversing entry and post a correction.');
+      return;
+    }
+
+    const parsedAmount = Number(amount);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      setError('Enter a valid posting date.');
+      return;
+    }
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0 || Math.round(parsedAmount * 100) !== parsedAmount * 100) {
+      setError('Amount must be positive and contain no more than two decimal places.');
+      return;
+    }
+    const expenseAccount = expenseAccounts.find((account) => account.id === expenseAccountId);
+    const paymentAccount = paymentAccounts.find((account) => account.id === paidFromAccountId);
+    if (!expenseAccount || !paymentAccount) {
+      setError('Select an active expense account and an active bank, cash, or wallet account.');
+      return;
+    }
+
+    const vendor = vendors.find((candidate) => candidate.id === vendorId);
+    setIsSubmitting(true);
+    try {
+      await addExpense({
+        vendorId: vendor?.id,
+        vendorName: vendor?.companyName || vendor?.name,
+        accountId: expenseAccount.id,
+        accountName: expenseAccount.name,
+        paidFromAccountId: paymentAccount.id,
+        paidFromAccountName: paymentAccount.name,
+        date,
+        currency: settings.currencyCode,
+        amount: parsedAmount,
+        taxAmount: 0,
+        isBillable: false,
+        paymentStatus: 'Paid',
+        description: description.trim() || `Expense paid${vendor ? ` to ${vendor.companyName || vendor.name}` : ''}`,
+      });
+      onClose();
+    } catch (submissionError) {
+      setError(
+        submissionError instanceof Error
+          ? submissionError.message
+          : 'Expense could not be posted. No financial data was changed.'
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4" onClick={onClose}>
+      <div
+        className="w-full max-w-2xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between border-b border-slate-200 px-6 py-5 dark:border-slate-700">
+          <div className="flex gap-3">
+            <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300">
+              <Receipt className="h-5 w-5" />
+            </span>
+            <div>
+              <h2 className="text-lg font-bold text-slate-900 dark:text-white">Post paid expense</h2>
+              <p className="mt-0.5 text-sm text-slate-500">
+                Creates the expense and balanced journal entry in one database transaction.
+              </p>
+            </div>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit}>
+          <div className="space-y-5 p-6">
+            <div className="flex gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-200">
+              <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
+              <p>
+                The server assigns the expense number, validates account ownership and roles, checks period locks, and posts both ledger legs atomically.
+              </p>
+            </div>
+
+            {(isProjectLaunch || expenseToEdit) && (
+              <div className="flex gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <p>
+                  {expenseToEdit
+                    ? 'Posted expense editing is unavailable. Financial corrections require an audited reversal.'
+                    : 'Project and customer rebilling tags are not yet supported by the authoritative expense posting workflow and will not be recorded.'}
+                </p>
+              </div>
+            )}
+
+            {error && (
+              <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-800 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-200">
+                {error}
+              </div>
+            )}
+
+            {postingUnavailable && (
+              <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-200">
+                Posting is unavailable until this organization has an active expense account and an active bank, cash, or wallet account.
+              </div>
+            )}
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200">
+                <span>Posting date</span>
+                <input
+                  type="date"
+                  required
+                  value={date}
+                  onChange={(event) => setDate(event.target.value)}
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                />
+              </label>
+              <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200">
+                <span>Amount ({settings.currencyCode})</span>
+                <input
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  inputMode="decimal"
+                  required
+                  value={amount}
+                  onChange={(event) => setAmount(event.target.value)}
+                  placeholder="0.00"
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                />
+              </label>
+              <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200">
+                <span>Expense account</span>
+                <select
+                  required
+                  value={expenseAccountId}
+                  onChange={(event) => setExpenseAccountId(event.target.value)}
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                >
+                  <option value="">Select expense account</option>
+                  {expenseAccounts.map((account) => (
+                    <option key={account.id} value={account.id}>{account.code} — {account.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200">
+                <span>Paid from</span>
+                <select
+                  required
+                  value={paidFromAccountId}
+                  onChange={(event) => setPaidFromAccountId(event.target.value)}
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                >
+                  <option value="">Select payment account</option>
+                  {paymentAccounts.map((account) => (
+                    <option key={account.id} value={account.id}>{account.code} — {account.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200 sm:col-span-2">
+                <span>Vendor (optional)</span>
+                <select
+                  value={vendorId}
+                  onChange={(event) => setVendorId(event.target.value)}
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                >
+                  <option value="">No vendor selected</option>
+                  {vendors.map((vendor) => (
+                    <option key={vendor.id} value={vendor.id}>{vendor.companyName || vendor.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200 sm:col-span-2">
+                <span>Description</span>
+                <textarea
+                  value={description}
+                  onChange={(event) => setDescription(event.target.value)}
+                  rows={3}
+                  maxLength={500}
+                  placeholder="Business purpose of this expense"
+                  className="w-full resize-none rounded-xl border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                />
+              </label>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-6 py-4 dark:border-slate-700 dark:bg-slate-800/60">
+            <p className="text-xs text-slate-500">Tax, FX, attachments, and itemization remain disabled until their ledger workflows are certified.</p>
+            <div className="flex shrink-0 gap-2">
+              <button type="button" onClick={onClose} disabled={isSubmitting} className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={postingUnavailable || Boolean(expenseToEdit) || isSubmitting}
+                className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isSubmitting ? 'Posting…' : 'Post expense'}
+              </button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};

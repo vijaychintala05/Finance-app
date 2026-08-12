@@ -1,0 +1,12 @@
+-- RETIRED STATIC SCHEMA SNAPSHOT
+--
+-- Do not apply this file to any environment. It used to describe only the
+-- prototype subset and could create a database that was missing production
+-- constraints, indexes, audit protections, and newer finance tables.
+--
+-- The authoritative, idempotent schema is defined by:
+--   server/src/database/migrationRunner.ts
+--
+-- Application startup executes migrationRunner. Production deployment must
+-- rehearse those migrations against a PostgreSQL staging copy and must not use
+-- a hand-maintained schema snapshot as a substitute for reviewed migrations.

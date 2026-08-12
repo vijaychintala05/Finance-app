@@ -30,7 +30,6 @@ const CURRENCIES = [
   { code: 'AUD', symbol: 'A$', name: 'Australian Dollar' },
   { code: 'AED', symbol: 'AED', name: 'UAE Dirham' },
   { code: 'SGD', symbol: 'S$', name: 'Singapore Dollar' },
-  { code: 'JPY', symbol: '¥', name: 'Japanese Yen' },
 ];
 
 export const CreateOrganizationWizardModal: React.FC<CreateOrganizationWizardModalProps> = ({

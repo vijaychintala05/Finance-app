@@ -30,6 +30,8 @@ import { PeriodLock } from '../../../src/types';
 import { newId } from '../utils/ids';
 import { OrganizationProvisioningService } from '../services/OrganizationProvisioningService';
 import { DocumentNumberingEngine } from '../services/DocumentNumberingEngine';
+import { FinancialDestructiveActionsService } from '../accounting/FinancialDestructiveActionsService';
+import { isIsoCalendarDate } from '../utils/date';
 
 export class FinanceController {
   // --- AUDIT LOG UTILITY ---
@@ -425,7 +427,7 @@ export class FinanceController {
     const orgId = req.auth!.organizationId;
     const { clientId, clientName, clientEmail, projectId, issueDate, dueDate, items, discount, notes } = req.body;
 
-    if (!clientId || !/^\d{4}-\d{2}-\d{2}$/.test(String(issueDate || '')) || !/^\d{4}-\d{2}-\d{2}$/.test(String(dueDate || '')) || dueDate < issueDate || !Array.isArray(items) || items.length === 0) {
+    if (!clientId || !isIsoCalendarDate(issueDate) || !isIsoCalendarDate(dueDate) || dueDate < issueDate || !Array.isArray(items) || items.length === 0) {
       res.status(400).json({ error: 'A tenant client, valid issue/due dates, and at least one line item are required' });
       return;
     }
@@ -506,7 +508,7 @@ export class FinanceController {
     const orgId = req.auth!.organizationId;
     const { clientId, customerId, clientName, customerName, paymentDate, paymentMode, depositToAccountId, depositAccountId, invoiceId, reference, referenceNumber, notes } = req.body;
     const parsedAmount = Number(req.body.amount);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(paymentDate || '')) || !Number.isFinite(parsedAmount) || parsedAmount <= 0 || !Number.isSafeInteger(Math.round(parsedAmount * 100)) || Math.abs(parsedAmount * 100 - Math.round(parsedAmount * 100)) > 1e-7) {
+    if (!isIsoCalendarDate(paymentDate) || !Number.isFinite(parsedAmount) || parsedAmount <= 0 || !Number.isSafeInteger(Math.round(parsedAmount * 100)) || Math.abs(parsedAmount * 100 - Math.round(parsedAmount * 100)) > 1e-7) {
       res.status(400).json({ error: 'paymentDate and a positive amount with no more than two decimals are required' });
       return;
     }
@@ -623,7 +625,7 @@ export class FinanceController {
       vendorName: expense.vendor_name || undefined, accountId: expense.expense_account_id,
       accountName: '', paidFromAccountId: expense.paid_from_account_id, date: expense.date,
       amount: Number(expense.amount), taxAmount: Number(expense.tax_amount || 0), isBillable: false,
-      paymentStatus: 'Paid', description: expense.description || '', createdAt: expense.created_at,
+      paymentStatus: 'Paid', status: expense.status || 'POSTED', description: expense.description || '', createdAt: expense.created_at,
     })));
   }
 
@@ -631,7 +633,7 @@ export class FinanceController {
     const orgId = req.auth!.organizationId;
     const { expenseAccountId, paidFromAccountId, vendorName, date, amount, description } = req.body;
     const parsedAmount = Number(amount);
-    if (!date || !expenseAccountId || !paidFromAccountId || !Number.isFinite(parsedAmount) || parsedAmount <= 0 || Math.round(parsedAmount * 100) / 100 !== parsedAmount) {
+    if (!isIsoCalendarDate(date) || !expenseAccountId || !paidFromAccountId || !Number.isFinite(parsedAmount) || parsedAmount <= 0 || Math.round(parsedAmount * 100) / 100 !== parsedAmount) {
       res.status(400).json({ error: 'date, expenseAccountId, paidFromAccountId, and a positive amount are required' });
       return;
     }
@@ -696,6 +698,20 @@ export class FinanceController {
     }
   }
 
+  public static async voidExpense(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const result = await FinancialDestructiveActionsService.voidExpense(
+        req.auth!.organizationId,
+        req.params.id,
+        req.auth!.userId,
+        req.body?.reason
+      );
+      res.json(result);
+    } catch (error: any) {
+      res.status(422).json({ error: error.message || 'Expense could not be voided' });
+    }
+  }
+
   // --- BILLS ---
   public static async getBills(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
@@ -744,7 +760,7 @@ export class FinanceController {
     const expenseAccountId = req.body.expenseAccountId;
     const payableAccountId = req.body.payableAccountId;
     const amounts = [parsedSubtotal, parsedTax, parsedTotal];
-    if (!vendorId || !/^\d{4}-\d{2}-\d{2}$/.test(String(billDate || '')) || !/^\d{4}-\d{2}-\d{2}$/.test(String(dueDate || '')) || dueDate < billDate || amounts.some((value) => !Number.isFinite(value) || value < 0 || Math.round(value * 100) / 100 !== value) || parsedTotal <= 0 || Math.abs(parsedSubtotal + parsedTax - parsedTotal) > 0.009) {
+    if (!vendorId || !isIsoCalendarDate(billDate) || !isIsoCalendarDate(dueDate) || dueDate < billDate || amounts.some((value) => !Number.isFinite(value) || value < 0 || Math.round(value * 100) / 100 !== value) || parsedTotal <= 0 || Math.abs(parsedSubtotal + parsedTax - parsedTotal) > 0.009) {
       res.status(400).json({ error: 'A tenant vendor, valid dates, and reconciling non-negative subtotal, tax, and total amounts are required' });
       return;
     }
@@ -797,6 +813,12 @@ export class FinanceController {
           `UPDATE bills SET journal_entry_id = $1 WHERE id = $2 AND organization_id = $3`,
           [posting.entryId, billId, orgId]
         );
+        const vendorBalance = await client.query(
+          `UPDATE vendors SET payables_balance = payables_balance + $1
+            WHERE organization_id = $2 AND id = $3`,
+          [parsedTotal, orgId, vendorId]
+        );
+        if (vendorBalance.rowCount !== 1) throw new Error('Bill vendor balance could not be updated');
 
         await client.query(
           `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state)
@@ -808,6 +830,20 @@ export class FinanceController {
       res.status(201).json({ id: billId, billNumber: finalBillNumber, totalAmount: parsedTotal, status: 'Unpaid', journalEntryId: result.entryId });
     } catch (error: any) {
       res.status(422).json({ error: error.message || 'Bill could not be posted' });
+    }
+  }
+
+  public static async voidBill(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const result = await FinancialDestructiveActionsService.voidBill(
+        req.auth!.organizationId,
+        req.params.id,
+        req.auth!.userId,
+        req.body?.reason
+      );
+      res.json(result);
+    } catch (error: any) {
+      res.status(422).json({ error: error.message || 'Bill could not be voided' });
     }
   }
 
@@ -842,7 +878,7 @@ export class FinanceController {
     const { lockDate, region, reason } = req.body;
     const normalizedReason = typeof reason === 'string' ? reason.trim() : '';
     const today = new Date().toISOString().slice(0, 10);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(lockDate || '')) || lockDate > today || normalizedReason.length < 5 || normalizedReason.length > 500) {
+    if (!isIsoCalendarDate(lockDate) || lockDate > today || normalizedReason.length < 5 || normalizedReason.length > 500) {
       res.status(400).json({ error: 'A valid non-future lockDate and a specific reason of 5-500 characters are required' });
       return;
     }

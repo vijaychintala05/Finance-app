@@ -4,12 +4,12 @@
 
 - Every posted event creates a journal with at least two lines.
 - Each line contains one positive debit or one positive credit, never both.
-- Debit and credit totals must be equal at cent precision before any write occurs.
+- Debit and credit totals must be equal using exact integer-cent aggregation before any write occurs, including journals whose aggregate exceeds JavaScript's safe integer range.
 - Referenced accounts must be active, unlocked, and owned by the same organization.
 - A posting on or before an active lock date is rejected.
 - Journal entry numbers are unique inside an organization.
 - The source document, journal, derived balance cache, and audit event commit together.
-- Posted entries are immutable. Corrections post a linked reversing journal.
+- Posted entries are immutable. Corrections post a linked reversing journal while the original remains posted and visible in ledger history.
 
 PostgreSQL `NUMERIC` columns preserve stored decimal values. Application validation restricts posted ledger amounts to currency precision. Reports calculate from journal lines rather than trusting the mutable browser or a standalone source-document total.
 

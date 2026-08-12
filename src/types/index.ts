@@ -344,6 +344,7 @@ export interface Expense {
   isBillable: boolean;
   isBilled?: boolean;
   paymentStatus: 'Paid' | 'Unpaid';
+  status?: 'POSTED' | 'VOIDED';
   description: string;
   notes?: string;
   receiptFileName?: string;
@@ -786,6 +787,7 @@ export interface PaymentReceipt {
   paymentMethod: string;
   referenceNumber: string;
   amount: number;
+  status?: 'ALLOCATED' | 'PARTIALLY_ALLOCATED' | 'REVERSED';
 }
 
 export interface RecurringInvoiceProfile {
@@ -819,7 +821,7 @@ export interface Bill {
   totalAmount: number;
   amountPaid: number;
   balanceDue?: number;
-  status: 'Unpaid' | 'Partially Paid' | 'Paid' | 'Overdue';
+  status: 'Unpaid' | 'Partially Paid' | 'Paid' | 'Overdue' | 'VOIDED';
   notes: string;
 }
 

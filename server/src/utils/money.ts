@@ -1,5 +1,22 @@
 const MAX_SAFE_CENTS = BigInt(Number.MAX_SAFE_INTEGER);
 
+export function moneyInputToCents(value: unknown, field: string): bigint {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new Error(`${field} must be a finite monetary amount`);
+    const scaled = value * 100;
+    const rounded = Math.round(scaled);
+    if (!Number.isSafeInteger(rounded)) {
+      throw new Error(`${field} exceeds the exact monetary range supported by this API`);
+    }
+    if (Math.abs(scaled - rounded) > 1e-7) {
+      throw new Error(`${field} cannot contain fractions smaller than one cent`);
+    }
+    return BigInt(rounded);
+  }
+
+  return databaseMoneyToCents(value, field);
+}
+
 export function databaseMoneyToCents(value: unknown, field: string): bigint {
   const raw = String(value ?? '0').trim();
   const match = raw.match(/^(-?)(\d+)(?:\.(\d+))?$/);

@@ -28,8 +28,8 @@ router.post('/restore', requirePermission('settings.backup'), requireTrustedFina
 router.get('/export', requirePermission('reports.export'), requireTrustedFinanceFeature('data-export'), SecurityController.exportBundle);
 
 // Safe Destructive Financial Actions
-router.post('/void-invoice', requirePermission('invoices.delete'), requireTrustedFinanceFeature('invoice-void'), SecurityController.voidInvoice);
-router.post('/reverse-payment', requirePermission('invoices.receive_payment'), requireTrustedFinanceFeature('payment-reversal'), SecurityController.reversePayment);
+router.post('/void-invoice', requirePermission('invoices.delete'), SecurityController.voidInvoice);
+router.post('/reverse-payment', requirePermission('invoices.receive_payment'), SecurityController.reversePayment);
 router.post('/reverse-journal', requirePermission('accounting.post'), requireTrustedFinanceFeature('legacy-journal-reversal'), SecurityController.reverseJournal);
 
 export default protectAsyncRoutes(router);

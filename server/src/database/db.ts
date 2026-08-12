@@ -1,5 +1,6 @@
 import pg from 'pg';
 import { newDb, IMemoryDb } from 'pg-mem';
+import { AsyncLocalStorage } from 'node:async_hooks';
 
 const { Pool } = pg;
 
@@ -8,11 +9,17 @@ export interface DbQueryResult<T = any> {
   rowCount: number;
 }
 
+export interface DbQueryClient {
+  query: <T = any>(text: string, params?: any[]) => Promise<DbQueryResult<T>>;
+}
+
 class DatabaseService {
   private pool: pg.Pool | null = null;
   private memoryStore: Map<string, any[]> = new Map();
   private isUsingMemoryFallback: boolean = false;
   private memDbInstance: IMemoryDb | null = null;
+  private transactionContext = new AsyncLocalStorage<DbQueryClient>();
+  private savepointSequence = 0;
 
   constructor() {
     this.initPool();
@@ -40,10 +47,14 @@ class DatabaseService {
   public async checkHealth(): Promise<{ isConnected: boolean; isMemoryMode: boolean }> {
     try {
       await this.query('SELECT 1');
-      return { isConnected: true, isMemoryMode: !this.pool || this.isUsingMemoryFallback };
+      return { isConnected: true, isMemoryMode: this.isMemoryMode() };
     } catch (e) {
       return { isConnected: false, isMemoryMode: false };
     }
+  }
+
+  public isMemoryMode(): boolean {
+    return Boolean(this.memDbInstance) || this.isUsingMemoryFallback || !this.pool;
   }
 
   public initPgMem() {
@@ -111,6 +122,9 @@ class DatabaseService {
   }
 
   public async query<T = any>(text: string, params: any[] = []): Promise<DbQueryResult<T>> {
+    const ambientClient = this.transactionContext.getStore();
+    if (ambientClient) return ambientClient.query<T>(text, params);
+
     if (this.pool && !this.isUsingMemoryFallback) {
       try {
         const res = await this.pool.query(text, params);
@@ -149,7 +163,31 @@ class DatabaseService {
     return Promise.resolve(this.executeInMemoryQuery<T>(text, params));
   }
 
-  public async transaction<T>(callback: (client: { query: (text: string, params?: any[]) => Promise<DbQueryResult> }) => Promise<T>): Promise<T> {
+  public async transaction<T>(callback: (client: DbQueryClient) => Promise<T>): Promise<T> {
+    const ambientClient = this.transactionContext.getStore();
+    if (ambientClient) {
+      if (this.memDbInstance) {
+        const nestedBackup = this.memDbInstance.backup();
+        try {
+          return await callback(ambientClient);
+        } catch (error) {
+          nestedBackup.restore();
+          throw error;
+        }
+      }
+
+      const savepoint = `firmbooks_nested_${++this.savepointSequence}`;
+      await ambientClient.query(`SAVEPOINT ${savepoint}`);
+      try {
+        const result = await callback(ambientClient);
+        await ambientClient.query(`RELEASE SAVEPOINT ${savepoint}`);
+        return result;
+      } catch (error) {
+        await ambientClient.query(`ROLLBACK TO SAVEPOINT ${savepoint}`);
+        throw error;
+      }
+    }
+
     if (this.pool && !this.isUsingMemoryFallback) {
       try {
         const client = await this.pool.connect();
@@ -159,12 +197,13 @@ class DatabaseService {
         const memoryBackup = this.memDbInstance?.backup();
         try {
           await client.query('BEGIN');
-          const res = await callback({
+          const transactionClient: DbQueryClient = {
             query: async (text, params) => {
               const r = await client.query(text, params);
               return { rows: r.rows, rowCount: r.rowCount || 0 };
             },
-          });
+          };
+          const res = await this.transactionContext.run(transactionClient, () => callback(transactionClient));
           await client.query('COMMIT');
           return res;
         } catch (err) {
@@ -189,12 +228,13 @@ class DatabaseService {
       const memoryBackup = this.memDbInstance?.backup();
       try {
         await client.query('BEGIN');
-        const res = await callback({
+        const transactionClient: DbQueryClient = {
           query: async (text, params) => {
             const r = await client.query(text, params);
             return { rows: r.rows, rowCount: r.rowCount || 0 };
           },
-        });
+        };
+        const res = await this.transactionContext.run(transactionClient, () => callback(transactionClient));
         await client.query('COMMIT');
         return res;
       } catch (err) {
@@ -212,9 +252,10 @@ class DatabaseService {
         Array.from(this.memoryStore.entries(), ([table, rows]) => [table, structuredClone(rows)])
       );
       try {
-        return await callback({
+        const transactionClient: DbQueryClient = {
           query: (text, params) => Promise.resolve(this.executeInMemoryQuery(text, params || [])),
-        });
+        };
+        return await this.transactionContext.run(transactionClient, () => callback(transactionClient));
       } catch (error) {
         this.memoryStore = memorySnapshot;
         throw error;

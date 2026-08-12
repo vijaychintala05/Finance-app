@@ -9,7 +9,7 @@ import organizationRoutes from './routes/organization.routes';
 import financeRoutes from './routes/finance.routes';
 import bankingRoutes from './routes/banking.routes';
 import securityRoutes from './routes/security.routes';
-import { MigrationRunner } from './database/migrationRunner';
+import { CURRENT_SCHEMA_VERSION, MigrationRunner } from './database/migrationRunner';
 import { assertProductionConfiguration, isProduction } from './config/environment';
 import { requestSecurityMiddleware } from './middleware/httpSecurity.middleware';
 import { idempotencyMiddleware } from './middleware/idempotency.middleware';
@@ -32,7 +32,13 @@ app.get('/api/healthz', (_req, res) => {
 app.get('/api/readyz', async (_req, res) => {
   try {
     const health = await db.checkHealth();
-    res.status(health.isConnected ? 200 : 503).json({ status: health.isConnected ? 'ready' : 'unavailable' });
+    const schemaCurrent = health.isConnected && await MigrationRunner.isCurrent();
+    const ready = health.isConnected && schemaCurrent && (!isProduction() || !health.isMemoryMode);
+    res.status(ready ? 200 : 503).json({
+      status: ready ? 'ready' : 'unavailable',
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      schemaCurrent,
+    });
   } catch {
     res.status(503).json({ status: 'unavailable' });
   }

@@ -472,7 +472,7 @@ describe('Phase 8.4A.4 — Quotation & Item Master Registry Schema Integrity Tes
 
     await ItemMasterService.updateItem(orgIdA, master.id, { salesRate: 8000 });
 
-    const inv = await QuotationEngine.convertToInvoice(orgIdA, q.id);
+    const inv = await QuotationEngine.convertToInvoice(orgIdA, q.id, 'conversion-test-user');
     expect(inv.subtotal).toBe(10000);
     expect(inv.totalAmount).toBe(11800);
   });
@@ -508,7 +508,7 @@ describe('Phase 8.4A.4 — Quotation & Item Master Registry Schema Integrity Tes
     });
 
     await expect(QuotationEngine.getQuotation(orgIdB, qA.id)).rejects.toThrow();
-    await expect(QuotationEngine.convertToInvoice(orgIdB, qA.id)).rejects.toThrow();
+    await expect(QuotationEngine.convertToInvoice(orgIdB, qA.id, 'conversion-test-user')).rejects.toThrow();
   });
 
   it('24. Unauthorized create/update rejected', async () => {

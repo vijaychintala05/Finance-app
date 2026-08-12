@@ -5,8 +5,10 @@ import { AccountingService } from '../../../src/services/accountingService';
 import { SalesService } from '../../../src/services/salesService';
 import { PeriodLock } from '../../../src/types';
 import { newId } from '../utils/ids';
+import { isIsoCalendarDate } from '../utils/date';
 import { DocumentNumberingEngine } from '../services/DocumentNumberingEngine';
 import { OrganizationProvisioningService } from '../services/OrganizationProvisioningService';
+import { AccountingIntegrityService } from '../services/AccountingIntegrityService';
 
 const roundMoney = (value: number): number => Math.round((value + Number.EPSILON) * 100) / 100;
 
@@ -443,34 +445,37 @@ export class SalesEngine {
 
   public static async getCustomerSummary(orgId: string, customerId: string): Promise<any> {
     const custRes = await db.query(`SELECT * FROM customers WHERE organization_id = $1 AND id = $2`, [orgId, customerId]);
+    let c = custRes.rows[0];
     if (custRes.rows.length === 0) {
       const clientRes = await db.query(`SELECT * FROM clients WHERE organization_id = $1 AND id = $2`, [orgId, customerId]);
       if (clientRes.rows.length === 0) return null;
       const client = clientRes.rows[0];
-      return {
+      c = {
         id: client.id,
-        displayName: client.name,
-        receivablesBalance: Number(client.receivables_balance || 0),
-        totalSales: 0,
-        overdue: 0,
-        unusedCredits: 0,
-        advancePayments: 0,
+        display_name: client.name,
+        legal_name: client.company_name,
+        email: client.email,
+        gstin: client.tax_id,
       };
     }
-
-    const c = custRes.rows[0];
 
     // Authoritative calculation from DB documents
     const invRes = await db.query(
       `SELECT COALESCE(SUM(total_amount), 0) as total_sales,
               COALESCE(SUM(balance_due), 0) as outstanding,
               COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE AND balance_due > 0 THEN balance_due ELSE 0 END), 0) as overdue
-       FROM invoices WHERE organization_id = $1 AND (client_id = $2 OR customer_id = $2) AND status != 'VOIDED'`,
+       FROM invoices
+       WHERE organization_id = $1
+         AND (client_id = $2 OR customer_id = $2)
+         AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT')`,
       [orgId, customerId]
     );
 
     const cnRes = await db.query(
-      `SELECT COALESCE(SUM(remaining_credit), 0) as unused_credits FROM credit_notes WHERE organization_id = $1 AND (client_id = $2 OR customer_id = $2) AND status = 'Open'`,
+      `SELECT COALESCE(SUM(remaining_credit), 0) as unused_credits
+         FROM credit_notes
+        WHERE organization_id = $1 AND client_id = $2
+          AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'CLOSED', 'APPLIED')`,
       [orgId, customerId]
     );
 
@@ -488,6 +493,7 @@ export class SalesEngine {
       totalSales: Number(invRes.rows[0].total_sales),
       outstandingReceivable: Number(invRes.rows[0].outstanding),
       overdue: Number(invRes.rows[0].overdue),
+      receivablesBalance: Number(invRes.rows[0].outstanding),
       unusedCredits: Number(cnRes.rows[0].unused_credits),
       advancePayments: Number(advRes.rows[0].advance_balance),
     };
@@ -621,8 +627,8 @@ export class SalesEngine {
   ): Promise<SalesOrderModel> {
     const id = newId('so');
     const orderDate = data.orderDate || new Date().toISOString().split('T')[0];
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(orderDate)) throw new Error('Sales order date must use YYYY-MM-DD format');
-    if (data.expectedDelivery && (!/^\d{4}-\d{2}-\d{2}$/.test(data.expectedDelivery) || data.expectedDelivery < orderDate)) {
+    if (!isIsoCalendarDate(orderDate)) throw new Error('Sales order date must be a real YYYY-MM-DD calendar date');
+    if (data.expectedDelivery && (!isIsoCalendarDate(data.expectedDelivery) || data.expectedDelivery < orderDate)) {
       throw new Error('Expected delivery must be a valid date on or after the order date');
     }
     const requestedStatus = String(data.status || 'CONFIRMED').toUpperCase();
@@ -764,7 +770,7 @@ export class SalesEngine {
     const issueDate = data.issueDate || now.split('T')[0];
     let invNumber = data.invoiceNumber || '';
     const dueDate = data.dueDate || issueDate;
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(issueDate) || !/^\d{4}-\d{2}-\d{2}$/.test(dueDate) || dueDate < issueDate) {
+    if (!isIsoCalendarDate(issueDate) || !isIsoCalendarDate(dueDate) || dueDate < issueDate) {
       throw new Error('Invoice issue and due dates must be valid YYYY-MM-DD values with due date on or after issue date');
     }
 
@@ -1579,68 +1585,23 @@ export class SalesEngine {
     isBalanced: boolean;
     details: any;
   }> {
-    // 1. Calculate sum of open unpaid invoice balances
-    const invRes = await db.query(
-      `SELECT COALESCE(SUM(balance_due), 0) as open_invoices_balance
-       FROM invoices
-       WHERE organization_id = $1 AND status NOT IN ('VOID', 'DRAFT')`,
-      [orgId]
-    );
-    const openInvoicesBal = Number(invRes.rows[0].open_invoices_balance || 0);
-
-    // 2. Subtract unused credit note balances
-    const cnRes = await db.query(
-      `SELECT COALESCE(SUM(remaining_credit), 0) as open_credits
-       FROM credit_notes
-       WHERE organization_id = $1 AND status = 'Open'`,
-      [orgId]
-    );
-    const openCredits = Number(cnRes.rows[0].open_credits || 0);
-
-    // 3. Subtract unapplied customer advances
-    const advRes = await db.query(
-      `SELECT COALESCE(SUM(unapplied_amount), 0) as open_advances
-       FROM customer_advances
-       WHERE organization_id = $1 AND status = 'UNAPPLIED'`,
-      [orgId]
-    );
-    const openAdvances = Number(advRes.rows[0].open_advances || 0);
-
-    const customerSubledgerTotal = Math.round((openInvoicesBal - openCredits - openAdvances) * 100) / 100;
-
-    // 4. Fetch GL Accounts Receivable Control Account balance from posted journal lines
-    const jlRes = await db.query(
-      `SELECT COALESCE(SUM(debit - credit), 0) as gl_bal
-       FROM journal_lines jl
-       JOIN journal_entries je ON jl.journal_entry_id = je.id
-       WHERE je.organization_id = $1 AND jl.account_code = '1100'`,
-      [orgId]
-    );
-
-    let arControlGLBalance = Number(jlRes.rows[0].gl_bal || 0);
-    if (arControlGLBalance === 0) {
-      const accRes = await db.query(
-        `SELECT balance FROM accounts WHERE organization_id = $1 AND code = '1100'`,
-        [orgId]
-      );
-      if (accRes.rows.length > 0) {
-        arControlGLBalance = Number(accRes.rows[0].balance || 0);
-      }
-    }
-
-    const difference = Math.abs(Math.round((customerSubledgerTotal - arControlGLBalance) * 100) / 100);
-    return {
+    // Preserve the legacy response shape while using the one authoritative,
+    // exact-cent reconciliation implementation. Unapplied advances live in the
+    // 2100 liability account and must not be netted against 1100 receivables.
+    const trusted = await AccountingIntegrityService.verifyARIntegrity(orgId);
+    const customerSubledgerTotal = Number(trusted.expectedAmount);
+    const arControlGLBalance = Number(trusted.actualAmount);
+    const difference = Number(trusted.difference);
+    const compatibilityResult = {
+      ...trusted,
       customerSubledgerTotal,
       arControlGLBalance,
       difference,
-      isValid: difference < 0.01,
-      isBalanced: difference < 0.01,
-      details: {
-        openInvoicesBal,
-        openCredits,
-        openAdvances,
-      },
+      isValid: trusted.isBalanced,
+      isBalanced: trusted.isBalanced,
+      details: trusted.details,
     };
+    return compatibilityResult;
   }
 
   // -------------------------------------------------------------
@@ -1650,7 +1611,10 @@ export class SalesEngine {
     const invRes = await db.query(
       `SELECT i.id, i.client_id, i.client_name, i.invoice_number, i.due_date, i.balance_due
        FROM invoices i
-       WHERE i.organization_id = $1 AND i.balance_due > 0 AND i.status != 'VOIDED' AND i.issue_date <= $2`,
+       WHERE i.organization_id = $1
+         AND i.balance_due > 0
+         AND UPPER(i.status) NOT IN ('VOID', 'VOIDED', 'DRAFT')
+         AND i.issue_date <= $2`,
       [orgId, asOfDate]
     );
 

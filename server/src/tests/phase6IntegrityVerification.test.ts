@@ -131,9 +131,33 @@ describe('Phase 6: General Ledger Integrity & Hardened Verification Test Suite',
     expect(result.checks.accountsPayable).toBeDefined();
     expect(result.checks.banking).toBeDefined();
     expect(result.checks.gst).toBeDefined();
+    expect(result.checks.accountBalanceCache).toBeDefined();
   });
 
-  it('7. Tax integrity reconciles both certified tax control accounts and fails on a one-cent mismatch', async () => {
+  it('7. Account balance cache reconciliation detects a one-cent GL divergence', async () => {
+    const jeId = `je-cache-${Date.now()}`;
+    await db.query(
+      `INSERT INTO journal_entries (id, organization_id, entry_number, date, status)
+       VALUES ($1, $2, 'JE-CACHE', '2025-04-10', 'POSTED')`,
+      [jeId, ORG_ID]
+    );
+    await db.query(
+      `INSERT INTO journal_lines (id, journal_entry_id, account_id, account_code, account_name, debit, credit)
+       VALUES ('jl-cache-ar', $1, 'acc-1100', '1100', 'Accounts Receivable', 10.00, 0),
+              ('jl-cache-revenue', $1, 'acc-4000', '4000', 'Sales Revenue', 0, 10.00)`,
+      [jeId]
+    );
+    await db.query(`UPDATE accounts SET balance = 10.00 WHERE id IN ('acc-1100', 'acc-4000')`);
+
+    expect((await AccountingIntegrityService.verifyAccountBalanceCache(ORG_ID)).isBalanced).toBe(true);
+    await db.query(`UPDATE accounts SET balance = 9.99 WHERE id = 'acc-1100'`);
+    const mismatch = await AccountingIntegrityService.verifyAccountBalanceCache(ORG_ID);
+    expect(mismatch.isBalanced).toBe(false);
+    expect(mismatch.difference).toBe('0.01');
+    expect(mismatch.details?.mismatchCount).toBe(1);
+  });
+
+  it('8. Tax integrity reconciles both certified tax control accounts and fails on a one-cent mismatch', async () => {
     await db.query(
       `INSERT INTO invoices (id, organization_id, invoice_number, client_name, issue_date, due_date, subtotal, tax_total, total_amount, paid_amount, balance_due, status)
        VALUES ('inv-tax-integrity', $1, 'INV-TAX-1', 'Tax Customer', '2025-04-10', '2025-05-10', 100.00, 18.00, 118.00, 0, 118.00, 'POSTED')`,

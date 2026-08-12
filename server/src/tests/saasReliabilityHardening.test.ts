@@ -96,6 +96,77 @@ describe('SaaS reliability hardening', () => {
     expect(Number(result.rows[0].balance)).toBe(25.5);
   });
 
+  it('rejects a one-cent imbalance even when aggregate cents exceed Number.MAX_SAFE_INTEGER', async () => {
+    const maximumLineAmount = 999999999999.99;
+    const lines = [];
+    for (let index = 0; index < 91; index += 1) {
+      lines.push({ accountId: debitAccountId, debit: maximumLineAmount, credit: 0 });
+      lines.push({
+        accountId: creditAccountId,
+        debit: 0,
+        credit: index === 90 ? maximumLineAmount - 0.01 : maximumLineAmount,
+      });
+    }
+
+    await expect(ServerPostingEngine.postEntry({
+      organizationId: orgId,
+      entryNumber: `JRN-LARGE-UNBALANCED-${Date.now()}`,
+      date: '2026-08-11',
+      description: 'Exact aggregate cents regression',
+      lines,
+    })).rejects.toThrow(/unbalanced/);
+  });
+
+  it('keeps both sides of a manual-journal reversal in the ledger and links them immutably', async () => {
+    const original = await ManualJournalService.createJournal(orgId, userId, {
+      date: '2026-08-11',
+      narration: 'Reversal ledger-history regression',
+      lines: [
+        { accountId: debitAccountId, debit: 73.19, credit: 0 },
+        { accountId: creditAccountId, debit: 0, credit: 73.19 },
+      ],
+    });
+
+    const reversed = await ManualJournalService.reverseJournal(
+      orgId,
+      userId,
+      original.id,
+      'Correct an incorrect manual classification'
+    );
+
+    const entries = await db.query(
+      `SELECT id, status, reversal_of_journal_id, reversed_by_journal_id, reversed_by
+         FROM journal_entries
+        WHERE organization_id = $1 AND id IN ($2, $3)`,
+      [orgId, original.id, reversed.reversalJournalId]
+    );
+    const originalRow = entries.rows.find((row) => row.id === original.id);
+    const reversalRow = entries.rows.find((row) => row.id === reversed.reversalJournalId);
+    expect(String(originalRow.status).toUpperCase()).toBe('POSTED');
+    expect(originalRow.reversed_by_journal_id).toBe(reversed.reversalJournalId);
+    expect(originalRow.reversed_by).toBe(userId);
+    expect(reversalRow.reversal_of_journal_id).toBe(original.id);
+
+    const ledger = await db.query(
+      `SELECT COALESCE(SUM(jl.debit - jl.credit), 0) AS net
+         FROM journal_lines jl
+         JOIN journal_entries je ON je.id = jl.journal_entry_id
+        WHERE je.organization_id = $1
+          AND jl.account_id = $2
+          AND je.id IN ($3, $4)
+          AND UPPER(je.status) = 'POSTED'`,
+      [orgId, debitAccountId, original.id, reversed.reversalJournalId]
+    );
+    expect(Number(ledger.rows[0].net)).toBe(0);
+
+    await expect(ManualJournalService.reverseJournal(
+      orgId,
+      userId,
+      original.id,
+      'Attempt the same reversal again'
+    )).rejects.toThrow(/ALREADY_REVERSED/);
+  });
+
   it('rejects unsafe numbering configuration', async () => {
     await expect(DocumentNumberingEngine.configureSequence(orgId, {
       documentType: 'INVOICE;DROP',

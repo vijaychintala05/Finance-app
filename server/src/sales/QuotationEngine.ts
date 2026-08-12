@@ -1357,7 +1357,7 @@ export class QuotationEngine {
   /**
    * Convert quotation to Sales Order using stored commercial snapshot
    */
-  public static async convertToSalesOrder(orgId: string, quotationId: string): Promise<SalesOrderModel> {
+  public static async convertToSalesOrder(orgId: string, quotationId: string, actorId: string): Promise<SalesOrderModel> {
     return db.transaction(async (client) => {
       const source = await client.query(
         `SELECT status FROM estimates WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
@@ -1389,14 +1389,14 @@ export class QuotationEngine {
         totalAmount: q.totalAmount,
         notes: q.notes,
         lineItems: q.lineItems,
-      }, client);
+      }, client, actorId);
     });
   }
 
   /**
    * Convert quotation directly to Invoice using stored commercial snapshot
    */
-  public static async convertToInvoice(orgId: string, quotationId: string): Promise<InvoiceModel> {
+  public static async convertToInvoice(orgId: string, quotationId: string, actorId: string): Promise<InvoiceModel> {
     return db.transaction(async (client) => {
     const source = await client.query(
       `SELECT status FROM estimates WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
@@ -1462,6 +1462,7 @@ export class QuotationEngine {
       totalAmount: q.totalAmount,
       isGstInclusive: q.isGstInclusive,
       notes: q.notes,
+      createdBy: actorId,
       lineItems: lineItemsSnapshot,
     }, client);
 

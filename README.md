@@ -4,14 +4,15 @@ FirmBooks is a multi-organization accounting application built with React, Expre
 
 ## Reliability model
 
-- Every enabled financial write is tenant-scoped, authenticated, permission-checked, and retry-safe.
+- Every enabled financial write is tenant-scoped, authenticated, permission-checked, and retry-safe. The idempotency outcome and financial mutation commit in the same PostgreSQL transaction.
 - Invoice, payment-received, expense, bill, and manual-journal posting commit the source document, balanced journal, account cache, and audit event in one database transaction.
 - Journal lines contain exactly one positive debit or credit, and every entry balances to the cent.
-- Posted documents are immutable. Corrections use explicit audited reversal workflows.
+- Posted documents are immutable. Certified corrections for invoices, payments received, expenses, bills, and manual journals use linked audited reversal journals.
 - Period and account locks are enforced by the server posting engine.
 - PostgreSQL decimals cross the API boundary through exact integer cents; unsafe-range and sub-cent values fail closed.
 - Dashboard totals come from posted journals. Certified reports are server-generated profit and loss, balance sheet, trial balance, general ledger, AR aging/reconciliation, and AP aging/reconciliation.
-- Tax integrity reconciles invoice output tax to control account `2200` and bill input tax to control account `1200` independently.
+- Tax integrity reconciles invoice output tax to control account `2200` and bill input tax to control account `1200` independently. The integrity suite also verifies every account balance cache against the posted ledger.
+- V1 base currencies are `AED`, `AUD`, `CAD`, `EUR`, `GBP`, `INR`, `SGD`, and `USD`; they all use two decimal minor units, matching the v1 ledger schema.
 - Production cannot use the in-memory database or demo seed identities.
 - Uncertified workflows fail closed instead of simulating financial success in the browser.
 
@@ -26,7 +27,7 @@ Requirements: Node.js 22+, npm, and PostgreSQL 15+.
 3. Install exact dependencies with `npm ci`.
 4. Start the application with `npm run dev`.
 
-The server applies its idempotent schema migration set in one transaction under a PostgreSQL advisory lock. It never seeds demo identities automatically. Registration provisions a tenant and its control accounts atomically.
+The server applies its versioned, idempotent schema migration set in one transaction under a PostgreSQL advisory lock. Readiness fails if schema version `2026.08.12-v1` is absent. It never seeds demo identities automatically. Registration provisions a tenant and its control accounts atomically.
 
 ## Verification
 

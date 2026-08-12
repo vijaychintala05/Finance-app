@@ -6,6 +6,7 @@ import { AuthenticatedRequest } from '../middleware/organizationIsolation.middle
 import { SessionSecurity } from '../auth/SessionSecurity';
 import { newId } from '../utils/ids';
 import { OrganizationProvisioningService } from '../services/OrganizationProvisioningService';
+import { normalizeSupportedBaseCurrency } from '../utils/currency';
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -30,10 +31,10 @@ export class AuthController {
       const countryInput = typeof req.body?.country === 'string' ? req.body.country.trim() : '';
       const currencyInput = typeof req.body?.baseCurrency === 'string' ? req.body.baseCurrency.trim().toUpperCase() : '';
       const country = countryInput || (process.env.NODE_ENV === 'test' ? 'Test Jurisdiction' : '');
-      const baseCurrency = currencyInput || (process.env.NODE_ENV === 'test' ? 'USD' : '');
+      const baseCurrency = normalizeSupportedBaseCurrency(currencyInput || (process.env.NODE_ENV === 'test' ? 'USD' : ''));
 
-      if (!EMAIL_PATTERN.test(email) || email.length > 320 || !password || !fullName || fullName.length > 255 || organizationName.length < 2 || organizationName.length > 120 || country.length < 2 || country.length > 100 || !/^[A-Z]{3}$/.test(baseCurrency)) {
-        res.status(400).json({ error: 'A valid email, password, full name, organization name, country, and three-letter base currency are required' });
+      if (!EMAIL_PATTERN.test(email) || email.length > 320 || !password || !fullName || fullName.length > 255 || organizationName.length < 2 || organizationName.length > 120 || country.length < 2 || country.length > 100 || !baseCurrency) {
+        res.status(400).json({ error: 'A valid email, password, full name, organization name, country, and supported two-decimal base currency are required' });
         return;
       }
 

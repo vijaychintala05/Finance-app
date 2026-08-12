@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { db } from '../database/db';
 import { MigrationRunner } from '../database/migrationRunner';
 import { PurchasesEngine } from '../purchases/PurchasesEngine';
+import { FinancialDestructiveActionsService } from '../accounting/FinancialDestructiveActionsService';
 
 describe('Phase 5: Purchases and Accounts Payable Hardened Test Suite', () => {
   const ORG_ID = 'org-purchases-test-123';
@@ -161,7 +162,7 @@ describe('Phase 5: Purchases and Accounts Payable Hardened Test Suite', () => {
     expect(receipt.status).toBe('RECEIVED');
 
     // 4. Create Partial Bill 1: ₹100,000
-    await PurchasesEngine.createAndPostBill(ORG_ID, {
+    const secondBill = await PurchasesEngine.createAndPostBill(ORG_ID, {
       vendorId: vendor.id,
       vendorName: vendor.name,
       purchaseOrderId: po.id,
@@ -187,6 +188,16 @@ describe('Phase 5: Purchases and Accounts Payable Hardened Test Suite', () => {
     const poCheck2 = await PurchasesEngine.getPurchaseOrder(ORG_ID, po.id);
     expect(poCheck2?.billedAmount).toBe(200000);
     expect(poCheck2?.status).toBe('BILLED');
+
+    await FinancialDestructiveActionsService.voidBill(
+      ORG_ID,
+      secondBill.id,
+      'purchase-correction-user',
+      'Vendor cancelled the remaining purchase-order invoice'
+    );
+    const poAfterVoid = await PurchasesEngine.getPurchaseOrder(ORG_ID, po.id);
+    expect(poAfterVoid?.billedAmount).toBe(100000);
+    expect(poAfterVoid?.status).toBe('PARTIALLY_BILLED');
   });
 
   // -------------------------------------------------------------

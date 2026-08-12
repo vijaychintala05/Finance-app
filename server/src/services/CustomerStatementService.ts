@@ -51,7 +51,7 @@ export class CustomerStatementService {
       [orgId, customerId, fromDate]
     );
     const payOpen = await db.query(
-      `SELECT COALESCE(SUM(amount), 0) as total FROM payments_received WHERE organization_id = $1 AND client_id = $2 AND payment_date < $3`,
+      `SELECT COALESCE(SUM(amount), 0) as total FROM payments_received WHERE organization_id = $1 AND client_id = $2 AND UPPER(status) <> 'REVERSED' AND payment_date < $3`,
       [orgId, customerId, fromDate]
     );
 
@@ -66,7 +66,7 @@ export class CustomerStatementService {
     );
 
     const payments = await db.query(
-      `SELECT id, payment_number as number, payment_date as date, amount, reference FROM payments_received WHERE organization_id = $1 AND client_id = $2 AND payment_date >= $3 AND payment_date <= $4`,
+      `SELECT id, payment_number as number, payment_date as date, amount, reference FROM payments_received WHERE organization_id = $1 AND client_id = $2 AND UPPER(status) <> 'REVERSED' AND payment_date >= $3 AND payment_date <= $4`,
       [orgId, customerId, fromDate, toDate]
     );
 

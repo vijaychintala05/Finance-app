@@ -32,10 +32,63 @@ export interface OrganizationIntegrityResult {
     accountsPayable: IntegrityCheckResult;
     banking: IntegrityCheckResult;
     gst: IntegrityCheckResult;
+    accountBalanceCache: IntegrityCheckResult;
   };
 }
 
 export class AccountingIntegrityService {
+  public static async verifyAccountBalanceCache(organizationId: string): Promise<IntegrityCheckResult> {
+    const now = new Date().toISOString();
+    const result = await db.query<any>(
+      `SELECT a.id, a.code, a.name, a.type, a.balance AS cached_balance,
+              COALESCE(SUM(
+                CASE
+                  WHEN UPPER(je.status) <> 'POSTED' OR je.id IS NULL THEN 0
+                  WHEN UPPER(a.type) IN ('ASSET', 'EXPENSE', 'COST OF GOODS SOLD', 'OTHER EXPENSE')
+                    THEN jl.debit - jl.credit
+                  ELSE jl.credit - jl.debit
+                END
+              ), 0) AS ledger_balance
+         FROM accounts a
+         LEFT JOIN journal_lines jl ON jl.account_id = a.id
+         LEFT JOIN journal_entries je
+           ON je.id = jl.journal_entry_id AND je.organization_id = a.organization_id
+        WHERE a.organization_id = $1
+        GROUP BY a.id, a.code, a.name, a.type, a.balance
+        ORDER BY a.code`,
+      [organizationId]
+    );
+
+    const mismatches: Array<Record<string, unknown>> = [];
+    let totalDifferenceCents = 0n;
+    for (const account of result.rows) {
+      const cachedCents = databaseMoneyToCents(account.cached_balance, `Account ${account.code} cached balance`);
+      const ledgerCents = databaseMoneyToCents(account.ledger_balance, `Account ${account.code} ledger balance`);
+      const differenceCents = absoluteCents(cachedCents - ledgerCents);
+      if (differenceCents !== 0n) {
+        totalDifferenceCents += differenceCents;
+        mismatches.push({
+          accountId: account.id,
+          accountCode: account.code,
+          accountName: account.name,
+          cachedBalance: formatCents(cachedCents),
+          ledgerBalance: formatCents(ledgerCents),
+          difference: formatCents(differenceCents),
+        });
+      }
+    }
+
+    return {
+      name: 'Account Balance Cache Reconciliation',
+      isBalanced: mismatches.length === 0,
+      expectedAmount: '0.00',
+      actualAmount: formatCents(totalDifferenceCents),
+      difference: formatCents(totalDifferenceCents),
+      checkedAt: now,
+      details: { accountCount: result.rows.length, mismatchCount: mismatches.length, mismatches },
+    };
+  }
+
   /**
    * Verify individual & organization-wide journal entries balance (Total Debits = Total Credits)
    */
@@ -150,7 +203,7 @@ export class AccountingIntegrityService {
     const advRes = await db.query<any>(
       `SELECT COALESCE(SUM(unapplied_amount), 0) as open_advances
        FROM customer_advances
-       WHERE organization_id = $1 AND UPPER(status) NOT IN ('VOID', 'VOIDED')`,
+       WHERE organization_id = $1 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'REVERSED')`,
       [organizationId]
     );
     const openAdvancesCents = databaseMoneyToCents(advRes.rows[0]?.open_advances, 'Customer advances liability');
@@ -219,7 +272,7 @@ export class AccountingIntegrityService {
     const advRes = await db.query<any>(
       `SELECT COALESCE(SUM(unapplied_amount), 0) as open_advances
        FROM vendor_advances
-       WHERE organization_id = $1 AND UPPER(status) NOT IN ('VOID', 'VOIDED')`,
+       WHERE organization_id = $1 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'REVERSED')`,
       [organizationId]
     );
     const openVendorAdvancesCents = databaseMoneyToCents(advRes.rows[0]?.open_advances, 'Vendor advances asset');
@@ -365,13 +418,14 @@ export class AccountingIntegrityService {
   public static async verifyOrganizationIntegrity(organizationId: string): Promise<OrganizationIntegrityResult> {
     const now = new Date().toISOString();
 
-    const [journal, trialBalance, accountsReceivable, accountsPayable, banking, gst] = await Promise.all([
+    const [journal, trialBalance, accountsReceivable, accountsPayable, banking, gst, accountBalanceCache] = await Promise.all([
       this.verifyJournalIntegrity(organizationId),
       this.verifyTrialBalanceIntegrity(organizationId),
       this.verifyARIntegrity(organizationId),
       this.verifyAPIntegrity(organizationId),
       this.verifyBankIntegrity(organizationId),
       this.verifyGSTIntegrity(organizationId),
+      this.verifyAccountBalanceCache(organizationId),
     ]);
 
     const isHealthy =
@@ -380,7 +434,8 @@ export class AccountingIntegrityService {
       accountsReceivable.isBalanced &&
       accountsPayable.isBalanced &&
       banking.isBalanced &&
-      gst.isBalanced;
+      gst.isBalanced &&
+      accountBalanceCache.isBalanced;
 
     return {
       organizationId,
@@ -393,6 +448,7 @@ export class AccountingIntegrityService {
         accountsPayable,
         banking,
         gst,
+        accountBalanceCache,
       },
     };
   }

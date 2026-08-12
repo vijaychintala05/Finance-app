@@ -24,7 +24,7 @@ export class AccountantOverviewService {
     // 1. Accounting Health
     const integrity = await AccountingIntegrityService.verifyOrganizationIntegrity(orgId);
     let passed = 0;
-    let total = 6;
+    let total = 7;
 
     if (integrity.checks.journal.isBalanced) passed++;
     if (integrity.checks.trialBalance.isBalanced) passed++;
@@ -32,14 +32,21 @@ export class AccountantOverviewService {
     if (integrity.checks.accountsPayable.isBalanced) passed++;
     if (integrity.checks.banking.isBalanced) passed++;
     if (integrity.checks.gst.isBalanced) passed++;
+    if (integrity.checks.accountBalanceCache.isBalanced) passed++;
 
     // 2. AR / AP Totals from subledger/GL queries
     const arRes = await db.query(
-      `SELECT COALESCE(SUM(balance_due), 0) as total FROM invoices WHERE organization_id = $1 AND status NOT IN ('VOID', 'PAID')`,
+      `SELECT COALESCE(SUM(balance_due), 0) as total
+         FROM invoices
+        WHERE organization_id = $1
+          AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT')`,
       [orgId]
     );
     const apRes = await db.query(
-      `SELECT COALESCE(SUM(balance_due), 0) as total FROM bills WHERE organization_id = $1 AND status NOT IN ('VOID', 'Paid', 'PAID')`,
+      `SELECT COALESCE(SUM(balance_due), 0) as total
+         FROM bills
+        WHERE organization_id = $1
+          AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'PAID')`,
       [orgId]
     );
     const arBal = Number(arRes.rows[0]?.total || 0);

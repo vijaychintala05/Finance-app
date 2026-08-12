@@ -207,7 +207,7 @@ export class Phase8Controller {
   public static async convertQuotationToSO(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const orgId = req.auth!.organizationId;
-      const salesOrder = await QuotationEngine.convertToSalesOrder(orgId, req.params.id);
+      const salesOrder = await QuotationEngine.convertToSalesOrder(orgId, req.params.id, req.auth!.userId);
       res.json({ salesOrder });
     } catch (err: any) {
       const message = err.message || 'Quotation conversion failed';
@@ -218,7 +218,7 @@ export class Phase8Controller {
   public static async convertQuotationToInvoice(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const orgId = req.auth!.organizationId;
-      const invoice = await QuotationEngine.convertToInvoice(orgId, req.params.id);
+      const invoice = await QuotationEngine.convertToInvoice(orgId, req.params.id, req.auth!.userId);
       res.json({ invoice });
     } catch (err: any) {
       const message = err.message || 'Quotation conversion failed';

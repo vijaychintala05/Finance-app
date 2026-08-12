@@ -1,94 +1,183 @@
-import { db } from '../database/db';
-import { AuditTrailService } from '../security/AuditTrailService';
-import { AccountingPeriodService } from './AccountingPeriodService';
+import { ServerPostingEngine } from './postingEngine';
+import { db, DbQueryClient } from '../database/db';
 import { newId } from '../utils/ids';
+import { databaseMoneyToCents } from '../utils/money';
+import { DocumentNumberingEngine } from '../services/DocumentNumberingEngine';
+
+interface ReversalResult {
+  success: boolean;
+  journalEntryId: string;
+}
+
+function validReason(reason: string): string {
+  const normalized = String(reason || '').trim();
+  if (normalized.length < 3 || normalized.length > 1000) {
+    throw new Error('REVERSAL_REASON_INVALID: A reversal reason containing 3-1000 characters is required');
+  }
+  return normalized;
+}
+
+function todayUtc(): string {
+  return new Date().toISOString().slice(0, 10);
+}
 
 export class FinancialDestructiveActionsService {
+  private static async reversePostedJournal(
+    client: DbQueryClient,
+    organizationId: string,
+    journalEntryId: string,
+    userId: string,
+    reason: string,
+    sourceLabel: string
+  ): Promise<string> {
+    const originalResult = await client.query(
+      `SELECT * FROM journal_entries
+        WHERE organization_id = $1 AND id = $2
+        FOR UPDATE`,
+      [organizationId, journalEntryId]
+    );
+    if (originalResult.rows.length !== 1) throw new Error(`${sourceLabel} posting journal was not found`);
+    const original = originalResult.rows[0];
+    if (String(original.status).toUpperCase() !== 'POSTED') throw new Error(`${sourceLabel} posting journal is not posted`);
+    if (original.reversed_by_journal_id) throw new Error(`${sourceLabel} posting has already been reversed`);
+    if (original.reversal_of_journal_id) throw new Error('A reversal journal cannot itself be reversed through a source-document workflow');
+
+    const lines = await client.query(
+      `SELECT jl.account_id, jl.debit, jl.credit, jl.description
+         FROM journal_lines jl
+         JOIN accounts a ON a.id = jl.account_id AND a.organization_id = $1
+        WHERE jl.journal_entry_id = $2
+        ORDER BY jl.id`,
+      [organizationId, journalEntryId]
+    );
+    if (lines.rows.length < 2) throw new Error(`${sourceLabel} posting journal has insufficient lines`);
+
+    const reversalDate = todayUtc();
+    const reversalNumber = await DocumentNumberingEngine.getNextNumber(
+      organizationId,
+      'JOURNAL',
+      reversalDate,
+      undefined,
+      client
+    );
+    const reversal = await ServerPostingEngine.postEntry({
+      organizationId,
+      entryNumber: reversalNumber,
+      date: reversalDate,
+      reference: String(original.entry_number || '').slice(0, 255),
+      description: `Reversal of ${sourceLabel}: ${reason}`,
+      lines: lines.rows.map((line) => ({
+        accountId: line.account_id,
+        debit: Number(line.credit || 0),
+        credit: Number(line.debit || 0),
+        description: `Reversal: ${String(line.description || '').slice(0, 900)}`,
+      })),
+    }, client);
+
+    await client.query(
+      `UPDATE journal_entries
+          SET reversal_of_journal_id = $1, reversal_reason = $2
+        WHERE organization_id = $3 AND id = $4`,
+      [journalEntryId, reason, organizationId, reversal.entryId]
+    );
+    const linked = await client.query(
+      `UPDATE journal_entries
+          SET reversed_by_journal_id = $1, reversed_at = CURRENT_TIMESTAMP,
+              reversed_by = $2, reversal_reason = $3
+        WHERE organization_id = $4 AND id = $5 AND reversed_by_journal_id IS NULL`,
+      [reversal.entryId, userId, reason, organizationId, journalEntryId]
+    );
+    if (linked.rowCount !== 1) throw new Error(`${sourceLabel} posting was reversed concurrently`);
+    return reversal.entryId;
+  }
+
+  private static async audit(
+    client: DbQueryClient,
+    organizationId: string,
+    userId: string,
+    action: string,
+    entityType: string,
+    entityId: string,
+    beforeState: unknown,
+    afterState: unknown
+  ): Promise<void> {
+    await client.query(
+      `INSERT INTO audit_logs
+        (id, organization_id, user_id, action, entity_type, entity_id, before_state, after_state)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [newId('aud'), organizationId, userId, action, entityType, entityId, JSON.stringify(beforeState), JSON.stringify(afterState)]
+    );
+  }
+
   public static async voidInvoice(
     organizationId: string,
     invoiceId: string,
     userId: string,
     reason: string
-  ): Promise<{ success: boolean; invoiceId: string; journalEntryId?: string }> {
-    const invRes = await db.query(
-      `SELECT * FROM invoices WHERE id = $1 AND organization_id = $2`,
-      [invoiceId, organizationId]
-    );
-
-    if (invRes.rows.length === 0) {
-      throw new Error(`Invoice [${invoiceId}] not found in organization [${organizationId}]`);
-    }
-
-    const invoice = invRes.rows[0];
-
-    // Verify Period Lock
-    const isLocked = await AccountingPeriodService.isPeriodLocked(
-      organizationId,
-      invoice.issue_date || invoice.issueDate
-    );
-    if (isLocked) {
-      throw new Error(`Cannot void invoice in a locked accounting period.`);
-    }
-
-    if (invoice.status === 'VOID') {
-      throw new Error(`Invoice [${invoiceId}] is already voided.`);
-    }
-
-    const paidAmount = Number(invoice.paid_amount || invoice.paidAmount || 0);
-    const amountCredited = Number(invoice.amount_credited || invoice.amountCredited || 0);
-
-    const allocRes = await db.query(
-      `SELECT COUNT(*) as count FROM payment_received_allocations WHERE invoice_id = $1 AND organization_id = $2`,
-      [invoiceId, organizationId]
-    );
-    const allocCount = Number(allocRes.rows[0]?.count || 0);
-
-    if (paidAmount > 0 || amountCredited > 0 || allocCount > 0) {
-      throw new Error(
-        `INVOICE_HAS_ALLOCATED_PAYMENTS: Cannot void invoice [${invoiceId}] with active payment allocations or applied credits. Reverse or unallocate payments first.`
+  ): Promise<ReversalResult & { invoiceId: string }> {
+    const normalizedReason = validReason(reason);
+    return db.transaction(async (client) => {
+      const result = await client.query(
+        `SELECT * FROM invoices WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [organizationId, invoiceId]
       );
-    }
-
-    // Reversing journal entry if original invoice was posted
-    let reversingJournalId: string | undefined;
-    const totalAmount = Number(invoice.total_amount || invoice.totalAmount || 0);
-
-    if (totalAmount > 0) {
-      reversingJournalId = `je-rev-inv-${Date.now()}`;
-      await db.query(
-        `INSERT INTO journal_entries (id, organization_id, entry_number, date, reference, description, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [
-          reversingJournalId,
-          organizationId,
-          `REV-${invoice.invoice_number || invoice.invoiceNumber}`,
-          new Date().toISOString().split('T')[0],
-          invoice.invoice_number || invoice.invoiceNumber,
-          `Reversing entry for Voided Invoice ${invoice.invoice_number || invoice.invoiceNumber}: ${reason}`,
-          'Posted',
-        ]
+      if (result.rows.length !== 1) throw new Error('Invoice was not found in this organization');
+      const invoice = result.rows[0];
+      if (['VOID', 'VOIDED'].includes(String(invoice.status).toUpperCase())) throw new Error('Invoice is already voided');
+      const financialState = [invoice.paid_amount, invoice.amount_credited, invoice.amount_written_off]
+        .map((value, index) => databaseMoneyToCents(value, `Invoice settlement amount ${index + 1}`));
+      const allocations = await client.query(
+        `SELECT COUNT(*) AS count
+           FROM payment_received_allocations pra
+           JOIN payments_received pr ON pr.id = pra.payment_id AND pr.organization_id = pra.organization_id
+          WHERE pra.organization_id = $1 AND pra.invoice_id = $2
+            AND UPPER(pr.status) <> 'REVERSED'`,
+        [organizationId, invoiceId]
       );
-    }
+      if (financialState.some((value) => value !== 0n) || Number(allocations.rows[0]?.count || 0) > 0) {
+        throw new Error('INVOICE_HAS_ALLOCATED_PAYMENTS: Reverse all payments and credits before voiding this invoice');
+      }
+      if (!invoice.journal_entry_id) throw new Error('Invoice has no certified posting journal to reverse');
 
-    // Update invoice status safely to VOID
-    await db.query(
-      `UPDATE invoices
-       SET status = 'VOID', balance_due = 0.00, notes = COALESCE(notes, '') || ' [VOIDED: ' || $1 || ']'
-       WHERE id = $2 AND organization_id = $3`,
-      [reason, invoiceId, organizationId]
-    );
-
-    await AuditTrailService.logAction({
-      organizationId,
-      userId,
-      action: 'INVOICE_VOIDED',
-      entityType: 'INVOICE',
-      entityId: invoiceId,
-      beforeState: { status: invoice.status, balanceDue: invoice.balance_due },
-      afterState: { status: 'VOID', balanceDue: 0, reason, reversingJournalId },
+      const reversalJournalId = await this.reversePostedJournal(
+        client, organizationId, invoice.journal_entry_id, userId, normalizedReason,
+        `invoice ${invoice.invoice_number}`
+      );
+      const updated = await client.query(
+        `UPDATE invoices
+            SET status = 'VOIDED', balance_due = 0,
+                reversal_journal_id = $1, reversed_at = CURRENT_TIMESTAMP,
+                reversed_by = $2, reversal_reason = $3
+          WHERE organization_id = $4 AND id = $5
+            AND UPPER(status) NOT IN ('VOID', 'VOIDED')`,
+        [reversalJournalId, userId, normalizedReason, organizationId, invoiceId]
+      );
+      if (updated.rowCount !== 1) throw new Error('Invoice state changed concurrently');
+      if (invoice.sales_order_id) {
+        const salesOrder = await client.query(
+          `SELECT total_amount, invoiced_amount FROM sales_orders
+            WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+          [organizationId, invoice.sales_order_id]
+        );
+        if (salesOrder.rows.length !== 1) throw new Error('Invoice source sales order was not found');
+        const newInvoicedCents = databaseMoneyToCents(salesOrder.rows[0].invoiced_amount, 'Sales order invoiced amount')
+          - databaseMoneyToCents(invoice.total_amount, 'Voided invoice total');
+        if (newInvoicedCents < 0n) throw new Error('Invoice total exceeds the sales order invoiced amount');
+        const orderTotalCents = databaseMoneyToCents(salesOrder.rows[0].total_amount, 'Sales order total');
+        const orderStatus = newInvoicedCents === 0n
+          ? 'CONFIRMED'
+          : newInvoicedCents >= orderTotalCents ? 'INVOICED' : 'PARTIALLY_INVOICED';
+        await client.query(
+          `UPDATE sales_orders SET invoiced_amount = $1, status = $2
+            WHERE organization_id = $3 AND id = $4`,
+          [Number(newInvoicedCents) / 100, orderStatus, organizationId, invoice.sales_order_id]
+        );
+      }
+      await this.audit(client, organizationId, userId, 'INVOICE_VOIDED', 'Invoice', invoiceId,
+        { status: invoice.status, balanceDue: invoice.balance_due },
+        { status: 'VOIDED', balanceDue: 0, reversalJournalId, reason: normalizedReason });
+      return { success: true, invoiceId, journalEntryId: reversalJournalId };
     });
-
-    return { success: true, invoiceId, journalEntryId: reversingJournalId };
   }
 
   public static async reversePaymentReceived(
@@ -96,173 +185,191 @@ export class FinancialDestructiveActionsService {
     paymentId: string,
     userId: string,
     reason: string
-  ): Promise<{ success: boolean; paymentId: string; journalEntryId?: string }> {
-    const payRes = await db.query(
-      `SELECT * FROM payments_received WHERE id = $1 AND organization_id = $2`,
-      [paymentId, organizationId]
-    );
-
-    if (payRes.rows.length === 0) {
-      throw new Error(`Payment [${paymentId}] not found in organization [${organizationId}]`);
-    }
-
-    const payment = payRes.rows[0];
-
-    const isLocked = await AccountingPeriodService.isPeriodLocked(
-      organizationId,
-      payment.payment_date || payment.paymentDate
-    );
-    if (isLocked) {
-      throw new Error(`Cannot reverse payment in a locked accounting period.`);
-    }
-
-    if (payment.status === 'REVERSED') {
-      throw new Error(`Payment [${paymentId}] is already reversed.`);
-    }
-
-    // Re-open allocated invoice balances
-    const allocRes = await db.query(
-      `SELECT * FROM payment_received_allocations WHERE payment_id = $1 AND organization_id = $2`,
-      [paymentId, organizationId]
-    );
-
-    for (const alloc of allocRes.rows) {
-      const invId = alloc.invoice_id || alloc.invoiceId;
-      const amount = Number(alloc.amount || 0);
-
-      await db.query(
-        `UPDATE invoices
-         SET paid_amount = GREATEST(0.00, paid_amount - $1),
-             balance_due = balance_due + $1,
-             status = CASE WHEN total_amount = balance_due + $1 THEN 'Unpaid' ELSE 'Partially Paid' END
-         WHERE id = $2 AND organization_id = $3`,
-        [amount, invId, organizationId]
+  ): Promise<ReversalResult & { paymentId: string }> {
+    const normalizedReason = validReason(reason);
+    return db.transaction(async (client) => {
+      const result = await client.query(
+        `SELECT * FROM payments_received WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [organizationId, paymentId]
       );
-    }
+      if (result.rows.length !== 1) throw new Error('Payment was not found in this organization');
+      const payment = result.rows[0];
+      if (String(payment.status).toUpperCase() === 'REVERSED') throw new Error('Payment is already reversed');
+      if (!payment.journal_entry_id) throw new Error('Payment has no certified posting journal to reverse');
 
-    // Reversing journal entry
-    const reversingJournalId = `je-rev-payrec-${Date.now()}`;
-    await db.query(
-      `INSERT INTO journal_entries (id, organization_id, entry_number, date, reference, description, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [
-        reversingJournalId,
-        organizationId,
-        `REV-${payment.payment_number || payment.paymentNumber}`,
-        new Date().toISOString().split('T')[0],
-        payment.payment_number || payment.paymentNumber,
-        `Reversing entry for Customer Payment ${payment.payment_number || payment.paymentNumber}: ${reason}`,
-        'Posted',
-      ]
-    );
+      const advances = await client.query(
+        `SELECT * FROM customer_advances WHERE organization_id = $1 AND payment_id = $2 FOR UPDATE`,
+        [organizationId, paymentId]
+      );
+      for (const advance of advances.rows) {
+        if (databaseMoneyToCents(advance.amount, 'Customer advance amount') !==
+            databaseMoneyToCents(advance.unapplied_amount, 'Customer advance unapplied amount')) {
+          throw new Error('PAYMENT_ADVANCE_APPLIED: Reverse all applications of this customer advance before reversing the payment');
+        }
+      }
 
-    // Update payment status to REVERSED
-    await db.query(
-      `UPDATE payments_received SET status = 'REVERSED' WHERE id = $1 AND organization_id = $2`,
-      [paymentId, organizationId]
-    );
+      const allocations = await client.query(
+        `SELECT * FROM payment_received_allocations
+          WHERE organization_id = $1 AND payment_id = $2
+          FOR UPDATE`,
+        [organizationId, paymentId]
+      );
+      for (const allocation of allocations.rows) {
+        const invoiceResult = await client.query(
+          `SELECT * FROM invoices WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+          [organizationId, allocation.invoice_id]
+        );
+        if (invoiceResult.rows.length !== 1) throw new Error('Allocated invoice was not found');
+        const invoice = invoiceResult.rows[0];
+        if (['VOID', 'VOIDED'].includes(String(invoice.status).toUpperCase())) throw new Error('Cannot reverse a payment allocated to a voided invoice');
+        const allocatedCents = databaseMoneyToCents(allocation.amount, 'Payment allocation');
+        const paidCents = databaseMoneyToCents(invoice.paid_amount, 'Invoice paid amount');
+        if (allocatedCents > paidCents) throw new Error('Payment allocation exceeds the invoice paid amount');
+        const newPaidCents = paidCents - allocatedCents;
+        const newBalanceCents = databaseMoneyToCents(invoice.total_amount, 'Invoice total')
+          - newPaidCents
+          - databaseMoneyToCents(invoice.amount_credited, 'Invoice credited amount')
+          - databaseMoneyToCents(invoice.amount_written_off, 'Invoice written-off amount');
+        const status = newBalanceCents === 0n ? 'PAID' : newPaidCents > 0n ? 'PARTIALLY_PAID' : 'POSTED';
+        await client.query(
+          `UPDATE invoices SET paid_amount = $1, balance_due = $2, status = $3
+            WHERE organization_id = $4 AND id = $5`,
+          [Number(newPaidCents) / 100, Number(newBalanceCents) / 100, status, organizationId, invoice.id]
+        );
+      }
 
-    await AuditTrailService.logAction({
-      organizationId,
-      userId,
-      action: 'PAYMENT_RECEIVED_REVERSED',
-      entityType: 'PAYMENT_RECEIVED',
-      entityId: paymentId,
-      beforeState: { status: payment.status },
-      afterState: { status: 'REVERSED', reason, reversingJournalId },
+      const reversalJournalId = await this.reversePostedJournal(
+        client, organizationId, payment.journal_entry_id, userId, normalizedReason,
+        `payment ${payment.payment_number}`
+      );
+      await client.query(
+        `UPDATE customer_advances
+            SET status = 'REVERSED', unapplied_amount = 0
+          WHERE organization_id = $1 AND payment_id = $2`,
+        [organizationId, paymentId]
+      );
+      const updated = await client.query(
+        `UPDATE payments_received
+            SET status = 'REVERSED', unallocated_amount = 0,
+                reversal_journal_id = $1, reversed_at = CURRENT_TIMESTAMP,
+                reversed_by = $2, reversal_reason = $3
+          WHERE organization_id = $4 AND id = $5 AND UPPER(status) <> 'REVERSED'`,
+        [reversalJournalId, userId, normalizedReason, organizationId, paymentId]
+      );
+      if (updated.rowCount !== 1) throw new Error('Payment state changed concurrently');
+      await this.audit(client, organizationId, userId, 'PAYMENT_RECEIVED_REVERSED', 'PaymentReceived', paymentId,
+        { status: payment.status, amount: payment.amount },
+        { status: 'REVERSED', reversalJournalId, reason: normalizedReason });
+      return { success: true, paymentId, journalEntryId: reversalJournalId };
     });
+  }
 
-    return { success: true, paymentId, journalEntryId: reversingJournalId };
+  public static async voidExpense(
+    organizationId: string,
+    expenseId: string,
+    userId: string,
+    reason: string
+  ): Promise<ReversalResult & { expenseId: string }> {
+    const normalizedReason = validReason(reason);
+    return db.transaction(async (client) => {
+      const result = await client.query(
+        `SELECT * FROM expenses WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [organizationId, expenseId]
+      );
+      if (result.rows.length !== 1) throw new Error('Expense was not found in this organization');
+      const expense = result.rows[0];
+      if (String(expense.status).toUpperCase() === 'VOIDED') throw new Error('Expense is already voided');
+      if (!expense.journal_entry_id) throw new Error('Expense has no certified posting journal to reverse');
+      const reversalJournalId = await this.reversePostedJournal(
+        client, organizationId, expense.journal_entry_id, userId, normalizedReason,
+        `expense ${expense.expense_number}`
+      );
+      await client.query(
+        `UPDATE expenses SET status = 'VOIDED', reversal_journal_id = $1,
+            reversed_at = CURRENT_TIMESTAMP, reversed_by = $2, reversal_reason = $3
+          WHERE organization_id = $4 AND id = $5`,
+        [reversalJournalId, userId, normalizedReason, organizationId, expenseId]
+      );
+      await this.audit(client, organizationId, userId, 'EXPENSE_VOIDED', 'Expense', expenseId,
+        { status: expense.status, amount: expense.amount },
+        { status: 'VOIDED', reversalJournalId, reason: normalizedReason });
+      return { success: true, expenseId, journalEntryId: reversalJournalId };
+    });
+  }
+
+  public static async voidBill(
+    organizationId: string,
+    billId: string,
+    userId: string,
+    reason: string
+  ): Promise<ReversalResult & { billId: string }> {
+    const normalizedReason = validReason(reason);
+    return db.transaction(async (client) => {
+      const result = await client.query(
+        `SELECT * FROM bills WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [organizationId, billId]
+      );
+      if (result.rows.length !== 1) throw new Error('Bill was not found in this organization');
+      const bill = result.rows[0];
+      if (['VOID', 'VOIDED'].includes(String(bill.status).toUpperCase())) throw new Error('Bill is already voided');
+      if (
+        databaseMoneyToCents(bill.amount_paid, 'Bill paid amount') !== 0n ||
+        databaseMoneyToCents(bill.amount_debited, 'Bill debited amount') !== 0n ||
+        databaseMoneyToCents(bill.amount_written_off, 'Bill written-off amount') !== 0n
+      ) {
+        throw new Error('BILL_HAS_SETTLEMENTS: Reverse all payments, vendor credits, and write-offs before voiding this bill');
+      }
+      if (!bill.journal_entry_id) throw new Error('Bill has no certified posting journal to reverse');
+      const reversalJournalId = await this.reversePostedJournal(
+        client, organizationId, bill.journal_entry_id, userId, normalizedReason,
+        `bill ${bill.bill_number}`
+      );
+      await client.query(
+        `UPDATE bills SET status = 'VOIDED', balance_due = 0,
+            reversal_journal_id = $1, reversed_at = CURRENT_TIMESTAMP,
+            reversed_by = $2, reversal_reason = $3
+          WHERE organization_id = $4 AND id = $5`,
+        [reversalJournalId, userId, normalizedReason, organizationId, billId]
+      );
+      const vendorBalance = await client.query(
+        `UPDATE vendors SET payables_balance = payables_balance - $1
+          WHERE organization_id = $2 AND id = $3 AND payables_balance >= $1`,
+        [Number(databaseMoneyToCents(bill.total_amount, 'Voided bill total')) / 100, organizationId, bill.vendor_id]
+      );
+      if (vendorBalance.rowCount !== 1) throw new Error('Bill vendor balance does not reconcile to the document being voided');
+      if (bill.purchase_order_id) {
+        const purchaseOrder = await client.query(
+          `SELECT total_amount, billed_amount FROM purchase_orders
+            WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+          [organizationId, bill.purchase_order_id]
+        );
+        if (purchaseOrder.rows.length !== 1) throw new Error('Bill source purchase order was not found');
+        const newBilledCents = databaseMoneyToCents(purchaseOrder.rows[0].billed_amount, 'Purchase order billed amount')
+          - databaseMoneyToCents(bill.total_amount, 'Voided bill total');
+        if (newBilledCents < 0n) throw new Error('Bill total exceeds the purchase order billed amount');
+        const orderTotalCents = databaseMoneyToCents(purchaseOrder.rows[0].total_amount, 'Purchase order total');
+        const orderStatus = newBilledCents === 0n
+          ? 'APPROVED'
+          : newBilledCents >= orderTotalCents ? 'BILLED' : 'PARTIALLY_BILLED';
+        await client.query(
+          `UPDATE purchase_orders SET billed_amount = $1, status = $2
+            WHERE organization_id = $3 AND id = $4`,
+          [Number(newBilledCents) / 100, orderStatus, organizationId, bill.purchase_order_id]
+        );
+      }
+      await this.audit(client, organizationId, userId, 'BILL_VOIDED', 'Bill', billId,
+        { status: bill.status, balanceDue: bill.balance_due },
+        { status: 'VOIDED', balanceDue: 0, reversalJournalId, reason: normalizedReason });
+      return { success: true, billId, journalEntryId: reversalJournalId };
+    });
   }
 
   public static async reverseJournalEntry(
-    organizationId: string,
-    journalEntryId: string,
-    userId: string,
-    reason: string
-  ): Promise<{ success: boolean; originalId: string; reversingId: string }> {
-    const jeRes = await db.query(
-      `SELECT * FROM journal_entries WHERE id = $1 AND organization_id = $2`,
-      [journalEntryId, organizationId]
-    );
-
-    if (jeRes.rows.length === 0) {
-      throw new Error(`Journal entry [${journalEntryId}] not found in organization [${organizationId}]`);
-    }
-
-    const je = jeRes.rows[0];
-
-    const isLocked = await AccountingPeriodService.isPeriodLocked(
-      organizationId,
-      je.date
-    );
-    if (isLocked) {
-      throw new Error(`Cannot reverse journal entry in a locked accounting period.`);
-    }
-
-    if (je.status === 'REVERSED') {
-      throw new Error(`Journal entry [${journalEntryId}] is already reversed.`);
-    }
-
-    const linesRes = await db.query(
-      `SELECT * FROM journal_lines WHERE journal_entry_id = $1`,
-      [journalEntryId]
-    );
-
-    const reversingId = newId('je-rev');
-    const now = new Date().toISOString().split('T')[0];
-
-    await db.query(
-      `INSERT INTO journal_entries (id, organization_id, entry_number, date, reference, description, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [
-        reversingId,
-        organizationId,
-        `REV-${je.entry_number || je.entryNumber}`,
-        now,
-        je.entry_number || je.entryNumber,
-        `Reversing Journal Entry for ${je.entry_number || je.entryNumber}: ${reason}`,
-        'Posted',
-      ]
-    );
-
-    // Swap debits and credits for reversing journal lines
-    for (const line of linesRes.rows) {
-      const lineId = newId('jl-rev');
-      const debit = Number(line.credit || 0);
-      const credit = Number(line.debit || 0);
-
-      await db.query(
-        `INSERT INTO journal_lines (id, journal_entry_id, account_id, account_code, account_name, debit, credit, description)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [
-          lineId,
-          reversingId,
-          line.account_id || line.accountId,
-          line.account_code || line.accountCode,
-          line.account_name || line.accountName,
-          debit,
-          credit,
-          `Reversal of line ${line.id}: ${reason}`,
-        ]
-      );
-    }
-
-    // Mark original entry status = REVERSED
-    await db.query(
-      `UPDATE journal_entries SET status = 'REVERSED' WHERE id = $1 AND organization_id = $2`,
-      [journalEntryId, organizationId]
-    );
-
-    await AuditTrailService.logAction({
-      organizationId,
-      userId,
-      action: 'JOURNAL_ENTRY_REVERSED',
-      entityType: 'JOURNAL_ENTRY',
-      entityId: journalEntryId,
-      afterState: { originalStatus: 'REVERSED', reversingId, reason },
-    });
-
-    return { success: true, originalId: journalEntryId, reversingId };
+    _organizationId: string,
+    _journalEntryId: string,
+    _userId: string,
+    _reason: string
+  ): Promise<never> {
+    throw new Error('Legacy journal reversal is disabled. Use the certified manual-journal reversal endpoint.');
   }
 }

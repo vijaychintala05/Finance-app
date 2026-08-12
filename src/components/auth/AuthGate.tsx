@@ -31,7 +31,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
           <input required minLength={2} maxLength={100} placeholder="Country of registration" className="w-full rounded-lg border p-3" value={form.country} onChange={(e) => setForm({ ...form, country: e.target.value })} />
           <select required className="w-full rounded-lg border p-3" value={form.baseCurrency} onChange={(e) => setForm({ ...form, baseCurrency: e.target.value })}>
             <option value="" disabled>Select permanent base currency</option>
-            {['INR', 'USD', 'EUR', 'GBP', 'AED', 'CAD', 'AUD', 'SGD', 'JPY'].map((currency) => <option key={currency} value={currency}>{currency}</option>)}
+            {['INR', 'USD', 'EUR', 'GBP', 'AED', 'CAD', 'AUD', 'SGD'].map((currency) => <option key={currency} value={currency}>{currency}</option>)}
           </select>
           <p className="text-xs text-amber-700">Country and base currency affect financial interpretation. Verify both before creating the firm.</p>
         </>}

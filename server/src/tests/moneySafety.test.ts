@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { centsToSafeNumber, databaseMoney, databaseMoneyToCents } from '../utils/money';
+import { centsToSafeNumber, databaseMoney, databaseMoneyToCents, moneyInputToCents } from '../utils/money';
 
 describe('database money safety', () => {
   it('parses PostgreSQL decimal strings into exact cents', () => {
@@ -16,5 +16,11 @@ describe('database money safety', () => {
   it('fails closed before exact cents would be lost in a JavaScript number', () => {
     expect(centsToSafeNumber(BigInt(Number.MAX_SAFE_INTEGER), 'amount')).toBe(Number.MAX_SAFE_INTEGER / 100);
     expect(() => centsToSafeNumber(BigInt(Number.MAX_SAFE_INTEGER) + 1n, 'amount')).toThrow('exact monetary range');
+  });
+
+  it('converts API money inputs to exact cents before aggregation', () => {
+    expect(moneyInputToCents(999999999999.99, 'amount')).toBe(99999999999999n);
+    expect(moneyInputToCents('0.01', 'amount')).toBe(1n);
+    expect(() => moneyInputToCents(1.001, 'amount')).toThrow('fractions smaller than one cent');
   });
 });

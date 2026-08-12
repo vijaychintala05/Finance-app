@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { db } from '../database/db';
 import { MigrationRunner } from '../database/migrationRunner';
 import { SalesEngine } from '../sales/SalesEngine';
+import { FinancialDestructiveActionsService } from '../accounting/FinancialDestructiveActionsService';
 
 describe('Phase 4: Sales and Accounts Receivable Hardened Test Suite', () => {
   const ORG_ID = 'org-sales-test-123';
@@ -191,6 +192,16 @@ describe('Phase 4: Sales and Accounts Receivable Hardened Test Suite', () => {
     const soCheck2 = await db.query(`SELECT status, invoiced_amount FROM sales_orders WHERE id = $1`, [so.id]);
     expect(soCheck2.rows[0].status).toBe('INVOICED');
     expect(Number(soCheck2.rows[0].invoiced_amount)).toBe(100000);
+
+    await FinancialDestructiveActionsService.voidInvoice(
+      ORG_ID,
+      inv2.id,
+      'sales-correction-user',
+      'Cancel the second milestone invoice before collection'
+    );
+    const soAfterVoid = await db.query(`SELECT status, invoiced_amount FROM sales_orders WHERE id = $1`, [so.id]);
+    expect(soAfterVoid.rows[0].status).toBe('PARTIALLY_INVOICED');
+    expect(Number(soAfterVoid.rows[0].invoiced_amount)).toBe(40000);
   });
 
   // -------------------------------------------------------------

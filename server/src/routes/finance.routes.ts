@@ -106,10 +106,12 @@ router.post('/saved-reports/:id/favorite', requirePermission('reports.view'), Fi
 // Expenses
 router.get('/expenses', requirePermission('expenses.view'), FinanceController.getExpenses);
 router.post('/expenses', requirePermission('expenses.create'), FinanceController.createExpense);
+router.post('/expenses/:id/void', requirePermission('expenses.create'), FinanceController.voidExpense);
 
 // Bills
 router.get('/bills', requirePermission('purchases.view'), FinanceController.getBills);
 router.post('/bills', requirePermission('purchases.create'), FinanceController.createBill);
+router.post('/bills/:id/void', requirePermission('purchases.create'), FinanceController.voidBill);
 
 // Period Locks
 router.get('/period-locks', requirePermission('accounting.view'), FinanceController.getPeriodLocks);

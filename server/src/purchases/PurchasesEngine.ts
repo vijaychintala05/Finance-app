@@ -1236,7 +1236,9 @@ export class PurchasesEngine {
     if (!vendor) throw new Error('Vendor not found.');
 
     const billsRes = await db.query(
-      `SELECT * FROM bills WHERE organization_id = $1 AND vendor_id = $2 AND status != 'DRAFT' AND status != 'VOIDED'`,
+      `SELECT * FROM bills
+        WHERE organization_id = $1 AND vendor_id = $2
+          AND UPPER(status) NOT IN ('DRAFT', 'VOID', 'VOIDED')`,
       [orgId, vendorId]
     );
 
@@ -1246,7 +1248,9 @@ export class PurchasesEngine {
     );
 
     const dnRes = await db.query(
-      `SELECT * FROM vendor_credits WHERE organization_id = $1 AND vendor_id = $2 AND status != 'VOID'`,
+      `SELECT * FROM vendor_credits
+        WHERE organization_id = $1 AND vendor_id = $2
+          AND UPPER(status) NOT IN ('DRAFT', 'VOID', 'VOIDED')`,
       [orgId, vendorId]
     );
 
@@ -1316,7 +1320,9 @@ export class PurchasesEngine {
     const asOfDate = asOfDateStr ? new Date(asOfDateStr) : new Date();
 
     const res = await db.query(
-      `SELECT * FROM bills WHERE organization_id = $1 AND balance_due > 0 AND status != 'DRAFT' AND status != 'VOIDED'`,
+      `SELECT * FROM bills
+        WHERE organization_id = $1 AND balance_due > 0
+          AND UPPER(status) NOT IN ('DRAFT', 'VOID', 'VOIDED')`,
       [orgId]
     );
 

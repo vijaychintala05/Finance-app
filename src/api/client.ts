@@ -26,6 +26,41 @@ export class ApiClient {
     throw new Error('Secure randomness is unavailable; mutation was not sent');
   }
 
+  private async pendingMutationStorageKey(fingerprint: string): Promise<string | undefined> {
+    if (typeof window === 'undefined' || !globalThis.crypto?.subtle) return undefined;
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(fingerprint));
+    const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+    return `firmbooks_pending_mutation_${hash}`;
+  }
+
+  private readPersistedMutationKey(storageKey: string | undefined): string | undefined {
+    if (!storageKey) return undefined;
+    try {
+      return window.sessionStorage.getItem(storageKey) || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private persistMutationKey(storageKey: string | undefined, key: string): void {
+    if (!storageKey) return;
+    try {
+      window.sessionStorage.setItem(storageKey, key);
+    } catch {
+      // The in-memory key still protects retries in this page lifecycle.
+    }
+  }
+
+  private clearMutationKey(fingerprint: string, storageKey: string | undefined): void {
+    this.pendingMutationKeys.delete(fingerprint);
+    if (!storageKey) return;
+    try {
+      window.sessionStorage.removeItem(storageKey);
+    } catch {
+      // Storage may be unavailable in a restricted browser context.
+    }
+  }
+
   private getAuthHeaders(): Record<string, string> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -55,14 +90,18 @@ export class ApiClient {
       const method = (options.method || 'GET').toUpperCase();
       const mutationHeaders: Record<string, string> = {};
       let mutationFingerprint: string | undefined;
+      let mutationStorageKey: string | undefined;
       if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
         const organizationId = typeof window !== 'undefined'
           ? localStorage.getItem('active_organization_id') || 'no-organization'
           : 'server';
         mutationFingerprint = `${organizationId}:${method}:${endpoint}:${String(options.body || '')}`;
-        const existingKey = this.pendingMutationKeys.get(mutationFingerprint);
+        mutationStorageKey = await this.pendingMutationStorageKey(mutationFingerprint);
+        const existingKey = this.pendingMutationKeys.get(mutationFingerprint)
+          || this.readPersistedMutationKey(mutationStorageKey);
         const idempotencyKey = existingKey || this.createIdempotencyKey();
         this.pendingMutationKeys.set(mutationFingerprint, idempotencyKey);
+        this.persistMutationKey(mutationStorageKey, idempotencyKey);
         mutationHeaders['Idempotency-Key'] = idempotencyKey;
       }
       const response = await fetch(`${this.baseUrl}${endpoint}`, {
@@ -80,7 +119,7 @@ export class ApiClient {
         // Preserve the key for an uncertain server outcome or an in-flight
         // duplicate. A corrected payload gets a different fingerprint/key.
         if (mutationFingerprint && response.status < 500 && response.status !== 409) {
-          this.pendingMutationKeys.delete(mutationFingerprint);
+          this.clearMutationKey(mutationFingerprint, mutationStorageKey);
         }
         return {
           data: null,
@@ -90,7 +129,7 @@ export class ApiClient {
       }
 
       const data = await response.json();
-      if (mutationFingerprint) this.pendingMutationKeys.delete(mutationFingerprint);
+      if (mutationFingerprint) this.clearMutationKey(mutationFingerprint, mutationStorageKey);
       return {
         data,
         error: null,

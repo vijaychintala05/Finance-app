@@ -39,11 +39,10 @@ export const BillDetailsModal: React.FC<BillDetailsModalProps> = ({
   const balanceDue = bill.totalAmount - bill.amountPaid;
 
   const handleDelete = () => {
-    if (confirm(`Are you sure you want to delete bill #${bill.billNumber}?`)) {
+    if (confirm(`Void bill #${bill.billNumber} by posting an audited reversal?`)) {
       if (deleteBill) {
-        deleteBill(bill.id);
+        void deleteBill(bill.id).then(onClose).catch((error) => window.alert(error.message));
       }
-      onClose();
     }
   };
 
@@ -115,7 +114,7 @@ export const BillDetailsModal: React.FC<BillDetailsModalProps> = ({
                   className="w-full text-left px-4 py-2 text-xs font-semibold text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950 flex items-center space-x-2"
                 >
                   <Trash2 className="w-4 h-4" />
-                  <span>Delete Bill</span>
+                  <span>Void Bill</span>
                 </button>
               </div>
             )}

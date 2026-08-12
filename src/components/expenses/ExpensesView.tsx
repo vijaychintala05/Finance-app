@@ -61,7 +61,10 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
       (e.invoiceNumber && e.invoiceNumber.toLowerCase().includes(search.toLowerCase()))
   );
 
-  const totalExpenseSum = filteredExpenses.reduce((acc, e) => acc + (e.amount || 0), 0);
+  const totalExpenseSum = filteredExpenses.reduce(
+    (acc, e) => acc + (e.status === 'VOIDED' ? 0 : (e.amount || 0)),
+    0
+  );
 
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-7xl mx-auto">

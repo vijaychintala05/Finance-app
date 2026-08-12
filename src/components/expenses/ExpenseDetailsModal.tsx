@@ -10,6 +10,7 @@ import {
   Paperclip,
   Printer,
   Receipt,
+  Trash2,
   User,
   X,
 } from 'lucide-react';
@@ -28,7 +29,7 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
   onClose,
   expense,
 }) => {
-  const { settings } = useBooks();
+  const { settings, deleteExpense } = useBooks();
   const [showMoreMenu, setShowMoreMenu] = useState(false);
 
   if (!isOpen || !expense) return null;
@@ -71,6 +72,21 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
                   <span>Print Details</span>
                 </button>
 
+                {expense.status !== 'VOIDED' && (
+                  <button
+                    onClick={() => {
+                      setShowMoreMenu(false);
+                      if (confirm(`Void expense #${expense.referenceNumber} by posting an audited reversal?`)) {
+                        void deleteExpense(expense.id).then(onClose).catch((error) => window.alert(error.message));
+                      }
+                    }}
+                    className="w-full text-left px-4 py-2 text-xs font-semibold text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950 flex items-center space-x-2"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>Void Expense</span>
+                  </button>
+                )}
+
               </div>
             )}
           </div>
@@ -91,6 +107,7 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
               <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mt-1">
                 on {formatDate(expense.date)} • Ref #{expense.referenceNumber}
               </p>
+              {expense.status === 'VOIDED' && <p className="mt-2 text-xs font-bold uppercase text-slate-500">Voided by audited reversal</p>}
             </div>
 
             {/* Receipt Box */}

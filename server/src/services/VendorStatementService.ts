@@ -30,15 +30,24 @@ export class VendorStatementService {
 
     // 1. Opening balance before fromDate (Bills - Payments - Debit Notes)
     const billsOpen = await db.query(
-      `SELECT COALESCE(SUM(total_amount), 0) as total FROM bills WHERE organization_id = $1 AND vendor_id = $2 AND status != 'VOID' AND bill_date < $3`,
+      `SELECT COALESCE(SUM(total_amount), 0) as total
+         FROM bills
+        WHERE organization_id = $1 AND vendor_id = $2
+          AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT') AND bill_date < $3`,
       [orgId, vendorId, fromDate]
     );
     const payOpen = await db.query(
-      `SELECT COALESCE(SUM(amount), 0) as total FROM payments_made WHERE organization_id = $1 AND vendor_id = $2 AND payment_date < $3`,
+      `SELECT COALESCE(SUM(amount), 0) as total
+         FROM payments_made
+        WHERE organization_id = $1 AND vendor_id = $2
+          AND UPPER(status) <> 'REVERSED' AND payment_date < $3`,
       [orgId, vendorId, fromDate]
     );
     const vcOpen = await db.query(
-      `SELECT COALESCE(SUM(total_amount), 0) as total FROM vendor_credits WHERE organization_id = $1 AND vendor_id = $2 AND date < $3`,
+      `SELECT COALESCE(SUM(total_amount), 0) as total
+         FROM vendor_credits
+        WHERE organization_id = $1 AND vendor_id = $2
+          AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT') AND date < $3`,
       [orgId, vendorId, fromDate]
     );
 
@@ -49,17 +58,29 @@ export class VendorStatementService {
 
     // 2. Transactions in range [fromDate, toDate]
     const bills = await db.query(
-      `SELECT id, bill_number, bill_date as date, total_amount as amount, notes FROM bills WHERE organization_id = $1 AND vendor_id = $2 AND status != 'VOID' AND bill_date >= $3 AND bill_date <= $4`,
+      `SELECT id, bill_number, bill_date as date, total_amount as amount, notes
+         FROM bills
+        WHERE organization_id = $1 AND vendor_id = $2
+          AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT')
+          AND bill_date >= $3 AND bill_date <= $4`,
       [orgId, vendorId, fromDate, toDate]
     );
 
     const pays = await db.query(
-      `SELECT id, payment_number, payment_date as date, amount, reference FROM payments_made WHERE organization_id = $1 AND vendor_id = $2 AND payment_date >= $3 AND payment_date <= $4`,
+      `SELECT id, payment_number, payment_date as date, amount, reference
+         FROM payments_made
+        WHERE organization_id = $1 AND vendor_id = $2
+          AND UPPER(status) <> 'REVERSED'
+          AND payment_date >= $3 AND payment_date <= $4`,
       [orgId, vendorId, fromDate, toDate]
     );
 
     const vcs = await db.query(
-      `SELECT id, credit_number, date, total_amount as amount, reason FROM vendor_credits WHERE organization_id = $1 AND vendor_id = $2 AND date >= $3 AND date <= $4`,
+      `SELECT id, credit_number, date, total_amount as amount, reason
+         FROM vendor_credits
+        WHERE organization_id = $1 AND vendor_id = $2
+          AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT')
+          AND date >= $3 AND date <= $4`,
       [orgId, vendorId, fromDate, toDate]
     );
 

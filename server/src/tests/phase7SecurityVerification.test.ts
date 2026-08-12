@@ -261,7 +261,7 @@ describe('Phase 7 — Security, Roles, Audit Trail, Backup & Production Hardenin
   });
 
   describe('8. Safe Destructive Financial Actions (Void & Reversals)', () => {
-    it('safely voids an invoice, updates balance due to 0, and posts reversing journal entry', async () => {
+    it('rejects invoice void when the source document has no certified posting journal', async () => {
       const invId = `inv-test-void-${Date.now()}`;
       await db.query(
         `INSERT INTO invoices (id, organization_id, invoice_number, customer_id, client_name, issue_date, due_date, status, total_amount, balance_due)
@@ -269,22 +269,15 @@ describe('Phase 7 — Security, Roles, Audit Trail, Backup & Production Hardenin
         [invId, ORG_A, 'INV-VOID-01', 'cust-01', 'Test Client Inc', '2026-03-01', '2026-03-15', 'Unpaid', 1200.00, 1200.00]
       );
 
-      const voidResult = await FinancialDestructiveActionsService.voidInvoice(
+      await expect(FinancialDestructiveActionsService.voidInvoice(
         ORG_A,
         invId,
         USER_OWNER,
         'Customer cancelled project before delivery'
-      );
-
-      expect(voidResult.success).toBe(true);
-      expect(voidResult.journalEntryId).toBeDefined();
-
-      const invCheck = await db.query('SELECT status, balance_due FROM invoices WHERE id = $1', [invId]);
-      expect(invCheck.rows[0].status).toBe('VOID');
-      expect(Number(invCheck.rows[0].balance_due)).toBe(0);
+      )).rejects.toThrow(/certified posting journal/);
     });
 
-    it('safely reverses a journal entry by swapping debits and credits', async () => {
+    it('keeps the uncertified legacy journal reversal disabled', async () => {
       const jeId = `je-test-rev-${Date.now()}`;
       await db.query(
         `INSERT INTO journal_entries (id, organization_id, entry_number, date, reference, description, status)
@@ -304,25 +297,12 @@ describe('Phase 7 — Security, Roles, Audit Trail, Backup & Production Hardenin
         [`jl-2-${jeId}`, jeId, 'acc-rev', '4010', 'Sales Revenue', 0.00, 500.00]
       );
 
-      const revResult = await FinancialDestructiveActionsService.reverseJournalEntry(
+      await expect(FinancialDestructiveActionsService.reverseJournalEntry(
         ORG_A,
         jeId,
         USER_OWNER,
         'Correction of improper classification'
-      );
-
-      expect(revResult.success).toBe(true);
-      expect(revResult.reversingId).toBeDefined();
-
-      const jeCheck = await db.query('SELECT status FROM journal_entries WHERE id = $1', [jeId]);
-      expect(jeCheck.rows[0].status).toBe('REVERSED');
-
-      const revLines = await db.query('SELECT * FROM journal_lines WHERE journal_entry_id = $1', [revResult.reversingId]);
-      expect(revLines.rows.length).toBe(2);
-      // Verify swapped debits and credits
-      const cashRevLine = revLines.rows.find((l) => l.account_code === '1010');
-      expect(Number(cashRevLine.credit)).toBe(500.00);
-      expect(Number(cashRevLine.debit)).toBe(0.00);
+      )).rejects.toThrow(/Legacy journal reversal is disabled/);
     });
   });
 

@@ -179,7 +179,7 @@ export const PaymentsReceivedView: React.FC<PaymentsReceivedViewProps> = ({
                 <tr><td colSpan={7} className="p-10 text-center text-sm text-slate-500">No authoritative payment records found.</td></tr>
               ) : filtered.map((payment) => (
                 <tr key={payment.id} onClick={() => setViewingPayment(payment)} className="cursor-pointer transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                  <td className="p-3 pl-4 font-mono font-bold text-teal-600">{payment.paymentNumber}</td>
+                  <td className="p-3 pl-4 font-mono font-bold text-teal-600">{payment.paymentNumber}{payment.status === 'REVERSED' ? ' · Reversed' : ''}</td>
                   <td className="p-3 font-bold text-slate-800 dark:text-slate-200">{payment.clientName}</td>
                   <td className="p-3 font-mono font-bold text-blue-600">{payment.invoiceNumber || 'Unallocated'}</td>
                   <td className="p-3 text-slate-500">{formatDate(payment.paymentDate)}</td>

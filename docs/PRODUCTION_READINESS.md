@@ -9,7 +9,7 @@
 - Exact RBAC permissions and tenant membership checks
 - Origin validation, API security headers, body limits, and production web CSP/HSTS
 - Required production configuration and prohibited production memory fallback
-- Mutation idempotency records with response replay
+- Mutation idempotency records, financial writes, and response outcomes in one ACID transaction, with reload-safe browser retry keys and response replay
 - Transactional invoice, received-payment, expense, bill, and manual-journal posting
 - Tenant-owned, active, and unlocked account validation with period-lock enforcement
 - Database uniqueness, amount checks, journal-line checks, foreign keys, and an append-only audit trigger
@@ -17,6 +17,10 @@
 - Exact integer-cent conversion at the PostgreSQL/API boundary with rejection of sub-cent and unsafe-range values
 - Posted-ledger dashboard totals and a bounded catalog of server-generated reports
 - Independent invoice-output and bill-input tax control reconciliation
+- Exact reconciliation of every cached account balance to the posted general ledger
+- Linked, audited, duplicate-safe reversals for invoices, payments received, expenses, bills, and manual journals
+- Versioned schema baseline (`2026.08.12-v1`) enforced by readiness checks
+- V1 currency allowlist restricted to two-decimal AED, AUD, CAD, EUR, GBP, INR, SGD, and USD ledgers
 - Fail-closed gates for workflows that have not completed financial certification
 - Two-key optional-feature promotion: source-controlled certification plus deployment configuration
 - Liveness/readiness endpoints and transactional schema migration under an advisory lock
@@ -51,11 +55,11 @@ Keep a workflow gated until all items pass:
 - subledger-to-GL reconciliation and report tests
 - monitoring signals and operator runbook
 
-Currently gated workflows include bank account mutation/import/reconciliation, credit notes/refunds/write-offs, customer-advance applications, delivery challans, fixed assets, recurring generation, period close/reopen, destructive reversals/voids, backup/restore/export, cash-flow classification and forecasting, customer/vendor statements, budget reporting, and the legacy accountant overview. The source-controlled optional-feature allowlist is empty in this build, so environment flags cannot enable them.
+Currently gated workflows include bank account mutation/import/reconciliation, credit notes/refunds/write-offs, customer-advance applications, delivery challans, fixed assets, recurring generation, period close/reopen, backup/restore/export, cash-flow classification and forecasting, customer/vendor statements, budget reporting, and the legacy accountant overview. The unsafe legacy free-form journal reversal remains disabled; the certified manual-journal reversal is enabled. The source-controlled optional-feature allowlist is empty, so environment flags cannot enable prototype workflows.
 
 ## Certified application scope
 
-The current trusted write scope is tenant registration/provisioning, chart-of-account creation outside reserved controls, invoices, payments received, expenses, bills, manual journals, and period locks. Each enabled financial write uses the server posting boundary and authoritative reload behavior.
+The current trusted write scope is tenant registration/provisioning, chart-of-account creation outside reserved controls, invoices, payments received, expenses, bills, manual journals, their certified source-document reversals, and period locks. Each enabled financial write uses the server posting boundary and authoritative reload behavior.
 
 The current trusted reporting scope is the posted-ledger dashboard, profit and loss, balance sheet, trial balance, general ledger, current AR aging/reconciliation, and current AP aging/reconciliation. Historical AR/AP reconstruction, cash-flow classification, tax filing reports, forecasts, comparative analytics, and accountant summaries are not certified and must not be marketed as available.
 
@@ -63,10 +67,13 @@ The current trusted reporting scope is the posted-ledger dashboard, profit and l
 
 Passing repository lint, unit/integration, browser E2E, build, and dependency audit is necessary but is not production launch approval. Before accepting live financial data, evidence every mandatory deployment control above in a real PostgreSQL staging environment. The launch decision must include recovery-drill results, concurrency/failover evidence, an independent security assessment, and accountant sign-off for every supported country, currency, and tax regime.
 
-Local verification completed on 2026-08-11:
+## V1 local release evidence (2026-08-12)
 
-- TypeScript static check: passed
-- Vitest: 40 files and 431 tests passed
-- Playwright: 4 desktop/mobile journeys passed
+- TypeScript/type-check gate: passed, 0 errors
+- Combined unit and integration suite: 40/40 test files and 441/441 tests passed, 0 failed, 0 skipped
+- Playwright desktop/mobile E2E suite: 4/4 passed, 0 failed, 0 skipped
 - Production client/server build: passed
-- Runtime dependency audit: 0 known vulnerabilities
+- Complete and production-only npm audits at `high` severity: 0 vulnerabilities
+- `git diff --check`: no whitespace errors (Windows line-ending conversion notices only)
+
+This machine has no `DATABASE_URL`, PostgreSQL CLI, or Docker runtime. Therefore, this evidence uses pg-mem for database tests and does not include the mandatory real-PostgreSQL migration, isolation/concurrency, failover, backup/restore, or recovery rehearsal. The launch gate still requires the real-PostgreSQL staging evidence listed above; pg-mem results cannot replace it.

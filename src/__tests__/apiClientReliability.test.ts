@@ -6,6 +6,28 @@ describe('API mutation reliability', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     localStorage.clear();
+    sessionStorage.clear();
+  });
+
+  it('reuses an uncertain mutation key after a browser application reload', async () => {
+    localStorage.setItem('active_organization_id', 'org-reload');
+    const keys: string[] = [];
+    let attempt = 0;
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      keys.push(new Headers(init?.headers).get('Idempotency-Key') || '');
+      attempt += 1;
+      if (attempt === 1) throw new Error('browser closed before response');
+      return new Response(JSON.stringify({ id: 'payment-1' }), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }));
+
+    await new ApiClient('/api/v1').post('/finance/payments-received', { amount: 25 });
+    await new ApiClient('/api/v1').post('/finance/payments-received', { amount: 25 });
+
+    expect(keys[1]).toBe(keys[0]);
+    expect(sessionStorage.length).toBe(0);
   });
 
   it('reuses the idempotency key after an uncertain network outcome', async () => {

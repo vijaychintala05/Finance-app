@@ -1,5 +1,7 @@
 import { db, DbQueryResult } from '../database/db';
 import { newId } from '../utils/ids';
+import { centsToSafeNumber, moneyInputToCents } from '../utils/money';
+import { isIsoCalendarDate } from '../utils/date';
 
 export interface JournalLineItem {
   accountId: string;
@@ -23,46 +25,43 @@ export interface QueryClient {
   query: (text: string, params?: any[]) => Promise<DbQueryResult>;
 }
 
-function asMoney(value: unknown, field: string): number {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    throw new Error(`${field} must be a finite, non-negative amount`);
-  }
-  const rounded = Math.round(parsed * 100) / 100;
-  if (!Number.isSafeInteger(Math.round(parsed * 100))) {
-    throw new Error(`${field} exceeds the supported monetary range`);
-  }
-  if (Math.abs(parsed - rounded) > 1e-9) {
-    throw new Error(`${field} cannot contain fractions smaller than one cent`);
-  }
-  return rounded;
+function asMoney(value: unknown, field: string): { amount: number; cents: bigint } {
+  const cents = moneyInputToCents(value, field);
+  if (cents < 0n) throw new Error(`${field} must be a non-negative amount`);
+  return { amount: centsToSafeNumber(cents, field), cents };
+}
+
+function formatCents(value: bigint): string {
+  const sign = value < 0n ? '-' : '';
+  const absolute = value < 0n ? -value : value;
+  return `${sign}${absolute / 100n}.${String(absolute % 100n).padStart(2, '0')}`;
 }
 
 export class ServerPostingEngine {
   public static async postEntry(payload: PostJournalPayload, transactionClient?: QueryClient): Promise<{ entryId: string }> {
     const execute = async (client: QueryClient): Promise<{ entryId: string }> => {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(payload.date)) {
+      if (!isIsoCalendarDate(payload.date)) {
         throw new Error('Journal date must use YYYY-MM-DD format');
       }
       if (!payload.entryNumber?.trim() || !payload.organizationId || !Array.isArray(payload.lines) || payload.lines.length < 2) {
         throw new Error('A journal requires an organization, entry number, and at least two lines');
       }
 
-      let debitCents = 0;
-      let creditCents = 0;
+      let debitCents = 0n;
+      let creditCents = 0n;
       const normalizedLines = payload.lines.map((line, index) => {
-        const debit = asMoney(line.debit, `lines[${index}].debit`);
-        const credit = asMoney(line.credit, `lines[${index}].credit`);
-        if (!line.accountId || (debit === 0) === (credit === 0)) {
+        const debitMoney = asMoney(line.debit, `lines[${index}].debit`);
+        const creditMoney = asMoney(line.credit, `lines[${index}].credit`);
+        if (!line.accountId || (debitMoney.cents === 0n) === (creditMoney.cents === 0n)) {
           throw new Error(`Journal line ${index + 1} must have an account and exactly one positive debit or credit`);
         }
-        debitCents += Math.round(debit * 100);
-        creditCents += Math.round(credit * 100);
-        return { ...line, debit, credit };
+        debitCents += debitMoney.cents;
+        creditCents += creditMoney.cents;
+        return { ...line, debit: debitMoney.amount, credit: creditMoney.amount };
       });
 
-      if (debitCents !== creditCents || debitCents === 0) {
-        throw new Error(`Journal is unbalanced: debit=${(debitCents / 100).toFixed(2)}, credit=${(creditCents / 100).toFixed(2)}`);
+      if (debitCents !== creditCents || debitCents === 0n) {
+        throw new Error(`Journal is unbalanced: debit=${formatCents(debitCents)}, credit=${formatCents(creditCents)}`);
       }
 
       const periodLock = await client.query(

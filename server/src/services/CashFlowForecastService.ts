@@ -57,7 +57,7 @@ export class CashFlowForecastService {
         `SELECT COALESCE(SUM(balance_due), 0) as total
          FROM invoices
          WHERE organization_id = $1
-           AND status NOT IN ('VOID', 'PAID')
+           AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'PAID')
            AND due_date >= $2 AND due_date <= $3`,
         [orgId, pStartStr, pEndStr]
       );
@@ -68,7 +68,7 @@ export class CashFlowForecastService {
         `SELECT COALESCE(SUM(balance_due), 0) as total
          FROM bills
          WHERE organization_id = $1
-           AND status NOT IN ('VOID', 'Paid', 'PAID')
+           AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'PAID')
            AND due_date >= $2 AND due_date <= $3`,
         [orgId, pStartStr, pEndStr]
       );

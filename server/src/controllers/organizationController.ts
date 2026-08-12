@@ -5,6 +5,7 @@ import crypto from 'crypto';
 import { newId } from '../utils/ids';
 import { OrganizationProvisioningService } from '../services/OrganizationProvisioningService';
 import { RbacService, UserRole } from '../auth/RbacService';
+import { normalizeSupportedBaseCurrency } from '../utils/currency';
 
 export class OrganizationController {
   public static async create(req: AuthenticatedRequest, res: Response): Promise<void> {
@@ -16,13 +17,13 @@ export class OrganizationController {
       }
 
       const normalizedName = typeof name === 'string' ? name.trim() : '';
-      const normalizedCurrency = typeof baseCurrency === 'string' ? baseCurrency.trim().toUpperCase() : '';
+      const normalizedCurrency = normalizeSupportedBaseCurrency(baseCurrency);
       const normalizedCountry = typeof country === 'string' ? country.trim() : '';
       const normalizedCurrencySymbol = typeof currencySymbol === 'string' && currencySymbol.trim()
         ? currencySymbol.trim()
-        : normalizedCurrency;
-      if (normalizedName.length < 2 || normalizedName.length > 120 || normalizedCountry.length < 2 || normalizedCountry.length > 120 || !/^[A-Z]{3}$/.test(normalizedCurrency)) {
-        res.status(400).json({ error: 'Organization name, country, and a three-letter base currency are required' });
+        : normalizedCurrency || '';
+      if (normalizedName.length < 2 || normalizedName.length > 120 || normalizedCountry.length < 2 || normalizedCountry.length > 120 || !normalizedCurrency) {
+        res.status(400).json({ error: 'Organization name, country, and a supported two-decimal base currency are required' });
         return;
       }
       if ((typeof industry === 'string' && industry.length > 120) || (typeof country === 'string' && country.length > 120) || (typeof currencySymbol === 'string' && currencySymbol.length > 8)) {

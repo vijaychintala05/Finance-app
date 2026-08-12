@@ -120,7 +120,7 @@ interface BooksContextType {
   invoices: Invoice[];
   addInvoice: (invoice: Omit<Invoice, 'id' | 'createdAt' | 'invoiceNumber'>) => Promise<Invoice>;
   updateInvoice: (id: string, invoice: Partial<Invoice>) => void;
-  deleteInvoice: (id: string) => void;
+  deleteInvoice: (id: string) => Promise<void>;
 
   estimates: Estimate[];
   addEstimate: (estimate: Omit<Estimate, 'id' | 'createdAt' | 'estimateNumber'>) => void;
@@ -128,7 +128,7 @@ interface BooksContextType {
 
   expenses: Expense[];
   addExpense: (expense: Omit<Expense, 'id' | 'createdAt' | 'referenceNumber'>) => Promise<void>;
-  deleteExpense: (id: string) => void;
+  deleteExpense: (id: string) => Promise<void>;
 
   journalEntries: JournalEntry[];
   addJournalEntry: (entry: Omit<JournalEntry, 'id' | 'createdAt' | 'entryNumber'>) => Promise<boolean>;
@@ -156,7 +156,7 @@ interface BooksContextType {
 
   paymentsReceived: PaymentReceipt[];
   addPaymentReceived: (payment: Omit<PaymentReceipt, 'id'> & { invoiceId?: string; clientId?: string; depositToAccountId?: string }) => Promise<PaymentReceipt>;
-  deletePaymentReceived: (id: string) => void;
+  deletePaymentReceived: (id: string) => Promise<void>;
 
   recurringInvoices: RecurringInvoiceProfile[];
   addRecurringInvoice: (profile: Omit<RecurringInvoiceProfile, 'id'>) => RecurringInvoiceProfile | null;
@@ -171,7 +171,7 @@ interface BooksContextType {
   bills: Bill[];
   addBill: (bill: Omit<Bill, 'id'> & { vendorId?: string; expenseAccountId?: string; payableAccountId?: string }) => Promise<Bill>;
   updateBill: (id: string, updated: Partial<Bill>) => void;
-  deleteBill: (id: string) => void;
+  deleteBill: (id: string) => Promise<void>;
 
   recurringBills: RecurringBill[];
   addRecurringBill: (bill: Omit<RecurringBill, 'id'>) => RecurringBill | null;
@@ -239,7 +239,6 @@ const getCurrencySymbol = (code: string): string => {
     case 'GBP': return '£';
     case 'CAD': return 'C$';
     case 'AUD': return 'A$';
-    case 'JPY': return '¥';
     case 'AED': return 'AED ';
     case 'SGD': return 'S$';
     case 'USD': return '$';
@@ -884,8 +883,12 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     window.alert('Posted invoices are immutable. Use an audited adjustment, void, or credit-note workflow.');
   };
 
-  const deleteInvoice = (id: string) => {
-    window.alert('Posted invoices cannot be deleted. Use the audited void or credit-note workflow.');
+  const deleteInvoice = async (id: string): Promise<void> => {
+    const reason = window.prompt('Reason for voiding this invoice (required for the audit trail):')?.trim();
+    if (!reason) return;
+    const response = await apiClient.post('/security/void-invoice', { invoiceId: id, reason });
+    if (!response.data) throw new Error(response.error || 'Invoice could not be voided');
+    await refreshAfterCommittedWrite();
   };
 
   const addEstimate = (estimateData: Omit<Estimate, 'id' | 'createdAt' | 'estimateNumber'>) => {
@@ -925,8 +928,12 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     await refreshAfterCommittedWrite();
   };
 
-  const deleteExpense = (id: string) => {
-    window.alert('Posted expenses cannot be deleted. Record an audited reversing entry.');
+  const deleteExpense = async (id: string): Promise<void> => {
+    const reason = window.prompt('Reason for voiding this expense (required for the audit trail):')?.trim();
+    if (!reason) return;
+    const response = await apiClient.post(`/finance/expenses/${id}/void`, { reason });
+    if (!response.data) throw new Error(response.error || 'Expense could not be voided');
+    await refreshAfterCommittedWrite();
   };
 
   const addJournalEntry = (
@@ -1086,8 +1093,12 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     await refreshAfterCommittedWrite();
     return newPayment;
   };
-  const deletePaymentReceived = (id: string) => {
-    window.alert('Posted payments cannot be deleted. Use the audited payment-reversal workflow.');
+  const deletePaymentReceived = async (id: string): Promise<void> => {
+    const reason = window.prompt('Reason for reversing this payment (required for the audit trail):')?.trim();
+    if (!reason) return;
+    const response = await apiClient.post('/security/reverse-payment', { paymentId: id, reason });
+    if (!response.data) throw new Error(response.error || 'Payment could not be reversed');
+    await refreshAfterCommittedWrite();
   };
 
   const addRecurringInvoice = (profileData: Omit<RecurringInvoiceProfile, 'id'>): RecurringInvoiceProfile | null => {
@@ -1127,8 +1138,12 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const updateBill = (id: string, updated: Partial<Bill>) => {
     window.alert('Posted bills require an audited adjustment or reversal workflow.');
   };
-  const deleteBill = (id: string) => {
-    window.alert('Posted bills cannot be deleted. Use an audited vendor-credit or reversal workflow.');
+  const deleteBill = async (id: string): Promise<void> => {
+    const reason = window.prompt('Reason for voiding this bill (required for the audit trail):')?.trim();
+    if (!reason) return;
+    const response = await apiClient.post(`/finance/bills/${id}/void`, { reason });
+    if (!response.data) throw new Error(response.error || 'Bill could not be voided');
+    await refreshAfterCommittedWrite();
   };
 
   const addRecurringBill = (billData: Omit<RecurringBill, 'id'>): RecurringBill | null => {

@@ -2,9 +2,23 @@ import { db } from './db';
 import { OrganizationProvisioningService } from '../services/OrganizationProvisioningService';
 import type { DbQueryResult } from './db';
 
+export const CURRENT_SCHEMA_VERSION = '2026.08.12-v1';
+
 export class MigrationRunner {
   public static async runMigrations(queryClient?: { query: (text: string, params?: any[]) => Promise<DbQueryResult> }): Promise<void> {
+    if (!queryClient) {
+      await db.transaction((client) => this.runMigrations(client));
+      return;
+    }
     console.log('[Migration] Starting PostgreSQL schema migrations...');
+
+    await queryClient.query(
+      `CREATE TABLE IF NOT EXISTS schema_migrations (
+        version VARCHAR(64) PRIMARY KEY,
+        description VARCHAR(255) NOT NULL,
+        applied_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`
+    );
 
     const tables = [
       `CREATE TABLE IF NOT EXISTS users (
@@ -1045,6 +1059,36 @@ export class MigrationRunner {
       )`,
 
       `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS customer_id VARCHAR(64)`,
+      `ALTER TABLE journal_entries ADD COLUMN IF NOT EXISTS reversal_of_journal_id VARCHAR(64)`,
+      `ALTER TABLE journal_entries ADD COLUMN IF NOT EXISTS reversed_by_journal_id VARCHAR(64)`,
+      `ALTER TABLE journal_entries ADD COLUMN IF NOT EXISTS reversed_at TIMESTAMP WITH TIME ZONE`,
+      `ALTER TABLE journal_entries ADD COLUMN IF NOT EXISTS reversed_by VARCHAR(64)`,
+      `ALTER TABLE journal_entries ADD COLUMN IF NOT EXISTS reversal_reason TEXT`,
+      `ALTER TABLE invoices ADD COLUMN IF NOT EXISTS reversal_journal_id VARCHAR(64)`,
+      `ALTER TABLE invoices ADD COLUMN IF NOT EXISTS reversed_at TIMESTAMP WITH TIME ZONE`,
+      `ALTER TABLE invoices ADD COLUMN IF NOT EXISTS reversed_by VARCHAR(64)`,
+      `ALTER TABLE invoices ADD COLUMN IF NOT EXISTS reversal_reason TEXT`,
+      `ALTER TABLE payments_received ADD COLUMN IF NOT EXISTS reversal_journal_id VARCHAR(64)`,
+      `ALTER TABLE payments_received ADD COLUMN IF NOT EXISTS reversed_at TIMESTAMP WITH TIME ZONE`,
+      `ALTER TABLE payments_received ADD COLUMN IF NOT EXISTS reversed_by VARCHAR(64)`,
+      `ALTER TABLE payments_received ADD COLUMN IF NOT EXISTS reversal_reason TEXT`,
+      `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS status VARCHAR(30) NOT NULL DEFAULT 'POSTED'`,
+      `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS reversal_journal_id VARCHAR(64)`,
+      `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS reversed_at TIMESTAMP WITH TIME ZONE`,
+      `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS reversed_by VARCHAR(64)`,
+      `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS reversal_reason TEXT`,
+      `ALTER TABLE bills ADD COLUMN IF NOT EXISTS reversal_journal_id VARCHAR(64)`,
+      `ALTER TABLE bills ADD COLUMN IF NOT EXISTS reversed_at TIMESTAMP WITH TIME ZONE`,
+      `ALTER TABLE bills ADD COLUMN IF NOT EXISTS reversed_by VARCHAR(64)`,
+      `ALTER TABLE bills ADD COLUMN IF NOT EXISTS reversal_reason TEXT`,
+      `DO $$ BEGIN
+        UPDATE vendors AS v
+           SET payables_balance = COALESCE((
+             SELECT SUM(b.balance_due) FROM bills b
+              WHERE b.organization_id = v.organization_id AND b.vendor_id = v.id
+                AND UPPER(b.status) NOT IN ('VOID', 'VOIDED', 'DRAFT')
+           ), 0);
+      END $$`,
       `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS revision_number INT DEFAULT 0`,
       `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS terms TEXT`,
       `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS notes TEXT`,
@@ -1084,8 +1128,44 @@ export class MigrationRunner {
       `CREATE INDEX IF NOT EXISTS idx_fixed_assets_org_status ON fixed_assets (organization_id, status)`,
       `CREATE UNIQUE INDEX IF NOT EXISTS uk_projects_org_code ON projects (organization_id, LOWER(code))`,
       `DO $$ BEGIN
-        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_organizations_currency_code') THEN
-          ALTER TABLE organizations ADD CONSTRAINT ck_organizations_currency_code CHECK (base_currency ~ '^[A-Z]{3}$');
+        UPDATE journal_entries AS original
+           SET status = 'Posted',
+               reversed_by_journal_id = reversal.id,
+               reversed_at = COALESCE(reversal.created_at, CURRENT_TIMESTAMP),
+               reversal_reason = COALESCE(original.reversal_reason, reversal.description)
+          FROM journal_entries AS reversal
+         WHERE UPPER(original.status) = 'REVERSED'
+           AND original.entry_number LIKE 'JV/%'
+           AND reversal.organization_id = original.organization_id
+           AND reversal.entry_number = 'RV-' || original.entry_number;
+
+        UPDATE journal_entries AS reversal
+           SET reversal_of_journal_id = original.id
+          FROM journal_entries AS original
+         WHERE reversal.reversal_of_journal_id IS NULL
+           AND original.reversed_by_journal_id = reversal.id;
+      END $$`,
+      `DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_journal_reversal_original') THEN
+          ALTER TABLE journal_entries ADD CONSTRAINT fk_journal_reversal_original
+          FOREIGN KEY (reversal_of_journal_id) REFERENCES journal_entries(id) ON DELETE RESTRICT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_journal_reversed_by') THEN
+          ALTER TABLE journal_entries ADD CONSTRAINT fk_journal_reversed_by
+          FOREIGN KEY (reversed_by_journal_id) REFERENCES journal_entries(id) ON DELETE RESTRICT;
+        END IF;
+      END $$`,
+      `DO $$ BEGIN
+        IF EXISTS (
+          SELECT 1 FROM organizations
+           WHERE base_currency NOT IN ('AED', 'AUD', 'CAD', 'EUR', 'GBP', 'INR', 'SGD', 'USD')
+        ) THEN
+          RAISE EXCEPTION 'Unsupported organization base currency exists. V1 supports AED, AUD, CAD, EUR, GBP, INR, SGD, and USD because its ledger has two-decimal precision.';
+        END IF;
+        ALTER TABLE organizations DROP CONSTRAINT IF EXISTS ck_organizations_currency_code;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_organizations_supported_currency_v1') THEN
+          ALTER TABLE organizations ADD CONSTRAINT ck_organizations_supported_currency_v1
+          CHECK (base_currency IN ('AED', 'AUD', 'CAD', 'EUR', 'GBP', 'INR', 'SGD', 'USD'));
         END IF;
       END $$`,
       `DO $$ BEGIN
@@ -1160,6 +1240,20 @@ export class MigrationRunner {
           ALTER TABLE payments_received ADD CONSTRAINT fk_payments_received_journal_entry FOREIGN KEY (journal_entry_id) REFERENCES journal_entries(id) ON DELETE RESTRICT;
         END IF;
       END $$`,
+      `DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_invoice_reversal_journal') THEN
+          ALTER TABLE invoices ADD CONSTRAINT fk_invoice_reversal_journal FOREIGN KEY (reversal_journal_id) REFERENCES journal_entries(id) ON DELETE RESTRICT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_payment_received_reversal_journal') THEN
+          ALTER TABLE payments_received ADD CONSTRAINT fk_payment_received_reversal_journal FOREIGN KEY (reversal_journal_id) REFERENCES journal_entries(id) ON DELETE RESTRICT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_expense_reversal_journal') THEN
+          ALTER TABLE expenses ADD CONSTRAINT fk_expense_reversal_journal FOREIGN KEY (reversal_journal_id) REFERENCES journal_entries(id) ON DELETE RESTRICT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_bill_reversal_journal') THEN
+          ALTER TABLE bills ADD CONSTRAINT fk_bill_reversal_journal FOREIGN KEY (reversal_journal_id) REFERENCES journal_entries(id) ON DELETE RESTRICT;
+        END IF;
+      END $$`,
       `CREATE OR REPLACE FUNCTION prevent_audit_log_mutation() RETURNS trigger AS $$
         BEGIN
           RAISE EXCEPTION 'audit_logs is append-only';
@@ -1174,15 +1268,15 @@ export class MigrationRunner {
       try {
         // pg-mem does not implement PL/pgSQL DO blocks. Runtime services still
         // enforce these invariants in tests; PostgreSQL receives the constraints.
-        if (db.isMemoryAllowed() && (
+        if (db.isMemoryMode() && (
           sql.trimStart().startsWith('DO $$') ||
           sql.includes('prevent_audit_log_mutation') ||
           sql.includes('audit_logs_immutable') ||
           sql.includes('idx_quotation_templates_one_default_per_org')
         )) continue;
-        await (queryClient || db).query(sql);
+        await queryClient.query(sql);
       } catch (err) {
-        if (!db.isMemoryAllowed() || process.env.NODE_ENV === 'production') {
+        if (!db.isMemoryMode() || process.env.NODE_ENV === 'production') {
           console.error('[Migration Fatal Error]', err);
           throw new Error(`Migration failed on statement: ${sql.slice(0, 80)}... Details: ${err instanceof Error ? err.message : String(err)}`);
         } else {
@@ -1193,17 +1287,30 @@ export class MigrationRunner {
 
     // Backfill newly introduced system control accounts for existing tenants.
     // Provisioning is idempotent and never overwrites a tenant's existing code.
-    const organizations = await (queryClient || db).query('SELECT id FROM organizations');
+    const organizations = await queryClient.query('SELECT id FROM organizations');
     for (const organization of organizations.rows) {
-      if (queryClient) {
-        await OrganizationProvisioningService.provisionDefaultChart(queryClient, organization.id);
-      } else {
-        await db.transaction((client) =>
-          OrganizationProvisioningService.provisionDefaultChart(client, organization.id)
-        );
-      }
+      await OrganizationProvisioningService.provisionDefaultChart(queryClient, organization.id);
     }
 
+    await queryClient.query(
+      `INSERT INTO schema_migrations (version, description)
+       VALUES ($1, $2)
+       ON CONFLICT (version) DO NOTHING`,
+      [CURRENT_SCHEMA_VERSION, 'FirmBooks v1 financial trust and reliability baseline']
+    );
+
     console.log('[Migration] All PostgreSQL tables initialized successfully.');
+  }
+
+  public static async isCurrent(): Promise<boolean> {
+    try {
+      const result = await db.query(
+        'SELECT version FROM schema_migrations WHERE version = $1',
+        [CURRENT_SCHEMA_VERSION]
+      );
+      return result.rows.length === 1;
+    } catch {
+      return false;
+    }
   }
 }

@@ -301,12 +301,12 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (window.confirm(`Delete invoice ${inv.invoiceNumber}?`)) {
-                          deleteInvoice(inv.id);
+                        if (window.confirm(`Void invoice ${inv.invoiceNumber} by posting an audited reversal?`)) {
+                          void deleteInvoice(inv.id).catch((error) => window.alert(error.message));
                         }
                       }}
                       className="p-1.5 text-rose-500 hover:bg-rose-100 dark:hover:bg-slate-700 rounded-lg cursor-pointer"
-                      title="Delete Invoice"
+                      title="Void invoice with an audited reversal"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>

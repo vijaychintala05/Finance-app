@@ -2,6 +2,8 @@ import { db } from '../database/db';
 import { ServerPostingEngine } from '../accounting/postingEngine';
 import { newId } from '../utils/ids';
 import { DocumentNumberingEngine } from './DocumentNumberingEngine';
+import { centsToSafeNumber, moneyInputToCents } from '../utils/money';
+import { isIsoCalendarDate } from '../utils/date';
 
 export interface ManualJournalLineInput {
   accountId: string;
@@ -43,29 +45,35 @@ export class ManualJournalService {
     userId: string,
     input: ManualJournalInput
   ): Promise<{ id: string; entryNumber: string; status: string }> {
-    if (!input || !/^\d{4}-\d{2}-\d{2}$/.test(String(input.date || ''))) throw new Error('JOURNAL_DATE_INVALID: Date must use YYYY-MM-DD format');
+    if (!input || !isIsoCalendarDate(input.date)) throw new Error('JOURNAL_DATE_INVALID: Date must be a real calendar date using YYYY-MM-DD format');
     if (!Array.isArray(input.lines) || input.lines.length < 2 || input.lines.length > 1000) throw new Error('JOURNAL_LINES_INVALID: Journal requires 2-1000 lines');
     if (input.reference && (typeof input.reference !== 'string' || input.reference.length > 255)) throw new Error('JOURNAL_REFERENCE_INVALID: Reference cannot exceed 255 characters');
     if (input.narration && (typeof input.narration !== 'string' || input.narration.length > 4000)) throw new Error('JOURNAL_NARRATION_INVALID: Narration cannot exceed 4000 characters');
     // 1. Validate Debit = Credit
-    let totalDebitCents = 0;
-    let totalCreditCents = 0;
+    let totalDebitCents = 0n;
+    let totalCreditCents = 0n;
 
     for (const [index, l] of input.lines.entries()) {
-      const debit = Number(l.debit || 0);
-      const credit = Number(l.credit || 0);
-      if (!l.accountId || !Number.isFinite(debit) || !Number.isFinite(credit) || debit < 0 || credit < 0 || (debit === 0) === (credit === 0) || !Number.isSafeInteger(Math.round(debit * 100)) || !Number.isSafeInteger(Math.round(credit * 100)) || Math.abs(debit * 100 - Math.round(debit * 100)) > 1e-7 || Math.abs(credit * 100 - Math.round(credit * 100)) > 1e-7) {
+      let debitCents: bigint;
+      let creditCents: bigint;
+      try {
+        debitCents = moneyInputToCents(l.debit || 0, `Line ${index + 1} debit`);
+        creditCents = moneyInputToCents(l.credit || 0, `Line ${index + 1} credit`);
+      } catch {
         throw new Error(`JOURNAL_LINE_INVALID: Line ${index + 1} must contain one safe positive two-decimal debit or credit`);
       }
-      totalDebitCents += Math.round(debit * 100);
-      totalCreditCents += Math.round(credit * 100);
+      if (!l.accountId || debitCents < 0n || creditCents < 0n || (debitCents === 0n) === (creditCents === 0n)) {
+        throw new Error(`JOURNAL_LINE_INVALID: Line ${index + 1} must contain one safe positive two-decimal debit or credit`);
+      }
+      totalDebitCents += debitCents;
+      totalCreditCents += creditCents;
     }
 
     if (totalDebitCents !== totalCreditCents) {
-      throw new Error(`JOURNAL_NOT_BALANCED: Total Debits (${(totalDebitCents / 100).toFixed(2)}) must equal Total Credits (${(totalCreditCents / 100).toFixed(2)})`);
+      throw new Error(`JOURNAL_NOT_BALANCED: Total Debits and Total Credits differ`);
     }
 
-    if (totalDebitCents <= 0) {
+    if (totalDebitCents <= 0n) {
       throw new Error('JOURNAL_ZERO_AMOUNT: Journal must have positive debit/credit amounts');
     }
 
@@ -116,7 +124,7 @@ export class ManualJournalService {
       await tx.query(
         `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state)
          VALUES ($1, $2, $3, 'MANUAL_JOURNAL_CREATED', 'JournalEntry', $4, $5)`,
-        [newId('aud'), orgId, userId, posting.entryId, JSON.stringify({ entryNumber, totalDebit: totalDebitCents / 100 })]
+        [newId('aud'), orgId, userId, posting.entryId, JSON.stringify({ entryNumber, totalDebit: centsToSafeNumber(totalDebitCents, 'Journal total debit') })]
       );
       return { id: posting.entryId, entryNumber, status };
     });
@@ -128,6 +136,10 @@ export class ManualJournalService {
     journalId: string,
     reversalReason: string
   ): Promise<{ reversalJournalId: string; reversalEntryNumber: string }> {
+    const normalizedReason = String(reversalReason || '').trim();
+    if (normalizedReason.length < 3 || normalizedReason.length > 1000) {
+      throw new Error('JOURNAL_REVERSAL_REASON_INVALID: Reversal reason must contain 3-1000 characters');
+    }
     const todayStr = new Date().toISOString().split('T')[0];
     let revEntryNumber = '';
     const reversalJournalId = await db.transaction(async (tx) => {
@@ -140,7 +152,7 @@ export class ManualJournalService {
       if (!String(originalJournal.entry_number || '').startsWith('JV/')) {
         throw new Error('JOURNAL_REVERSAL_SCOPE: Only manual journals can use this endpoint; source documents require their own audited reversal workflow');
       }
-      if (String(originalJournal.status).toUpperCase() === 'REVERSED') throw new Error('JOURNAL_ALREADY_REVERSED: This journal has already been reversed');
+      if (originalJournal.reversed_by_journal_id) throw new Error('JOURNAL_ALREADY_REVERSED: This journal has already been reversed');
       const linesRes = await tx.query(
         `SELECT jl.* FROM journal_lines jl
           JOIN journal_entries je ON je.id = jl.journal_entry_id
@@ -150,18 +162,12 @@ export class ManualJournalService {
       if (linesRes.rows.length < 2) throw new Error('JOURNAL_INVALID: Original journal has insufficient lines');
       revEntryNumber = `RV-${originalJournal.entry_number}`;
 
-      const updated = await tx.query(
-        `UPDATE journal_entries SET status = 'REVERSED'
-          WHERE id = $1 AND organization_id = $2 AND UPPER(status) <> 'REVERSED'`,
-        [journalId, orgId]
-      );
-      if (updated.rowCount !== 1) throw new Error('JOURNAL_ALREADY_REVERSED: This journal has already been reversed');
       const posting = await ServerPostingEngine.postEntry({
         organizationId: orgId,
         entryNumber: revEntryNumber,
         date: todayStr,
         reference: `REV-${originalJournal.entry_number}`,
-        description: `Reversal of ${originalJournal.entry_number}: ${reversalReason}`,
+        description: `Reversal of ${originalJournal.entry_number}: ${normalizedReason}`,
         lines: linesRes.rows.map((line) => ({
           accountId: line.account_id,
           debit: Number(line.credit || 0),
@@ -170,9 +176,23 @@ export class ManualJournalService {
         })),
       }, tx);
       await tx.query(
+        `UPDATE journal_entries
+            SET reversal_of_journal_id = $1, reversal_reason = $2
+          WHERE id = $3 AND organization_id = $4`,
+        [journalId, normalizedReason, posting.entryId, orgId]
+      );
+      const updated = await tx.query(
+        `UPDATE journal_entries
+            SET reversed_by_journal_id = $1, reversed_at = CURRENT_TIMESTAMP,
+                reversed_by = $2, reversal_reason = $3
+          WHERE id = $4 AND organization_id = $5 AND reversed_by_journal_id IS NULL`,
+        [posting.entryId, userId, normalizedReason, journalId, orgId]
+      );
+      if (updated.rowCount !== 1) throw new Error('JOURNAL_ALREADY_REVERSED: This journal has already been reversed');
+      await tx.query(
         `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state, after_state)
          VALUES ($1, $2, $3, 'MANUAL_JOURNAL_REVERSED', 'JournalEntry', $4, $5, $6)`,
-        [newId('aud'), orgId, userId, journalId, JSON.stringify({ status: originalJournal.status }), JSON.stringify({ status: 'REVERSED', reversalJournalId: posting.entryId, reversalReason })]
+        [newId('aud'), orgId, userId, journalId, JSON.stringify({ status: originalJournal.status }), JSON.stringify({ status: originalJournal.status, reversalJournalId: posting.entryId, reversalReason: normalizedReason })]
       );
       return posting.entryId;
     });

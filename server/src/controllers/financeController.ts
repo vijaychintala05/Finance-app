@@ -340,6 +340,200 @@ export class FinanceController {
     res.status(201).json(record);
   }
 
+  public static async getTimeEntries(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const result = await db.query(
+      `SELECT * FROM time_entries WHERE organization_id = $1 ORDER BY date DESC, created_at DESC`,
+      [orgId]
+    );
+    res.json(result.rows.map((row) => ({
+      id: row.id, organizationId: row.organization_id, projectId: row.project_id,
+      projectName: row.project_name, clientName: row.client_name || '', staffName: row.staff_name,
+      taskName: row.task_name, date: row.date, hours: Number(row.hours), hourlyRate: Number(row.hourly_rate),
+      isBillable: Boolean(row.is_billable), isBilled: Boolean(row.is_billed),
+      invoiceId: row.invoice_id || undefined, description: row.description || '',
+    })));
+  }
+
+  private static validateTimeEntryInput(input: any): string | null {
+    const hours = Number(input.hours);
+    const hourlyRate = Number(input.hourlyRate);
+    if (!input.projectId || !isIsoCalendarDate(input.date) || !String(input.staffName || '').trim() || !String(input.taskName || '').trim()) {
+      return 'Project, date, staff name, and task name are required';
+    }
+    if (!Number.isFinite(hours) || hours <= 0 || hours > 24 || Math.abs(hours * 100 - Math.round(hours * 100)) > 1e-7) {
+      return 'Hours must be greater than zero, no more than 24, and contain at most two decimals';
+    }
+    if (!Number.isFinite(hourlyRate) || hourlyRate < 0 || !Number.isSafeInteger(Math.round(hourlyRate * 100)) || Math.abs(hourlyRate * 100 - Math.round(hourlyRate * 100)) > 1e-7) {
+      return 'Hourly rate must be a safe non-negative amount with at most two decimals';
+    }
+    if (String(input.staffName).trim().length > 255 || String(input.taskName).trim().length > 255 || String(input.description || '').length > 10000) {
+      return 'Time-entry text exceeds the allowed length';
+    }
+    return null;
+  }
+
+  public static async createTimeEntry(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const validationError = FinanceController.validateTimeEntryInput(req.body);
+    if (validationError) { res.status(400).json({ error: validationError }); return; }
+    const { projectId, staffName, taskName, date, description } = req.body;
+    const hours = Number(req.body.hours);
+    const hourlyRate = Number(req.body.hourlyRate);
+    const isBillable = req.body.isBillable !== false;
+    const id = newId('time');
+    try {
+      const record = await db.transaction(async (client) => {
+        const projectResult = await client.query(
+          `SELECT id, name, client_name FROM projects WHERE organization_id = $1 AND id = $2 AND status <> 'Cancelled'`,
+          [orgId, projectId]
+        );
+        if (projectResult.rows.length !== 1) throw new Error('Project does not belong to this organization or is cancelled');
+        const project = projectResult.rows[0];
+        await client.query(
+          `INSERT INTO time_entries (id, organization_id, project_id, project_name, client_name, staff_name, task_name, date, hours, hourly_rate, is_billable, is_billed, description)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, FALSE, $12)`,
+          [id, orgId, projectId, project.name, project.client_name || '', String(staffName).trim(), String(taskName).trim(), date, hours, hourlyRate, isBillable, description || '']
+        );
+        await client.query(
+          `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state)
+           VALUES ($1, $2, $3, 'TIME_ENTRY_CREATED', 'TimeEntry', $4, $5)`,
+          [newId('aud'), orgId, req.auth!.userId, id, JSON.stringify({ projectId, date, hours, hourlyRate, isBillable })]
+        );
+        return { id, projectId, projectName: project.name, clientName: project.client_name || '', staffName: String(staffName).trim(), taskName: String(taskName).trim(), date, hours, hourlyRate, isBillable, isBilled: false, description: description || '' };
+      });
+      res.status(201).json(record);
+    } catch (error: any) {
+      res.status(422).json({ error: error.message || 'Time entry could not be saved' });
+    }
+  }
+
+  public static async updateTimeEntry(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    try {
+      const updated = await db.transaction(async (client) => {
+        const existingResult = await client.query(`SELECT * FROM time_entries WHERE organization_id = $1 AND id = $2 FOR UPDATE`, [orgId, req.params.id]);
+        if (existingResult.rows.length !== 1) throw new Error('Time entry was not found in this organization');
+        const existing = existingResult.rows[0];
+        if (existing.is_billed) throw new Error('Billed time is immutable; correct it through the invoice adjustment workflow');
+        const merged = {
+          projectId: req.body.projectId ?? existing.project_id, staffName: req.body.staffName ?? existing.staff_name,
+          taskName: req.body.taskName ?? existing.task_name, date: req.body.date ?? existing.date,
+          hours: req.body.hours ?? existing.hours, hourlyRate: req.body.hourlyRate ?? existing.hourly_rate,
+          isBillable: req.body.isBillable ?? existing.is_billable, description: req.body.description ?? existing.description,
+        };
+        const validationError = FinanceController.validateTimeEntryInput(merged);
+        if (validationError) throw new Error(validationError);
+        const projectResult = await client.query(`SELECT id, name, client_name FROM projects WHERE organization_id = $1 AND id = $2 AND status <> 'Cancelled'`, [orgId, merged.projectId]);
+        if (projectResult.rows.length !== 1) throw new Error('Project does not belong to this organization or is cancelled');
+        const project = projectResult.rows[0];
+        await client.query(
+          `UPDATE time_entries SET project_id = $1, project_name = $2, client_name = $3, staff_name = $4, task_name = $5, date = $6, hours = $7, hourly_rate = $8, is_billable = $9, description = $10
+           WHERE organization_id = $11 AND id = $12`,
+          [merged.projectId, project.name, project.client_name || '', String(merged.staffName).trim(), String(merged.taskName).trim(), merged.date, Number(merged.hours), Number(merged.hourlyRate), Boolean(merged.isBillable), merged.description || '', orgId, req.params.id]
+        );
+        await client.query(`INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state, after_state) VALUES ($1, $2, $3, 'TIME_ENTRY_UPDATED', 'TimeEntry', $4, $5, $6)`, [newId('aud'), orgId, req.auth!.userId, req.params.id, JSON.stringify(existing), JSON.stringify(merged)]);
+        return { id: req.params.id, ...merged, projectName: project.name, clientName: project.client_name || '', hours: Number(merged.hours), hourlyRate: Number(merged.hourlyRate), isBilled: false };
+      });
+      res.json(updated);
+    } catch (error: any) { res.status(422).json({ error: error.message || 'Time entry could not be updated' }); }
+  }
+
+  public static async deleteTimeEntry(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    try {
+      await db.transaction(async (client) => {
+        const existing = await client.query(`SELECT * FROM time_entries WHERE organization_id = $1 AND id = $2 FOR UPDATE`, [orgId, req.params.id]);
+        if (existing.rows.length !== 1) throw new Error('Time entry was not found in this organization');
+        if (existing.rows[0].is_billed) throw new Error('Billed time cannot be deleted');
+        await client.query(`DELETE FROM time_entries WHERE organization_id = $1 AND id = $2`, [orgId, req.params.id]);
+        await client.query(`INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state) VALUES ($1, $2, $3, 'TIME_ENTRY_DELETED', 'TimeEntry', $4, $5)`, [newId('aud'), orgId, req.auth!.userId, req.params.id, JSON.stringify(existing.rows[0])]);
+      });
+      res.status(204).end();
+    } catch (error: any) { res.status(422).json({ error: error.message || 'Time entry could not be deleted' }); }
+  }
+
+  public static async getProjectSummaries(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const [projects, invoices, expenses, timeEntries] = await Promise.all([
+      db.query(`SELECT id, budget_type, total_budget FROM projects WHERE organization_id = $1`, [orgId]),
+      db.query(`SELECT project_id, total_amount, paid_amount FROM invoices WHERE organization_id = $1 AND project_id IS NOT NULL AND status NOT IN ('VOID', 'VOIDED')`, [orgId]),
+      db.query(`SELECT project_id, amount FROM expenses WHERE organization_id = $1 AND project_id IS NOT NULL AND status <> 'VOIDED'`, [orgId]),
+      db.query(`SELECT project_id, hours, hourly_rate, is_billable, is_billed FROM time_entries WHERE organization_id = $1`, [orgId]),
+    ]);
+    const summaries = projects.rows.map((project) => {
+      const projectInvoices = invoices.rows.filter((row) => row.project_id === project.id);
+      const projectExpenses = expenses.rows.filter((row) => row.project_id === project.id);
+      const projectTime = timeEntries.rows.filter((row) => row.project_id === project.id);
+      const totalInvoiced = projectInvoices.reduce((sum, row) => sum + Number(row.total_amount || 0), 0);
+      const totalCollected = projectInvoices.reduce((sum, row) => sum + Number(row.paid_amount || 0), 0);
+      const directExpenses = projectExpenses.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+      const totalLoggedHours = projectTime.reduce((sum, row) => sum + Number(row.hours || 0), 0);
+      const unbilledHoursAmount = projectTime
+        .filter((row) => row.is_billable && !row.is_billed)
+        .reduce((sum, row) => sum + Number(row.hours || 0) * Number(row.hourly_rate || 0), 0);
+      const netProfit = totalInvoiced - directExpenses;
+      const budget = Number(project.total_budget || 0);
+      const budgetBasis = project.budget_type === 'Task Hours' ? totalLoggedHours : directExpenses;
+      return {
+        projectId: project.id,
+        totalInvoiced: Math.round(totalInvoiced * 100) / 100,
+        totalCollected: Math.round(totalCollected * 100) / 100,
+        directExpenses: Math.round(directExpenses * 100) / 100,
+        unbilledHoursAmount: Math.round(unbilledHoursAmount * 100) / 100,
+        totalLoggedHours: Math.round(totalLoggedHours * 100) / 100,
+        netProfit: Math.round(netProfit * 100) / 100,
+        profitMarginPercent: totalInvoiced > 0 ? Math.round((netProfit / totalInvoiced) * 1000) / 10 : 0,
+        budgetUsedPercent: budget > 0 ? Math.round((budgetBasis / budget) * 1000) / 10 : 0,
+      };
+    });
+    res.json(summaries);
+  }
+
+  public static async invoiceUnbilledTime(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const issueDate = req.body.issueDate || new Date().toISOString().split('T')[0];
+    const dueDate = req.body.dueDate || issueDate;
+    if (!isIsoCalendarDate(issueDate) || !isIsoCalendarDate(dueDate) || dueDate < issueDate) {
+      res.status(400).json({ error: 'Valid issue and due dates are required' }); return;
+    }
+    try {
+      const result = await db.transaction(async (client) => {
+        const projectResult = await client.query(`SELECT * FROM projects WHERE organization_id = $1 AND id = $2 FOR UPDATE`, [orgId, req.params.id]);
+        if (projectResult.rows.length !== 1) throw new Error('Project was not found in this organization');
+        const project = projectResult.rows[0];
+        if (!project.client_id) throw new Error('Project must have a verified customer before time can be invoiced');
+        const entriesResult = await client.query(
+          `SELECT * FROM time_entries WHERE organization_id = $1 AND project_id = $2 AND is_billable = TRUE AND is_billed = FALSE ORDER BY date, created_at FOR UPDATE`,
+          [orgId, req.params.id]
+        );
+        if (entriesResult.rows.length === 0) throw new Error('No unbilled billable time exists for this project');
+        const invoice = await SalesEngine.createAndPostInvoice(orgId, {
+          customerId: project.client_id,
+          customerName: project.client_name,
+          projectId: project.id,
+          issueDate,
+          dueDate,
+          lineItems: entriesResult.rows.map((entry) => ({
+            description: `${entry.task_name} — ${entry.staff_name} (${entry.date})`,
+            quantity: Number(entry.hours), unitPrice: Number(entry.hourly_rate), taxRate: 0,
+          })),
+          notes: `Billable time for project ${project.code} — ${project.name}`,
+          status: 'POSTED', createdBy: req.auth!.userId,
+        }, client);
+        for (const entry of entriesResult.rows) {
+          await client.query(`UPDATE time_entries SET is_billed = TRUE, invoice_id = $1 WHERE organization_id = $2 AND id = $3 AND is_billed = FALSE`, [invoice.id, orgId, entry.id]);
+        }
+        await client.query(`INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state) VALUES ($1, $2, $3, 'PROJECT_TIME_INVOICED', 'Project', $4, $5)`, [newId('aud'), orgId, req.auth!.userId, project.id, JSON.stringify({ invoiceId: invoice.id, timeEntryIds: entriesResult.rows.map((entry) => entry.id), totalAmount: invoice.totalAmount })]);
+        return invoice;
+      });
+      res.status(201).json(result);
+    } catch (error: any) {
+      const message = error.message || 'Project time could not be invoiced';
+      res.status(message.includes('No unbilled') ? 409 : 422).json({ error: message });
+    }
+  }
+
   // --- INVOICES ---
   public static async getInvoices(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
@@ -624,14 +818,15 @@ export class FinanceController {
       id: expense.id, organizationId: expense.organization_id, referenceNumber: expense.expense_number,
       vendorName: expense.vendor_name || undefined, accountId: expense.expense_account_id,
       accountName: '', paidFromAccountId: expense.paid_from_account_id, date: expense.date,
-      amount: Number(expense.amount), taxAmount: Number(expense.tax_amount || 0), isBillable: false,
-      paymentStatus: 'Paid', status: expense.status || 'POSTED', description: expense.description || '', createdAt: expense.created_at,
+      amount: Number(expense.amount), taxAmount: Number(expense.tax_amount || 0),
+      projectId: expense.project_id || undefined, clientId: expense.client_id || undefined,
+      isBillable: Boolean(expense.is_billable), paymentStatus: 'Paid', status: expense.status || 'POSTED', description: expense.description || '', createdAt: expense.created_at,
     })));
   }
 
   public static async createExpense(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
-    const { expenseAccountId, paidFromAccountId, vendorName, date, amount, description } = req.body;
+    const { expenseAccountId, paidFromAccountId, vendorName, date, amount, description, projectId, clientId, isBillable } = req.body;
     const parsedAmount = Number(amount);
     if (!isIsoCalendarDate(date) || !expenseAccountId || !paidFromAccountId || !Number.isFinite(parsedAmount) || parsedAmount <= 0 || Math.round(parsedAmount * 100) / 100 !== parsedAmount) {
       res.status(400).json({ error: 'date, expenseAccountId, paidFromAccountId, and a positive amount are required' });
@@ -662,10 +857,15 @@ export class FinanceController {
         ) {
           throw new Error('Expense debit account must be an expense account and payment account must be an active bank, cash, or wallet account');
         }
+        if (projectId) {
+          const project = await client.query(`SELECT id, client_id FROM projects WHERE organization_id = $1 AND id = $2 AND status <> 'Cancelled'`, [orgId, projectId]);
+          if (project.rows.length !== 1) throw new Error('Expense project does not belong to this organization or is cancelled');
+          if (clientId && project.rows[0].client_id && clientId !== project.rows[0].client_id) throw new Error('Expense customer does not match the selected project');
+        }
         await client.query(
-          `INSERT INTO expenses (id, organization_id, expense_number, expense_account_id, paid_from_account_id, vendor_name, date, amount, description)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-          [expId, orgId, finalExpenseNumber, expenseAccountId, paidFromAccountId, vendorName || '', date, parsedAmount, description || '']
+          `INSERT INTO expenses (id, organization_id, expense_number, expense_account_id, paid_from_account_id, vendor_name, date, amount, description, project_id, client_id, is_billable)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+          [expId, orgId, finalExpenseNumber, expenseAccountId, paidFromAccountId, vendorName || '', date, parsedAmount, description || '', projectId || null, clientId || null, Boolean(isBillable)]
         );
 
         const posting = await ServerPostingEngine.postEntry({

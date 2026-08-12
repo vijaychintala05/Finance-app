@@ -1,63 +1,19 @@
-import React from 'react';
-import { AlertTriangle, ShieldCheck, X } from 'lucide-react';
+import React, { useState } from 'react';
+import { ShieldCheck, X } from 'lucide-react';
 import { Account, FirmSettings } from '../../types';
+import { BankAccount } from '../../types/banking';
+import { BankingService } from '../../services/bankingService';
 import { formatCurrency } from '../../utils/formatters';
 
-interface ReconcileBankModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-  account: Account | null;
-  settings: FirmSettings;
-  onReconcileComplete?: () => void;
-}
-
-export const ReconcileBankModal: React.FC<ReconcileBankModalProps> = ({
-  isOpen,
-  onClose,
-  account,
-  settings,
-}) => {
+interface Props { isOpen: boolean; onClose: () => void; account: Account | null; bankAccount: BankAccount | null; settings: FirmSettings; onReconcileComplete?: () => void; }
+export const ReconcileBankModal: React.FC<Props> = ({ isOpen, onClose, account, bankAccount, settings, onReconcileComplete }) => {
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [balance, setBalance] = useState(''); const [summary, setSummary] = useState<any>(null); const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
   if (!isOpen || !account) return null;
-
-  return (
-    <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50">
-      <div className="bg-white dark:bg-slate-900 rounded-2xl max-w-lg w-full shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <ShieldCheck className="w-5 h-5 text-blue-600" />
-            <div>
-              <h3 className="text-sm font-bold text-slate-900 dark:text-white">Bank Reconciliation</h3>
-              <p className="text-[11px] text-slate-500">{account.code} · {account.name}</p>
-            </div>
-          </div>
-          <button onClick={onClose} aria-label="Close" className="p-1.5 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 rounded-lg">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        <div className="p-6 space-y-4">
-          <div className="rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-900 p-4 flex items-start gap-3">
-            <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
-            <div>
-              <p className="text-sm font-bold text-amber-900 dark:text-amber-200">Reconciliation is not enabled yet</p>
-              <p className="text-xs text-amber-800 dark:text-amber-300 mt-1 leading-relaxed">
-                A trustworthy reconciliation must use imported statement transactions, persistent cleared-item links, an audited close, and a server-verified zero difference. This workspace will not display example transactions or claim a reconciliation until that workflow is complete.
-              </p>
-            </div>
-          </div>
-
-          <div className="rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-4 flex items-center justify-between">
-            <span className="text-xs font-bold text-slate-500 uppercase tracking-wide">Authoritative GL balance</span>
-            <span className="text-sm font-mono font-black text-slate-900 dark:text-white">{formatCurrency(account.balance, settings.currencySymbol)}</span>
-          </div>
-        </div>
-
-        <div className="px-6 py-4 bg-slate-50 dark:bg-slate-950 border-t border-slate-200 dark:border-slate-800 flex justify-end">
-          <button onClick={onClose} className="px-4 py-2 bg-slate-900 dark:bg-blue-600 text-white text-xs font-bold rounded-xl">
-            Close
-          </button>
-        </div>
-      </div>
-    </div>
-  );
+  const review = async () => { setError(''); if (!bankAccount) return setError('Create or link the bank account profile first.'); const parsed = Number(balance); if (!Number.isFinite(parsed)) return setError('Enter the statement closing balance.'); setBusy(true); try { setSummary(await BankingService.getReconciliationSummary(bankAccount.id, date, parsed, account.balance)); } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not verify reconciliation.'); } finally { setBusy(false); } };
+  const complete = async () => { if (!summary || summary.status !== 'BALANCED' || !bankAccount) return; setBusy(true); try { await BankingService.completeReconciliationSession(bankAccount.id, date, Number(balance), account.balance); onReconcileComplete?.(); onClose(); } catch (cause) { setError(cause instanceof Error ? cause.message : 'Reconciliation was not completed.'); } finally { setBusy(false); } };
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4"><div className="w-full max-w-lg rounded-2xl bg-white shadow-2xl dark:bg-slate-900">
+    <div className="flex justify-between border-b p-5"><div className="flex gap-2"><ShieldCheck className="h-5 w-5 text-blue-600"/><div><h3 className="text-sm font-bold">Bank Reconciliation</h3><p className="text-[11px] text-slate-500">{account.code} · {account.name}</p></div></div><button onClick={onClose}><X className="h-4 w-4"/></button></div>
+    <div className="space-y-4 p-6">{error && <div role="alert" className="rounded-xl bg-rose-50 p-3 text-xs font-semibold text-rose-800">{error}</div>}<div className="grid grid-cols-2 gap-3"><label className="text-xs font-bold">Statement end date<input type="date" value={date} onChange={(e)=>{setDate(e.target.value);setSummary(null);}} className="mt-1 w-full rounded-xl border p-2"/></label><label className="text-xs font-bold">Closing balance<input type="number" step="0.01" value={balance} onChange={(e)=>{setBalance(e.target.value);setSummary(null);}} className="mt-1 w-full rounded-xl border p-2"/></label></div><div className="rounded-xl bg-slate-50 p-4 text-xs"><div className="flex justify-between"><span>Authoritative GL balance</span><strong>{formatCurrency(account.balance, settings.currencySymbol)}</strong></div>{summary && <><div className="mt-2 flex justify-between"><span>Verified difference</span><strong className={summary.status === 'BALANCED' ? 'text-emerald-600' : 'text-rose-600'}>{formatCurrency(summary.difference, settings.currencySymbol)}</strong></div><p className="mt-2 font-bold">{summary.status === 'BALANCED' ? 'Balanced — ready to complete' : 'Resolve the difference before completion'}</p></>}</div><div className="flex justify-end gap-2"><button onClick={review} disabled={busy} className="rounded-xl border px-4 py-2 text-xs font-bold">Verify</button><button onClick={complete} disabled={busy || summary?.status !== 'BALANCED'} className="rounded-xl bg-blue-600 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">Complete reconciliation</button></div></div>
+  </div></div>;
 };

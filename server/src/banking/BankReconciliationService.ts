@@ -12,11 +12,11 @@ import {
   CSVColumnMapping,
   MatchSuggestion,
 } from '../../../src/types/banking';
-import { AccountingService } from '../../../src/services/accountingService';
 import { AccountingCandidate, BankMatchingEngine } from './BankMatchingEngine';
 import { BankRulesEngine } from './BankRulesEngine';
 import { BankStatementParserFactory } from './parsers/BankStatementParserFactory';
 import { newId } from '../utils/ids';
+import { AccountingPeriodService } from '../accounting/AccountingPeriodService';
 
 /**
  * BANK RECONCILIATION SERVICE
@@ -260,8 +260,8 @@ export class BankReconciliationService {
       status: 'Completed',
     };
 
-    // Save Import Record directly to Database (Errors propagate directly)
-    await db.query(
+    await db.transaction(async (client) => {
+    await client.query(
       `INSERT INTO bank_statement_imports (id, organization_id, bank_account_id, source_format, original_filename, file_hash, parser_version, statement_from, statement_to, opening_balance, closing_balance, currency, imported_by, imported_at, transaction_count, status)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
       [
@@ -286,7 +286,7 @@ export class BankReconciliationService {
 
     const insertedTxs: BankStatementTransaction[] = [];
     for (const tx of newTransactions) {
-      const checkDb = await db.query(
+      const checkDb = await client.query(
         `SELECT id FROM bank_statement_transactions WHERE organization_id = $1 AND fingerprint = $2`,
         [tx.organizationId, tx.fingerprint]
       );
@@ -296,7 +296,7 @@ export class BankReconciliationService {
         continue;
       }
 
-      await db.query(
+      await client.query(
         `INSERT INTO bank_statement_transactions (id, organization_id, bank_account_id, statement_import_id, transaction_date, value_date, amount, direction, running_balance, narration, reference, transaction_type, utr, rrn, upi_reference, cheque_number, counterparty_name, currency, reconciliation_status, fingerprint, raw_data, created_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`,
         [
@@ -327,6 +327,12 @@ export class BankReconciliationService {
       insertedTxs.push(tx);
     }
     newTransactions = insertedTxs;
+    await client.query(
+      `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state)
+       VALUES ($1, $2, $3, 'BANK_STATEMENT_IMPORTED', 'BankStatementImport', $4, $5)`,
+      [newId('aud'), orgId, importedBy || 'system', importId, JSON.stringify({ bankAccountId, filename, fileHash, newTransactionsCount: newTxCount, duplicateCount })]
+    );
+    });
 
     // INVARIANT CHECK: Statement import MUST produce ZERO change to General Ledger / Trial Balance / P&L
     return {
@@ -444,42 +450,29 @@ export class BankReconciliationService {
     matchedAmount: number,
     confidenceScore: number = 100,
     reasons: any[] = [{ code: 'MANUAL_OR_RULE_MATCH', description: 'Matched by user or deterministic rule', weight: 100 }],
-    matchedBy: string = 'System'
+    matchedBy: string = 'System',
+    validateAccountingDocument: boolean = false
   ): Promise<BankReconciliationMatch> {
-    const txs = await this.getTransactions(orgId, { limit: 100000 });
-    const statementTx = txs.find((t) => t.id === statementTxId);
-    const totalTxAmount = statementTx ? statementTx.amount : matchedAmount;
-
-    const existingMatches = await this.getMatchesForTransaction(orgId, statementTxId);
-    const existingSum = existingMatches.reduce((sum, m) => sum + Number(m.matchedAmount || 0), 0);
-
-    if (existingSum + matchedAmount > totalTxAmount + 0.001) {
-      throw new Error(`Cannot match amount ${matchedAmount}. Total matched (${existingSum + matchedAmount}) exceeds statement transaction amount (${totalTxAmount}).`);
+    const validTypes = new Set(['invoice', 'payment_received', 'bill', 'payment_made', 'expense', 'transfer', 'journal']);
+    if (!validTypes.has(accountingType)) throw new Error('Unsupported accounting transaction type');
+    if (!Number.isFinite(matchedAmount) || matchedAmount <= 0 || Math.abs(matchedAmount * 100 - Math.round(matchedAmount * 100)) > 1e-7) throw new Error('Matched amount must be positive with at most two decimals');
+    return db.transaction(async (client) => {
+    const txResult = await client.query(`SELECT * FROM bank_statement_transactions WHERE organization_id = $1 AND id = $2 FOR UPDATE`, [orgId, statementTxId]);
+    if (txResult.rows.length !== 1) throw new Error('Statement transaction was not found in this organization');
+    const statementTx = this.formatTransaction(txResult.rows[0]);
+    if (statementTx.reconciliationStatus === 'RECONCILED') throw new Error('A completed reconciliation must be reopened before its matches can change');
+    const accountingTableByType: Record<string, string> = { invoice: 'invoices', payment_received: 'payments_received', bill: 'bills', payment_made: 'payments_made', expense: 'expenses', journal: 'journal_entries', transfer: 'journal_entries' };
+    if (validateAccountingDocument) {
+      const accountingDocument = await client.query(`SELECT id FROM ${accountingTableByType[accountingType]} WHERE organization_id = $1 AND id = $2`, [orgId, accountingId]);
+      if (accountingDocument.rows.length !== 1) throw new Error('Accounting document was not found in this organization');
     }
-
-    const newTotalMatched = existingSum + matchedAmount;
-    const isFullyMatched = Math.abs(newTotalMatched - totalTxAmount) < 0.01;
-    const newStatus = isFullyMatched ? 'MATCHED' : 'PARTIALLY_MATCHED';
-
+    const existing = await client.query(`SELECT matched_amount FROM bank_reconciliation_matches WHERE organization_id = $1 AND statement_transaction_id = $2 AND status = 'MATCHED'`, [orgId, statementTxId]);
+    const existingSum = existing.rows.reduce((sum, row) => sum + Number(row.matched_amount || 0), 0);
+    if (existingSum + matchedAmount > statementTx.amount + 0.001) throw new Error('Total matched amount exceeds statement transaction amount');
+    const newStatus = Math.abs(existingSum + matchedAmount - statementTx.amount) < 0.01 ? 'MATCHED' : 'PARTIALLY_MATCHED';
     const matchId = newId('match');
-    const match: BankReconciliationMatch = {
-      id: matchId,
-      organizationId: orgId,
-      statementTransactionId: statementTxId,
-      accountingTransactionType: accountingType as AccountingTransactionType,
-      accountingTransactionId: accountingId,
-      matchedAmount,
-      matchConfidence: confidenceScore,
-      matchReasons: reasons,
-      matchedBy,
-      matchedAt: new Date().toISOString(),
-      status: 'MATCHED',
-    };
-
-    if (statementTx) {
-      statementTx.reconciliationStatus = newStatus;
-    }
-    await db.query(
+    const match: BankReconciliationMatch = { id: matchId, organizationId: orgId, statementTransactionId: statementTxId, accountingTransactionType: accountingType as AccountingTransactionType, accountingTransactionId: accountingId, matchedAmount, matchConfidence: confidenceScore, matchReasons: reasons, matchedBy, matchedAt: new Date().toISOString(), status: 'MATCHED' };
+    await client.query(
       `INSERT INTO bank_reconciliation_matches (id, organization_id, statement_transaction_id, accounting_transaction_type, accounting_transaction_id, matched_amount, match_confidence, match_reasons, matched_by, matched_at, status)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
       [
@@ -497,12 +490,12 @@ export class BankReconciliationService {
       ]
     );
 
-    await db.query(
+    await client.query(
       `UPDATE bank_statement_transactions SET reconciliation_status = $1 WHERE organization_id = $2 AND id = $3`,
       [newStatus, orgId, statementTxId]
     );
 
-    await db.query(
+    await client.query(
       `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, metadata)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
       [
@@ -517,6 +510,7 @@ export class BankReconciliationService {
     );
 
     return match;
+    });
   }
 
   public static async reconcileMatch(
@@ -823,7 +817,7 @@ export class BankReconciliationService {
     bankAccountId: string,
     statementEndDate: string,
     statementClosingBalance: number,
-    glBankBalance: number = 0
+    trustedGlBankBalanceForInternalVerification?: number
   ): Promise<{
     statementClosingBalance: number;
     glBankBalance: number;
@@ -834,6 +828,17 @@ export class BankReconciliationService {
     difference: number;
     status: 'BALANCED' | 'DISCREPANCY';
   }> {
+    const accountResult = await db.query(`SELECT ledger_account_id FROM bank_accounts WHERE organization_id = $1 AND id = $2 AND is_active = TRUE`, [orgId, bankAccountId]);
+    if (accountResult.rows.length !== 1) throw new Error('Bank account was not found in this organization');
+    const balanceResult = await db.query(
+      `SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) AS balance FROM journal_lines jl
+       JOIN journal_entries je ON je.id = jl.journal_entry_id
+       WHERE je.organization_id = $1 AND je.status = 'Posted' AND je.date <= $2 AND jl.account_id = $3`,
+      [orgId, statementEndDate, accountResult.rows[0].ledger_account_id]
+    );
+    const glBankBalance = trustedGlBankBalanceForInternalVerification === undefined
+      ? Number(balanceResult.rows[0]?.balance || 0)
+      : trustedGlBankBalanceForInternalVerification;
     const txs = await this.getTransactions(orgId, { bankAccountId, toDate: statementEndDate, limit: 100000 });
 
     let matchedDepositsTotal = 0;
@@ -871,15 +876,16 @@ export class BankReconciliationService {
     bankAccountId: string,
     statementEndDate: string,
     statementClosingBalance: number,
-    glBankBalance: number,
-    periodLocks: any[] = [],
+    glBankBalance?: number,
+    _periodLocks: any[] = [],
     userId: string = 'System'
   ): Promise<BankReconciliationSession> {
-    if (AccountingService.isPeriodLocked(statementEndDate, periodLocks)) {
+    if (await AccountingPeriodService.isPeriodLocked(orgId, statementEndDate)) {
       throw new Error(`Cannot finalize reconciliation in locked accounting period (${statementEndDate}).`);
     }
 
     const summary = await this.getReconciliationSummary(orgId, bankAccountId, statementEndDate, statementClosingBalance, glBankBalance);
+    if (summary.status !== 'BALANCED') throw new Error(`Reconciliation cannot complete with a difference of ${summary.difference.toFixed(2)}`);
 
     const sessionId = newId('session');
     const session: BankReconciliationSession = {
@@ -888,14 +894,15 @@ export class BankReconciliationService {
       bankAccountId,
       statementEndDate,
       statementClosingBalance,
-      ledgerBalance: glBankBalance,
+      ledgerBalance: summary.glBankBalance,
       difference: summary.difference,
       reconciledBy: userId,
       reconciledAt: new Date().toISOString(),
       status: 'COMPLETED',
     };
 
-    await db.query(
+    return db.transaction(async (client) => {
+    await client.query(
       `INSERT INTO bank_reconciliation_sessions (id, organization_id, bank_account_id, statement_end_date, statement_closing_balance, ledger_balance, difference, reconciled_by, reconciled_at, status)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
       [
@@ -912,13 +919,13 @@ export class BankReconciliationService {
       ]
     );
 
-    await db.query(
+    await client.query(
       `UPDATE bank_statement_transactions SET reconciliation_status = 'RECONCILED'
        WHERE organization_id = $1 AND bank_account_id = $2 AND transaction_date <= $3 AND reconciliation_status = 'MATCHED'`,
       [orgId, bankAccountId, statementEndDate]
     );
 
-    await db.query(
+    await client.query(
       `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, metadata)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
       [
@@ -933,6 +940,7 @@ export class BankReconciliationService {
     );
 
     return session;
+    });
   }
 
   // Formatting helpers

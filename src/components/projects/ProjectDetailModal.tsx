@@ -108,8 +108,8 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
     (p) => p.clientId === project.clientId || p.clientName === project.clientName
   );
 
-  const handleGenerateInvoice = () => {
-    const newInv = convertUnbilledTimeToInvoice(project.id, project.clientId);
+  const handleGenerateInvoice = async () => {
+    const newInv = await convertUnbilledTimeToInvoice(project.id, project.clientId);
     if (newInv) {
       setPreviewInvoice(newInv);
       setActiveTab('invoices');
@@ -1208,4 +1208,3 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
     </div>
   );
 };
-

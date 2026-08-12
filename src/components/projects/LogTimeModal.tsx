@@ -70,7 +70,7 @@ export const LogTimeModal: React.FC<LogTimeModalProps> = ({
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!projectId || !taskName || !hours) return;
 
@@ -78,7 +78,7 @@ export const LogTimeModal: React.FC<LogTimeModalProps> = ({
     const cli = clients.find((c) => c.id === prj?.clientId);
 
     const saved = editingTimeEntry
-      ? updateTimeEntry(editingTimeEntry.id, {
+      ? await updateTimeEntry(editingTimeEntry.id, {
         projectId,
         projectName: prj?.name || 'Project',
         clientName: cli?.name || 'Client',
@@ -90,7 +90,7 @@ export const LogTimeModal: React.FC<LogTimeModalProps> = ({
         isBillable,
         description,
       })
-      : addTimeEntry({
+      : await addTimeEntry({
         projectId,
         projectName: prj?.name || 'Project',
         clientName: cli?.name || 'Client',

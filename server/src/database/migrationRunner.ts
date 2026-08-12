@@ -2,7 +2,7 @@ import { db } from './db';
 import { OrganizationProvisioningService } from '../services/OrganizationProvisioningService';
 import type { DbQueryResult } from './db';
 
-export const CURRENT_SCHEMA_VERSION = '2026.08.12-v1';
+export const CURRENT_SCHEMA_VERSION = '2026.08.12-v1-project-accounting';
 
 export class MigrationRunner {
   public static async runMigrations(queryClient?: { query: (text: string, params?: any[]) => Promise<DbQueryResult> }): Promise<void> {
@@ -768,6 +768,10 @@ export class MigrationRunner {
       `ALTER TABLE vendors ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE`,
       `ALTER TABLE vendors ADD COLUMN IF NOT EXISTS opening_balance NUMERIC(15, 2) DEFAULT 0.00`,
       `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS journal_entry_id VARCHAR(64)`,
+      `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS project_id VARCHAR(64)`,
+      `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS client_id VARCHAR(64)`,
+      `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS is_billable BOOLEAN NOT NULL DEFAULT FALSE`,
+      `ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS invoice_id VARCHAR(64)`,
       `ALTER TABLE bills ADD COLUMN IF NOT EXISTS vendor_invoice_number VARCHAR(64)`,
       `ALTER TABLE bills ADD COLUMN IF NOT EXISTS vendor_email VARCHAR(255)`,
       `ALTER TABLE bills ADD COLUMN IF NOT EXISTS purchase_order_id VARCHAR(64)`,
@@ -1124,6 +1128,7 @@ export class MigrationRunner {
       `CREATE INDEX IF NOT EXISTS idx_invoices_org_due_status ON invoices (organization_id, due_date, status)`,
       `CREATE INDEX IF NOT EXISTS idx_bills_org_due_status ON bills (organization_id, due_date, status)`,
       `CREATE INDEX IF NOT EXISTS idx_audit_org_timestamp ON audit_logs (organization_id, timestamp DESC)`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_statement_fingerprint_unique ON bank_statement_transactions (organization_id, fingerprint)`,
       `CREATE INDEX IF NOT EXISTS idx_budget_lines_org_budget ON budget_lines (organization_id, budget_id)`,
       `CREATE INDEX IF NOT EXISTS idx_fixed_assets_org_status ON fixed_assets (organization_id, status)`,
       `CREATE UNIQUE INDEX IF NOT EXISTS uk_projects_org_code ON projects (organization_id, LOWER(code))`,
@@ -1296,7 +1301,7 @@ export class MigrationRunner {
       `INSERT INTO schema_migrations (version, description)
        VALUES ($1, $2)
        ON CONFLICT (version) DO NOTHING`,
-      [CURRENT_SCHEMA_VERSION, 'FirmBooks v1 financial trust and reliability baseline']
+      [CURRENT_SCHEMA_VERSION, 'FirmBooks v1 authoritative project accounting and time billing']
     );
 
     console.log('[Migration] All PostgreSQL tables initialized successfully.');

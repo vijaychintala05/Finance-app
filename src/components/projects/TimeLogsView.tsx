@@ -121,9 +121,9 @@ export const TimeLogsView: React.FC<TimeLogsViewProps> = ({
     .filter((e) => e.isBilled)
     .reduce((sum, e) => sum + e.hours * e.hourlyRate, 0);
 
-  const handleDelete = (id: string, task: string) => {
+  const handleDelete = async (id: string, task: string) => {
     if (confirm(`Are you sure you want to delete the time log for "${task}"?`)) {
-      deleteTimeEntry(id);
+      await deleteTimeEntry(id);
     }
   };
 
@@ -168,11 +168,11 @@ export const TimeLogsView: React.FC<TimeLogsViewProps> = ({
     document.body.removeChild(link);
   };
 
-  const handleBatchInvoice = () => {
+  const handleBatchInvoice = async () => {
     if (selectedProjectId !== 'ALL') {
       const prj = projects.find((p) => p.id === selectedProjectId);
       if (prj) {
-        const inv = convertUnbilledTimeToInvoice(prj.id, prj.clientId);
+        const inv = await convertUnbilledTimeToInvoice(prj.id, prj.clientId);
         if (inv) {
           alert(
             `Successfully created Invoice ${inv.invoiceNumber} from unbilled time logs for project ${prj.name}!`

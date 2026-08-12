@@ -20,7 +20,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
   defaultProjectId,
   defaultClientId,
 }) => {
-  const { accounts, vendors, addExpense, settings } = useBooks();
+  const { accounts, vendors, projects, addExpense, settings } = useBooks();
   const expenseAccounts = useMemo(
     () => accounts.filter((account) => account.type === 'Expense' && account.status !== 'Inactive'),
     [accounts]
@@ -43,6 +43,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
   const [vendorId, setVendorId] = useState('');
   const [amount, setAmount] = useState('');
   const [description, setDescription] = useState('');
+  const [projectId, setProjectId] = useState(defaultProjectId || '');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -54,13 +55,13 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
     setVendorId('');
     setAmount('');
     setDescription('');
+    setProjectId(defaultProjectId || '');
     setError('');
     setIsSubmitting(false);
   }, [isOpen, expenseAccounts, paymentAccounts]);
 
   if (!isOpen) return null;
 
-  const isProjectLaunch = Boolean(defaultProjectId || defaultClientId);
   const postingUnavailable = expenseAccounts.length === 0 || paymentAccounts.length === 0;
 
   const handleSubmit = async (event: React.FormEvent) => {
@@ -102,6 +103,8 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
         currency: settings.currencyCode,
         amount: parsedAmount,
         taxAmount: 0,
+        projectId: projectId || undefined,
+        clientId: projects.find((project) => project.id === projectId)?.clientId || defaultClientId,
         isBillable: false,
         paymentStatus: 'Paid',
         description: description.trim() || `Expense paid${vendor ? ` to ${vendor.companyName || vendor.name}` : ''}`,
@@ -150,13 +153,11 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
               </p>
             </div>
 
-            {(isProjectLaunch || expenseToEdit) && (
+            {expenseToEdit && (
               <div className="flex gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                 <p>
-                  {expenseToEdit
-                    ? 'Posted expense editing is unavailable. Financial corrections require an audited reversal.'
-                    : 'Project and customer rebilling tags are not yet supported by the authoritative expense posting workflow and will not be recorded.'}
+                  Posted expense editing is unavailable. Financial corrections require an audited reversal.
                 </p>
               </div>
             )}
@@ -236,6 +237,19 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                   <option value="">No vendor selected</option>
                   {vendors.map((vendor) => (
                     <option key={vendor.id} value={vendor.id}>{vendor.companyName || vendor.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200 sm:col-span-2">
+                <span>Project (optional)</span>
+                <select
+                  value={projectId}
+                  onChange={(event) => setProjectId(event.target.value)}
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                >
+                  <option value="">No project selected</option>
+                  {projects.filter((project) => project.status !== 'Cancelled').map((project) => (
+                    <option key={project.id} value={project.id}>{project.code} — {project.name}</option>
                   ))}
                 </select>
               </label>

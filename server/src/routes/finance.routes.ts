@@ -26,6 +26,12 @@ router.post('/vendors', requirePermission(['invoices.create', 'purchases.create'
 // Projects
 router.get('/projects', requirePermission(['invoices.view', 'purchases.view']), FinanceController.getProjects);
 router.post('/projects', requirePermission(['invoices.create', 'purchases.create']), FinanceController.createProject);
+router.get('/project-summaries', requirePermission(['invoices.view', 'purchases.view']), FinanceController.getProjectSummaries);
+router.get('/time-entries', requirePermission('invoices.view'), FinanceController.getTimeEntries);
+router.post('/time-entries', requirePermission('invoices.create'), FinanceController.createTimeEntry);
+router.put('/time-entries/:id', requirePermission('invoices.edit'), FinanceController.updateTimeEntry);
+router.delete('/time-entries/:id', requirePermission('invoices.edit'), FinanceController.deleteTimeEntry);
+router.post('/projects/:id/invoice-unbilled-time', requirePermission('invoices.create'), FinanceController.invoiceUnbilledTime);
 
 // Estimates
 router.get('/estimates', requirePermission('invoices.view'), FinanceController.getEstimates);

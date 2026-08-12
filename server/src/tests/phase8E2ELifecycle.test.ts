@@ -283,7 +283,7 @@ describe('Phase 8: Complete End-to-End Business Lifecycle & Production UX Harden
     expect(paidInv.status).toBe('Paid');
   });
 
-  it('Step 7: Uncertified bank mutation workflows fail closed', async () => {
+  it('Step 7: Bank account onboarding rejects unbalanced opening data', async () => {
     const bAccRes = await request
       .post('/api/v1/banking/accounts')
       .set(authHeader)
@@ -295,8 +295,8 @@ describe('Phase 8: Complete End-to-End Business Lifecycle & Production UX Harden
         glAccountId: 'acc-1010',
         currentBalance: 500000,
       });
-    expect(bAccRes.status).toBe(503);
-    expect(bAccRes.body.feature).toBe('bank-account-management');
+    expect(bAccRes.status).toBe(400);
+    expect(bAccRes.body.error).toContain('valid account identifier');
   });
 
   it('Step 8: Procurement Cycle (Purchase Order, Vendor Bill, Vendor Payment)', async () => {

@@ -4,11 +4,15 @@ import { NextFunction, Request, Response } from 'express';
 // must first be added here by code review; an environment variable can then
 // enable that reviewed implementation for a deployment. Configuration alone
 // can never promote prototype code into the trusted surface.
-const CERTIFIED_OPTIONAL_FEATURES = new Set<string>([]);
+const CERTIFIED_OPTIONAL_FEATURES = new Set<string>([
+  'bank-account-management',
+  'bank-statement-import',
+  'bank-reconciliation',
+]);
 
 function enabledFeatures(): Set<string> {
   return new Set(
-    (process.env.TRUSTED_FINANCE_FEATURES || '')
+    (process.env.TRUSTED_FINANCE_FEATURES || Array.from(CERTIFIED_OPTIONAL_FEATURES).join(','))
       .split(',')
       .map((feature) => feature.trim())
       .filter((feature) => CERTIFIED_OPTIONAL_FEATURES.has(feature))

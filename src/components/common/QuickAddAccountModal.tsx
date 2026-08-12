@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { Account, AccountSubType, AccountType } from '../../types';
 import { useBooks } from '../../context/BooksContext';
+import { BankingService } from '../../services/bankingService';
 
 export type QuickAccountCategory =
   | 'Bank'
@@ -34,7 +35,7 @@ export const QuickAddAccountModal: React.FC<QuickAddAccountModalProps> = ({
   defaultCategory = 'Bank',
   onAccountCreated,
 }) => {
-  const { addAccount } = useBooks();
+  const { addAccount, settings } = useBooks();
 
   const [categoryPreset, setCategoryPreset] = useState<QuickAccountCategory>(
     defaultCategory as QuickAccountCategory
@@ -43,6 +44,8 @@ export const QuickAddAccountModal: React.FC<QuickAddAccountModalProps> = ({
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
   const [description, setDescription] = useState('');
+  const [bankName, setBankName] = useState('');
+  const [accountNumber, setAccountNumber] = useState('');
 
   useEffect(() => {
     if (isOpen) {
@@ -52,6 +55,8 @@ export const QuickAddAccountModal: React.FC<QuickAddAccountModalProps> = ({
       setName('');
       setCode('');
       setDescription('');
+      setBankName('');
+      setAccountNumber('');
     }
   }, [isOpen, defaultCategory]);
 
@@ -97,6 +102,17 @@ export const QuickAddAccountModal: React.FC<QuickAddAccountModalProps> = ({
         description: description.trim() || undefined,
         balance: 0,
       });
+      if (categoryPreset === 'Bank') {
+        await BankingService.createAccount({
+          ledgerAccountId: newAcc.id,
+          accountName: newAcc.name,
+          accountNumber: accountNumber.trim(),
+          bankName: bankName.trim(),
+          currency: settings.currencyCode,
+          openingBalanceDate: new Date().toISOString().slice(0, 10),
+          currentBalance: 0,
+        });
+      }
       if (onAccountCreated) onAccountCreated(newAcc);
       setName('');
       setDescription('');
@@ -249,6 +265,19 @@ export const QuickAddAccountModal: React.FC<QuickAddAccountModalProps> = ({
               New accounts start at zero. Record any opening balance with a balanced opening journal so the trial balance remains trustworthy.
             </div>
           </div>
+
+          {categoryPreset === 'Bank' && (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div>
+                <label className="block text-slate-700 font-bold mb-1">Bank name</label>
+                <input required value={bankName} onChange={(event) => setBankName(event.target.value)} placeholder="e.g. HDFC Bank" className="w-full bg-slate-50 border border-slate-200 focus:border-blue-600 text-slate-900 font-semibold px-3 py-2 rounded-xl text-xs focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-slate-700 font-bold mb-1">Account number</label>
+                <input required minLength={4} maxLength={34} value={accountNumber} onChange={(event) => setAccountNumber(event.target.value)} placeholder="4–34 letters or digits" className="w-full bg-slate-50 border border-slate-200 focus:border-blue-600 text-slate-900 font-mono font-semibold px-3 py-2 rounded-xl text-xs focus:outline-none" />
+              </div>
+            </div>
+          )}
 
           {/* Description */}
           <div>

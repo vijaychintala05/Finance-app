@@ -1,8 +1,5 @@
 import { Request, Response } from 'express';
 import { BankReconciliationService } from '../banking/BankReconciliationService';
-import { db } from '../database/db';
-import crypto from 'crypto';
-import { newId } from '../utils/ids';
 
 function getOrgId(req: Request): string {
   const orgId = (req as any).auth?.organizationId;
@@ -39,52 +36,14 @@ export class BankingController {
     try {
       const orgId = getOrgId(req);
       const bankAccountId = req.body.bankAccountId || req.params.accountId;
-      const { filename, fileName, content, sourceFormat, mapping, transactions } = req.body;
+      const { filename, fileName, content, sourceFormat, mapping } = req.body;
 
       if (!bankAccountId) {
         return res.status(400).json({ success: false, error: 'bankAccountId is required' });
       }
 
-      if (transactions && Array.isArray(transactions)) {
-        // Direct transaction list import
-        const importId = newId('stmt');
-        for (const tx of transactions) {
-          const fp = crypto.createHash('sha256').update(JSON.stringify({
-            bankAccountId,
-            transactionDate: tx.transactionDate || tx.date,
-            valueDate: tx.valueDate || tx.transactionDate || tx.date,
-            amount: Number(tx.amount),
-            direction: tx.direction || (Number(tx.amount) >= 0 ? 'CR' : 'DR'),
-            reference: tx.reference || tx.referenceNumber || '',
-            narration: tx.narration || tx.description || '',
-          })).digest('hex');
-          await db.query(
-            `INSERT INTO bank_statement_transactions
-             (id, organization_id, bank_account_id, statement_import_id, transaction_date, value_date, narration, reference, amount, direction, reconciliation_status, fingerprint, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-            [
-              newId('btx'),
-              orgId,
-              bankAccountId,
-              importId,
-              tx.transactionDate || tx.date,
-              tx.valueDate || tx.transactionDate || tx.date,
-              tx.narration || tx.description || 'Bank Transaction',
-              tx.reference || tx.referenceNumber || '',
-              Math.abs(Number(tx.amount)),
-              tx.direction || (Number(tx.amount) >= 0 ? 'CR' : 'DR'),
-              'UNMATCHED',
-              fp,
-              new Date().toISOString(),
-            ]
-          );
-        }
-        res.status(201).json({ success: true, importId, count: transactions.length });
-        return;
-      }
-
       if (!content) {
-        return res.status(400).json({ success: false, error: 'content or transactions array is required' });
+        return res.status(400).json({ success: false, error: 'A supported statement file is required' });
       }
 
       const result = await BankReconciliationService.importStatement(
@@ -186,7 +145,8 @@ export class BankingController {
         matchedAmount || 0,
         100,
         [],
-        userEmail
+        userEmail,
+        true
       );
 
       res.status(200).json({ success: true, data: match, ...match });
@@ -250,7 +210,6 @@ export class BankingController {
       const bankAccountId = req.query.bankAccountId as string;
       const statementEndDate = (req.query.statementEndDate as string) || new Date().toISOString().substring(0, 10);
       const statementClosingBalance = parseFloat((req.query.statementClosingBalance as string) || '0');
-      const glBankBalance = parseFloat((req.query.glBankBalance as string) || '0');
 
       if (!bankAccountId) {
         return res.status(400).json({ success: false, error: 'bankAccountId is required' });
@@ -261,7 +220,7 @@ export class BankingController {
         bankAccountId,
         statementEndDate,
         statementClosingBalance,
-        glBankBalance
+        undefined
       );
 
       res.json({ success: true, data: summary });
@@ -274,7 +233,7 @@ export class BankingController {
   public static async completeSession(req: Request, res: Response) {
     try {
       const orgId = getOrgId(req);
-      const { bankAccountId, statementEndDate, statementClosingBalance, glBankBalance, periodLocks } = req.body;
+      const { bankAccountId, statementEndDate, statementClosingBalance } = req.body;
 
       if (!bankAccountId || !statementEndDate) {
         return res.status(400).json({ success: false, error: 'bankAccountId and statementEndDate are required' });
@@ -285,8 +244,8 @@ export class BankingController {
         bankAccountId,
         statementEndDate,
         statementClosingBalance || 0,
-        glBankBalance || 0,
-        periodLocks || [],
+        undefined,
+        [],
         (req as any).auth.userId
       );
 

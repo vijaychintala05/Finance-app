@@ -113,9 +113,9 @@ interface BooksContextType {
   deleteProject: (id: string) => void;
 
   timeEntries: TimeEntry[];
-  addTimeEntry: (entry: Omit<TimeEntry, 'id'>) => boolean;
-  updateTimeEntry: (id: string, entry: Partial<TimeEntry>) => boolean;
-  deleteTimeEntry: (id: string) => void;
+  addTimeEntry: (entry: Omit<TimeEntry, 'id'>) => Promise<boolean>;
+  updateTimeEntry: (id: string, entry: Partial<TimeEntry>) => Promise<boolean>;
+  deleteTimeEntry: (id: string) => Promise<void>;
 
   invoices: Invoice[];
   addInvoice: (invoice: Omit<Invoice, 'id' | 'createdAt' | 'invoiceNumber'>) => Promise<Invoice>;
@@ -200,7 +200,7 @@ interface BooksContextType {
   bulkUpdateJournals: (journalIds: string[], updates: Partial<JournalEntry>) => void;
 
   getProjectSummary: (projectId: string) => ProjectFinancialSummary;
-  convertUnbilledTimeToInvoice: (projectId: string, clientId: string) => Invoice | null;
+  convertUnbilledTimeToInvoice: (projectId: string, clientId: string) => Promise<Invoice | null>;
 
   clearAllData: () => void;
   loadSampleData: () => void;
@@ -495,6 +495,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [vendors, setVendors] = useState<Vendor[]>(initialData.vendors);
   const [projects, setProjects] = useState<Project[]>(initialData.projects);
   const [timeEntries, setTimeEntries] = useState<TimeEntry[]>(initialData.timeEntries);
+  const [projectSummaries, setProjectSummaries] = useState<ProjectFinancialSummary[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>(initialData.invoices);
   const [estimates, setEstimates] = useState<Estimate[]>(initialData.estimates);
   const [expenses, setExpenses] = useState<Expense[]>(initialData.expenses);
@@ -531,7 +532,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       localStorage.setItem('active_organization_id', requestedOrgId);
       const endpoints = [
         'accounts', 'clients', 'vendors', 'projects', 'invoices', 'estimates',
-        'expenses', 'journals', 'period-locks', 'sales-orders', 'delivery-challans',
+        'expenses', 'journals', 'period-locks', 'sales-orders', 'delivery-challans', 'time-entries', 'project-summaries',
         'payments-received', 'credit-notes', 'bills', 'audit',
       ] as const;
       const responses = await Promise.all(endpoints.map((endpoint) => apiClient.get<any[]>(`/finance/${endpoint}`)));
@@ -546,6 +547,8 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setClients(data.clients);
       setVendors(data.vendors);
       setProjects(data.projects);
+      setTimeEntries(data['time-entries']);
+      setProjectSummaries(data['project-summaries']);
       setInvoices((data.invoices || []).map(normalizeInvoiceForUi));
       setEstimates(data.estimates);
       setExpenses(data.expenses);
@@ -588,6 +591,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       console.error('A committed transaction could not be reloaded for verification:', error);
       setAccounts([]); setClients([]); setVendors([]); setProjects([]); setInvoices([]);
       setEstimates([]); setExpenses([]); setJournalEntries([]); setPeriodLocks([]);
+      setTimeEntries([]); setProjectSummaries([]);
       setSalesOrders([]); setDeliveryChallans([]); setPaymentsReceived([]); setCreditNotes([]); setBills([]);
       setAuditLogs([]);
       window.alert('The server committed this transaction, but the verification refresh failed. Do not submit it again; reload the page before continuing.');
@@ -603,6 +607,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         console.error('Financial data unavailable; no local fallback was used:', error);
         setAccounts([]); setClients([]); setVendors([]); setProjects([]); setInvoices([]);
         setEstimates([]); setExpenses([]); setJournalEntries([]); setPeriodLocks([]);
+        setTimeEntries([]); setProjectSummaries([]);
         setSalesOrders([]); setDeliveryChallans([]); setPaymentsReceived([]); setCreditNotes([]); setBills([]);
         setAuditLogs([]);
       }
@@ -679,7 +684,8 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setSalespersons(targetData.salespersons);
     setVendors([]);
     setProjects([]);
-    setTimeEntries(targetData.timeEntries);
+    setTimeEntries([]);
+    setProjectSummaries([]);
     setInvoices([]);
     setEstimates([]);
     setExpenses([]);
@@ -838,18 +844,24 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     window.alert('Projects with financial history cannot be deleted. Archival is not enabled yet.');
   };
 
-  const addTimeEntry = (entry: Omit<TimeEntry, 'id'>) => {
-    window.alert('Time tracking requires a server-backed workflow and is not enabled yet.');
-    return false;
+  const addTimeEntry = async (entry: Omit<TimeEntry, 'id'>): Promise<boolean> => {
+    const response = await apiClient.post<TimeEntry>('/finance/time-entries', entry);
+    if (!response.data) throw new Error(response.error || 'Time entry could not be saved');
+    await refreshAfterCommittedWrite();
+    return true;
   };
 
-  const updateTimeEntry = (id: string, entryData: Partial<TimeEntry>) => {
-    window.alert('Time tracking requires a server-backed workflow and is not enabled yet.');
-    return false;
+  const updateTimeEntry = async (id: string, entryData: Partial<TimeEntry>): Promise<boolean> => {
+    const response = await apiClient.put<TimeEntry>(`/finance/time-entries/${id}`, entryData);
+    if (!response.data) throw new Error(response.error || 'Time entry could not be updated');
+    await refreshAfterCommittedWrite();
+    return true;
   };
 
-  const deleteTimeEntry = (id: string) => {
-    window.alert('Time tracking requires a server-backed workflow and is not enabled yet.');
+  const deleteTimeEntry = async (id: string): Promise<void> => {
+    const response = await apiClient.delete(`/finance/time-entries/${id}`);
+    if (response.error) throw new Error(response.error);
+    await refreshAfterCommittedWrite();
   };
 
   const addInvoice = async (invoiceData: Omit<Invoice, 'id' | 'createdAt' | 'invoiceNumber'>): Promise<Invoice> => {
@@ -904,9 +916,6 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (expenseData.isItemized || expenseData.items?.length) {
       throw new Error('Itemized expenses are not enabled until every line can be persisted and posted atomically.');
     }
-    if (expenseData.projectId || expenseData.clientId || expenseData.isBillable) {
-      throw new Error('Project and customer rebilling metadata is not enabled for posted expenses yet.');
-    }
     if (Number(expenseData.taxAmount || 0) !== 0) {
       throw new Error('Expense tax posting is not enabled. Record a bill with verified tax lines instead.');
     }
@@ -923,6 +932,9 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       date: expenseData.date,
       amount: expenseData.amount,
       description: expenseData.description,
+      projectId: expenseData.projectId,
+      clientId: expenseData.clientId,
+      isBillable: expenseData.isBillable,
     });
     if (!response.data) throw new Error(response.error || 'Expense could not be posted');
     await refreshAfterCommittedWrite();
@@ -963,49 +975,20 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   // Helper function: Project Financial Summary
   const getProjectSummary = (projectId: string): ProjectFinancialSummary => {
-    const prjInvoices = invoices.filter((i) => i.projectId === projectId && i.status !== 'Void');
-    const totalInvoiced = prjInvoices.reduce((sum, i) => sum + i.totalAmount, 0);
-    const totalCollected = prjInvoices.reduce((sum, i) => sum + i.paidAmount, 0);
-
-    const prjExpenses = expenses.filter((e) => e.projectId === projectId);
-    const directExpenses = prjExpenses.reduce((sum, e) => sum + e.amount, 0);
-
-    const prjTimes = timeEntries.filter((t) => t.projectId === projectId);
-    const totalLoggedHours = prjTimes.reduce((sum, t) => sum + t.hours, 0);
-
-    const unbilledTimes = prjTimes.filter((t) => t.isBillable && !t.isBilled);
-    const unbilledHoursAmount = unbilledTimes.reduce((sum, t) => sum + t.hours * t.hourlyRate, 0);
-
-    const netProfit = totalInvoiced - directExpenses;
-    const profitMarginPercent = totalInvoiced > 0 ? (netProfit / totalInvoiced) * 100 : 0;
-
-    const prj = projects.find((p) => p.id === projectId);
-    let budgetUsedPercent = 0;
-    if (prj && prj.totalBudget > 0) {
-      if (prj.budgetType === 'Fixed Cost' || prj.budgetType === 'Time & Materials') {
-        budgetUsedPercent = (directExpenses / prj.totalBudget) * 100;
-      } else {
-        budgetUsedPercent = (totalLoggedHours / prj.totalBudget) * 100;
-      }
-    }
-
-    return {
-      projectId,
-      totalInvoiced,
-      totalCollected,
-      directExpenses,
-      unbilledHoursAmount,
-      totalLoggedHours,
-      netProfit,
-      profitMarginPercent: Math.round(profitMarginPercent * 10) / 10,
-      budgetUsedPercent: Math.round(budgetUsedPercent * 10) / 10,
+    return projectSummaries.find((summary) => summary.projectId === projectId) || {
+      projectId, totalInvoiced: 0, totalCollected: 0, directExpenses: 0,
+      unbilledHoursAmount: 0, totalLoggedHours: 0, netProfit: 0,
+      profitMarginPercent: 0, budgetUsedPercent: 0,
     };
   };
 
   // Helper function: Convert all unbilled time for a project into a new invoice
-  const convertUnbilledTimeToInvoice = (projectId: string, clientId: string): Invoice | null => {
-    window.alert('Time-to-invoice conversion requires one atomic server transaction and is not enabled yet.');
-    return null;
+  const convertUnbilledTimeToInvoice = async (projectId: string, clientId: string): Promise<Invoice | null> => {
+    const today = new Date().toISOString().split('T')[0];
+    const response = await apiClient.post<any>(`/finance/projects/${projectId}/invoice-unbilled-time`, { issueDate: today, dueDate: today });
+    if (!response.data) throw new Error(response.error || 'Unbilled time could not be invoiced');
+    await refreshAfterCommittedWrite();
+    return normalizeInvoiceForUi({ ...response.data, clientId, paidAmount: 0, balanceDue: response.data.totalAmount });
   };
 
   const addPeriodLock = async (lockData: Omit<PeriodLock, 'id' | 'lockedAt' | 'status'>): Promise<void> => {

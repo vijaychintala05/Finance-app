@@ -9,6 +9,8 @@ import { ImportStatementModal } from './ImportStatementModal';
 import { BankAccountsSummaryCards } from './BankAccountsSummaryCards';
 import { BankAccountsListSidebar } from './BankAccountsListSidebar';
 import { BankTransactionsFeed } from './BankTransactionsFeed';
+import { BankingService } from '../../services/bankingService';
+import { BankAccount } from '../../types/banking';
 
 interface BankingViewProps {
   autoOpenReconcile?: boolean;
@@ -54,6 +56,12 @@ export const BankingView: React.FC<BankingViewProps> = ({
   const [recordTxDefaultType, setRecordTxDefaultType] = useState<'DEBIT' | 'CREDIT'>('DEBIT');
   const [isReconcileOpen, setIsReconcileOpen] = useState<boolean>(false);
   const [isImportStatementOpen, setIsImportStatementOpen] = useState<boolean>(false);
+  const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
+
+  const refreshBankAccounts = React.useCallback(() => {
+    BankingService.getAccounts().then(setBankAccounts).catch((error) => console.error('Bank accounts unavailable:', error));
+  }, []);
+  React.useEffect(refreshBankAccounts, [refreshBankAccounts]);
 
   React.useEffect(() => {
     if (autoOpenReconcile) {
@@ -218,6 +226,10 @@ export const BankingView: React.FC<BankingViewProps> = ({
     }
     return currentCategoryAccounts[0] || accounts[0] || null;
   }, [selectedAccountId, accounts, currentCategoryAccounts]);
+  const activeBankAccount = useMemo(
+    () => bankAccounts.find((candidate) => candidate.ledgerAccountId === activeAccount?.id) || null,
+    [bankAccounts, activeAccount]
+  );
 
   // Bank transactions feed for active account
   const accountTransactions = useMemo(() => {
@@ -396,8 +408,10 @@ export const BankingView: React.FC<BankingViewProps> = ({
         <ReconcileBankModal
           isOpen={isReconcileOpen}
           account={activeAccount}
+          bankAccount={activeBankAccount}
           settings={settings}
           onClose={() => setIsReconcileOpen(false)}
+          onReconcileComplete={refreshBankAccounts}
         />
       )}
 
@@ -405,8 +419,9 @@ export const BankingView: React.FC<BankingViewProps> = ({
         <ImportStatementModal
           isOpen={isImportStatementOpen}
           account={activeAccount}
-          settings={settings}
+          bankAccount={activeBankAccount}
           onClose={() => setIsImportStatementOpen(false)}
+          onImported={refreshBankAccounts}
         />
       )}
 

@@ -118,10 +118,9 @@ export const MobileNav: React.FC<MobileNavProps> = ({
       id: 'settings_section',
       label: 'Settings',
       icon: <Settings className="w-5 h-5" />,
-      defaultTab: 'settings_overview',
+      defaultTab: 'settings',
       subItems: [
-        { id: 'settings_overview', label: 'Overview' },
-        { id: 'settings', label: 'Workspace Settings' },
+        { id: 'settings', label: 'Settings' },
       ],
     },
   ];

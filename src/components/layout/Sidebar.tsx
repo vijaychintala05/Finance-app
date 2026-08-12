@@ -122,10 +122,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
       id: 'settings_section',
       label: 'Settings',
       icon: <Settings className="w-4 h-4" />,
-      defaultTab: 'settings_overview',
+      defaultTab: 'settings',
       subItems: [
-        { id: 'settings_overview', label: 'Overview' },
-        { id: 'settings', label: 'Workspace Settings' },
+        { id: 'settings', label: 'Settings' },
       ],
     },
   ];
@@ -282,7 +281,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Footer info */}
       <div className="p-3 border-t border-white/15 text-[11px] text-blue-200 flex justify-between items-center">
-        <span>FirmBooks v2.4</span>
+        <span>FirmBooks v1.0</span>
         <span className="font-mono text-white font-semibold">{settings.currencyCode}</span>
       </div>
     </aside>

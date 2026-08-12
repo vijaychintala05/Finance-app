@@ -10,6 +10,7 @@ import {
   CreditCard,
   Calculator,
   FileSpreadsheet,
+  Download,
 } from 'lucide-react';
 import { NavigationTab } from '../../types';
 import { useBooks } from '../../context/BooksContext';
@@ -36,7 +37,23 @@ export const Header: React.FC<HeaderProps> = ({
   const { settings, updateSettings, currentOrg } = useBooks();
   const handleMobileToggle = onOpenMobileMenu || onOpenMobileNav || (() => {});
   const [isNewMenuOpen, setIsNewMenuOpen] = useState(false);
+  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const newMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      setInstallPrompt(event as BeforeInstallPromptEvent);
+    };
+    window.addEventListener('beforeinstallprompt', handleInstallPrompt);
+    return () => window.removeEventListener('beforeinstallprompt', handleInstallPrompt);
+  }, []);
+
+  const installApp = async () => {
+    if (!installPrompt) return;
+    await installPrompt.prompt();
+    setInstallPrompt(null);
+  };
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -146,6 +163,17 @@ export const Header: React.FC<HeaderProps> = ({
 
       {/* Right: Mobile Search, Global + New Dropdown & Theme / Utilities */}
       <div className="flex items-center space-x-2.5">
+        {installPrompt && (
+          <button
+            type="button"
+            onClick={() => void installApp()}
+            className="hidden items-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs font-bold text-blue-700 hover:bg-blue-100 sm:flex"
+            title="Install FirmBooks as an app"
+          >
+            <Download className="h-4 w-4" />
+            <span>Install</span>
+          </button>
+        )}
         {/* Mobile Search Trigger */}
         <div className="md:hidden">
           <GlobalSearchBar onNavigate={(tab, opts) => onNavigate && onNavigate(tab, opts)} isMobileTrigger={true} />

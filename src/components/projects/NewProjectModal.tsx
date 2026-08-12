@@ -3,6 +3,7 @@ import { Plus, X } from 'lucide-react';
 import { ProjectBudgetType, ProjectStatus } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 import { QuickAddClientModal } from '../common/QuickAddClientModal';
+import { createBrowserId } from '../../utils/browserIds';
 
 interface NewProjectModalProps {
   isOpen: boolean;
@@ -12,7 +13,7 @@ interface NewProjectModalProps {
 export const NewProjectModal: React.FC<NewProjectModalProps> = ({ isOpen, onClose }) => {
   const { clients, addProject, settings } = useBooks();
 
-  const [code, setCode] = useState(`PRJ-${globalThis.crypto.randomUUID().slice(0, 8).toUpperCase()}`);
+  const [code, setCode] = useState(() => `PRJ-${createBrowserId().slice(-8).toUpperCase()}`);
   const [name, setName] = useState('');
   const [clientId, setClientId] = useState(clients[0]?.id || '');
   const [description, setDescription] = useState('');
@@ -58,7 +59,7 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({ isOpen, onClos
       <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 w-full max-w-lg overflow-hidden shadow-xl">
         <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center">
           <h3 className="font-bold text-slate-900 dark:text-slate-100 text-sm">
-            Create New Firm Project
+            Create New Project
           </h3>
           <button onClick={onClose} className="p-1 text-slate-400 hover:text-slate-600">
             <X className="w-5 h-5" />

@@ -3,6 +3,7 @@ import { X, FolderPlus, Plus, Loader2, AlertCircle } from 'lucide-react';
 import { ProjectBudgetType, ProjectStatus } from '../../types';
 import { customerApi } from '../../services/customerApi';
 import { QuickAddClientModal } from './QuickAddClientModal';
+import { createBrowserId } from '../../utils/browserIds';
 
 interface ClientItem {
   id: string;
@@ -28,7 +29,7 @@ export const QuickAddProjectModal: React.FC<QuickAddProjectModalProps> = ({
   clients = [],
   currencyCode = '',
 }) => {
-  const [code, setCode] = useState(`PRJ-${globalThis.crypto.randomUUID().slice(0, 8).toUpperCase()}`);
+  const [code, setCode] = useState(() => `PRJ-${createBrowserId().slice(-8).toUpperCase()}`);
   const [name, setName] = useState('');
   const [clientId, setClientId] = useState(defaultClientId || clients[0]?.id || '');
   const [description, setDescription] = useState('');

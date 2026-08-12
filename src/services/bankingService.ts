@@ -10,6 +10,7 @@ import {
   CSVColumnMapping,
   MatchSuggestion,
 } from '../types/banking';
+import { createBrowserId } from '../utils/browserIds';
 
 export class BankingService {
   private static async apiCall<T>(endpoint: string, method: string = 'GET', body?: any): Promise<T> {
@@ -24,7 +25,7 @@ export class BankingService {
     };
     if (token) headers.Authorization = `Bearer ${token}`;
     if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method.toUpperCase())) {
-      headers['Idempotency-Key'] = globalThis.crypto.randomUUID();
+      headers['Idempotency-Key'] = createBrowserId('mutation');
     }
     const response = await fetch(`/api/v1/banking${endpoint}`, {
       method,

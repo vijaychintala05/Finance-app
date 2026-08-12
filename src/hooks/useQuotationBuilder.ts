@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
+import { createBrowserId } from '../utils/browserIds';
 
 export interface BuilderLineItem {
   id: string;
@@ -149,7 +150,7 @@ export function useQuotationBuilder(initialData?: Partial<QuotationBuilderData>)
       const original = prev[idx];
       const clone: BuilderLineItem = {
         ...original,
-        id: `line-${globalThis.crypto.randomUUID()}`,
+        id: createBrowserId('line'),
       };
       const next = [...prev];
       next.splice(idx + 1, 0, clone);

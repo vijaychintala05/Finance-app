@@ -23,6 +23,7 @@ interface MobileNavProps {
   activeTab: string;
   setActiveTab: (tab: string) => void;
   onOpenQuickCreate?: () => void;
+  enabledCapabilities?: ReadonlySet<string>;
 }
 
 interface SubNavItem {
@@ -45,6 +46,7 @@ export const MobileNav: React.FC<MobileNavProps> = ({
   activeTab,
   setActiveTab,
   onOpenQuickCreate,
+  enabledCapabilities = new Set(),
 }) => {
   const { settings } = useBooks();
 
@@ -81,6 +83,12 @@ export const MobileNav: React.FC<MobileNavProps> = ({
         { id: 'clients', label: 'Customers' },
         { id: 'invoices', label: 'Invoices' },
         { id: 'payments_received', label: 'Payments Received' },
+        ...(enabledCapabilities.has('receivables-corrections')
+          ? [{ id: 'credit_notes' as NavigationTab, label: 'Credit Notes' }]
+          : []),
+        ...(enabledCapabilities.has('recurring-transactions')
+          ? [{ id: 'recurring_invoices' as NavigationTab, label: 'Recurring Invoices' }]
+          : []),
       ],
     },
     {
@@ -92,6 +100,18 @@ export const MobileNav: React.FC<MobileNavProps> = ({
         { id: 'vendors', label: 'Vendors' },
         { id: 'expenses', label: 'Expenses' },
         { id: 'bills', label: 'Bills' },
+        ...(enabledCapabilities.has('payables-settlement')
+          ? [
+              { id: 'payments_made' as NavigationTab, label: 'Payments Made' },
+              { id: 'vendor_credits' as NavigationTab, label: 'Vendor Credits' },
+            ]
+          : []),
+        ...(enabledCapabilities.has('recurring-transactions')
+          ? [
+              { id: 'recurring_bills' as NavigationTab, label: 'Recurring Bills' },
+              { id: 'recurring_expenses' as NavigationTab, label: 'Recurring Expenses' },
+            ]
+          : []),
       ],
     },
     {
@@ -103,6 +123,8 @@ export const MobileNav: React.FC<MobileNavProps> = ({
         { id: 'journals', label: 'Manual Journals' },
         { id: 'coa', label: 'Chart of Accounts' },
         { id: 'transaction_locking', label: 'Period Locks' },
+        ...(enabledCapabilities.has('fixed-assets') ? [{ id: 'fixed_assets' as NavigationTab, label: 'Fixed Assets' }] : []),
+        ...(enabledCapabilities.has('period-close') ? [{ id: 'period_close' as NavigationTab, label: 'Period Close' }] : []),
       ],
     },
     {
@@ -121,6 +143,8 @@ export const MobileNav: React.FC<MobileNavProps> = ({
       defaultTab: 'settings',
       subItems: [
         { id: 'settings', label: 'Settings' },
+        ...(enabledCapabilities.has('team-access') ? [{ id: 'team_access' as NavigationTab, label: 'Team Access' }] : []),
+        ...(enabledCapabilities.has('recovery-center') ? [{ id: 'recovery_center' as NavigationTab, label: 'Recovery Center' }] : []),
       ],
     },
   ];

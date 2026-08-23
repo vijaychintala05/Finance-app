@@ -54,14 +54,40 @@ router.post('/invoices', requirePermission('invoices.create'), FinanceController
 // Payments Received & Advances
 router.get('/payments-received', requirePermission('invoices.view'), FinanceController.getPaymentsReceived);
 router.post('/payments-received', requirePermission('invoices.receive_payment'), FinanceController.recordPaymentReceived);
+router.post('/payments-received/:id/reverse', requirePermission('invoices.receive_payment'), FinanceController.reversePaymentReceived);
+router.get('/customer-advances', requirePermission('invoices.view'), requireTrustedFinanceFeature('customer-advance-application'), FinanceController.getCustomerAdvances);
+router.get('/customer-advance-applications', requirePermission('invoices.view'), requireTrustedFinanceFeature('customer-advance-application'), FinanceController.getCustomerAdvanceApplications);
 router.post('/customer-advances/apply', requirePermission('invoices.receive_payment'), requireTrustedFinanceFeature('customer-advance-application'), FinanceController.applyCustomerAdvance);
+router.post('/customer-advance-applications/:id/reverse', requirePermission('invoices.receive_payment'), requireTrustedFinanceFeature('customer-advance-application'), FinanceController.reverseCustomerAdvanceApplication);
 
 // Credit Notes, Refunds & Write-Offs
 router.get('/credit-notes', requirePermission('invoices.view'), FinanceController.getCreditNotes);
 router.post('/credit-notes', requirePermission('invoices.create'), requireTrustedFinanceFeature('credit-notes'), FinanceController.createCreditNote);
 router.post('/credit-notes/apply', requirePermission('invoices.edit'), requireTrustedFinanceFeature('credit-notes'), FinanceController.applyCreditNote);
+router.post('/credit-notes/:id/reverse', requirePermission('invoices.edit'), requireTrustedFinanceFeature('credit-notes'), FinanceController.reverseCreditNote);
 router.post('/refunds', requirePermission('invoices.edit'), requireTrustedFinanceFeature('customer-refunds'), FinanceController.recordRefund);
+router.get('/refunds', requirePermission('invoices.view'), requireTrustedFinanceFeature('customer-refunds'), FinanceController.getCustomerRefunds);
+router.post('/refunds/:id/reverse', requirePermission('invoices.edit'), requireTrustedFinanceFeature('customer-refunds'), FinanceController.reverseCustomerRefund);
 router.post('/write-offs', requirePermission('invoices.delete'), requireTrustedFinanceFeature('receivable-write-offs'), FinanceController.recordWriteOff);
+router.get('/write-offs', requirePermission('invoices.view'), requireTrustedFinanceFeature('receivable-write-offs'), FinanceController.getReceivableWriteOffs);
+router.post('/write-offs/:id/reverse', requirePermission('invoices.delete'), requireTrustedFinanceFeature('receivable-write-offs'), FinanceController.reverseReceivableWriteOff);
+
+// Vendor Payments, Advances, Credits & Write-Offs
+router.get('/vendor-payments', requirePermission('purchases.view'), requireTrustedFinanceFeature('vendor-settlements'), FinanceController.getVendorPayments);
+router.post('/vendor-payments', requirePermission('purchases.create'), requireTrustedFinanceFeature('vendor-settlements'), FinanceController.recordVendorPayment);
+router.post('/vendor-payments/:id/reverse', requirePermission('purchases.create'), requireTrustedFinanceFeature('vendor-settlements'), FinanceController.reverseVendorPayment);
+router.get('/vendor-advances', requirePermission('purchases.view'), requireTrustedFinanceFeature('vendor-settlements'), FinanceController.getVendorAdvances);
+router.get('/vendor-advance-applications', requirePermission('purchases.view'), requireTrustedFinanceFeature('vendor-settlements'), FinanceController.getVendorAdvanceApplications);
+router.post('/vendor-advances', requirePermission('purchases.create'), requireTrustedFinanceFeature('vendor-settlements'), FinanceController.recordVendorAdvance);
+router.post('/vendor-advances/:id/reverse', requirePermission('purchases.create'), requireTrustedFinanceFeature('vendor-settlements'), FinanceController.reverseVendorAdvance);
+router.post('/vendor-advances/apply', requirePermission('purchases.create'), requireTrustedFinanceFeature('vendor-settlements'), FinanceController.applyVendorAdvance);
+router.post('/vendor-advance-applications/:id/reverse', requirePermission('purchases.create'), requireTrustedFinanceFeature('vendor-settlements'), FinanceController.reverseVendorAdvanceApplication);
+router.get('/debit-notes', requirePermission('purchases.view'), requireTrustedFinanceFeature('vendor-credits'), FinanceController.getDebitNotes);
+router.post('/debit-notes', requirePermission('purchases.create'), requireTrustedFinanceFeature('vendor-credits'), FinanceController.createDebitNote);
+router.post('/debit-notes/:id/reverse', requirePermission('purchases.create'), requireTrustedFinanceFeature('vendor-credits'), FinanceController.reverseVendorCredit);
+router.post('/ap-write-offs', requirePermission('purchases.create'), requireTrustedFinanceFeature('payable-write-offs'), FinanceController.recordAPWriteOff);
+router.get('/ap-write-offs', requirePermission('purchases.view'), requireTrustedFinanceFeature('payable-write-offs'), FinanceController.getPayableWriteOffs);
+router.post('/ap-write-offs/:id/reverse', requirePermission('purchases.create'), requireTrustedFinanceFeature('payable-write-offs'), FinanceController.reversePayableWriteOff);
 
 // AR Aging & Integrity Verifier
 router.get('/ar-aging', requirePermission('reports.view'), FinanceController.getARAging);
@@ -98,6 +124,8 @@ router.get('/fixed-assets', requirePermission('accounting.view'), FinanceControl
 router.post('/fixed-assets', requirePermission('accounting.post'), requireTrustedFinanceFeature('fixed-assets'), FinanceController.createFixedAsset);
 router.post('/fixed-assets/:id/depreciate', requirePermission('accounting.post'), requireTrustedFinanceFeature('fixed-assets'), FinanceController.depreciateFixedAsset);
 router.post('/fixed-assets/:id/dispose', requirePermission('accounting.post'), requireTrustedFinanceFeature('fixed-assets'), FinanceController.disposeFixedAsset);
+router.post('/fixed-assets/:id/depreciation/reverse', requirePermission('accounting.post'), requireTrustedFinanceFeature('fixed-assets'), FinanceController.reverseFixedAssetDepreciation);
+router.post('/fixed-assets/:id/disposal/reverse', requirePermission('accounting.post'), requireTrustedFinanceFeature('fixed-assets'), FinanceController.reverseFixedAssetDisposal);
 
 // Period Close Workspace
 router.get('/period-close/validate', requirePermission('accounting.view'), FinanceController.validatePeriodClose);

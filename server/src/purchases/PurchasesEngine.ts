@@ -1,4 +1,4 @@
-import { db } from '../database/db';
+import { db, type DbQueryClient as QueryClient } from '../database/db';
 import { ServerPostingEngine } from '../accounting/postingEngine';
 import { AccountingService } from '../../../src/services/accountingService';
 import { PeriodLock } from '../../../src/types';
@@ -109,6 +109,7 @@ export interface VendorPaymentModel {
   unallocatedAmount?: number;
   status?: string;
   allocations?: { billId: string; amount: number }[];
+  _debugFailPoint?: 'after_journal' | 'after_payment' | 'after_first_allocation';
   journalEntryId?: string;
   createdAt?: string;
 }
@@ -133,8 +134,9 @@ export interface DebitNoteModel {
 
 export class PurchasesEngine {
   // Helper for checking Period Lock
-  private static async checkPeriodLock(orgId: string, dateStr: string): Promise<void> {
-    const lockRes = await db.query(
+  private static async checkPeriodLock(orgId: string, dateStr: string, transactionClient?: QueryClient): Promise<void> {
+    const client = transactionClient || db;
+    const lockRes = await client.query(
       `SELECT lock_date FROM period_locks WHERE organization_id = $1 AND status = 'Active'`,
       [orgId]
     );
@@ -161,14 +163,16 @@ export class PurchasesEngine {
     date: string,
     reference: string,
     description: string,
-    lines: any[]
+    lines: any[],
+    transactionClient?: QueryClient
   ): Promise<string> {
+    const queryClient: QueryClient = transactionClient || db;
     const resolvedLines = await Promise.all(
       lines.map(async (line) => {
         let accId = line.accountId;
         let accCode = line.accountCode;
         let accName = line.accountName;
-        const accRes = await db.query(
+        const accRes = await queryClient.query(
           `SELECT id, code, name FROM accounts WHERE organization_id = $1 AND (id = $2 OR code = $3 OR code = $2)`,
           [orgId, accId, accCode || accId]
         );
@@ -193,7 +197,7 @@ export class PurchasesEngine {
       reference,
       description,
       lines: resolvedLines,
-    });
+    }, transactionClient);
 
     return postRes.entryId;
   }
@@ -500,193 +504,223 @@ export class PurchasesEngine {
   // -------------------------------------------------------------
   // 4. VENDOR BILLS (POSTING & AP BALANCES)
   // -------------------------------------------------------------
-  public static async createAndPostBill(orgId: string, data: Partial<BillModel>): Promise<BillModel> {
-    const billDate = data.billDate || new Date().toISOString().split('T')[0];
-    await this.checkPeriodLock(orgId, billDate);
+  public static async createAndPostBill(
+    orgId: string,
+    data: Partial<BillModel>,
+    transactionClient?: QueryClient,
+    _debugFailPoint?: 'after_journal' | 'after_bill' | 'after_po' | 'after_vendor'
+  ): Promise<BillModel> {
+    const execute = async (client: QueryClient) => {
+      const billDate = data.billDate || new Date().toISOString().split('T')[0];
+      await this.checkPeriodLock(orgId, billDate, client);
 
-    // Duplicate Vendor Invoice Number Guard
-    if (data.vendorInvoiceNumber && data.vendorId) {
-      const dupCheck = await db.query(
-        `SELECT id FROM bills WHERE organization_id = $1 AND vendor_id = $2 AND vendor_invoice_number = $3 AND status != 'VOIDED'`,
-        [orgId, data.vendorId, data.vendorInvoiceNumber]
-      );
-      if (dupCheck.rows.length > 0) {
-        throw new Error(`Duplicate Vendor Invoice Number '${data.vendorInvoiceNumber}' already exists for this vendor.`);
+      // Duplicate Vendor Invoice Number Guard
+      if (data.vendorInvoiceNumber && data.vendorId) {
+        const dupCheck = await client.query(
+          `SELECT id FROM bills WHERE organization_id = $1 AND vendor_id = $2 AND vendor_invoice_number = $3 AND status != 'VOIDED'`,
+          [orgId, data.vendorId, data.vendorInvoiceNumber]
+        );
+        if (dupCheck.rows.length > 0) {
+          throw new Error(`Duplicate Vendor Invoice Number '${data.vendorInvoiceNumber}' already exists for this vendor.`);
+        }
       }
-    }
 
-    const id = newId('bill');
-    const billNum = await DocumentNumberingEngine.getNextNumber(orgId, 'VENDOR_BILL', billDate);
-    const now = new Date().toISOString();
-
-    const subtotal = data.subtotal || 0;
-    const taxTotal = data.taxTotal || 0;
-    const discount = data.discount || 0;
-    const roundOff = data.roundOffAmount || 0;
-    const totalAmount = data.totalAmount || Math.round((subtotal + taxTotal - discount + roundOff) * 100) / 100;
-    const amountPaid = data.amountPaid || 0;
-    const balanceDue = Math.round((totalAmount - amountPaid) * 100) / 100;
-
-    let status: BillModel['status'] = data.status || 'POSTED';
-    if (status === 'POSTED') {
-      if (balanceDue === 0) status = 'PAID';
-      else if (amountPaid > 0) status = 'PARTIALLY_PAID';
-      else status = 'POSTED';
-    }
-
-    // Double-Entry GL Posting for Vendor Bill
-    // Debit: Expense / Inventory Account
-    // Debit: GST Input Tax Credit (acc-gst-input / 2110)
-    // Credit: Accounts Payable (acc-ap-control / 2000)
-    let journalEntryId: string | undefined;
-
-    if (status !== 'DRAFT') {
-      const glLines: any[] = [];
+      const id = newId('bill');
+      const billNum = await DocumentNumberingEngine.getNextNumber(orgId, 'VENDOR_BILL', billDate, undefined, client);
+      const now = new Date().toISOString();
 
       const itemsList = data.lineItems || (data as any).items || [];
-      // Line items or aggregate expense debit
-      if (itemsList.length > 0) {
-        for (const item of itemsList) {
+      const calculatedSubtotal = itemsList.reduce((sum: number, it: any) => sum + (it.amount || ((Number(it.quantity) || 0) * (Number(it.unitPrice) || 0))), 0);
+      const subtotal = data.subtotal !== undefined ? data.subtotal : calculatedSubtotal;
+      const taxTotal = data.taxTotal || 0;
+      const discount = data.discount || 0;
+      const roundOff = data.roundOffAmount || 0;
+      const totalAmount = data.totalAmount || Math.round((subtotal + taxTotal - discount + roundOff) * 100) / 100;
+      const amountPaid = data.amountPaid || 0;
+      const balanceDue = Math.round((totalAmount - amountPaid) * 100) / 100;
+
+      let status: BillModel['status'] = data.status || 'POSTED';
+      if (status === 'POSTED') {
+        if (balanceDue === 0) status = 'PAID';
+        else if (amountPaid > 0) status = 'PARTIALLY_PAID';
+        else status = 'POSTED';
+      }
+
+      // Double-Entry GL Posting for Vendor Bill
+      // Debit: Expense / Inventory Account
+      // Debit: GST Input Tax Credit (acc-gst-input / 2110)
+      // Credit: Accounts Payable (acc-ap-control / 2000)
+      let journalEntryId: string | undefined;
+
+      if (status !== 'DRAFT') {
+        const glLines: any[] = [];
+
+        // Line items or aggregate expense debit
+        if (itemsList.length > 0) {
+          for (const item of itemsList) {
+            glLines.push({
+              accountId: item.accountId || 'acc-expense',
+              accountCode: item.accountCode || '5000',
+              accountName: item.accountName || 'Operating Expense',
+              debit: item.amount || (item.quantity * item.unitPrice),
+              credit: 0,
+              description: item.description || `Bill ${billNum} Line Item`,
+            });
+          }
+        } else {
           glLines.push({
-            accountId: item.accountId || 'acc-expense',
-            accountCode: item.accountCode || '5000',
-            accountName: item.accountName || 'Operating Expense',
-            debit: item.amount || (item.quantity * item.unitPrice),
+            accountId: 'acc-expense',
+            accountCode: '5000',
+            accountName: 'Operating Expense',
+            debit: subtotal - discount,
             credit: 0,
-            description: item.description || `Bill ${billNum} Line Item`,
+            description: `Bill ${billNum} Expense`,
           });
         }
-      } else {
+
+        // Tax Input Credit
+        if (taxTotal > 0) {
+          glLines.push({
+            accountId: 'acc-gst-input',
+            accountCode: '2110',
+            accountName: 'GST Input Tax Credit',
+            debit: taxTotal,
+            credit: 0,
+            description: `GST Input Tax Credit for ${billNum}`,
+          });
+        }
+
+        // AP Control Account Credit
         glLines.push({
-          accountId: 'acc-expense',
-          accountCode: '5000',
-          accountName: 'Operating Expense',
-          debit: subtotal - discount,
-          credit: 0,
-          description: `Bill ${billNum} Expense`,
+          accountId: 'acc-ap-control',
+          accountCode: '2000',
+          accountName: 'Accounts Payable',
+          debit: 0,
+          credit: totalAmount,
+          description: `Vendor Bill ${billNum} Payable to ${data.vendorName}`,
         });
+
+        journalEntryId = await this.persistJournalEntry(
+          orgId,
+          `JE-BILL-${billNum}`,
+          billDate,
+          data.vendorInvoiceNumber || billNum,
+          `Vendor Bill ${billNum} posted for ${data.vendorName}`,
+          glLines,
+          client
+        );
+
+        if (_debugFailPoint === 'after_journal') {
+          throw new Error('SIMULATED_FAILURE_AFTER_JOURNAL');
+        }
       }
 
-      // Tax Input Credit
-      if (taxTotal > 0) {
-        glLines.push({
-          accountId: 'acc-gst-input',
-          accountCode: '2110',
-          accountName: 'GST Input Tax Credit',
-          debit: taxTotal,
-          credit: 0,
-          description: `GST Input Tax Credit for ${billNum}`,
-        });
-      }
-
-      // AP Control Account Credit
-      glLines.push({
-        accountId: 'acc-ap-control',
-        accountCode: '2000',
-        accountName: 'Accounts Payable',
-        debit: 0,
-        credit: totalAmount,
-        description: `Vendor Bill ${billNum} Payable to ${data.vendorName}`,
-      });
-
-      journalEntryId = await this.persistJournalEntry(
-        orgId,
-        `JE-BILL-${billNum}`,
-        billDate,
-        data.vendorInvoiceNumber || billNum,
-        `Vendor Bill ${billNum} posted for ${data.vendorName}`,
-        glLines
+      // Persist into `bills` table
+      await client.query(
+        `INSERT INTO bills (id, organization_id, bill_number, vendor_invoice_number, purchase_order_id, vendor_id, vendor_name, vendor_email, bill_date, due_date, subtotal, tax_total, discount, round_off_amount, total_amount, amount_paid, amount_debited, amount_written_off, balance_due, status, notes, line_items, journal_entry_id, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)`,
+        [
+          id,
+          orgId,
+          billNum,
+          data.vendorInvoiceNumber || billNum,
+          data.purchaseOrderId || null,
+          data.vendorId,
+          data.vendorName || 'Vendor',
+          data.vendorEmail || '',
+          billDate,
+          data.dueDate || billDate,
+          subtotal,
+          taxTotal,
+          discount,
+          roundOff,
+          totalAmount,
+          amountPaid,
+          0,
+          0,
+          balanceDue,
+          status,
+          data.notes || '',
+          JSON.stringify(data.lineItems || []),
+          journalEntryId || null,
+          now,
+        ]
       );
-    }
 
-    // Persist into `bills` table
-    await db.query(
-      `INSERT INTO bills (id, organization_id, bill_number, vendor_invoice_number, purchase_order_id, vendor_id, vendor_name, vendor_email, bill_date, due_date, subtotal, tax_total, discount, round_off_amount, total_amount, amount_paid, amount_debited, amount_written_off, balance_due, status, notes, line_items, journal_entry_id, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)`,
-      [
+      if (_debugFailPoint === 'after_bill') {
+        throw new Error('SIMULATED_FAILURE_AFTER_BILL');
+      }
+
+      // Update PO billed amount if linked
+      if (data.purchaseOrderId) {
+        await client.query(
+          `UPDATE purchase_orders SET billed_amount = billed_amount + $1, status = CASE WHEN billed_amount + $1 >= total_amount THEN 'BILLED' ELSE 'PARTIALLY_BILLED' END WHERE organization_id = $2 AND id = $3`,
+          [totalAmount, orgId, data.purchaseOrderId]
+        );
+      }
+
+      if (_debugFailPoint === 'after_po') {
+        throw new Error('SIMULATED_FAILURE_AFTER_PO');
+      }
+
+      // Update Vendor Payables Balance
+      if (data.vendorId) {
+        await client.query(
+          `UPDATE vendors SET payables_balance = payables_balance + $1 WHERE organization_id = $2 AND id = $3`,
+          [balanceDue, orgId, data.vendorId]
+        );
+      }
+
+      if (_debugFailPoint === 'after_vendor') {
+        throw new Error('SIMULATED_FAILURE_AFTER_VENDOR');
+      }
+
+      // Audit Log
+      await client.query(
+        `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, timestamp, after_state)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          newId('aud'),
+          orgId,
+          'SYSTEM',
+          'CREATE_BILL',
+          'BILL',
+          id,
+          now,
+          JSON.stringify({ billNumber: billNum, totalAmount, balanceDue, journalEntryId }),
+        ]
+      );
+
+      return {
         id,
-        orgId,
-        billNum,
-        data.vendorInvoiceNumber || billNum,
-        data.purchaseOrderId || null,
-        data.vendorId,
-        data.vendorName || 'Vendor',
-        data.vendorEmail || '',
+        organizationId: orgId,
+        billNumber: billNum,
+        vendorInvoiceNumber: data.vendorInvoiceNumber || billNum,
+        purchaseOrderId: data.purchaseOrderId,
+        vendorId: data.vendorId!,
+        vendorName: data.vendorName || 'Vendor',
+        vendorEmail: data.vendorEmail || '',
         billDate,
-        data.dueDate || billDate,
+        dueDate: data.dueDate || billDate,
         subtotal,
         taxTotal,
         discount,
-        roundOff,
+        roundOffAmount: roundOff,
         totalAmount,
         amountPaid,
-        0,
-        0,
+        amountDebited: 0,
+        amountWrittenOff: 0,
         balanceDue,
         status,
-        data.notes || '',
-        JSON.stringify(data.lineItems || []),
-        journalEntryId || null,
-        now,
-      ]
-    );
-
-    // Update PO billed amount if linked
-    if (data.purchaseOrderId) {
-      await db.query(
-        `UPDATE purchase_orders SET billed_amount = billed_amount + $1, status = CASE WHEN billed_amount + $1 >= total_amount THEN 'BILLED' ELSE 'PARTIALLY_BILLED' END WHERE organization_id = $2 AND id = $3`,
-        [totalAmount, orgId, data.purchaseOrderId]
-      );
-    }
-
-    // Update Vendor Payables Balance
-    await db.query(
-      `UPDATE vendors SET payables_balance = payables_balance + $1 WHERE organization_id = $2 AND id = $3`,
-      [balanceDue, orgId, data.vendorId]
-    );
-
-    // Audit Log
-    await db.query(
-      `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, timestamp, after_state)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-      [
-        newId('aud'),
-        orgId,
-        'SYSTEM',
-        'CREATE_BILL',
-        'BILL',
-        id,
-        now,
-        JSON.stringify({ billNumber: billNum, totalAmount, balanceDue }),
-      ]
-    );
-
-    return {
-      id,
-      organizationId: orgId,
-      billNumber: billNum,
-      vendorInvoiceNumber: data.vendorInvoiceNumber || billNum,
-      purchaseOrderId: data.purchaseOrderId,
-      vendorId: data.vendorId!,
-      vendorName: data.vendorName || 'Vendor',
-      vendorEmail: data.vendorEmail,
-      billDate,
-      dueDate: data.dueDate || billDate,
-      subtotal,
-      taxTotal,
-      discount,
-      roundOffAmount: roundOff,
-      totalAmount,
-      amountPaid,
-      amountDebited: 0,
-      amountWrittenOff: 0,
-      balanceDue,
-      status,
-      lineItems: data.lineItems || [],
-      notes: data.notes || '',
-      journalEntryId,
-      createdAt: now,
+        notes: data.notes || '',
+        lineItems: data.lineItems || [],
+        journalEntryId,
+        createdAt: now,
+      };
     };
+
+    if (transactionClient) return await execute(transactionClient);
+    return await db.transaction(execute);
   }
 
   public static async getBill(orgId: string, id: string): Promise<BillModel | null> {
@@ -729,143 +763,198 @@ export class PurchasesEngine {
   // -------------------------------------------------------------
   public static async recordVendorPayment(
     orgId: string,
-    data: Partial<VendorPaymentModel>
+    data: Partial<VendorPaymentModel>,
+    transactionClient?: QueryClient
   ): Promise<VendorPaymentModel> {
-    const paymentDate = data.paymentDate || new Date().toISOString().split('T')[0];
-    await this.checkPeriodLock(orgId, paymentDate);
+    const execute = async (client: QueryClient) => {
+      const paymentDate = data.paymentDate || new Date().toISOString().split('T')[0];
+      await this.checkPeriodLock(orgId, paymentDate, client);
 
-    const amount = data.amount || 0;
-    if (amount <= 0) {
-      throw new Error('Payment amount must be greater than zero.');
-    }
-
-    const allocations = data.allocations || [];
-    const totalAllocated = allocations.reduce((sum, a) => sum + a.amount, 0);
-
-    if (totalAllocated > amount) {
-      throw new Error(`Total allocated amount (${totalAllocated}) cannot exceed payment amount (${amount}).`);
-    }
-
-    // Validate allocations against bill balances
-    for (const alloc of allocations) {
-      const bill = await this.getBill(orgId, alloc.billId);
-      if (!bill) throw new Error(`Bill ${alloc.billId} not found.`);
-      if (alloc.amount > bill.balanceDue + 0.01) {
-        throw new Error(`Allocation amount (${alloc.amount}) exceeds Bill balance due (${bill.balanceDue}).`);
+      const amount = Number(data.amount) || 0;
+      if (amount <= 0) {
+        throw new Error('Payment amount must be greater than zero.');
       }
-    }
 
-    const id = newId('pmt');
-    const pmtNum = await DocumentNumberingEngine.getNextNumber(orgId, 'VENDOR_PAYMENT', paymentDate);
-    const now = new Date().toISOString();
-    const unallocatedAmount = Math.round((amount - totalAllocated) * 100) / 100;
+      // 1. Group and aggregate allocation amounts by billId
+      const aggregatedAllocations = new Map<string, number>();
+      for (const alloc of data.allocations || []) {
+        if (!alloc.billId || !alloc.amount || alloc.amount <= 0) continue;
+        const currentSum = aggregatedAllocations.get(alloc.billId) || 0;
+        aggregatedAllocations.set(alloc.billId, Math.round((currentSum + Number(alloc.amount)) * 100) / 100);
+      }
 
-    // GL Posting for Vendor Payment
-    // Debit: Accounts Payable (acc-ap-control / 2000)
-    // Credit: Bank / Cash Account (paidFromAccountId / 1010)
-    const journalEntryId = await this.persistJournalEntry(
-      orgId,
-      `JE-PMT-${pmtNum}`,
-      paymentDate,
-      data.reference || pmtNum,
-      `Vendor Payment ${pmtNum} to ${data.vendorName}`,
-      [
-        {
-          accountId: 'acc-ap-control',
-          accountCode: '2000',
-          accountName: 'Accounts Payable',
-          debit: amount,
-          credit: 0,
-          description: `AP Settlement for ${data.vendorName}`,
-        },
-        {
-          accountId: data.paidFromAccountId || 'acc-bank-1',
-          accountCode: '1010',
-          accountName: 'Bank Account',
-          debit: 0,
-          credit: amount,
-          description: `Outflow via ${data.paymentMode || 'Bank Transfer'}`,
-        },
-      ]
-    );
+      const totalAllocated = Array.from(aggregatedAllocations.values()).reduce((sum, amt) => sum + amt, 0);
 
-    // Persist Payment
-    await db.query(
-      `INSERT INTO payments_made (id, organization_id, payment_number, vendor_id, vendor_name, payment_date, amount, payment_mode, paid_from_account_id, reference, notes, unallocated_amount, status, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
-      [
-        id,
+      if (totalAllocated > amount + 0.009) {
+        throw new Error(`Total allocated amount (${totalAllocated}) cannot exceed payment amount (${amount}).`);
+      }
+
+      // 2. Sort unique bill IDs in deterministic ascending lexical order before locking to prevent deadlocks
+      const sortedBillIds = Array.from(aggregatedAllocations.keys()).sort();
+
+      // 3. Lock & validate all allocated bills in deterministic sorted order
+      const lockedBills: Array<{ billId: string; bill: any; allocAmount: number; newPaid: number; newBal: number; newStatus: string }> = [];
+      for (const bId of sortedBillIds) {
+        const allocAmount = aggregatedAllocations.get(bId)!;
+        const billRes = await client.query(
+          `SELECT total_amount, amount_paid, amount_debited, amount_written_off, balance_due, status, vendor_id, bill_number FROM bills WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+          [orgId, bId]
+        );
+        if (billRes.rows.length === 0) throw new Error(`Bill ${bId} not found.`);
+        const bill = billRes.rows[0];
+        if (data.vendorId && bill.vendor_id && bill.vendor_id !== data.vendorId) {
+          throw new Error(`Bill ${bill.bill_number} does not belong to vendor ${data.vendorId}`);
+        }
+        const currentBal = Math.max(0, Math.round((Number(bill.total_amount || 0) - Number(bill.amount_paid || 0) - Number(bill.amount_debited || 0) - Number(bill.amount_written_off || 0)) * 100) / 100);
+        if (allocAmount > currentBal + 0.009) {
+          throw new Error(`Allocation amount (${allocAmount}) exceeds Bill balance due (${currentBal}).`);
+        }
+        const newPaid = Math.round((Number(bill.amount_paid || 0) + allocAmount) * 100) / 100;
+        const newBal = Math.max(0, Math.round((Number(bill.total_amount || 0) - newPaid - Number(bill.amount_debited || 0) - Number(bill.amount_written_off || 0)) * 100) / 100);
+        const newStatus = newBal === 0 ? 'PAID' : 'PARTIALLY_PAID';
+        lockedBills.push({ billId: bId, bill, allocAmount, newPaid, newBal, newStatus });
+      }
+
+      const id = newId('pmt');
+      const pmtNum = await DocumentNumberingEngine.getNextNumber(orgId, 'VENDOR_PAYMENT', paymentDate, undefined, client);
+      const now = new Date().toISOString();
+      const unallocatedAmount = Math.max(0, Math.round((amount - totalAllocated) * 100) / 100);
+
+      // Allocated cash settles AP; any excess remains a vendor-advance asset.
+      const journalEntryId = await this.persistJournalEntry(
         orgId,
-        pmtNum,
-        data.vendorId,
-        data.vendorName || 'Vendor',
+        `JE-PMT-${pmtNum}`,
         paymentDate,
-        amount,
-        data.paymentMode || 'Bank Transfer',
-        data.paidFromAccountId || 'acc-bank-1',
-        data.reference || '',
-        data.notes || '',
-        unallocatedAmount,
-        unallocatedAmount > 0 ? 'PARTIALLY_ALLOCATED' : 'ALLOCATED',
-        now,
-      ]
-    );
-
-    // Apply allocations
-    for (const alloc of allocations) {
-      await db.query(
-        `INSERT INTO payment_made_allocations (id, organization_id, payment_id, bill_id, amount)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [newId('alloc'), orgId, id, alloc.billId, alloc.amount]
+        data.reference || pmtNum,
+        `Vendor Payment ${pmtNum} to ${data.vendorName}`,
+        [
+          ...(totalAllocated > 0 ? [{
+            accountId: 'acc-ap-control',
+            accountCode: '2000',
+            accountName: 'Accounts Payable',
+            debit: totalAllocated,
+            credit: 0,
+            description: `AP Settlement for ${data.vendorName}`,
+          }] : []),
+          ...(unallocatedAmount > 0 ? [{
+            accountId: 'acc-vendor-advances',
+            accountCode: '1200',
+            accountName: 'Vendor Advances Asset',
+            debit: unallocatedAmount,
+            credit: 0,
+            description: `Unallocated vendor advance for ${data.vendorName}`,
+          }] : []),
+          {
+            accountId: data.paidFromAccountId || 'acc-bank-1',
+            accountCode: '1010',
+            accountName: 'Bank Account',
+            debit: 0,
+            credit: amount,
+            description: `Outflow via ${data.paymentMode || 'Bank Transfer'}`,
+          },
+        ],
+        client
       );
 
-      // Update Bill
-      const billRes = await db.query(
-        `SELECT total_amount, amount_paid, amount_debited, amount_written_off FROM bills WHERE organization_id = $1 AND id = $2`,
-        [orgId, alloc.billId]
+      // Fault injection hook 1: forced failure after journal creation
+      if (data._debugFailPoint === 'after_journal') {
+        throw new Error('DEBUG_FAILURE: Forced failure after journal creation');
+      }
+
+      // Persist Payment
+      await client.query(
+        `INSERT INTO payments_made (id, organization_id, payment_number, vendor_id, vendor_name, payment_date, amount, payment_mode, paid_from_account_id, reference, notes, unallocated_amount, status, journal_entry_id, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+        [
+          id,
+          orgId,
+          pmtNum,
+          data.vendorId,
+          data.vendorName || 'Vendor',
+          paymentDate,
+          amount,
+          data.paymentMode || 'Bank Transfer',
+          data.paidFromAccountId || 'acc-bank-1',
+          data.reference || '',
+          data.notes || '',
+          unallocatedAmount,
+          unallocatedAmount > 0 ? 'PARTIALLY_ALLOCATED' : 'ALLOCATED',
+          journalEntryId,
+          now,
+        ]
       );
-      if (billRes.rows.length > 0) {
-        const b = billRes.rows[0];
-        const newPaid = Number(b.amount_paid) + alloc.amount;
-        const total = Number(b.total_amount);
-        const debited = Number(b.amount_debited || 0);
-        const writtenOff = Number(b.amount_written_off || 0);
-        const newBal = Math.max(0, Math.round((total - newPaid - debited - writtenOff) * 100) / 100);
 
-        let newStatus = 'PARTIALLY_PAID';
-        if (newBal === 0) newStatus = 'PAID';
-
-        await db.query(
-          `UPDATE bills SET amount_paid = $1, balance_due = $2, status = $3 WHERE organization_id = $4 AND id = $5`,
-          [newPaid, newBal, newStatus, orgId, alloc.billId]
+      if (unallocatedAmount > 0) {
+        await client.query(
+          `INSERT INTO vendor_advances
+            (id, organization_id, vendor_id, payment_id, amount, unapplied_amount, paid_date, status, journal_entry_id, created_at)
+           VALUES ($1, $2, $3, $4, $5, $5, $6, 'UNAPPLIED', $7, $8)`,
+          [newId('vadv'), orgId, data.vendorId, id, unallocatedAmount, paymentDate, journalEntryId, now]
         );
       }
-    }
 
-    // Update Vendor Payables Balance
-    await db.query(
-      `UPDATE vendors SET payables_balance = CASE WHEN payables_balance - $1 < 0 THEN 0 ELSE payables_balance - $1 END WHERE organization_id = $2 AND id = $3`,
-      [totalAllocated, orgId, data.vendorId]
-    );
+      // Fault injection hook 2: forced failure after payment write
+      if (data._debugFailPoint === 'after_payment') {
+        throw new Error('DEBUG_FAILURE: Forced failure after payment write');
+      }
 
-    return {
-      id,
-      organizationId: orgId,
-      paymentNumber: pmtNum,
-      vendorId: data.vendorId!,
-      vendorName: data.vendorName || 'Vendor',
-      paymentDate,
-      amount,
-      paymentMode: data.paymentMode || 'Bank Transfer',
-      paidFromAccountId: data.paidFromAccountId || 'acc-bank-1',
-      reference: data.reference,
-      notes: data.notes,
-      unallocatedAmount,
-      status: unallocatedAmount > 0 ? 'PARTIALLY_ALLOCATED' : 'ALLOCATED',
-      allocations,
-      journalEntryId,
-      createdAt: now,
+      // Apply allocations in deterministic sorted order
+      let billAllocCounter = 0;
+      for (const item of lockedBills) {
+        await client.query(
+          `INSERT INTO payment_made_allocations (id, organization_id, payment_id, bill_id, amount)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [newId('alloc'), orgId, id, item.billId, item.allocAmount]
+        );
+
+        const updateRes = await client.query(
+          `UPDATE bills SET amount_paid = $1, balance_due = $2, status = $3 WHERE organization_id = $4 AND id = $5 AND balance_due >= $6 - 0.009`,
+          [item.newPaid, item.newBal, item.newStatus, orgId, item.billId, item.allocAmount]
+        );
+        if (updateRes.rowCount === 0) {
+          throw new Error(`Concurrent modification: Bill balance for ${item.bill.bill_number || item.billId} has changed.`);
+        }
+
+        billAllocCounter++;
+        // Fault injection hook 3: forced failure after first allocation
+        if (billAllocCounter === 1 && data._debugFailPoint === 'after_first_allocation') {
+          throw new Error('DEBUG_FAILURE: Forced failure after first allocation write');
+        }
+      }
+
+      // Update Vendor Payables Balance
+      if (data.vendorId) {
+        await client.query(
+          `UPDATE vendors
+              SET payables_balance = CASE WHEN payables_balance - $1 < 0 THEN 0 ELSE payables_balance - $1 END,
+                  advance_balance = advance_balance + $2
+            WHERE organization_id = $3 AND id = $4`,
+          [totalAllocated, unallocatedAmount, orgId, data.vendorId]
+        );
+      }
+
+      return {
+        id,
+        organizationId: orgId,
+        paymentNumber: pmtNum,
+        vendorId: data.vendorId!,
+        vendorName: data.vendorName || 'Vendor',
+        paymentDate,
+        amount,
+        paymentMode: data.paymentMode || 'Bank Transfer',
+        paidFromAccountId: data.paidFromAccountId || 'acc-bank-1',
+        reference: data.reference,
+        notes: data.notes,
+        unallocatedAmount,
+        status: unallocatedAmount > 0 ? 'PARTIALLY_ALLOCATED' : 'ALLOCATED',
+        allocations: data.allocations || [],
+        journalEntryId,
+        createdAt: now,
+      };
     };
+
+    if (transactionClient) return await execute(transactionClient);
+    return await db.transaction(execute);
   }
 
   // -------------------------------------------------------------
@@ -873,280 +962,327 @@ export class PurchasesEngine {
   // -------------------------------------------------------------
   public static async recordVendorAdvance(
     orgId: string,
-    data: { vendorId: string; vendorName?: string; amount: number; paidDate: string; paidFromAccountId: string; reference?: string; notes?: string }
+    data: { vendorId: string; vendorName?: string; amount: number; paidDate: string; paidFromAccountId: string; reference?: string; notes?: string },
+    transactionClient?: QueryClient
   ): Promise<any> {
-    await this.checkPeriodLock(orgId, data.paidDate);
+    const execute = async (client: QueryClient) => {
+      await this.checkPeriodLock(orgId, data.paidDate, client);
 
-    if (data.amount <= 0) throw new Error('Advance amount must be greater than zero.');
+      const amount = Number(data.amount) || 0;
+      if (amount <= 0) throw new Error('Advance amount must be greater than zero.');
 
-    const advId = newId('vadv');
-    const now = new Date().toISOString();
+      const advId = newId('vadv');
+      const now = new Date().toISOString();
 
-    // GL Posting for Vendor Advance
-    // Debit: Vendor Advances Asset (acc-vendor-advances / 1200)
-    // Credit: Bank / Cash Account (paidFromAccountId)
-    const journalEntryId = await this.persistJournalEntry(
-      orgId,
-      `JE-VADV-${advId}`,
-      data.paidDate,
-      data.reference || advId,
-      `Vendor Advance paid to ${data.vendorName || data.vendorId}`,
-      [
-        {
-          accountId: 'acc-vendor-advances',
-          accountCode: '1200',
-          accountName: 'Vendor Advances Asset',
-          debit: data.amount,
-          credit: 0,
-          description: `Prepayment / Advance to vendor`,
-        },
-        {
-          accountId: data.paidFromAccountId,
-          accountCode: '1010',
-          accountName: 'Bank Account',
-          debit: 0,
-          credit: data.amount,
-          description: `Bank outflow for Vendor Advance`,
-        },
-      ]
-    );
+      // GL Posting for Vendor Advance
+      // Debit: Vendor Advances Asset (acc-vendor-advances / 1200)
+      // Credit: Bank / Cash Account (paidFromAccountId)
+      const journalEntryId = await this.persistJournalEntry(
+        orgId,
+        `JE-VADV-${advId}`,
+        data.paidDate,
+        data.reference || advId,
+        `Vendor Advance paid to ${data.vendorName || data.vendorId}`,
+        [
+          {
+            accountId: 'acc-vendor-advances',
+            accountCode: '1200',
+            accountName: 'Vendor Advances Asset',
+            debit: amount,
+            credit: 0,
+            description: `Prepayment / Advance to vendor`,
+          },
+          {
+            accountId: data.paidFromAccountId,
+            accountCode: '1010',
+            accountName: 'Bank Account',
+            debit: 0,
+            credit: amount,
+            description: `Bank outflow for Vendor Advance`,
+          },
+        ],
+        client
+      );
 
-    await db.query(
-      `INSERT INTO vendor_advances (id, organization_id, vendor_id, amount, unapplied_amount, paid_date, status, journal_entry_id, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-      [advId, orgId, data.vendorId, data.amount, data.amount, data.paidDate, 'UNAPPLIED', journalEntryId, now]
-    );
+      await client.query(
+        `INSERT INTO vendor_advances (id, organization_id, vendor_id, amount, unapplied_amount, paid_date, status, journal_entry_id, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [advId, orgId, data.vendorId, amount, amount, data.paidDate, 'UNAPPLIED', journalEntryId, now]
+      );
 
-    await db.query(
-      `UPDATE vendors SET advance_balance = advance_balance + $1 WHERE organization_id = $2 AND id = $3`,
-      [data.amount, orgId, data.vendorId]
-    );
+      await client.query(
+        `UPDATE vendors SET advance_balance = advance_balance + $1 WHERE organization_id = $2 AND id = $3`,
+        [amount, orgId, data.vendorId]
+      );
 
-    return { id: advId, organizationId: orgId, vendorId: data.vendorId, amount: data.amount, unappliedAmount: data.amount, paidDate: data.paidDate, journalEntryId };
+      return { id: advId, organizationId: orgId, vendorId: data.vendorId, amount, unappliedAmount: amount, paidDate: data.paidDate, journalEntryId };
+    };
+
+    if (transactionClient) return await execute(transactionClient);
+    return await db.transaction(execute);
   }
 
   public static async applyVendorAdvance(
     orgId: string,
-    data: { vendorId: string; advanceId: string; billId: string; amount: number; appliedDate: string }
+    data: { vendorId: string; advanceId: string; billId: string; amount: number; appliedDate: string },
+    transactionClient?: QueryClient
   ): Promise<any> {
-    await this.checkPeriodLock(orgId, data.appliedDate);
+    const execute = async (client: QueryClient) => {
+      await this.checkPeriodLock(orgId, data.appliedDate, client);
 
-    // Fetch advance
-    const advRes = await db.query(
-      `SELECT * FROM vendor_advances WHERE organization_id = $1 AND id = $2 AND vendor_id = $3`,
-      [orgId, data.advanceId, data.vendorId]
-    );
-    if (advRes.rows.length === 0) throw new Error('Vendor advance not found.');
-    const adv = advRes.rows[0];
-    const unapplied = Number(adv.unapplied_amount);
+      // Fetch and lock advance
+      const advRes = await client.query(
+        `SELECT * FROM vendor_advances WHERE organization_id = $1 AND id = $2 AND vendor_id = $3 FOR UPDATE`,
+        [orgId, data.advanceId, data.vendorId]
+      );
+      if (advRes.rows.length === 0) throw new Error('Vendor advance not found.');
+      const adv = advRes.rows[0];
+      const unapplied = Number(adv.unapplied_amount);
 
-    if (data.amount > unapplied) {
-      throw new Error(`Applied amount (${data.amount}) cannot exceed unapplied advance balance (${unapplied}).`);
-    }
+      if (data.amount > unapplied) {
+        throw new Error(`Applied amount (${data.amount}) cannot exceed unapplied advance balance (${unapplied}).`);
+      }
 
-    // Fetch bill
-    const bill = await this.getBill(orgId, data.billId);
-    if (!bill) throw new Error('Bill not found.');
-    if (data.amount > bill.balanceDue + 0.01) {
-      throw new Error(`Applied advance (${data.amount}) cannot exceed Bill balance due (${bill.balanceDue}).`);
-    }
+      // Fetch and lock bill
+      const billRes = await client.query(
+        `SELECT * FROM bills WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, data.billId]
+      );
+      if (billRes.rows.length === 0) throw new Error('Bill not found.');
+      const b = billRes.rows[0];
+      const billBal = Math.max(0, Math.round((Number(b.total_amount) - Number(b.amount_paid || 0) - Number(b.amount_debited || 0) - Number(b.amount_written_off || 0)) * 100) / 100);
 
-    // GL Posting for Advance Application
-    // Debit: Accounts Payable (acc-ap-control / 2000)
-    // Credit: Vendor Advances Asset (acc-vendor-advances / 1200)
-    const journalEntryId = await this.persistJournalEntry(
-      orgId,
-      newId('je'),
-      data.appliedDate,
-      bill.billNumber,
-      `Vendor advance applied to Bill ${bill.billNumber}`,
-      [
-        {
-          accountId: 'acc-ap-control',
-          accountCode: '2000',
-          accountName: 'Accounts Payable',
-          debit: data.amount,
-          credit: 0,
-          description: `AP Settlement via Vendor Advance`,
-        },
-        {
-          accountId: 'acc-vendor-advances',
-          accountCode: '1200',
-          accountName: 'Vendor Advances Asset',
-          debit: 0,
-          credit: data.amount,
-          description: `Vendor advance drawn down for Bill ${bill.billNumber}`,
-        },
-      ]
-    );
+      if (data.amount > billBal + 0.01) {
+        throw new Error(`Applied advance (${data.amount}) cannot exceed Bill balance due (${billBal}).`);
+      }
 
-    // Update Advance
-    const newUnapplied = Math.round((unapplied - data.amount) * 100) / 100;
-    const newAdvStatus = newUnapplied === 0 ? 'APPLIED' : 'PARTIALLY_APPLIED';
-    await db.query(
-      `UPDATE vendor_advances SET unapplied_amount = $1, status = $2 WHERE organization_id = $3 AND id = $4`,
-      [newUnapplied, newAdvStatus, orgId, data.advanceId]
-    );
+      // GL Posting for Advance Application
+      // Debit: Accounts Payable (acc-ap-control / 2000)
+      // Credit: Vendor Advances Asset (acc-vendor-advances / 1200)
+      const journalEntryId = await this.persistJournalEntry(
+        orgId,
+        newId('je'),
+        data.appliedDate,
+        b.bill_number,
+        `Vendor advance applied to Bill ${b.bill_number}`,
+        [
+          {
+            accountId: 'acc-ap-control',
+            accountCode: '2000',
+            accountName: 'Accounts Payable',
+            debit: data.amount,
+            credit: 0,
+            description: `AP Settlement via Vendor Advance`,
+          },
+          {
+            accountId: 'acc-vendor-advances',
+            accountCode: '1200',
+            accountName: 'Vendor Advances Asset',
+            debit: 0,
+            credit: data.amount,
+            description: `Vendor advance drawn down for Bill ${b.bill_number}`,
+          },
+        ],
+        client
+      );
 
-    // Update Bill
-    const newPaid = Math.round((bill.amountPaid + data.amount) * 100) / 100;
-    const newBal = Math.max(0, Math.round((bill.totalAmount - newPaid - (bill.amountDebited || 0) - (bill.amountWrittenOff || 0)) * 100) / 100);
-    const newBillStatus = newBal === 0 ? 'PAID' : 'PARTIALLY_PAID';
+      await client.query(
+        `INSERT INTO vendor_advance_applications
+          (id, organization_id, advance_id, bill_id, amount_applied, applied_date, journal_entry_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [newId('vadvapp'), orgId, data.advanceId, data.billId, data.amount, data.appliedDate, journalEntryId]
+      );
 
-    await db.query(
-      `UPDATE bills SET amount_paid = $1, balance_due = $2, status = $3 WHERE organization_id = $4 AND id = $5`,
-      [newPaid, newBal, newBillStatus, orgId, data.billId]
-    );
+      // Update Advance
+      const newUnapplied = Math.round((unapplied - data.amount) * 100) / 100;
+      const newAdvStatus = newUnapplied === 0 ? 'APPLIED' : 'PARTIALLY_APPLIED';
+      await client.query(
+        `UPDATE vendor_advances SET unapplied_amount = $1, status = $2 WHERE organization_id = $3 AND id = $4`,
+        [newUnapplied, newAdvStatus, orgId, data.advanceId]
+      );
 
-    // Update Vendor Balances
-    await db.query(
-      `UPDATE vendors SET advance_balance = CASE WHEN advance_balance - $1 < 0 THEN 0 ELSE advance_balance - $1 END, payables_balance = CASE WHEN payables_balance - $1 < 0 THEN 0 ELSE payables_balance - $1 END WHERE organization_id = $2 AND id = $3`,
-      [data.amount, orgId, data.vendorId]
-    );
+      // Update Bill
+      const newPaid = Math.round((Number(b.amount_paid || 0) + data.amount) * 100) / 100;
+      const newBal = Math.max(0, Math.round((Number(b.total_amount) - newPaid - Number(b.amount_debited || 0) - Number(b.amount_written_off || 0)) * 100) / 100);
+      const newBillStatus = newBal === 0 ? 'PAID' : 'PARTIALLY_PAID';
 
-    return { success: true, advanceId: data.advanceId, billId: data.billId, amountApplied: data.amount, remainingAdvance: newUnapplied, newBillBalance: newBal, journalEntryId };
+      await client.query(
+        `UPDATE bills SET amount_paid = $1, balance_due = $2, status = $3 WHERE organization_id = $4 AND id = $5`,
+        [newPaid, newBal, newBillStatus, orgId, data.billId]
+      );
+
+      // Update Vendor Balances
+      await client.query(
+        `UPDATE vendors SET advance_balance = CASE WHEN advance_balance - $1 < 0 THEN 0 ELSE advance_balance - $1 END, payables_balance = CASE WHEN payables_balance - $1 < 0 THEN 0 ELSE payables_balance - $1 END WHERE organization_id = $2 AND id = $3`,
+        [data.amount, orgId, data.vendorId]
+      );
+
+      return { success: true, advanceId: data.advanceId, billId: data.billId, amountApplied: data.amount, remainingAdvance: newUnapplied, newBillBalance: newBal, journalEntryId };
+    };
+
+    if (transactionClient) return await execute(transactionClient);
+    return await db.transaction(execute);
   }
 
   // -------------------------------------------------------------
   // 7. DEBIT NOTES / VENDOR CREDITS
   // -------------------------------------------------------------
-  public static async createDebitNote(orgId: string, data: Partial<DebitNoteModel>): Promise<DebitNoteModel> {
-    const date = data.date || new Date().toISOString().split('T')[0];
-    await this.checkPeriodLock(orgId, date);
+  public static async createDebitNote(
+    orgId: string,
+    data: Partial<DebitNoteModel>,
+    transactionClient?: QueryClient
+  ): Promise<DebitNoteModel> {
+    const execute = async (client: QueryClient) => {
+      const date = data.date || new Date().toISOString().split('T')[0];
+      await this.checkPeriodLock(orgId, date, client);
 
-    const id = newId('dn');
-    const dnNum = await DocumentNumberingEngine.getNextNumber(orgId, 'DEBIT_NOTE', date);
-    const now = new Date().toISOString();
+      const id = newId('dn');
+      const dnNum = await DocumentNumberingEngine.getNextNumber(orgId, 'DEBIT_NOTE', date, undefined, client);
+      const now = new Date().toISOString();
 
-    const taxableAmount = data.taxableAmount || 0;
-    const taxAmount = data.taxAmount || 0;
-    const totalAmount = data.totalAmount || Math.round((taxableAmount + taxAmount) * 100) / 100;
+      const taxableAmount = data.taxableAmount || 0;
+      const taxAmount = data.taxAmount || 0;
+      const totalAmount = data.totalAmount || Math.round((taxableAmount + taxAmount) * 100) / 100;
 
-    // GL Posting for Debit Note
-    // Debit: Accounts Payable (acc-ap-control / 2000)
-    // Credit: Purchase Return / Operating Expense (5000)
-    // Credit: GST Input Tax Credit Reversal (2110) if tax exists
-    const glLines: any[] = [
-      {
-        accountId: 'acc-ap-control',
-        accountCode: '2000',
-        accountName: 'Accounts Payable',
-        debit: totalAmount,
-        credit: 0,
-        description: `Debit Note ${dnNum} issued to ${data.vendorName}`,
-      },
-      {
-        accountId: 'acc-expense',
-        accountCode: '5000',
-        accountName: 'Operating Expense / Purchase Return',
-        debit: 0,
-        credit: taxableAmount,
-        description: `Purchase return adjustment`,
-      },
-    ];
+      // GL Posting for Debit Note
+      // Debit: Accounts Payable (acc-ap-control / 2000)
+      // Credit: Purchase Return / Operating Expense (5000)
+      // Credit: GST Input Tax Credit Reversal (2110) if tax exists
+      const glLines: any[] = [
+        {
+          accountId: 'acc-ap-control',
+          accountCode: '2000',
+          accountName: 'Accounts Payable',
+          debit: totalAmount,
+          credit: 0,
+          description: `Debit Note ${dnNum} issued to ${data.vendorName}`,
+        },
+        {
+          accountId: 'acc-expense',
+          accountCode: '5000',
+          accountName: 'Operating Expense / Purchase Return',
+          debit: 0,
+          credit: taxableAmount,
+          description: `Purchase return adjustment`,
+        },
+      ];
 
-    if (taxAmount > 0) {
-      glLines.push({
-        accountId: 'acc-gst-input',
-        accountCode: '2110',
-        accountName: 'GST Input Tax Credit',
-        debit: 0,
-        credit: taxAmount,
-        description: `GST Input Tax Credit reversal for ${dnNum}`,
-      });
-    }
+      if (taxAmount > 0) {
+        glLines.push({
+          accountId: 'acc-gst-input',
+          accountCode: '2110',
+          accountName: 'GST Input Tax Credit',
+          debit: 0,
+          credit: taxAmount,
+          description: `GST Input Tax Credit reversal for ${dnNum}`,
+        });
+      }
 
-    const journalEntryId = await this.persistJournalEntry(
-      orgId,
-      `JE-DN-${dnNum}`,
-      date,
-      dnNum,
-      `Debit Note ${dnNum} issued to ${data.vendorName}`,
-      glLines
-    );
+      const journalEntryId = await this.persistJournalEntry(
+        orgId,
+        `JE-DN-${dnNum}`,
+        date,
+        dnNum,
+        `Debit Note ${dnNum} issued to ${data.vendorName}`,
+        glLines,
+        client
+      );
 
-    let remainingCredit = totalAmount;
-    let billId = data.billId;
+      let remainingCredit = totalAmount;
+      let billId = data.billId;
 
-    // If linked directly to a bill, apply immediately
-    if (billId) {
-      const bill = await this.getBill(orgId, billId);
-      if (bill && bill.balanceDue > 0) {
-        const applied = Math.min(bill.balanceDue, totalAmount);
-        remainingCredit = Math.round((totalAmount - applied) * 100) / 100;
-
-        const newDebited = Math.round(((bill.amountDebited || 0) + applied) * 100) / 100;
-        const newBal = Math.max(0, Math.round((bill.totalAmount - bill.amountPaid - newDebited - (bill.amountWrittenOff || 0)) * 100) / 100);
-        const newBillStatus = newBal === 0 ? 'PAID' : 'PARTIALLY_PAID';
-
-        await db.query(
-          `UPDATE bills SET amount_debited = $1, balance_due = $2, status = $3 WHERE organization_id = $4 AND id = $5`,
-          [newDebited, newBal, newBillStatus, orgId, billId]
+      // If linked directly to a bill, lock and apply immediately
+      if (billId) {
+        const billRes = await client.query(
+          `SELECT * FROM bills WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+          [orgId, billId]
         );
+        if (billRes.rows.length > 0) {
+          const b = billRes.rows[0];
+          const billBal = Math.max(0, Math.round((Number(b.total_amount) - Number(b.amount_paid || 0) - Number(b.amount_debited || 0) - Number(b.amount_written_off || 0)) * 100) / 100);
+          if (billBal > 0) {
+            const applied = Math.min(billBal, totalAmount);
+            remainingCredit = Math.round((totalAmount - applied) * 100) / 100;
 
-        await db.query(
-          `INSERT INTO debit_note_applications (id, organization_id, debit_note_id, bill_id, amount_applied, applied_date, created_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-          [newId('dnapp'), orgId, id, billId, applied, date, now]
-        );
+            const newDebited = Math.round(((Number(b.amount_debited) || 0) + applied) * 100) / 100;
+            const newBal = Math.max(0, Math.round((Number(b.total_amount) - Number(b.amount_paid || 0) - newDebited - (Number(b.amount_written_off) || 0)) * 100) / 100);
+            const newBillStatus = newBal === 0 ? 'PAID' : 'PARTIALLY_PAID';
 
-        // Reduce payables balance
-        await db.query(
-          `UPDATE vendors SET payables_balance = CASE WHEN payables_balance - $1 < 0 THEN 0 ELSE payables_balance - $1 END WHERE organization_id = $2 AND id = $3`,
-          [applied, orgId, data.vendorId]
+            await client.query(
+              `UPDATE bills SET amount_debited = $1, balance_due = $2, status = $3 WHERE organization_id = $4 AND id = $5`,
+              [newDebited, newBal, newBillStatus, orgId, billId]
+            );
+
+            await client.query(
+              `INSERT INTO debit_note_applications (id, organization_id, debit_note_id, bill_id, amount_applied, applied_date, created_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+              [newId('dnapp'), orgId, id, billId, applied, date, now]
+            );
+
+            // Reduce payables balance
+            if (data.vendorId) {
+              await client.query(
+                `UPDATE vendors SET payables_balance = CASE WHEN payables_balance - $1 < 0 THEN 0 ELSE payables_balance - $1 END WHERE organization_id = $2 AND id = $3`,
+                [applied, orgId, data.vendorId]
+              );
+            }
+          }
+        }
+      }
+
+      const status = remainingCredit === 0 ? 'CLOSED' : remainingCredit < totalAmount ? 'PARTIALLY_APPLIED' : 'OPEN';
+
+      await client.query(
+        `INSERT INTO vendor_credits (id, organization_id, credit_number, debit_note_number, vendor_id, vendor_name, bill_id, date, taxable_amount, tax_amount, total_amount, remaining_credit, status, reason, journal_entry_id, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+        [
+          id,
+          orgId,
+          dnNum,
+          dnNum,
+          data.vendorId,
+          data.vendorName || 'Vendor',
+          billId || null,
+          date,
+          taxableAmount,
+          taxAmount,
+          totalAmount,
+          remainingCredit,
+          status,
+          data.reason || '',
+          journalEntryId,
+          now,
+        ]
+      );
+
+      if (remainingCredit > 0 && data.vendorId) {
+        await client.query(
+          `UPDATE vendors SET unused_credits = unused_credits + $1 WHERE organization_id = $2 AND id = $3`,
+          [remainingCredit, orgId, data.vendorId]
         );
       }
-    }
 
-    const status = remainingCredit === 0 ? 'CLOSED' : remainingCredit < totalAmount ? 'PARTIALLY_APPLIED' : 'OPEN';
-
-    await db.query(
-      `INSERT INTO vendor_credits (id, organization_id, credit_number, debit_note_number, vendor_id, vendor_name, bill_id, date, taxable_amount, tax_amount, total_amount, remaining_credit, status, reason, journal_entry_id, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
-      [
+      return {
         id,
-        orgId,
-        dnNum,
-        dnNum,
-        data.vendorId,
-        data.vendorName || 'Vendor',
-        billId || null,
+        organizationId: orgId,
+        debitNoteNumber: dnNum,
+        vendorId: data.vendorId!,
+        vendorName: data.vendorName || 'Vendor',
+        billId,
         date,
         taxableAmount,
         taxAmount,
         totalAmount,
         remainingCredit,
-        status,
-        data.reason || '',
+        status: status as DebitNoteModel['status'],
+        reason: data.reason || '',
         journalEntryId,
-        now,
-      ]
-    );
-
-    if (remainingCredit > 0) {
-      await db.query(
-        `UPDATE vendors SET unused_credits = unused_credits + $1 WHERE organization_id = $2 AND id = $3`,
-        [remainingCredit, orgId, data.vendorId]
-      );
-    }
-
-    return {
-      id,
-      organizationId: orgId,
-      debitNoteNumber: dnNum,
-      vendorId: data.vendorId!,
-      vendorName: data.vendorName || 'Vendor',
-      billId,
-      date,
-      taxableAmount,
-      taxAmount,
-      totalAmount,
-      remainingCredit,
-      status,
-      reason: data.reason || '',
-      journalEntryId,
-      createdAt: now,
+        createdAt: now,
+      };
     };
+
+    if (transactionClient) return await execute(transactionClient);
+    return await db.transaction(execute);
   }
 
   // -------------------------------------------------------------
@@ -1154,78 +1290,93 @@ export class PurchasesEngine {
   // -------------------------------------------------------------
   public static async recordAPWriteOff(
     orgId: string,
-    data: { billId: string; vendorId: string; writeOffDate: string; amount: number; writeOffAccountId: string; reason?: string; userId?: string }
+    data: { billId: string; vendorId: string; writeOffDate: string; amount: number; writeOffAccountId: string; reason?: string; userId?: string },
+    transactionClient?: QueryClient
   ): Promise<any> {
-    await this.checkPeriodLock(orgId, data.writeOffDate);
+    const execute = async (client: QueryClient) => {
+      await this.checkPeriodLock(orgId, data.writeOffDate, client);
 
-    const bill = await this.getBill(orgId, data.billId);
-    if (!bill) throw new Error('Bill not found.');
-    if (data.amount > bill.balanceDue + 0.01) {
-      throw new Error(`Write-off amount (${data.amount}) exceeds Bill balance due (${bill.balanceDue}).`);
-    }
+      const billRes = await client.query(
+        `SELECT * FROM bills WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, data.billId]
+      );
+      if (billRes.rows.length === 0) throw new Error('Bill not found.');
+      const bill = billRes.rows[0];
+      const billBal = Math.max(0, Math.round((Number(bill.total_amount) - Number(bill.amount_paid || 0) - Number(bill.amount_debited || 0) - Number(bill.amount_written_off || 0)) * 100) / 100);
 
-    // GL Posting for AP Write-off / Purchase Discount
-    // Debit: Accounts Payable (acc-ap-control / 2000)
-    // Credit: Purchase Discount / Recovery Account (writeOffAccountId)
-    const journalEntryId = await this.persistJournalEntry(
-      orgId,
-      newId('je'),
-      data.writeOffDate,
-      bill.billNumber,
-      `AP Write-off / Purchase Discount for Bill ${bill.billNumber}`,
-      [
-        {
-          accountId: 'acc-ap-control',
-          accountCode: '2000',
-          accountName: 'Accounts Payable',
-          debit: data.amount,
-          credit: 0,
-          description: `AP Write-off / Discount clearance`,
-        },
-        {
-          accountId: data.writeOffAccountId || 'acc-purchase-discount',
-          accountCode: '5100',
-          accountName: 'Purchase Discount / Recovery',
-          debit: 0,
-          credit: data.amount,
-          description: `Write-off reason: ${data.reason || 'Discount / Variance'}`,
-        },
-      ]
-    );
+      if (data.amount > billBal + 0.01) {
+        throw new Error(`Write-off amount (${data.amount}) exceeds Bill balance due (${billBal}).`);
+      }
 
-    const newWrittenOff = Math.round(((bill.amountWrittenOff || 0) + data.amount) * 100) / 100;
-    const newBal = Math.max(0, Math.round((bill.totalAmount - bill.amountPaid - (bill.amountDebited || 0) - newWrittenOff) * 100) / 100);
-    const newStatus = newBal === 0 ? 'WRITTEN_OFF' : bill.status;
-
-    await db.query(
-      `UPDATE bills SET amount_written_off = $1, balance_due = $2, status = $3 WHERE organization_id = $4 AND id = $5`,
-      [newWrittenOff, newBal, newStatus, orgId, data.billId]
-    );
-
-    await db.query(
-      `INSERT INTO ap_write_offs (id, organization_id, bill_id, vendor_id, write_off_date, amount, write_off_account_id, reason, user_id, journal_entry_id, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-      [
-        newId('apwo'),
+      // GL Posting for AP Write-off / Purchase Discount
+      // Debit: Accounts Payable (acc-ap-control / 2000)
+      // Credit: Purchase Discount / Recovery Account (writeOffAccountId)
+      const journalEntryId = await this.persistJournalEntry(
         orgId,
-        data.billId,
-        data.vendorId,
+        newId('je'),
         data.writeOffDate,
-        data.amount,
-        data.writeOffAccountId,
-        data.reason || '',
-        data.userId || 'SYSTEM',
-        journalEntryId,
-        new Date().toISOString(),
-      ]
-    );
+        bill.bill_number,
+        `AP Write-off / Purchase Discount for Bill ${bill.bill_number}`,
+        [
+          {
+            accountId: 'acc-ap-control',
+            accountCode: '2000',
+            accountName: 'Accounts Payable',
+            debit: data.amount,
+            credit: 0,
+            description: `AP Write-off / Discount clearance`,
+          },
+          {
+            accountId: data.writeOffAccountId || 'acc-purchase-discount',
+            accountCode: '5100',
+            accountName: 'Purchase Discount / Recovery',
+            debit: 0,
+            credit: data.amount,
+            description: `Write-off reason: ${data.reason || 'Discount / Variance'}`,
+          },
+        ],
+        client
+      );
 
-    await db.query(
-      `UPDATE vendors SET payables_balance = CASE WHEN payables_balance - $1 < 0 THEN 0 ELSE payables_balance - $1 END WHERE organization_id = $2 AND id = $3`,
-      [data.amount, orgId, data.vendorId]
-    );
+      const newWrittenOff = Math.round(((Number(bill.amount_written_off) || 0) + data.amount) * 100) / 100;
+      const newBal = Math.max(0, Math.round((Number(bill.total_amount) - Number(bill.amount_paid || 0) - Number(bill.amount_debited || 0) - newWrittenOff) * 100) / 100);
+      const newStatus = newBal === 0 ? 'WRITTEN_OFF' : bill.status;
 
-    return { success: true, billId: data.billId, writeOffAmount: data.amount, newBalanceDue: newBal, journalEntryId };
+      await client.query(
+        `UPDATE bills SET amount_written_off = $1, balance_due = $2, status = $3 WHERE organization_id = $4 AND id = $5`,
+        [newWrittenOff, newBal, newStatus, orgId, data.billId]
+      );
+
+      await client.query(
+        `INSERT INTO ap_write_offs (id, organization_id, bill_id, vendor_id, write_off_date, amount, write_off_account_id, reason, user_id, journal_entry_id, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        [
+          newId('apwo'),
+          orgId,
+          data.billId,
+          data.vendorId,
+          data.writeOffDate,
+          data.amount,
+          data.writeOffAccountId,
+          data.reason || '',
+          data.userId || 'SYSTEM',
+          journalEntryId,
+          new Date().toISOString(),
+        ]
+      );
+
+      if (data.vendorId) {
+        await client.query(
+          `UPDATE vendors SET payables_balance = CASE WHEN payables_balance - $1 < 0 THEN 0 ELSE payables_balance - $1 END WHERE organization_id = $2 AND id = $3`,
+          [data.amount, orgId, data.vendorId]
+        );
+      }
+
+      return { success: true, billId: data.billId, writeOffAmount: data.amount, newBalanceDue: newBal, journalEntryId };
+    };
+
+    if (transactionClient) return await execute(transactionClient);
+    return await db.transaction(execute);
   }
 
   // -------------------------------------------------------------

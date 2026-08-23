@@ -42,6 +42,7 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
   const [terms, setTerms] = useState('Net 30. Please remit payment via bank transfer.');
   const [editReason, setEditReason] = useState('');
   const [formError, setFormError] = useState('');
+  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
 
   const revenueAccounts = useMemo(() => accounts.filter((a) => a.type === 'Revenue'), [accounts]);
 
@@ -56,6 +57,41 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
       amount: 0,
     },
   ]);
+
+  const isDirty = useMemo(() => {
+    if (!isOpen) return false;
+    if (editingInvoice) {
+      if (editReason.trim() !== '') return true;
+      if (clientId !== (editingInvoice.clientId || '')) return true;
+      if (projectId !== (editingInvoice.projectId || '')) return true;
+      if (salespersonId !== (editingInvoice.salespersonId || '')) return true;
+      if (issueDate !== (editingInvoice.issueDate || '')) return true;
+      if (dueDate !== (editingInvoice.dueDate || '')) return true;
+      if (discount !== String(editingInvoice.discount || 0)) return true;
+      if (notes !== (editingInvoice.notes || '')) return true;
+      if (terms !== (editingInvoice.terms || '')) return true;
+      return false;
+    } else {
+      if (items.some((it) => it.description.trim() || Number(it.unitPrice) > 0)) return true;
+      if (notes !== 'Thank you for your business.') return true;
+      if (terms !== 'Net 30. Please remit payment via bank transfer.') return true;
+      if (discount !== '0') return true;
+      if (salespersonId !== '') return true;
+      return false;
+    }
+  }, [isOpen, editingInvoice, editReason, clientId, projectId, salespersonId, issueDate, dueDate, discount, notes, terms, items]);
+
+  const handleRequestClose = () => {
+    if (isDirty) {
+      setShowDiscardConfirm(true);
+    } else {
+      onClose();
+    }
+  };
+
+  useEffect(() => {
+    setShowDiscardConfirm(false);
+  }, [isOpen]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -281,7 +317,7 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
               </span>
             )}
           </div>
-          <button onClick={onClose} className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
+          <button onClick={handleRequestClose} className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -577,7 +613,7 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
           <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex justify-end space-x-2">
             <button
               type="button"
-              onClick={onClose}
+              onClick={handleRequestClose}
               className="px-4 py-2 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 font-medium cursor-pointer"
             >
               Cancel
@@ -601,6 +637,36 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
           </div>
         </form>
       </div>
+
+      {showDiscardConfirm && (
+        <div className="fixed inset-0 z-60 bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5 max-w-sm w-full shadow-2xl space-y-4">
+            <h4 className="text-sm font-bold text-slate-900 dark:text-slate-100">Unsaved Changes</h4>
+            <p className="text-xs text-slate-600 dark:text-slate-400">
+              You have unsaved changes on this invoice. Are you sure you want to discard them?
+            </p>
+            <div className="flex justify-end space-x-2">
+              <button
+                type="button"
+                onClick={() => setShowDiscardConfirm(false)}
+                className="px-3 py-1.5 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+              >
+                Keep Editing
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowDiscardConfirm(false);
+                  onClose();
+                }}
+                className="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-semibold cursor-pointer"
+              >
+                Discard Changes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <QuickAddClientModal
         isOpen={isQuickClientOpen}

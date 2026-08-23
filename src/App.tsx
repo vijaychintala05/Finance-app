@@ -5,6 +5,8 @@ import { Sidebar } from './components/layout/Sidebar';
 import { MobileNav } from './components/layout/MobileNav';
 import { CreateOrganizationWizardModal } from './components/organization/CreateOrganizationWizardModal';
 import { OrganizationSwitcherModal } from './components/organization/OrganizationSwitcherModal';
+import { CapabilityUnavailable } from './components/common/CapabilityUnavailable';
+import { useFinanceCapabilities } from './capabilities/useFinanceCapabilities';
 
 const lazyNamed = <T extends React.ComponentType<any>>(loader: () => Promise<any>, name: string) =>
   React.lazy(async () => ({ default: (await loader())[name] as T }));
@@ -22,21 +24,40 @@ const SettingsView = lazyNamed(() => import('./components/settings/SettingsView'
 const SalespersonsView = lazyNamed(() => import('./components/salespersons/SalespersonsView'), 'SalespersonsView');
 const PurchasesOverview = lazyNamed(() => import('./components/purchases/PurchasesOverview'), 'PurchasesOverview');
 const VendorsView = lazyNamed(() => import('./components/purchases/VendorsView'), 'VendorsView');
-const RecurringExpensesView = lazyNamed(() => import('./components/purchases/RecurringExpensesView'), 'RecurringExpensesView');
 const PurchaseOrdersView = lazyNamed(() => import('./components/purchases/PurchaseOrdersView'), 'PurchaseOrdersView');
 const BillsView = lazyNamed(() => import('./components/purchases/BillsView'), 'BillsView');
-const RecurringBillsView = lazyNamed(() => import('./components/purchases/RecurringBillsView'), 'RecurringBillsView');
-const PaymentsMadeView = lazyNamed(() => import('./components/purchases/PaymentsMadeView'), 'PaymentsMadeView');
-const VendorCreditsView = lazyNamed(() => import('./components/purchases/VendorCreditsView'), 'VendorCreditsView');
 const SalesOverview = lazyNamed(() => import('./components/sales/SalesOverview'), 'SalesOverview');
 const SalesOrdersView = lazyNamed(() => import('./components/sales/SalesOrdersView'), 'SalesOrdersView');
-const RecurringInvoicesView = lazyNamed(() => import('./components/sales/RecurringInvoicesView'), 'RecurringInvoicesView');
+const RecurringTransactionsView = lazyNamed(() => import('./components/recurring/RecurringTransactionsView'), 'RecurringTransactionsView');
 const DeliveryChallansView = lazyNamed(() => import('./components/sales/DeliveryChallansView'), 'DeliveryChallansView');
 const PaymentsReceivedView = lazyNamed(() => import('./components/sales/PaymentsReceivedView'), 'PaymentsReceivedView');
-const CreditNotesView = lazyNamed(() => import('./components/sales/CreditNotesView'), 'CreditNotesView');
+const FixedAssetsView = lazyNamed(() => import('./components/accounting/FixedAssetsView'), 'FixedAssetsView');
+const PeriodCloseView = lazyNamed(() => import('./components/accounting/PeriodCloseView'), 'PeriodCloseView');
+const TeamAccessView = lazyNamed(() => import('./components/settings/TeamAccessView'), 'TeamAccessView');
+const RecoveryCenterView = lazyNamed(() => import('./components/settings/RecoveryCenterView'), 'RecoveryCenterView');
+const SettlementWorkspace = lazyNamed(() => import('./components/accounting/SettlementWorkspace'), 'SettlementWorkspace');
+
+const parseHashRoute = (): { tab: string; entityId?: string } => {
+  if (typeof window === 'undefined') return { tab: 'dashboard' };
+  const rawHash = window.location.hash.replace(/^#\/?/, '').trim();
+  if (!rawHash) return { tab: 'dashboard' };
+  const [routePart, queryPart] = rawHash.split('?');
+  const tab = routePart.trim() || 'dashboard';
+  let entityId: string | undefined = undefined;
+  if (queryPart) {
+    const params = new URLSearchParams(queryPart);
+    entityId = params.get('id') || undefined;
+  }
+  return { tab, entityId };
+};
 
 function MainAppLayout() {
-  const [activeTab, setActiveTab] = useState('dashboard');
+  const financeCapabilities = useFinanceCapabilities();
+  const enabledCapabilities = React.useMemo(
+    () => new Set(financeCapabilities.capabilities.filter((item) => item.state === 'enabled').map((item) => item.key)),
+    [financeCapabilities.capabilities]
+  );
+  const [activeTab, setActiveTab] = useState(() => parseHashRoute().tab);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [isOrgWizardOpen, setIsOrgWizardOpen] = useState(false);
   const [isOrgSwitcherOpen, setIsOrgSwitcherOpen] = useState(false);
@@ -56,7 +77,22 @@ function MainAppLayout() {
   const [autoOpenVendorCreditModal, setAutoOpenVendorCreditModal] = useState(false);
   const [autoOpenJournalModal, setAutoOpenJournalModal] = useState(false);
 
-  const [selectedEntityId, setSelectedEntityId] = useState<string | undefined>(undefined);
+  const [selectedEntityId, setSelectedEntityId] = useState<string | undefined>(() => parseHashRoute().entityId);
+
+  React.useEffect(() => {
+    const handleHashChange = () => {
+      const { tab, entityId } = parseHashRoute();
+      setActiveTab(tab);
+      setSelectedEntityId(entityId);
+    };
+
+    window.addEventListener('hashchange', handleHashChange);
+    window.addEventListener('popstate', handleHashChange);
+    return () => {
+      window.removeEventListener('hashchange', handleHashChange);
+      window.removeEventListener('popstate', handleHashChange);
+    };
+  }, []);
 
   const handleNavigate = (tab: string, options?: { autoCreate?: boolean; entityId?: string }) => {
     setSelectedEntityId(options?.entityId);
@@ -75,10 +111,39 @@ function MainAppLayout() {
     if (tab === 'vendor_credits' && options?.autoCreate) setAutoOpenVendorCreditModal(true);
     if ((tab === 'journals' || tab === 'accounting') && options?.autoCreate) setAutoOpenJournalModal(true);
 
+    if (typeof window !== 'undefined') {
+      const targetHash = `#/${tab}${options?.entityId ? `?id=${encodeURIComponent(options.entityId)}` : ''}`;
+      if (window.location.hash !== targetHash) {
+        window.history.pushState(null, '', targetHash);
+      }
+    }
+
     setActiveTab(tab);
   };
 
   const renderActiveView = () => {
+    const optionalCapabilityByTab: Record<string, string> = {
+      recurring_invoices: 'recurring-transactions',
+      recurring_bills: 'recurring-transactions',
+      recurring_expenses: 'recurring-transactions',
+      credit_notes: 'receivables-corrections',
+      payments_made: 'payables-settlement',
+      vendor_credits: 'payables-settlement',
+      fixed_assets: 'fixed-assets',
+      period_close: 'period-close',
+      team_access: 'team-access',
+      recovery_center: 'recovery-center',
+    };
+    const requiredCapability = optionalCapabilityByTab[activeTab];
+    if (requiredCapability && !financeCapabilities.isEnabled(requiredCapability)) {
+      return (
+        <CapabilityUnavailable
+          loading={financeCapabilities.loading}
+          capability={financeCapabilities.getCapability(requiredCapability)}
+        />
+      );
+    }
+
     switch (activeTab) {
       case 'dashboard':
         return <DashboardView onNavigate={handleNavigate} />;
@@ -143,7 +208,7 @@ function MainAppLayout() {
           />
         );
       case 'recurring_invoices':
-        return <RecurringInvoicesView />;
+        return <RecurringTransactionsView kind="INVOICE" />;
       case 'delivery_challans':
         return <DeliveryChallansView />;
       case 'payments_received':
@@ -156,14 +221,7 @@ function MainAppLayout() {
           />
         );
       case 'credit_notes':
-        return (
-          <CreditNotesView
-            autoOpenCreateModal={autoOpenCreditNoteModal}
-            onModalClosed={() => setAutoOpenCreditNoteModal(false)}
-            selectedEntityId={selectedEntityId}
-            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
-          />
-        );
+        return <SettlementWorkspace side="receivable" initialResource="credits" autoOpenCreateModal={autoOpenCreditNoteModal} onModalClosed={() => setAutoOpenCreditNoteModal(false)} />;
       case 'salespersons':
         return <SalespersonsView />;
 
@@ -188,7 +246,7 @@ function MainAppLayout() {
           />
         );
       case 'recurring_expenses':
-        return <RecurringExpensesView />;
+        return <RecurringTransactionsView kind="EXPENSE" />;
       case 'purchase_orders':
         return (
           <PurchaseOrdersView
@@ -208,25 +266,11 @@ function MainAppLayout() {
           />
         );
       case 'recurring_bills':
-        return <RecurringBillsView />;
+        return <RecurringTransactionsView kind="BILL" />;
       case 'payments_made':
-        return (
-          <PaymentsMadeView
-            autoOpenCreateModal={autoOpenPaymentMadeModal}
-            onModalClosed={() => setAutoOpenPaymentMadeModal(false)}
-            selectedEntityId={selectedEntityId}
-            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
-          />
-        );
+        return <SettlementWorkspace side="payable" initialResource="payments" autoOpenCreateModal={autoOpenPaymentMadeModal} onModalClosed={() => setAutoOpenPaymentMadeModal(false)} />;
       case 'vendor_credits':
-        return (
-          <VendorCreditsView
-            autoOpenCreateModal={autoOpenVendorCreditModal}
-            onModalClosed={() => setAutoOpenVendorCreditModal(false)}
-            selectedEntityId={selectedEntityId}
-            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
-          />
-        );
+        return <SettlementWorkspace side="payable" initialResource="credits" autoOpenCreateModal={autoOpenVendorCreditModal} onModalClosed={() => setAutoOpenVendorCreditModal(false)} />;
 
       // Accounting Sub-Tabs
       case 'accounting_overview':
@@ -255,6 +299,10 @@ function MainAppLayout() {
         );
       case 'transaction_locking':
         return <AccountingView initialSubTab="transaction_locking" onSubTabChange={(st) => setActiveTab(st)} />;
+      case 'fixed_assets':
+        return <FixedAssetsView />;
+      case 'period_close':
+        return <PeriodCloseView />;
 
       // Reports
       case 'reports':
@@ -264,6 +312,10 @@ function MainAppLayout() {
       case 'settings_overview':
       case 'settings':
         return <SettingsView />;
+      case 'team_access':
+        return <TeamAccessView />;
+      case 'recovery_center':
+        return <RecoveryCenterView />;
 
       default:
         return <DashboardView onNavigate={handleNavigate} />;
@@ -275,7 +327,8 @@ function MainAppLayout() {
       {/* Left Strip Sidebar - Fixed Full Height */}
       <Sidebar
         activeTab={activeTab}
-        setActiveTab={setActiveTab}
+        setActiveTab={(tab) => handleNavigate(tab)}
+        enabledCapabilities={enabledCapabilities}
         onOpenQuickCreate={() => handleNavigate('invoices', { autoCreate: true })}
         onOpenOrgSwitcher={() => setIsOrgSwitcherOpen(true)}
         onOpenOrgWizard={() => setIsOrgWizardOpen(true)}
@@ -284,7 +337,8 @@ function MainAppLayout() {
       {/* Mobile Navigation Overlay */}
       <MobileNav
         activeTab={activeTab}
-        setActiveTab={setActiveTab}
+        setActiveTab={(tab) => handleNavigate(tab)}
+        enabledCapabilities={enabledCapabilities}
         onOpenQuickCreate={() => handleNavigate('invoices', { autoCreate: true })}
         isOpen={mobileNavOpen}
         onClose={() => setMobileNavOpen(false)}

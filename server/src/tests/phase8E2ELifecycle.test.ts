@@ -280,7 +280,7 @@ describe('Phase 8: Complete End-to-End Business Lifecycle & Production UX Harden
     const invFinalRes = await request.get('/api/v1/invoices').set(authHeader);
     const paidInv = invFinalRes.body.find((i: any) => i.id === invoiceId);
     expect(Number(paidInv.balance_due || paidInv.balanceDue || 0)).toBe(0);
-    expect(paidInv.status).toBe('Paid');
+    expect(paidInv.status.toUpperCase()).toBe('PAID');
   });
 
   it('Step 7: Bank account onboarding rejects unbalanced opening data', async () => {

@@ -20,6 +20,17 @@ class DatabaseService {
   private memDbInstance: IMemoryDb | null = null;
   private transactionContext = new AsyncLocalStorage<DbQueryClient>();
   private savepointSequence = 0;
+  private memTxMutex: Promise<void> = Promise.resolve();
+
+  private acquireMemTxLock(): Promise<() => void> {
+    let release!: () => void;
+    const next = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const current = this.memTxMutex;
+    this.memTxMutex = current.then(() => next);
+    return current.then(() => release);
+  }
 
   constructor() {
     this.initPool();
@@ -188,13 +199,11 @@ class DatabaseService {
       }
     }
 
-    if (this.pool && !this.isUsingMemoryFallback) {
+    if (this.memDbInstance && this.pool) {
+      const unlock = await this.acquireMemTxLock();
       try {
         const client = await this.pool.connect();
-        // pg-mem's pg adapter accepts BEGIN/ROLLBACK but does not implement
-        // rollback isolation. Its native backup restores the complete database
-        // and keeps transaction tests honest.
-        const memoryBackup = this.memDbInstance?.backup();
+        const memoryBackup = this.memDbInstance.backup();
         try {
           await client.query('BEGIN');
           const transactionClient: DbQueryClient = {
@@ -208,7 +217,32 @@ class DatabaseService {
           return res;
         } catch (err) {
           await client.query('ROLLBACK');
-          memoryBackup?.restore();
+          memoryBackup.restore();
+          throw err;
+        } finally {
+          client.release();
+        }
+      } finally {
+        unlock();
+      }
+    }
+
+    if (this.pool && !this.isUsingMemoryFallback) {
+      try {
+        const client = await this.pool.connect();
+        try {
+          await client.query('BEGIN');
+          const transactionClient: DbQueryClient = {
+            query: async (text, params) => {
+              const r = await client.query(text, params);
+              return { rows: r.rows, rowCount: r.rowCount || 0 };
+            },
+          };
+          const res = await this.transactionContext.run(transactionClient, () => callback(transactionClient));
+          await client.query('COMMIT');
+          return res;
+        } catch (err) {
+          await client.query('ROLLBACK');
           throw err;
         } finally {
           client.release();
@@ -220,29 +254,6 @@ class DatabaseService {
         } else {
           throw err;
         }
-      }
-    }
-
-    if (this.pool) {
-      const client = await this.pool.connect();
-      const memoryBackup = this.memDbInstance?.backup();
-      try {
-        await client.query('BEGIN');
-        const transactionClient: DbQueryClient = {
-          query: async (text, params) => {
-            const r = await client.query(text, params);
-            return { rows: r.rows, rowCount: r.rowCount || 0 };
-          },
-        };
-        const res = await this.transactionContext.run(transactionClient, () => callback(transactionClient));
-        await client.query('COMMIT');
-        return res;
-      } catch (err) {
-        await client.query('ROLLBACK');
-        memoryBackup?.restore();
-        throw err;
-      } finally {
-        client.release();
       }
     } else {
       if (!this.isMemoryAllowed()) {

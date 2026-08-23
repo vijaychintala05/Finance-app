@@ -242,8 +242,9 @@ export interface InvoiceModel {
 
 export class SalesEngine {
   // Helper for checking Period Lock
-  private static async checkPeriodLock(orgId: string, dateStr: string): Promise<void> {
-    const lockRes = await db.query(
+  private static async checkPeriodLock(orgId: string, dateStr: string, transactionClient?: QueryClient): Promise<void> {
+    const client = transactionClient || db;
+    const lockRes = await client.query(
       `SELECT lock_date FROM period_locks WHERE organization_id = $1 AND status = 'Active'`,
       [orgId]
     );
@@ -762,9 +763,6 @@ export class SalesEngine {
     data: Partial<InvoiceModel>,
     transactionClient?: QueryClient
   ): Promise<InvoiceModel> {
-    // 1. Period lock validation
-    await SalesEngine.checkPeriodLock(orgId, data.issueDate || new Date().toISOString().split('T')[0]);
-
     const id = data.id || newId('inv');
     const now = new Date().toISOString();
     const issueDate = data.issueDate || now.split('T')[0];
@@ -796,6 +794,7 @@ export class SalesEngine {
     const status = isPosted ? 'POSTED' : 'DRAFT';
 
     const persistInvoice = async (client: QueryClient) => {
+      await SalesEngine.checkPeriodLock(orgId, issueDate, client);
       invNumber = invNumber || await DocumentNumberingEngine.getNextNumber(orgId, 'INVOICE', issueDate, undefined, client);
       const customerId = data.customerId || (data as any).clientId;
       if (!customerId) throw new Error('Invoice customer is required');
@@ -1101,131 +1100,214 @@ export class SalesEngine {
   public static async recordPayment(
     orgId: string,
     payload: {
-      customerId: string;
-      customerName: string;
+      customerId?: string;
+      clientId?: string;
+      customerName?: string;
+      clientName?: string;
       paymentDate: string;
       amount: number;
-      paymentMode: string;
-      depositToAccountId: string;
+      paymentMode?: string;
+      depositToAccountId?: string;
       reference?: string;
       notes?: string;
-      allocations: { invoiceId: string; amount: number }[];
-    }
-  ): Promise<{ paymentId: string; unallocatedAmount: number }> {
-    await SalesEngine.checkPeriodLock(orgId, payload.paymentDate);
+      allocations?: { invoiceId: string; amount: number }[];
+      _debugFailPoint?: 'after_journal' | 'after_payment' | 'after_first_allocation';
+    },
+    transactionClient?: QueryClient
+  ): Promise<{ id: string; paymentId: string; paymentNumber: string; amount: number; unallocatedAmount: number; journalEntryId: string }> {
+    const execute = async (client: QueryClient) => {
+      await SalesEngine.checkPeriodLock(orgId, payload.paymentDate, client);
 
-    const paymentId = newId('pmt');
-    const paymentNum = await DocumentNumberingEngine.getNextNumber(orgId, 'CUSTOMER_PAYMENT', payload.paymentDate);
-    const now = new Date().toISOString();
+      let customerId = payload.customerId || payload.clientId || '';
+      let customerName = payload.customerName || payload.clientName || '';
+      const paymentMode = payload.paymentMode || 'Bank Transfer';
+      const depositToAccountId = payload.depositToAccountId || '1010';
 
-    const totalAllocated = payload.allocations.reduce((sum, a) => sum + a.amount, 0);
-    const unallocatedAmount = Math.max(0, Math.round((payload.amount - totalAllocated) * 100) / 100);
+      if (!customerName && customerId) {
+        const custRes = await client.query(
+          `SELECT display_name AS name FROM customers WHERE organization_id = $1 AND id = $2
+           UNION ALL SELECT name FROM clients WHERE organization_id = $1 AND id = $2 LIMIT 1`,
+          [orgId, customerId]
+        );
+        if (custRes.rows.length > 0) {
+          customerName = custRes.rows[0].name || 'Customer';
+        }
+      }
+      if (!customerName) customerName = 'Customer';
 
-    // GL Posting for Payment:
-    // Dr Bank Account: payload.amount
-    // Cr Accounts Receivable: totalAllocated
-    // Cr Customer Advances Liability: unallocatedAmount (if any)
-    const journalLines: any[] = [
-      {
-        accountId: payload.depositToAccountId,
-        accountCode: '1010',
-        accountName: 'Bank / Cash Account',
-        debit: payload.amount,
-        credit: 0,
-        description: `Payment ${paymentNum} received from ${payload.customerName}`,
-      },
-    ];
+      const paymentId = newId('pmt');
+      const paymentNum = await DocumentNumberingEngine.getNextNumber(orgId, 'CUSTOMER_PAYMENT', payload.paymentDate, undefined, client);
+      const now = new Date().toISOString();
 
-    if (totalAllocated > 0) {
-      journalLines.push({
-        accountId: '1100',
-        accountCode: '1100',
-        accountName: 'Accounts Receivable',
-        debit: 0,
-        credit: totalAllocated,
-        description: `Payment ${paymentNum} allocated to invoices`,
-      });
-    }
+      // 1. Group and aggregate allocation amounts by invoiceId
+      const aggregatedAllocations = new Map<string, number>();
+      for (const alloc of payload.allocations || []) {
+        if (!alloc.invoiceId || !alloc.amount || alloc.amount <= 0) continue;
+        const currentSum = aggregatedAllocations.get(alloc.invoiceId) || 0;
+        aggregatedAllocations.set(alloc.invoiceId, Math.round((currentSum + Number(alloc.amount)) * 100) / 100);
+      }
 
-    if (unallocatedAmount > 0) {
-      journalLines.push({
-        accountId: '2100',
-        accountCode: '2100',
-        accountName: 'Customer Advances Liability',
-        debit: 0,
-        credit: unallocatedAmount,
-        description: `Unallocated Customer Advance for ${payload.customerName}`,
-      });
-    }
+      const totalAllocated = Array.from(aggregatedAllocations.values()).reduce((sum, amt) => sum + amt, 0);
+      if (totalAllocated > payload.amount + 0.009) {
+        throw new Error(`Total allocated amount (${totalAllocated}) cannot exceed payment amount (${payload.amount}).`);
+      }
+      const unallocatedAmount = Math.max(0, Math.round((payload.amount - totalAllocated) * 100) / 100);
 
-    await SalesEngine.persistJournalEntry(
-      orgId,
-      `JE-${paymentNum}`,
-      payload.paymentDate,
-      paymentNum,
-      `Payment Received ${paymentNum}`,
-      journalLines
-    );
+      // 2. Sort unique invoice IDs in deterministic ascending lexical order to prevent distributed deadlocks
+      const sortedInvoiceIds = Array.from(aggregatedAllocations.keys()).sort();
 
-    // Persist Payment
-    await db.query(
-      `INSERT INTO payments_received (id, organization_id, payment_number, client_id, client_name, payment_date, amount, payment_mode, deposit_to_account_id, reference, notes, unallocated_amount, status, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
-      [
-        paymentId,
+      // 3. Lock & validate all allocated invoices in deterministic sorted order
+      const lockedInvoices: Array<{ id: string; invoice: any; allocAmount: number; newPaid: number; newBal: number; newStatus: string }> = [];
+      for (const invId of sortedInvoiceIds) {
+        const allocAmount = aggregatedAllocations.get(invId)!;
+        const invRes = await client.query(
+          `SELECT * FROM invoices WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+          [orgId, invId]
+        );
+        if (invRes.rows.length === 0) {
+          throw new Error(`Invoice ${invId} not found`);
+        }
+        const inv = invRes.rows[0];
+        const invoiceCustomerId = inv.customer_id || inv.client_id;
+        if (invoiceCustomerId && customerId && invoiceCustomerId !== customerId) {
+          throw new Error(`CROSS_CUSTOMER_ALLOCATION: Invoice ${inv.invoice_number} does not belong to customer ${customerId}`);
+        }
+        if (!customerId && invoiceCustomerId) {
+          customerId = invoiceCustomerId;
+          customerName = inv.client_name || customerName;
+        }
+
+        const currentBal = Math.max(0, Math.round((Number(inv.total_amount || 0) - Number(inv.paid_amount || 0) - Number(inv.amount_credited || 0) - Number(inv.amount_written_off || 0)) * 100) / 100);
+        if (allocAmount > currentBal + 0.009) {
+          throw new Error(`Allocation amount (${allocAmount}) exceeds invoice ${inv.invoice_number} balance due (${currentBal})`);
+        }
+        const newPaid = Math.round((Number(inv.paid_amount || 0) + allocAmount) * 100) / 100;
+        const newBal = Math.max(0, Math.round((Number(inv.total_amount || 0) - newPaid - Number(inv.amount_credited || 0) - Number(inv.amount_written_off || 0)) * 100) / 100);
+        const newStatus = newBal === 0 ? 'PAID' : 'PARTIALLY_PAID';
+        lockedInvoices.push({ id: invId, invoice: inv, allocAmount, newPaid, newBal, newStatus });
+      }
+
+      // GL Posting for Payment:
+      // Dr Bank Account: payload.amount
+      // Cr Accounts Receivable: totalAllocated
+      // Cr Customer Advances Liability: unallocatedAmount (if any)
+      const journalLines: any[] = [
+        {
+          accountId: depositToAccountId,
+          accountCode: '1010',
+          accountName: 'Bank / Cash Account',
+          debit: payload.amount,
+          credit: 0,
+          description: `Payment ${paymentNum} received from ${customerName}`,
+        },
+      ];
+
+      if (totalAllocated > 0) {
+        journalLines.push({
+          accountId: '1100',
+          accountCode: '1100',
+          accountName: 'Accounts Receivable',
+          debit: 0,
+          credit: totalAllocated,
+          description: `Payment ${paymentNum} allocated to invoices`,
+        });
+      }
+
+      if (unallocatedAmount > 0) {
+        journalLines.push({
+          accountId: '2100',
+          accountCode: '2100',
+          accountName: 'Customer Advances Liability',
+          debit: 0,
+          credit: unallocatedAmount,
+          description: `Unallocated Customer Advance for ${customerName}`,
+        });
+      }
+
+      const journalEntryId = await SalesEngine.persistJournalEntry(
         orgId,
-        paymentNum,
-        payload.customerId,
-        payload.customerName,
+        `JE-${paymentNum}`,
         payload.paymentDate,
-        payload.amount,
-        payload.paymentMode,
-        payload.depositToAccountId,
-        payload.reference || '',
-        payload.notes || '',
-        unallocatedAmount,
-        unallocatedAmount > 0 ? 'PARTIALLY_ALLOCATED' : 'ALLOCATED',
-        now,
-      ]
-    );
-
-    // Process each allocation
-    for (const alloc of payload.allocations) {
-      if (alloc.amount <= 0) continue;
-
-      await db.query(
-        `INSERT INTO payment_received_allocations (id, organization_id, payment_id, invoice_id, amount)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [newId('alloc'), orgId, paymentId, alloc.invoiceId, alloc.amount]
+        paymentNum,
+        `Payment Received ${paymentNum}`,
+        journalLines,
+        client
       );
 
-      // Update Invoice paid_amount and balance_due
-      const invRes = await db.query(`SELECT * FROM invoices WHERE organization_id = $1 AND id = $2`, [orgId, alloc.invoiceId]);
-      if (invRes.rows.length > 0) {
-        const inv = invRes.rows[0];
-        const newPaid = Math.round((Number(inv.paid_amount || 0) + alloc.amount) * 100) / 100;
-        const newBal = Math.max(0, Math.round((Number(inv.total_amount || 0) - newPaid - Number(inv.amount_credited || 0) - Number(inv.amount_written_off || 0)) * 100) / 100);
+      // Fault injection hook 1: forced failure after journal entry write
+      if (payload._debugFailPoint === 'after_journal') {
+        throw new Error('DEBUG_FAILURE: Forced failure after journal entry creation');
+      }
 
-        let newStatus = 'PARTIALLY_PAID';
-        if (newBal === 0) newStatus = 'PAID';
+      // Persist Payment
+      await client.query(
+        `INSERT INTO payments_received (id, organization_id, payment_number, client_id, client_name, payment_date, amount, payment_mode, deposit_to_account_id, reference, notes, unallocated_amount, status, journal_entry_id, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+        [
+          paymentId,
+          orgId,
+          paymentNum,
+          customerId,
+          customerName,
+          payload.paymentDate,
+          payload.amount,
+          paymentMode,
+          depositToAccountId,
+          payload.reference || '',
+          payload.notes || '',
+          unallocatedAmount,
+          unallocatedAmount > 0 ? 'PARTIALLY_ALLOCATED' : 'ALLOCATED',
+          journalEntryId,
+          now,
+        ]
+      );
 
-        await db.query(
-          `UPDATE invoices SET paid_amount = $1, balance_due = $2, status = $3 WHERE organization_id = $4 AND id = $5`,
-          [newPaid, newBal, newStatus, orgId, alloc.invoiceId]
+      // Fault injection hook 2: forced failure after payment record write
+      if (payload._debugFailPoint === 'after_payment') {
+        throw new Error('DEBUG_FAILURE: Forced failure after payment write');
+      }
+
+      // Process each allocation in deterministic sorted order
+      let allocationCounter = 0;
+      for (const item of lockedInvoices) {
+        const updateRes = await client.query(
+          `UPDATE invoices
+              SET paid_amount = $1, balance_due = $2, status = $3
+            WHERE organization_id = $4 AND id = $5
+              AND balance_due >= $6 - 0.009`,
+          [item.newPaid, item.newBal, item.newStatus, orgId, item.id, item.allocAmount]
+        );
+        if (updateRes.rowCount === 0) {
+          throw new Error(`Concurrent modification: Invoice balance for ${item.invoice.invoice_number || item.id} has changed.`);
+        }
+
+        await client.query(
+          `INSERT INTO payment_received_allocations (id, organization_id, payment_id, invoice_id, amount)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [newId('alloc'), orgId, paymentId, item.id, item.allocAmount]
+        );
+
+        allocationCounter++;
+        // Fault injection hook 3: forced failure after first allocation write
+        if (allocationCounter === 1 && payload._debugFailPoint === 'after_first_allocation') {
+          throw new Error('DEBUG_FAILURE: Forced failure after first allocation write');
+        }
+      }
+
+      // Save Customer Advance record if unallocated
+      if (unallocatedAmount > 0) {
+        await client.query(
+          `INSERT INTO customer_advances (id, organization_id, customer_id, payment_id, amount, unapplied_amount, received_date, status, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+          [newId('adv'), orgId, customerId, paymentId, unallocatedAmount, unallocatedAmount, payload.paymentDate, 'UNAPPLIED', now]
         );
       }
-    }
 
-    // Save Customer Advance record if unallocated
-    if (unallocatedAmount > 0) {
-      await db.query(
-        `INSERT INTO customer_advances (id, organization_id, customer_id, payment_id, amount, unapplied_amount, received_date, status, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [newId('adv'), orgId, payload.customerId, paymentId, unallocatedAmount, unallocatedAmount, payload.paymentDate, 'UNAPPLIED', now]
-      );
-    }
+      return { id: paymentId, paymentId, paymentNumber: paymentNum, amount: payload.amount, unallocatedAmount, journalEntryId };
+    };
 
-    return { paymentId, unallocatedAmount };
+    if (transactionClient) return await execute(transactionClient);
+    return await db.transaction(execute);
   }
 
   // -------------------------------------------------------------
@@ -1235,76 +1317,117 @@ export class SalesEngine {
     orgId: string,
     advanceId: string,
     invoiceId: string,
-    amountToApply: number,
-    applyDate: string
-  ): Promise<{ appliedAmount: number; invoiceRemainingBalance: number }> {
-    await SalesEngine.checkPeriodLock(orgId, applyDate);
+    amount: number,
+    appliedDate: string,
+    transactionClient?: QueryClient
+  ): Promise<{ appliedAmount: number; advanceRemainingBalance: number; invoiceRemainingBalance: number }> {
+    const execute = async (client: QueryClient) => {
+      await SalesEngine.checkPeriodLock(orgId, appliedDate, client);
 
-    const advRes = await db.query(`SELECT * FROM customer_advances WHERE organization_id = $1 AND id = $2`, [orgId, advanceId]);
-    if (advRes.rows.length === 0) throw new Error('Customer Advance not found');
-    const adv = advRes.rows[0];
+      // Lock advance
+      const advRes = await client.query(
+        `SELECT * FROM customer_advances WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, advanceId]
+      );
+      if (advRes.rows.length === 0) {
+        throw new Error(`Customer Advance ${advanceId} not found`);
+      }
+      const adv = advRes.rows[0];
+      const availableAdv = Number(adv.unapplied_amount || 0);
+      if (amount > availableAdv + 0.009) {
+        throw new Error(`Applied amount (${amount}) exceeds available advance balance (${availableAdv})`);
+      }
 
-    const availableAdv = Number(adv.unapplied_amount);
-    if (amountToApply > availableAdv) throw new Error(`Cannot apply ${amountToApply}: exceeds available advance balance ${availableAdv}`);
+      // Lock invoice
+      const invRes = await client.query(
+        `SELECT * FROM invoices WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, invoiceId]
+      );
+      if (invRes.rows.length === 0) {
+        throw new Error(`Invoice ${invoiceId} not found`);
+      }
+      const inv = invRes.rows[0];
+      const invoiceCustomerId = inv.customer_id || inv.client_id;
+      if (invoiceCustomerId && adv.customer_id && invoiceCustomerId !== adv.customer_id) {
+        throw new Error(`CROSS_CUSTOMER_ALLOCATION: Cannot apply advance from customer ${adv.customer_id} to invoice belonging to ${invoiceCustomerId}`);
+      }
 
-    const invRes = await db.query(`SELECT * FROM invoices WHERE organization_id = $1 AND id = $2`, [orgId, invoiceId]);
-    if (invRes.rows.length === 0) throw new Error('Invoice not found');
-    const inv = invRes.rows[0];
+      const invBal = Math.max(0, Math.round((Number(inv.total_amount || 0) - Number(inv.paid_amount || 0) - Number(inv.amount_credited || 0) - Number(inv.amount_written_off || 0)) * 100) / 100);
+      if (amount > invBal + 0.009) {
+        throw new Error(`Applied advance (${amount}) exceeds invoice ${inv.invoice_number} balance due (${invBal})`);
+      }
 
-    if (adv.customer_id && inv.customer_id && adv.customer_id !== inv.customer_id) {
-      throw new Error('CROSS_CUSTOMER_ALLOCATION: Cannot apply customer advance across different customers');
-    }
+      const newAdvBal = Math.max(0, Math.round((availableAdv - amount) * 100) / 100);
+      const newAdvStatus = newAdvBal === 0 ? 'APPLIED' : 'PARTIALLY_APPLIED';
 
-    const currentBal = Number(inv.balance_due);
-    const actualApplied = Math.min(amountToApply, currentBal);
+      // Atomic advance drawdown
+      const advUpdate = await client.query(
+        `UPDATE customer_advances
+            SET unapplied_amount = $1, status = $2
+          WHERE organization_id = $3 AND id = $4
+            AND unapplied_amount >= $5 - 0.009`,
+        [newAdvBal, newAdvStatus, orgId, advanceId, amount]
+      );
+      if (advUpdate.rowCount === 0) {
+        throw new Error('Concurrent modification: Advance balance has changed.');
+      }
 
-    // GL Entry: Dr Customer Advances Liability, Cr Accounts Receivable
-    const journalLines = [
-      {
-        accountId: '2100',
-        accountCode: '2100',
-        accountName: 'Customer Advances Liability',
-        debit: actualApplied,
-        credit: 0,
-        description: `Apply Advance to Invoice ${inv.invoice_number}`,
-      },
-      {
-        accountId: '1100',
-        accountCode: '1100',
-        accountName: 'Accounts Receivable',
-        debit: 0,
-        credit: actualApplied,
-        description: `Advance Applied to Invoice ${inv.invoice_number}`,
-      },
-    ];
+      const newInvPaid = Math.round((Number(inv.paid_amount || 0) + amount) * 100) / 100;
+      const newInvBal = Math.max(0, Math.round((Number(inv.total_amount || 0) - newInvPaid - Number(inv.amount_credited || 0) - Number(inv.amount_written_off || 0)) * 100) / 100);
+      const newInvStatus = newInvBal === 0 ? 'PAID' : 'PARTIALLY_PAID';
 
-    await SalesEngine.persistJournalEntry(
-      orgId,
-      newId('je'),
-      applyDate,
-      inv.invoice_number,
-      `Advance Applied to Invoice ${inv.invoice_number}`,
-      journalLines
-    );
+      // Atomic invoice update
+      const invUpdate = await client.query(
+        `UPDATE invoices
+            SET paid_amount = $1, balance_due = $2, status = $3
+          WHERE organization_id = $4 AND id = $5
+            AND balance_due >= $6 - 0.009`,
+        [newInvPaid, newInvBal, newInvStatus, orgId, invoiceId, amount]
+      );
+      if (invUpdate.rowCount === 0) {
+        throw new Error('Concurrent modification: Invoice balance has changed.');
+      }
 
-    // Update advance record
-    const newUnapplied = Math.round((availableAdv - actualApplied) * 100) / 100;
-    await db.query(
-      `UPDATE customer_advances SET unapplied_amount = $1, status = $2 WHERE organization_id = $3 AND id = $4`,
-      [newUnapplied, newUnapplied === 0 ? 'APPLIED' : 'PARTIALLY_APPLIED', orgId, advanceId]
-    );
+      // Record GL Entry: Dr Customer Advances (2100), Cr Accounts Receivable (1100)
+      const journalEntryId = await SalesEngine.persistJournalEntry(
+        orgId,
+        `JE-ADVAPP-${newId('je')}`,
+        appliedDate,
+        inv.invoice_number,
+        `Advance ${advanceId} applied to Invoice ${inv.invoice_number}`,
+        [
+          {
+            accountId: '2100',
+            accountCode: '2100',
+            accountName: 'Customer Advances Liability',
+            debit: amount,
+            credit: 0,
+            description: `Advance drawn down for Invoice ${inv.invoice_number}`,
+          },
+          {
+            accountId: '1100',
+            accountCode: '1100',
+            accountName: 'Accounts Receivable',
+            debit: 0,
+            credit: amount,
+            description: `Accounts Receivable settled via advance`,
+          },
+        ],
+        client
+      );
 
-    // Update invoice balance
-    const newPaid = Math.round((Number(inv.paid_amount) + actualApplied) * 100) / 100;
-    const newBal = Math.max(0, Math.round((currentBal - actualApplied) * 100) / 100);
-    const newStatus = newBal === 0 ? 'PAID' : 'PARTIALLY_PAID';
+      await client.query(
+        `INSERT INTO customer_advance_applications
+          (id, organization_id, advance_id, invoice_id, amount_applied, applied_date, journal_entry_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [newId('advapp'), orgId, advanceId, invoiceId, amount, appliedDate, journalEntryId]
+      );
 
-    await db.query(
-      `UPDATE invoices SET paid_amount = $1, balance_due = $2, status = $3 WHERE organization_id = $4 AND id = $5`,
-      [newPaid, newBal, newStatus, orgId, invoiceId]
-    );
+      return { appliedAmount: amount, advanceRemainingBalance: newAdvBal, invoiceRemainingBalance: newInvBal };
+    };
 
-    return { appliedAmount: actualApplied, invoiceRemainingBalance: newBal };
+    if (transactionClient) return await execute(transactionClient);
+    return await db.transaction(execute);
   }
 
   // -------------------------------------------------------------
@@ -1320,71 +1443,78 @@ export class SalesEngine {
       taxableAmount: number;
       taxAmount: number;
       reason?: string;
-    }
+    },
+    transactionClient?: QueryClient
   ): Promise<{ creditNoteId: string; totalAmount: number }> {
-    await SalesEngine.checkPeriodLock(orgId, payload.date);
+    const execute = async (client: QueryClient) => {
+      await SalesEngine.checkPeriodLock(orgId, payload.date, client);
 
-    const id = newId('cn');
-    const cnNumber = await DocumentNumberingEngine.getNextNumber(orgId, 'CREDIT_NOTE', payload.date);
-    const totalAmount = Math.round((payload.taxableAmount + payload.taxAmount) * 100) / 100;
-    const now = new Date().toISOString();
+      const id = newId('cn');
+      const cnNumber = await DocumentNumberingEngine.getNextNumber(orgId, 'CREDIT_NOTE', payload.date, undefined, client);
+      const totalAmount = Math.round((payload.taxableAmount + payload.taxAmount) * 100) / 100;
+      const now = new Date().toISOString();
 
-    // GL Posting for Credit Note:
-    // Dr Sales / Revenue (taxableAmount)
-    // Dr GST Output Liability Reversal (taxAmount)
-    // Cr Accounts Receivable (totalAmount)
-    const journalLines: any[] = [
-      {
-        accountId: '4000',
-        accountCode: '4000',
-        accountName: 'Sales Revenue Reversal',
-        debit: payload.taxableAmount,
-        credit: 0,
-        description: `Credit Note ${cnNumber} Revenue Reversal`,
-      },
-    ];
+      // GL Posting for Credit Note:
+      // Dr Sales / Revenue (taxableAmount)
+      // Dr GST Output Liability Reversal (taxAmount)
+      // Cr Accounts Receivable (totalAmount)
+      const journalLines: any[] = [
+        {
+          accountId: '4000',
+          accountCode: '4000',
+          accountName: 'Sales Revenue Reversal',
+          debit: payload.taxableAmount,
+          credit: 0,
+          description: `Credit Note ${cnNumber} Revenue Reversal`,
+        },
+      ];
 
-    if (payload.taxAmount > 0) {
+      if (payload.taxAmount > 0) {
+        journalLines.push({
+          accountId: '2200',
+          accountCode: '2200',
+          accountName: 'GST Output Tax Reversal',
+          debit: payload.taxAmount,
+          credit: 0,
+          description: `Credit Note ${cnNumber} Tax Reversal`,
+        });
+      }
+
       journalLines.push({
-        accountId: '2200',
-        accountCode: '2200',
-        accountName: 'GST Output Tax Reversal',
-        debit: payload.taxAmount,
-        credit: 0,
-        description: `Credit Note ${cnNumber} Tax Reversal`,
+        accountId: '1100',
+        accountCode: '1100',
+        accountName: 'Accounts Receivable',
+        debit: 0,
+        credit: totalAmount,
+        description: `Credit Note ${cnNumber} AR Reduction`,
       });
-    }
 
-    journalLines.push({
-      accountId: '1100',
-      accountCode: '1100',
-      accountName: 'Accounts Receivable',
-      debit: 0,
-      credit: totalAmount,
-      description: `Credit Note ${cnNumber} AR Reduction`,
-    });
+      const journalEntryId = await SalesEngine.persistJournalEntry(
+        orgId,
+        `JE-${cnNumber}`,
+        payload.date,
+        cnNumber,
+        `Credit Note ${cnNumber} Created`,
+        journalLines,
+        client
+      );
 
-    await SalesEngine.persistJournalEntry(
-      orgId,
-      `JE-${cnNumber}`,
-      payload.date,
-      cnNumber,
-      `Credit Note ${cnNumber} Created`,
-      journalLines
-    );
+      await client.query(
+        `INSERT INTO credit_notes (id, organization_id, credit_note_number, client_id, client_name, date, total_amount, remaining_credit, status, reason, journal_entry_id, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        [id, orgId, cnNumber, payload.customerId, payload.customerName, payload.date, totalAmount, totalAmount, 'Open', payload.reason || '', journalEntryId, now]
+      );
 
-    await db.query(
-      `INSERT INTO credit_notes (id, organization_id, credit_note_number, client_id, client_name, date, total_amount, remaining_credit, status, reason, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-      [id, orgId, cnNumber, payload.customerId, payload.customerName, payload.date, totalAmount, totalAmount, 'Open', payload.reason || '', now]
-    );
+      // If assigned directly against an invoice, auto-apply to invoice
+      if (payload.invoiceId) {
+        await SalesEngine.applyCreditNoteToInvoice(orgId, id, payload.invoiceId, totalAmount, payload.date, client);
+      }
 
-    // If assigned directly against an invoice, auto-apply to invoice
-    if (payload.invoiceId) {
-      await SalesEngine.applyCreditNoteToInvoice(orgId, id, payload.invoiceId, totalAmount, payload.date);
-    }
+      return { creditNoteId: id, totalAmount };
+    };
 
-    return { creditNoteId: id, totalAmount };
+    if (transactionClient) return await execute(transactionClient);
+    return await db.transaction(execute);
   }
 
   public static async applyCreditNoteToInvoice(
@@ -1392,52 +1522,61 @@ export class SalesEngine {
     creditNoteId: string,
     invoiceId: string,
     amountToApply: number,
-    applyDate: string
+    applyDate: string,
+    transactionClient?: QueryClient
   ): Promise<{ appliedAmount: number; remainingCreditNoteBalance: number }> {
-    await SalesEngine.checkPeriodLock(orgId, applyDate);
+    const execute = async (client: QueryClient) => {
+      await SalesEngine.checkPeriodLock(orgId, applyDate, client);
 
-    const cnRes = await db.query(`SELECT * FROM credit_notes WHERE organization_id = $1 AND id = $2`, [orgId, creditNoteId]);
-    if (cnRes.rows.length === 0) throw new Error('Credit Note not found');
-    const cn = cnRes.rows[0];
+      const cnRes = await client.query(`SELECT * FROM credit_notes WHERE organization_id = $1 AND id = $2 FOR UPDATE`, [orgId, creditNoteId]);
+      if (cnRes.rows.length === 0) throw new Error('Credit Note not found');
+      const cn = cnRes.rows[0];
 
-    const availableCredit = Number(cn.remaining_credit);
-    if (amountToApply > availableCredit) throw new Error(`Amount ${amountToApply} exceeds remaining credit ${availableCredit}`);
+      const availableCredit = Number(cn.remaining_credit);
+      if (amountToApply > availableCredit) throw new Error(`Amount ${amountToApply} exceeds remaining credit ${availableCredit}`);
 
-    const invRes = await db.query(`SELECT * FROM invoices WHERE organization_id = $1 AND id = $2`, [orgId, invoiceId]);
-    if (invRes.rows.length === 0) throw new Error('Invoice not found');
-    const inv = invRes.rows[0];
+      const invRes = await client.query(`SELECT * FROM invoices WHERE organization_id = $1 AND id = $2 FOR UPDATE`, [orgId, invoiceId]);
+      if (invRes.rows.length === 0) throw new Error('Invoice not found');
+      const inv = invRes.rows[0];
 
-    if (cn.customer_id && inv.customer_id && cn.customer_id !== inv.customer_id) {
-      throw new Error('CROSS_CUSTOMER_ALLOCATION: Cannot apply credit note across different customers');
-    }
+      const cnCust = cn.customer_id || cn.client_id;
+      const invCust = inv.customer_id || inv.client_id;
+      if (cnCust && invCust && cnCust !== invCust) {
+        throw new Error('CROSS_CUSTOMER_ALLOCATION: Cannot apply credit note across different customers');
+      }
 
-    const actualApplied = Math.min(amountToApply, Number(inv.balance_due));
+      const currentBal = Math.max(0, Math.round((Number(inv.total_amount) - Number(inv.paid_amount || 0) - Number(inv.amount_credited || 0) - Number(inv.amount_written_off || 0)) * 100) / 100);
+      const actualApplied = Math.min(amountToApply, currentBal);
 
-    // Application record
-    await db.query(
-      `INSERT INTO credit_note_applications (id, organization_id, credit_note_id, invoice_id, amount_applied, applied_date)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [newId('cna'), orgId, creditNoteId, invoiceId, actualApplied, applyDate]
-    );
+      // Application record
+      await client.query(
+        `INSERT INTO credit_note_applications (id, organization_id, credit_note_id, invoice_id, amount_applied, applied_date)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [newId('cna'), orgId, creditNoteId, invoiceId, actualApplied, applyDate]
+      );
 
-    // Update Credit Note
-    const newRemCredit = Math.round((availableCredit - actualApplied) * 100) / 100;
-    await db.query(
-      `UPDATE credit_notes SET remaining_credit = $1, status = $2 WHERE organization_id = $3 AND id = $4`,
-      [newRemCredit, newRemCredit === 0 ? 'Closed' : 'Open', orgId, creditNoteId]
-    );
+      // Update Credit Note
+      const newRemCredit = Math.round((availableCredit - actualApplied) * 100) / 100;
+      await client.query(
+        `UPDATE credit_notes SET remaining_credit = $1, status = $2 WHERE organization_id = $3 AND id = $4`,
+        [newRemCredit, newRemCredit === 0 ? 'Closed' : 'Open', orgId, creditNoteId]
+      );
 
-    // Update Invoice balance
-    const currentCredited = Number(inv.amount_credited || 0);
-    const newCredited = Math.round((currentCredited + actualApplied) * 100) / 100;
-    const newBal = Math.max(0, Math.round((Number(inv.total_amount) - Number(inv.paid_amount) - newCredited - Number(inv.amount_written_off || 0)) * 100) / 100);
+      // Update Invoice balance
+      const currentCredited = Number(inv.amount_credited || 0);
+      const newCredited = Math.round((currentCredited + actualApplied) * 100) / 100;
+      const newBal = Math.max(0, Math.round((Number(inv.total_amount) - Number(inv.paid_amount || 0) - newCredited - Number(inv.amount_written_off || 0)) * 100) / 100);
 
-    await db.query(
-      `UPDATE invoices SET amount_credited = $1, balance_due = $2, status = $3 WHERE organization_id = $4 AND id = $5`,
-      [newCredited, newBal, newBal === 0 ? 'PAID' : 'PARTIALLY_PAID', orgId, invoiceId]
-    );
+      await client.query(
+        `UPDATE invoices SET amount_credited = $1, balance_due = $2, status = $3 WHERE organization_id = $4 AND id = $5`,
+        [newCredited, newBal, newBal === 0 ? 'PAID' : 'PARTIALLY_PAID', orgId, invoiceId]
+      );
 
-    return { appliedAmount: actualApplied, remainingCreditNoteBalance: newRemCredit };
+      return { appliedAmount: actualApplied, remainingCreditNoteBalance: newRemCredit };
+    };
+
+    if (transactionClient) return await execute(transactionClient);
+    return await db.transaction(execute);
   }
 
   // -------------------------------------------------------------
@@ -1453,57 +1592,70 @@ export class SalesEngine {
       refundAccountId: string;
       reference?: string;
       notes?: string;
-    }
+    },
+    transactionClient?: QueryClient
   ): Promise<{ refundId: string }> {
-    await SalesEngine.checkPeriodLock(orgId, payload.refundDate);
+    const execute = async (client: QueryClient) => {
+      await SalesEngine.checkPeriodLock(orgId, payload.refundDate, client);
 
-    const refundId = newId('ref');
-    const refundNum = await DocumentNumberingEngine.getNextNumber(orgId, 'CUSTOMER_REFUND', payload.refundDate);
-    const now = new Date().toISOString();
+      const refundId = newId('ref');
+      const refundNum = await DocumentNumberingEngine.getNextNumber(orgId, 'CUSTOMER_REFUND', payload.refundDate, undefined, client);
+      const now = new Date().toISOString();
 
-    // GL Entry: Dr Customer Credit / Liability, Cr Bank Account
-    const journalLines = [
-      {
-        accountId: '2100',
-        accountCode: '2100',
-        accountName: 'Customer Credit Liability',
-        debit: payload.amount,
-        credit: 0,
-        description: `Customer Refund ${refundNum}`,
-      },
-      {
-        accountId: payload.refundAccountId,
-        accountCode: '1010',
-        accountName: 'Bank Account',
-        debit: 0,
-        credit: payload.amount,
-        description: `Customer Refund ${refundNum}`,
-      },
-    ];
+      if (payload.creditNoteId) {
+        const cnRes = await client.query(`SELECT * FROM credit_notes WHERE organization_id = $1 AND id = $2 FOR UPDATE`, [orgId, payload.creditNoteId]);
+        if (cnRes.rows.length === 0) throw new Error('Credit note not found for refund');
+        const remCredit = Number(cnRes.rows[0].remaining_credit || 0);
+        if (payload.amount > remCredit) {
+          throw new Error(`Refund amount ${payload.amount} exceeds remaining credit note balance ${remCredit}`);
+        }
+        await client.query(
+          `UPDATE credit_notes SET remaining_credit = remaining_credit - $1, status = CASE WHEN remaining_credit - $1 = 0 THEN 'Refunded' ELSE status END WHERE organization_id = $2 AND id = $3`,
+          [payload.amount, orgId, payload.creditNoteId]
+        );
+      }
 
-    await SalesEngine.persistJournalEntry(
-      orgId,
-      `JE-${refundNum}`,
-      payload.refundDate,
-      refundNum,
-      `Customer Refund ${refundNum}`,
-      journalLines
-    );
+      // GL Entry: Dr Customer Credit / Liability, Cr Bank Account
+      const journalLines = [
+        {
+          accountId: '2100',
+          accountCode: '2100',
+          accountName: 'Customer Credit Liability',
+          debit: payload.amount,
+          credit: 0,
+          description: `Customer Refund ${refundNum}`,
+        },
+        {
+          accountId: payload.refundAccountId,
+          accountCode: '1010',
+          accountName: 'Bank Account',
+          debit: 0,
+          credit: payload.amount,
+          description: `Customer Refund ${refundNum}`,
+        },
+      ];
 
-    if (payload.creditNoteId) {
-      await db.query(
-        `UPDATE credit_notes SET remaining_credit = remaining_credit - $1, status = CASE WHEN remaining_credit - $1 = 0 THEN 'Refunded' ELSE status END WHERE organization_id = $2 AND id = $3`,
-        [payload.amount, orgId, payload.creditNoteId]
+      const journalEntryId = await SalesEngine.persistJournalEntry(
+        orgId,
+        `JE-${refundNum}`,
+        payload.refundDate,
+        refundNum,
+        `Customer Refund ${refundNum}`,
+        journalLines,
+        client
       );
-    }
 
-    await db.query(
-      `INSERT INTO customer_refunds (id, organization_id, refund_number, customer_id, credit_note_id, refund_date, amount, refund_account_id, reference, notes, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-      [refundId, orgId, refundNum, payload.customerId, payload.creditNoteId || null, payload.refundDate, payload.amount, payload.refundAccountId, payload.reference || '', payload.notes || '', now]
-    );
+      await client.query(
+        `INSERT INTO customer_refunds (id, organization_id, refund_number, customer_id, credit_note_id, refund_date, amount, refund_account_id, reference, notes, journal_entry_id, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        [refundId, orgId, refundNum, payload.customerId, payload.creditNoteId || null, payload.refundDate, payload.amount, payload.refundAccountId, payload.reference || '', payload.notes || '', journalEntryId, now]
+      );
 
-    return { refundId };
+      return { refundId };
+    };
+
+    if (transactionClient) return await execute(transactionClient);
+    return await db.transaction(execute);
   }
 
   public static async recordWriteOff(
@@ -1516,62 +1668,74 @@ export class SalesEngine {
       writeOffAccountId: string;
       reason: string;
       userId?: string;
-    }
+    },
+    transactionClient?: QueryClient
   ): Promise<{ writeOffId: string }> {
-    await SalesEngine.checkPeriodLock(orgId, payload.writeOffDate);
+    const execute = async (client: QueryClient) => {
+      await SalesEngine.checkPeriodLock(orgId, payload.writeOffDate, client);
 
-    const invRes = await db.query(`SELECT * FROM invoices WHERE organization_id = $1 AND id = $2`, [orgId, payload.invoiceId]);
-    if (invRes.rows.length === 0) throw new Error('Invoice not found');
-    const inv = invRes.rows[0];
+      const invRes = await client.query(`SELECT * FROM invoices WHERE organization_id = $1 AND id = $2 FOR UPDATE`, [orgId, payload.invoiceId]);
+      if (invRes.rows.length === 0) throw new Error('Invoice not found');
+      const inv = invRes.rows[0];
 
-    const writeOffId = newId('wo');
-    const now = new Date().toISOString();
+      const currentBal = Math.max(0, Math.round((Number(inv.total_amount) - Number(inv.paid_amount || 0) - Number(inv.amount_credited || 0) - Number(inv.amount_written_off || 0)) * 100) / 100);
+      if (payload.amount > currentBal + 0.009) {
+        throw new Error(`Write-off amount (${payload.amount}) exceeds invoice balance due (${currentBal})`);
+      }
 
-    // GL Posting: Dr Bad Debt / Write-Off Expense, Cr Accounts Receivable
-    const journalLines = [
-      {
-        accountId: payload.writeOffAccountId,
-        accountCode: '5800',
-        accountName: 'Bad Debt Expense',
-        debit: payload.amount,
-        credit: 0,
-        description: `Write off invoice ${inv.invoice_number}`,
-      },
-      {
-        accountId: '1100',
-        accountCode: '1100',
-        accountName: 'Accounts Receivable',
-        debit: 0,
-        credit: payload.amount,
-        description: `Write off invoice ${inv.invoice_number}`,
-      },
-    ];
+      const writeOffId = newId('wo');
+      const now = new Date().toISOString();
 
-    await SalesEngine.persistJournalEntry(
-      orgId,
-      newId('je'),
-      payload.writeOffDate,
-      inv.invoice_number,
-      `Write off invoice ${inv.invoice_number}`,
-      journalLines
-    );
+      // GL Posting: Dr Bad Debt / Write-Off Expense, Cr Accounts Receivable
+      const journalLines = [
+        {
+          accountId: payload.writeOffAccountId,
+          accountCode: '5800',
+          accountName: 'Bad Debt Expense',
+          debit: payload.amount,
+          credit: 0,
+          description: `Write off invoice ${inv.invoice_number}`,
+        },
+        {
+          accountId: '1100',
+          accountCode: '1100',
+          accountName: 'Accounts Receivable',
+          debit: 0,
+          credit: payload.amount,
+          description: `Write off invoice ${inv.invoice_number}`,
+        },
+      ];
 
-    // Update invoice record
-    const newWrittenOff = Math.round((Number(inv.amount_written_off || 0) + payload.amount) * 100) / 100;
-    const newBal = Math.max(0, Math.round((Number(inv.total_amount) - Number(inv.paid_amount) - Number(inv.amount_credited || 0) - newWrittenOff) * 100) / 100);
+      const journalEntryId = await SalesEngine.persistJournalEntry(
+        orgId,
+        newId('je'),
+        payload.writeOffDate,
+        inv.invoice_number,
+        `Write off invoice ${inv.invoice_number}`,
+        journalLines,
+        client
+      );
 
-    await db.query(
-      `UPDATE invoices SET amount_written_off = $1, balance_due = $2, status = $3 WHERE organization_id = $4 AND id = $5`,
-      [newWrittenOff, newBal, newBal === 0 ? 'WRITTEN_OFF' : inv.status, orgId, payload.invoiceId]
-    );
+      // Update invoice record
+      const newWrittenOff = Math.round((Number(inv.amount_written_off || 0) + payload.amount) * 100) / 100;
+      const newBal = Math.max(0, Math.round((Number(inv.total_amount) - Number(inv.paid_amount || 0) - Number(inv.amount_credited || 0) - newWrittenOff) * 100) / 100);
 
-    await db.query(
-      `INSERT INTO ar_write_offs (id, organization_id, invoice_id, customer_id, write_off_date, amount, write_off_account_id, reason, user_id, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-      [writeOffId, orgId, payload.invoiceId, payload.customerId, payload.writeOffDate, payload.amount, payload.writeOffAccountId, payload.reason, payload.userId || 'Admin', now]
-    );
+      await client.query(
+        `UPDATE invoices SET amount_written_off = $1, balance_due = $2, status = $3 WHERE organization_id = $4 AND id = $5`,
+        [newWrittenOff, newBal, newBal === 0 ? 'WRITTEN_OFF' : inv.status, orgId, payload.invoiceId]
+      );
 
-    return { writeOffId };
+      await client.query(
+        `INSERT INTO ar_write_offs (id, organization_id, invoice_id, customer_id, write_off_date, amount, write_off_account_id, reason, user_id, journal_entry_id, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        [writeOffId, orgId, payload.invoiceId, payload.customerId, payload.writeOffDate, payload.amount, payload.writeOffAccountId, payload.reason, payload.userId || 'Admin', journalEntryId, now]
+      );
+
+      return { writeOffId };
+    };
+
+    if (transactionClient) return await execute(transactionClient);
+    return await db.transaction(execute);
   }
 
   // -------------------------------------------------------------

@@ -31,7 +31,9 @@ export const PaymentsReceivedView: React.FC<PaymentsReceivedViewProps> = ({
           account.status !== 'Inactive' &&
           !account.isLocked &&
           (account.code === '1000' ||
-            ['Bank', 'Cash', 'Cash & Bank', 'Digital Wallet', 'Undeposited Funds'].includes(account.subType))
+            ['bank', 'cash', 'cash & bank', 'digital wallet', 'undeposited funds'].includes(
+              String(account.subType || '').toLowerCase()
+            ))
       ),
     [accounts]
   );
@@ -69,6 +71,19 @@ export const PaymentsReceivedView: React.FC<PaymentsReceivedViewProps> = ({
   }, [autoOpenCreateModal]);
 
   useEffect(() => {
+    if (isModalOpen) {
+      if (!invoiceId && outstandingInvoices.length > 0) {
+        const firstInvoice = outstandingInvoices[0];
+        setInvoiceId(firstInvoice.id);
+        if (!amount) setAmount(firstInvoice.balanceDue.toFixed(2));
+      }
+      if (!depositAccountId && depositAccounts.length > 0) {
+        setDepositAccountId(depositAccounts[0].id);
+      }
+    }
+  }, [isModalOpen, outstandingInvoices, depositAccounts, invoiceId, depositAccountId, amount]);
+
+  useEffect(() => {
     if (!selectedEntityId) return;
     const found = paymentsReceived.find(
       (payment) => payment.id === selectedEntityId || payment.paymentNumber === selectedEntityId
@@ -87,11 +102,14 @@ export const PaymentsReceivedView: React.FC<PaymentsReceivedViewProps> = ({
     );
   });
 
+  const normalizeDate = (d?: string) => (d ? (d.includes('T') ? d.split('T')[0] : d.slice(0, 10)) : '');
+
   const handleInvoiceChange = (nextInvoiceId: string) => {
     setInvoiceId(nextInvoiceId);
     const invoice = outstandingInvoices.find((candidate) => candidate.id === nextInvoiceId);
     setAmount(invoice ? invoice.balanceDue.toFixed(2) : '');
-    if (invoice && paymentDate < invoice.issueDate) setPaymentDate(invoice.issueDate);
+    const issueDateOnly = normalizeDate(invoice?.issueDate);
+    if (issueDateOnly && paymentDate < issueDateOnly) setPaymentDate(issueDateOnly);
   };
 
   const handleRecordPayment = async (event: React.FormEvent) => {
@@ -108,7 +126,8 @@ export const PaymentsReceivedView: React.FC<PaymentsReceivedViewProps> = ({
       setError('Amount must be positive and contain no more than two decimal places.');
       return;
     }
-    if (paymentDate < invoice.issueDate) {
+    const issueDateOnly = normalizeDate(invoice.issueDate);
+    if (issueDateOnly && paymentDate < issueDateOnly) {
       setError('Payment date cannot precede the invoice issue date.');
       return;
     }
@@ -208,7 +227,7 @@ export const PaymentsReceivedView: React.FC<PaymentsReceivedViewProps> = ({
               <label className="block space-y-1 text-xs font-bold text-slate-700 dark:text-slate-300"><span>Outstanding invoice</span><select required value={invoiceId} onChange={(event) => handleInvoiceChange(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white p-2.5 font-medium dark:border-slate-700 dark:bg-slate-800 dark:text-white"><option value="">Select invoice</option>{outstandingInvoices.map((invoice) => <option key={invoice.id} value={invoice.id}>{invoice.invoiceNumber} — {invoice.clientName} — {formatCurrency(invoice.balanceDue, settings.currencySymbol)} due</option>)}</select></label>
               <label className="block space-y-1 text-xs font-bold text-slate-700 dark:text-slate-300"><span>Deposit account</span><select required value={depositAccountId} onChange={(event) => setDepositAccountId(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white p-2.5 font-medium dark:border-slate-700 dark:bg-slate-800 dark:text-white"><option value="">Select account</option>{depositAccounts.map((account) => <option key={account.id} value={account.id}>{account.code} — {account.name}</option>)}</select></label>
               <div className="grid grid-cols-2 gap-3">
-                <label className="space-y-1 text-xs font-bold text-slate-700 dark:text-slate-300"><span>Payment date</span><input required type="date" min={selectedInvoice?.issueDate} value={paymentDate} onChange={(event) => setPaymentDate(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white p-2.5 font-medium dark:border-slate-700 dark:bg-slate-800 dark:text-white" /></label>
+                <label className="space-y-1 text-xs font-bold text-slate-700 dark:text-slate-300"><span>Payment date</span><input required type="date" min={normalizeDate(selectedInvoice?.issueDate) || undefined} value={paymentDate} onChange={(event) => setPaymentDate(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white p-2.5 font-medium dark:border-slate-700 dark:bg-slate-800 dark:text-white" /></label>
                 <label className="space-y-1 text-xs font-bold text-slate-700 dark:text-slate-300"><span>Amount ({settings.currencyCode})</span><input required type="number" min="0.01" step="0.01" value={amount} onChange={(event) => setAmount(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white p-2.5 font-mono font-bold dark:border-slate-700 dark:bg-slate-800 dark:text-white" /></label>
               </div>
               <label className="block space-y-1 text-xs font-bold text-slate-700 dark:text-slate-300"><span>Payment method</span><select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white p-2.5 font-medium dark:border-slate-700 dark:bg-slate-800 dark:text-white"><option>Bank Transfer</option><option>Cheque</option><option>Cash</option><option>Card Processor</option><option>UPI</option></select></label>

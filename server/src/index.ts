@@ -15,6 +15,12 @@ import { requestSecurityMiddleware } from './middleware/httpSecurity.middleware'
 import { idempotencyMiddleware } from './middleware/idempotency.middleware';
 import { persistentRateLimit } from './middleware/rateLimit.middleware';
 import { db } from './database/db';
+import point1Routes from './routes/point1.routes';
+import { domainErrorMiddleware } from './middleware/domainError.middleware';
+import { createInvitationAcceptanceRouter, createMembershipManagementRouter } from './access/MembershipRouter';
+import { requireTrustedFinanceFeature } from './middleware/trustedFeature.middleware';
+import recurringRoutes from './routes/recurring.routes';
+import recoveryRoutes from './routes/recovery.routes';
 
 import phase8Routes from './routes/phase8.routes';
 import { Phase8Controller } from './controllers/Phase8Controller';
@@ -63,6 +69,7 @@ export async function initDatabase(): Promise<void> {
 
 // Auth Routes (unprotected for login/register, protected internally)
 app.use('/api/v1/auth', authRoutes);
+app.use('/api/v1/access', requireTrustedFinanceFeature('team-access'), createInvitationAcceptanceRouter());
 
 // Public Customer Quotation Portal (Unprotected by design for external clients)
 app.get('/api/v1/public/quotation/:token', persistentRateLimit('quotation-view', 60, 60), Phase8Controller.getPublicQuotation);
@@ -73,6 +80,17 @@ app.use('/api/v1/organizations', authMiddleware, organizationIsolationMiddleware
 app.use('/api/v1/finance', authMiddleware, organizationIsolationMiddleware, idempotencyMiddleware, financeRoutes);
 app.use('/api/v1/banking', authMiddleware, organizationIsolationMiddleware, idempotencyMiddleware, bankingRoutes);
 app.use('/api/v1/security', authMiddleware, organizationIsolationMiddleware, idempotencyMiddleware, securityRoutes);
+app.use('/api/v1/point1', authMiddleware, organizationIsolationMiddleware, idempotencyMiddleware, point1Routes);
+app.use('/api/v1/recurring', authMiddleware, organizationIsolationMiddleware, idempotencyMiddleware, recurringRoutes);
+app.use('/api/v1/recovery', authMiddleware, organizationIsolationMiddleware, idempotencyMiddleware, recoveryRoutes);
+app.use(
+  '/api/v1/access',
+  authMiddleware,
+  organizationIsolationMiddleware,
+  idempotencyMiddleware,
+  requireTrustedFinanceFeature('team-access'),
+  createMembershipManagementRouter()
+);
 // Backward-compatible v1 finance aliases. New clients should use /api/v1/finance;
 // both routers share one security/idempotency boundary so an alias request can
 // never be registered twice as its own in-flight duplicate.
@@ -93,11 +111,6 @@ app.get('/api/v1/health', authMiddleware, organizationIsolationMiddleware, (req:
   });
 });
 
-app.use('/api', (error: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  const requestId = res.getHeader('X-Request-ID');
-  console.error('[API Error]', { requestId, method: req.method, path: req.path, error: error?.message });
-  if (res.headersSent) return;
-  res.status(500).json({ error: 'Internal server error', requestId });
-});
+app.use('/api', domainErrorMiddleware);
 
 export default app;

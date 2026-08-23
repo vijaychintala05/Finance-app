@@ -19,6 +19,10 @@ export type NavigationTab =
   | 'bulk_updates'
   | 'coa'
   | 'transaction_locking'
+  | 'fixed_assets'
+  | 'period_close'
+  | 'team_access'
+  | 'recovery_center'
   | 'reports'
   | 'settings'
   // Sales specific sub-tabs

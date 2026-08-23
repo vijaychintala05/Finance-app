@@ -3,6 +3,8 @@
 @variant dark (&:where(.dark, .dark *));
 
 @theme {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
   --color-primary-blue: #2563eb;
   --color-primary-blue-hover: #1d4ed8;
   --color-sidebar-blue: #1d50bd;
@@ -37,11 +39,17 @@
 }
 
 /* Utility classes for component styles */
+.font-financial {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-feature-settings: "tnum" 1, "zero" 1;
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+
 .btn-primary-blue {
   background-color: #2563eb;
   color: #ffffff;
   font-weight: 600;
-  border-radius: 0.5rem;
+  border-radius: 0.75rem;
   padding: 0.625rem 1.25rem;
   transition: all 0.15s ease-in-out;
 }
@@ -52,7 +60,7 @@
 .card-books {
   background-color: #ffffff;
   border: 1px solid #e2e8f0;
-  border-radius: 0.75rem;
+  border-radius: 1rem;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
 }
 

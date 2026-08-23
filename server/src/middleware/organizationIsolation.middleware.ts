@@ -78,7 +78,9 @@ export const organizationIsolationMiddleware = async (
   // If no org ID specified, look up user's primary/first organization
   if (!requestedOrgId) {
     const userOrgsRes = await db.query(
-      'SELECT organization_id FROM organization_members WHERE user_id = $1 LIMIT 1',
+      `SELECT organization_id FROM organization_members
+        WHERE user_id = $1 AND COALESCE(status, 'Active') = 'Active'
+        ORDER BY joined_at ASC LIMIT 1`,
       [req.user.userId]
     );
 
@@ -92,7 +94,10 @@ export const organizationIsolationMiddleware = async (
 
   // 2. VERIFY USER MEMBERSHIP & TENANT ISOLATION
   const membershipRes = await db.query(
-    'SELECT role FROM organization_members WHERE organization_id = $1 AND user_id = $2',
+    `SELECT role, access_version, access_invalidated_at
+       FROM organization_members
+      WHERE organization_id = $1 AND user_id = $2
+        AND COALESCE(status, 'Active') = 'Active'`,
     [requestedOrgId, req.user.userId]
   );
 

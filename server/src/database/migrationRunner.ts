@@ -1,8 +1,9 @@
 import { db } from './db';
 import { OrganizationProvisioningService } from '../services/OrganizationProvisioningService';
+import { applyPoint1Schema } from './point1Schema';
 import type { DbQueryResult } from './db';
 
-export const CURRENT_SCHEMA_VERSION = '2026.08.12-v1-project-accounting';
+export const CURRENT_SCHEMA_VERSION = '2026.08.23-v3-point1-foundations';
 
 export class MigrationRunner {
   public static async runMigrations(queryClient?: { query: (text: string, params?: any[]) => Promise<DbQueryResult> }): Promise<void> {
@@ -376,6 +377,10 @@ export class MigrationRunner {
         payment_mode VARCHAR(50) NOT NULL,
         paid_from_account_id VARCHAR(64) NOT NULL,
         reference VARCHAR(255),
+        notes TEXT,
+        unallocated_amount NUMERIC(15, 2) DEFAULT 0.00,
+        status VARCHAR(30) DEFAULT 'ALLOCATED',
+        journal_entry_id VARCHAR(64),
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       )`,
 
@@ -787,6 +792,7 @@ export class MigrationRunner {
       `ALTER TABLE payments_made ADD COLUMN IF NOT EXISTS unallocated_amount NUMERIC(15, 2) DEFAULT 0.00`,
       `ALTER TABLE payments_made ADD COLUMN IF NOT EXISTS status VARCHAR(30) DEFAULT 'ALLOCATED'`,
       `ALTER TABLE payments_made ADD COLUMN IF NOT EXISTS notes TEXT`,
+      `ALTER TABLE payments_made ADD COLUMN IF NOT EXISTS journal_entry_id VARCHAR(64)`,
       `ALTER TABLE vendor_credits ADD COLUMN IF NOT EXISTS debit_note_number VARCHAR(64)`,
       `ALTER TABLE vendor_credits ADD COLUMN IF NOT EXISTS bill_id VARCHAR(64)`,
       `ALTER TABLE vendor_credits ADD COLUMN IF NOT EXISTS taxable_amount NUMERIC(15, 2) DEFAULT 0.00`,
@@ -1266,7 +1272,170 @@ export class MigrationRunner {
       $$ LANGUAGE plpgsql`,
       `DROP TRIGGER IF EXISTS audit_logs_immutable ON audit_logs`,
       `CREATE TRIGGER audit_logs_immutable BEFORE UPDATE OR DELETE ON audit_logs
-        FOR EACH ROW EXECUTE FUNCTION prevent_audit_log_mutation()`
+        FOR EACH ROW EXECUTE FUNCTION prevent_audit_log_mutation()`,
+      `DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uk_invoices_org_id') THEN
+          ALTER TABLE invoices ADD CONSTRAINT uk_invoices_org_id UNIQUE (organization_id, id);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uk_bills_org_id') THEN
+          ALTER TABLE bills ADD CONSTRAINT uk_bills_org_id UNIQUE (organization_id, id);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uk_customers_org_id') THEN
+          ALTER TABLE customers ADD CONSTRAINT uk_customers_org_id UNIQUE (organization_id, id);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uk_clients_org_id') THEN
+          ALTER TABLE clients ADD CONSTRAINT uk_clients_org_id UNIQUE (organization_id, id);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uk_vendors_org_id') THEN
+          ALTER TABLE vendors ADD CONSTRAINT uk_vendors_org_id UNIQUE (organization_id, id);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uk_accounts_org_id') THEN
+          ALTER TABLE accounts ADD CONSTRAINT uk_accounts_org_id UNIQUE (organization_id, id);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uk_credit_notes_org_id') THEN
+          ALTER TABLE credit_notes ADD CONSTRAINT uk_credit_notes_org_id UNIQUE (organization_id, id);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uk_vendor_credits_org_id') THEN
+          ALTER TABLE vendor_credits ADD CONSTRAINT uk_vendor_credits_org_id UNIQUE (organization_id, id);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uk_payments_received_org_id') THEN
+          ALTER TABLE payments_received ADD CONSTRAINT uk_payments_received_org_id UNIQUE (organization_id, id);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uk_payments_made_org_id') THEN
+          ALTER TABLE payments_made ADD CONSTRAINT uk_payments_made_org_id UNIQUE (organization_id, id);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uk_customer_advances_org_id') THEN
+          ALTER TABLE customer_advances ADD CONSTRAINT uk_customer_advances_org_id UNIQUE (organization_id, id);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uk_vendor_advances_org_id') THEN
+          ALTER TABLE vendor_advances ADD CONSTRAINT uk_vendor_advances_org_id UNIQUE (organization_id, id);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uk_journal_entries_org_id') THEN
+          ALTER TABLE journal_entries ADD CONSTRAINT uk_journal_entries_org_id UNIQUE (organization_id, id);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uk_sales_orders_org_id') THEN
+          ALTER TABLE sales_orders ADD CONSTRAINT uk_sales_orders_org_id UNIQUE (organization_id, id);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uk_estimates_org_id') THEN
+          ALTER TABLE estimates ADD CONSTRAINT uk_estimates_org_id UNIQUE (organization_id, id);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uk_purchase_orders_org_id') THEN
+          ALTER TABLE purchase_orders ADD CONSTRAINT uk_purchase_orders_org_id UNIQUE (organization_id, id);
+        END IF;
+      END $$`,
+      `DO $$
+      DECLARE
+        pra_corrupt_count INT;
+        pma_corrupt_count INT;
+        cna_corrupt_count INT;
+        dna_corrupt_count INT;
+      BEGIN
+        SELECT COUNT(*) INTO pra_corrupt_count
+          FROM payment_received_allocations pra
+          LEFT JOIN payments_received p ON p.organization_id = pra.organization_id AND p.id = pra.payment_id
+          LEFT JOIN invoices i ON i.organization_id = pra.organization_id AND i.id = pra.invoice_id
+         WHERE p.id IS NULL OR i.id IS NULL;
+
+        IF pra_corrupt_count > 0 THEN
+          RAISE EXCEPTION 'Migration preflight check failed: % orphaned or cross-tenant payment_received_allocations detected. Foreign key migration aborted without data loss.', pra_corrupt_count;
+        END IF;
+
+        SELECT COUNT(*) INTO pma_corrupt_count
+          FROM payment_made_allocations pma
+          LEFT JOIN payments_made p ON p.organization_id = pma.organization_id AND p.id = pma.payment_id
+          LEFT JOIN bills b ON b.organization_id = pma.organization_id AND b.id = pma.bill_id
+         WHERE p.id IS NULL OR b.id IS NULL;
+
+        IF pma_corrupt_count > 0 THEN
+          RAISE EXCEPTION 'Migration preflight check failed: % orphaned or cross-tenant payment_made_allocations detected. Foreign key migration aborted without data loss.', pma_corrupt_count;
+        END IF;
+
+        SELECT COUNT(*) INTO cna_corrupt_count
+          FROM credit_note_applications cna
+          LEFT JOIN credit_notes c ON c.organization_id = cna.organization_id AND c.id = cna.credit_note_id
+          LEFT JOIN invoices i ON i.organization_id = cna.organization_id AND i.id = cna.invoice_id
+         WHERE c.id IS NULL OR i.id IS NULL;
+
+        IF cna_corrupt_count > 0 THEN
+          RAISE EXCEPTION 'Migration preflight check failed: % orphaned or cross-tenant credit_note_applications detected. Foreign key migration aborted without data loss.', cna_corrupt_count;
+        END IF;
+
+        SELECT COUNT(*) INTO dna_corrupt_count
+          FROM debit_note_applications dna
+          LEFT JOIN vendor_credits vc ON vc.organization_id = dna.organization_id AND vc.id = dna.debit_note_id
+          LEFT JOIN bills b ON b.organization_id = dna.organization_id AND b.id = dna.bill_id
+         WHERE vc.id IS NULL OR b.id IS NULL;
+
+        IF dna_corrupt_count > 0 THEN
+          RAISE EXCEPTION 'Migration preflight check failed: % orphaned or cross-tenant debit_note_applications detected. Foreign key migration aborted without data loss.', dna_corrupt_count;
+        END IF;
+      END $$`,
+      `DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_payment_received_alloc_payment_org') THEN
+          ALTER TABLE payment_received_allocations ADD CONSTRAINT fk_payment_received_alloc_payment_org
+          FOREIGN KEY (organization_id, payment_id) REFERENCES payments_received(organization_id, id) ON DELETE RESTRICT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_payment_received_alloc_invoice_org') THEN
+          ALTER TABLE payment_received_allocations ADD CONSTRAINT fk_payment_received_alloc_invoice_org
+          FOREIGN KEY (organization_id, invoice_id) REFERENCES invoices(organization_id, id) ON DELETE RESTRICT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_payment_made_alloc_payment_org') THEN
+          ALTER TABLE payment_made_allocations ADD CONSTRAINT fk_payment_made_alloc_payment_org
+          FOREIGN KEY (organization_id, payment_id) REFERENCES payments_made(organization_id, id) ON DELETE RESTRICT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_payment_made_alloc_bill_org') THEN
+          ALTER TABLE payment_made_allocations ADD CONSTRAINT fk_payment_made_alloc_bill_org
+          FOREIGN KEY (organization_id, bill_id) REFERENCES bills(organization_id, id) ON DELETE RESTRICT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_customer_advances_payment_org') THEN
+          ALTER TABLE customer_advances ADD CONSTRAINT fk_customer_advances_payment_org
+          FOREIGN KEY (organization_id, payment_id) REFERENCES payments_received(organization_id, id) ON DELETE RESTRICT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_vendor_advances_vendor_org') THEN
+          ALTER TABLE vendor_advances ADD CONSTRAINT fk_vendor_advances_vendor_org
+          FOREIGN KEY (organization_id, vendor_id) REFERENCES vendors(organization_id, id) ON DELETE RESTRICT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_cn_app_credit_note_org') THEN
+          ALTER TABLE credit_note_applications ADD CONSTRAINT fk_cn_app_credit_note_org
+          FOREIGN KEY (organization_id, credit_note_id) REFERENCES credit_notes(organization_id, id) ON DELETE RESTRICT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_cn_app_invoice_org') THEN
+          ALTER TABLE credit_note_applications ADD CONSTRAINT fk_cn_app_invoice_org
+          FOREIGN KEY (organization_id, invoice_id) REFERENCES invoices(organization_id, id) ON DELETE RESTRICT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_dn_app_debit_note_org') THEN
+          ALTER TABLE debit_note_applications ADD CONSTRAINT fk_dn_app_debit_note_org
+          FOREIGN KEY (organization_id, debit_note_id) REFERENCES vendor_credits(organization_id, id) ON DELETE RESTRICT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_dn_app_bill_org') THEN
+          ALTER TABLE debit_note_applications ADD CONSTRAINT fk_dn_app_bill_org
+          FOREIGN KEY (organization_id, bill_id) REFERENCES bills(organization_id, id) ON DELETE RESTRICT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_customer_refunds_account_org') THEN
+          ALTER TABLE customer_refunds ADD CONSTRAINT fk_customer_refunds_account_org
+          FOREIGN KEY (organization_id, refund_account_id) REFERENCES accounts(organization_id, id) ON DELETE RESTRICT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_ar_write_off_invoice_org') THEN
+          ALTER TABLE ar_write_offs ADD CONSTRAINT fk_ar_write_off_invoice_org
+          FOREIGN KEY (organization_id, invoice_id) REFERENCES invoices(organization_id, id) ON DELETE RESTRICT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_ar_write_off_account_org') THEN
+          ALTER TABLE ar_write_offs ADD CONSTRAINT fk_ar_write_off_account_org
+          FOREIGN KEY (organization_id, write_off_account_id) REFERENCES accounts(organization_id, id) ON DELETE RESTRICT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_ap_write_off_bill_org') THEN
+          ALTER TABLE ap_write_offs ADD CONSTRAINT fk_ap_write_off_bill_org
+          FOREIGN KEY (organization_id, bill_id) REFERENCES bills(organization_id, id) ON DELETE RESTRICT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_ap_write_off_vendor_org') THEN
+          ALTER TABLE ap_write_offs ADD CONSTRAINT fk_ap_write_off_vendor_org
+          FOREIGN KEY (organization_id, vendor_id) REFERENCES vendors(organization_id, id) ON DELETE RESTRICT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_ap_write_off_account_org') THEN
+          ALTER TABLE ap_write_offs ADD CONSTRAINT fk_ap_write_off_account_org
+          FOREIGN KEY (organization_id, write_off_account_id) REFERENCES accounts(organization_id, id) ON DELETE RESTRICT;
+        END IF;
+      END $$`,
     ];
 
     for (const sql of tables) {
@@ -1297,11 +1466,13 @@ export class MigrationRunner {
       await OrganizationProvisioningService.provisionDefaultChart(queryClient, organization.id);
     }
 
+    await applyPoint1Schema(queryClient);
+
     await queryClient.query(
       `INSERT INTO schema_migrations (version, description)
        VALUES ($1, $2)
        ON CONFLICT (version) DO NOTHING`,
-      [CURRENT_SCHEMA_VERSION, 'FirmBooks v1 authoritative project accounting and time billing']
+      [CURRENT_SCHEMA_VERSION, 'FirmBooks v3 Point-1 workflow certification foundations']
     );
 
     console.log('[Migration] All PostgreSQL tables initialized successfully.');

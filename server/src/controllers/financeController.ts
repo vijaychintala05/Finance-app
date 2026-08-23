@@ -1,5 +1,5 @@
 import { Response } from 'express';
-import { db } from '../database/db';
+import { db, type DbQueryClient } from '../database/db';
 import { AuthenticatedRequest } from '../middleware/organizationIsolation.middleware';
 import { ServerPostingEngine } from '../accounting/postingEngine';
 import { AccountingService } from '../../../src/services/accountingService';
@@ -32,6 +32,7 @@ import { OrganizationProvisioningService } from '../services/OrganizationProvisi
 import { DocumentNumberingEngine } from '../services/DocumentNumberingEngine';
 import { FinancialDestructiveActionsService } from '../accounting/FinancialDestructiveActionsService';
 import { isIsoCalendarDate } from '../utils/date';
+import { ExpensePostingService } from '../services/ExpensePostingService';
 
 export class FinanceController {
   // --- AUDIT LOG UTILITY ---
@@ -41,10 +42,11 @@ export class FinanceController {
     action: string,
     entityType: string,
     entityId: string,
-    afterState: any = null
+    afterState: any = null,
+    queryClient: DbQueryClient = db
   ) {
     try {
-      await db.query(
+      await queryClient.query(
         'INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state) VALUES ($1, $2, $3, $4, $5, $6, $7)',
         [newId('aud'), orgId, userId, action, entityType, entityId, JSON.stringify(afterState)]
       );
@@ -707,104 +709,28 @@ export class FinanceController {
       return;
     }
 
-    const paymentId = newId('pay');
-    let finalPaymentNumber = '';
     try {
-      const result = await db.transaction(async (client) => {
-        finalPaymentNumber = finalPaymentNumber || await DocumentNumberingEngine.getNextNumber(orgId, 'CUSTOMER_PAYMENT', paymentDate, undefined, client);
-        let finalClientId = clientId || customerId;
-        let finalClientName = clientName || customerName;
-        let allocatedAmount = 0;
-        let invoiceState: { id: string; paidAmount: number; balanceDue: number; status: string } | null = null;
+      const finalCustomerId = customerId || clientId;
+      const finalCustomerName = customerName || clientName;
+      const resolvedDepositAccountId = depositToAccountId || depositAccountId;
 
-        if (invoiceId) {
-          const invRes = await client.query(
-            'SELECT * FROM invoices WHERE id = $1 AND organization_id = $2 FOR UPDATE',
-            [invoiceId, orgId]
-          );
-          if (invRes.rows.length !== 1) throw new Error('Invoice was not found in this organization');
-          const invoice = invRes.rows[0];
-          const invoiceClientId = invoice.client_id || invoice.customer_id;
-          if (finalClientId && finalClientId !== invoiceClientId) throw new Error('Payment customer does not match the selected invoice');
-          if (['DRAFT', 'VOID', 'VOIDED'].includes(String(invoice.status).toUpperCase())) throw new Error('Payments cannot be applied to a draft or voided invoice');
-          if (Number(invoice.balance_due || 0) <= 0) throw new Error('Selected invoice has no outstanding balance');
-          const invoiceDate = new Date(invoice.issue_date).toISOString().split('T')[0];
-          if (paymentDate < invoiceDate) throw new Error('Payment date cannot precede the selected invoice issue date');
-          finalClientId = invoiceClientId;
-          finalClientName = finalClientName || invoice.client_name;
-          allocatedAmount = Math.min(parsedAmount, Number(invoice.balance_due || 0));
-          const newPaid = Math.round((Number(invoice.paid_amount || 0) + allocatedAmount) * 100) / 100;
-          const computed = SalesService.computeInvoiceStatusAndBalance(Number(invoice.total_amount), newPaid);
-          await client.query(
-            `UPDATE invoices SET paid_amount = $1, balance_due = $2, status = $3
-              WHERE id = $4 AND organization_id = $5`,
-            [newPaid, computed.balanceDue, computed.status, invoiceId, orgId]
-          );
-          invoiceState = { id: invoiceId, paidAmount: newPaid, balanceDue: computed.balanceDue, status: computed.status };
-        }
-        if (!finalClientId || !finalClientName) throw new Error('A valid customer is required');
-        const customer = await client.query(
-          `SELECT id FROM clients WHERE organization_id = $1 AND id = $2
-           UNION ALL SELECT id FROM customers WHERE organization_id = $1 AND id = $2 LIMIT 1`,
-          [orgId, finalClientId]
-        );
-        if (customer.rows.length === 0) throw new Error('Payment customer does not belong to this organization');
-
-        const unallocatedAmount = Math.round((parsedAmount - allocatedAmount) * 100) / 100;
-        const resolvedDepositAccountId = depositToAccountId || depositAccountId || await OrganizationProvisioningService.resolveAccountId(client, orgId, '1000', ['Asset']);
-        const depositAccount = await client.query(
-          `SELECT id, code, sub_type FROM accounts
-            WHERE organization_id = $1 AND id = $2 AND type = 'Asset'
-              AND status = 'Active' AND COALESCE(is_locked, FALSE) = FALSE`,
-          [orgId, resolvedDepositAccountId]
-        );
-        const deposit = depositAccount.rows[0];
-        const depositSubType = String(deposit?.sub_type || '').toLowerCase();
-        if (
-          depositAccount.rows.length !== 1 ||
-          !['bank', 'cash', 'cash & bank', 'digital wallet', 'undeposited funds'].includes(depositSubType)
-        ) throw new Error('Payment deposit account must be an active bank, cash, wallet, or undeposited-funds account in this organization');
-        await client.query(
-          `INSERT INTO payments_received
-            (id, organization_id, payment_number, client_id, client_name, payment_date, amount, payment_mode, deposit_to_account_id, reference, notes, unallocated_amount, status)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-          [paymentId, orgId, finalPaymentNumber, finalClientId, finalClientName, paymentDate, parsedAmount, paymentMode || 'Bank Wire', resolvedDepositAccountId, reference || referenceNumber || '', notes || '', unallocatedAmount, unallocatedAmount > 0 ? 'PARTIALLY_ALLOCATED' : 'ALLOCATED']
-        );
-
-        if (invoiceId && allocatedAmount > 0) {
-          await client.query(
-            'INSERT INTO payment_received_allocations (id, organization_id, payment_id, invoice_id, amount) VALUES ($1, $2, $3, $4, $5)',
-            [newId('alloc'), orgId, paymentId, invoiceId, allocatedAmount]
-          );
-        }
-
-        const receivableId = allocatedAmount > 0 ? await OrganizationProvisioningService.resolveAccountId(client, orgId, '1100', ['Asset']) : '';
-        const advanceId = unallocatedAmount > 0 ? await OrganizationProvisioningService.resolveAccountId(client, orgId, '2100', ['Liability']) : '';
-        const posting = await ServerPostingEngine.postEntry({
-          organizationId: orgId,
-          entryNumber: `JRN-PAY-${paymentId}`,
-          date: paymentDate,
-          reference: finalPaymentNumber,
-          description: `Payment received from ${finalClientName}`,
-          lines: [
-            { accountId: resolvedDepositAccountId, debit: parsedAmount, credit: 0 },
-            ...(allocatedAmount > 0 ? [{ accountId: receivableId, debit: 0, credit: allocatedAmount }] : []),
-            ...(unallocatedAmount > 0 ? [{ accountId: advanceId, debit: 0, credit: unallocatedAmount }] : []),
-          ],
-        }, client);
-        await client.query(
-          `UPDATE payments_received SET journal_entry_id = $1 WHERE id = $2 AND organization_id = $3`,
-          [posting.entryId, paymentId, orgId]
-        );
-        await client.query(
-          `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state)
-           VALUES ($1, $2, $3, 'PAYMENT_RECORDED', 'PaymentReceived', $4, $5)`,
-          [newId('aud'), orgId, req.auth!.userId, paymentId, JSON.stringify({ amount: parsedAmount, allocatedAmount, unallocatedAmount, journalEntryId: posting.entryId })]
-        );
-        return { ...posting, allocatedAmount, unallocatedAmount, invoice: invoiceState };
+      const result = await SalesEngine.recordPayment(orgId, {
+        customerId: finalCustomerId,
+        clientId: finalCustomerId,
+        customerName: finalCustomerName,
+        clientName: finalCustomerName,
+        paymentDate,
+        paymentMode: paymentMode || 'Bank Wire',
+        depositToAccountId: resolvedDepositAccountId,
+        reference: reference || referenceNumber || '',
+        notes: notes || '',
+        amount: parsedAmount,
+        allocations: invoiceId ? [{ invoiceId, amount: parsedAmount }] : undefined,
       });
 
-      res.status(201).json({ id: paymentId, paymentNumber: finalPaymentNumber, amount: parsedAmount, status: 'Recorded', ...result });
+      await FinanceController.logAudit(orgId, req.auth!.userId, 'PAYMENT_RECORDED', 'PaymentReceived', result.id, result);
+
+      res.status(201).json({ id: result.id, paymentNumber: result.paymentNumber, amount: parsedAmount, status: 'Recorded', ...result });
     } catch (error: any) {
       res.status(422).json({ error: error.message || 'Payment could not be posted' });
     }
@@ -825,76 +751,16 @@ export class FinanceController {
   }
 
   public static async createExpense(req: AuthenticatedRequest, res: Response): Promise<void> {
-    const orgId = req.auth!.organizationId;
-    const { expenseAccountId, paidFromAccountId, vendorName, date, amount, description, projectId, clientId, isBillable } = req.body;
-    const parsedAmount = Number(amount);
-    if (!isIsoCalendarDate(date) || !expenseAccountId || !paidFromAccountId || !Number.isFinite(parsedAmount) || parsedAmount <= 0 || Math.round(parsedAmount * 100) / 100 !== parsedAmount) {
-      res.status(400).json({ error: 'date, expenseAccountId, paidFromAccountId, and a positive amount are required' });
-      return;
-    }
-
-    const expId = newId('exp');
-    let finalExpenseNumber = '';
     try {
-      const result = await db.transaction(async (client) => {
-        finalExpenseNumber = finalExpenseNumber || await DocumentNumberingEngine.getNextNumber(orgId, 'EXPENSE', date, undefined, client);
-        const accountCheck = await client.query(
-          `SELECT id, type, code, sub_type FROM accounts
-            WHERE organization_id = $1 AND id IN ($2, $3) AND status = 'Active' AND COALESCE(is_locked, FALSE) = FALSE`,
-          [orgId, expenseAccountId, paidFromAccountId]
-        );
-        if (new Set(accountCheck.rows.map((row) => row.id)).size !== 2) {
-          throw new Error('Both expense and payment accounts must be active, unlocked accounts in this organization');
-        }
-        const expenseAccount = accountCheck.rows.find((account) => account.id === expenseAccountId);
-        const paymentAccount = accountCheck.rows.find((account) => account.id === paidFromAccountId);
-        const paymentSubType = String(paymentAccount?.sub_type || '').toLowerCase();
-        if (
-          !expenseAccount ||
-          expenseAccount.type !== 'Expense' ||
-          !paymentAccount || paymentAccount.type !== 'Asset' ||
-          !['bank', 'cash', 'cash & bank', 'digital wallet'].includes(paymentSubType)
-        ) {
-          throw new Error('Expense debit account must be an expense account and payment account must be an active bank, cash, or wallet account');
-        }
-        if (projectId) {
-          const project = await client.query(`SELECT id, client_id FROM projects WHERE organization_id = $1 AND id = $2 AND status <> 'Cancelled'`, [orgId, projectId]);
-          if (project.rows.length !== 1) throw new Error('Expense project does not belong to this organization or is cancelled');
-          if (clientId && project.rows[0].client_id && clientId !== project.rows[0].client_id) throw new Error('Expense customer does not match the selected project');
-        }
-        await client.query(
-          `INSERT INTO expenses (id, organization_id, expense_number, expense_account_id, paid_from_account_id, vendor_name, date, amount, description, project_id, client_id, is_billable)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-          [expId, orgId, finalExpenseNumber, expenseAccountId, paidFromAccountId, vendorName || '', date, parsedAmount, description || '', projectId || null, clientId || null, Boolean(isBillable)]
-        );
-
-        const posting = await ServerPostingEngine.postEntry({
-          organizationId: orgId,
-          entryNumber: `JRN-EXP-${expId}`,
-          date,
-          reference: finalExpenseNumber,
-          description: `Expense paid to ${vendorName || 'Vendor'}`,
-          lines: [
-            { accountId: expenseAccountId, debit: parsedAmount, credit: 0 },
-            { accountId: paidFromAccountId, debit: 0, credit: parsedAmount },
-          ],
-        }, client);
-
-        await client.query(
-          `UPDATE expenses SET journal_entry_id = $1 WHERE id = $2 AND organization_id = $3`,
-          [posting.entryId, expId, orgId]
-        );
-
-        await client.query(
-          `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state)
-           VALUES ($1, $2, $3, 'EXPENSE_CREATED', 'Expense', $4, $5)`,
-          [newId('aud'), orgId, req.auth!.userId, expId, JSON.stringify({ amount: parsedAmount, vendorName, journalEntryId: posting.entryId })]
-        );
-        return posting;
-      });
-      res.status(201).json({ id: expId, expenseNumber: finalExpenseNumber, amount: parsedAmount, journalEntryId: result.entryId });
+      const result = await ExpensePostingService.createAndPost(
+        req.auth!.organizationId,
+        req.auth!.userId,
+        req.body
+      );
+      res.status(201).json(result);
     } catch (error: any) {
-      res.status(422).json({ error: error.message || 'Expense could not be posted' });
+      const message = error.message || 'Expense could not be posted';
+      res.status(message.startsWith('EXPENSE_INPUT_INVALID:') ? 400 : 422).json({ error: message });
     }
   }
 
@@ -1233,9 +1099,22 @@ export class FinanceController {
   public static async applyCustomerAdvance(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
     const { advanceId, invoiceId, amountToApply, applyDate } = req.body;
-    const result = await SalesEngine.applyAdvanceToInvoice(orgId, advanceId, invoiceId, amountToApply, applyDate || new Date().toISOString().split('T')[0]);
-    await FinanceController.logAudit(orgId, req.auth!.userId, 'CUSTOMER_ADVANCE_APPLIED', 'CustomerAdvance', advanceId, result);
+    const result = await db.transaction(async (client) => {
+      const application = await SalesEngine.applyAdvanceToInvoice(orgId, advanceId, invoiceId, amountToApply, applyDate || new Date().toISOString().split('T')[0], client);
+      await FinanceController.logAudit(orgId, req.auth!.userId, 'CUSTOMER_ADVANCE_APPLIED', 'CustomerAdvance', advanceId, application, client);
+      return application;
+    });
     res.json(result);
+  }
+
+  public static async getCustomerAdvances(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const result = await db.query('SELECT * FROM customer_advances WHERE organization_id = $1 ORDER BY received_date DESC, created_at DESC', [req.auth!.organizationId]);
+    res.json(result.rows);
+  }
+
+  public static async getCustomerAdvanceApplications(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const result = await db.query('SELECT * FROM customer_advance_applications WHERE organization_id = $1 ORDER BY created_at DESC', [req.auth!.organizationId]);
+    res.json(result.rows);
   }
 
   public static async getCreditNotes(req: AuthenticatedRequest, res: Response): Promise<void> {
@@ -1246,31 +1125,220 @@ export class FinanceController {
 
   public static async createCreditNote(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
-    const result = await SalesEngine.createCreditNote(orgId, req.body);
-    await FinanceController.logAudit(orgId, req.auth!.userId, 'CREDIT_NOTE_CREATED', 'CreditNote', result.creditNoteId, result);
+    const result = await db.transaction(async (client) => {
+      const note = await SalesEngine.createCreditNote(orgId, req.body, client);
+      await FinanceController.logAudit(orgId, req.auth!.userId, 'CREDIT_NOTE_CREATED', 'CreditNote', note.creditNoteId, note, client);
+      return note;
+    });
     res.status(201).json(result);
   }
 
   public static async applyCreditNote(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
     const { creditNoteId, invoiceId, amountToApply, applyDate } = req.body;
-    const result = await SalesEngine.applyCreditNoteToInvoice(orgId, creditNoteId, invoiceId, amountToApply, applyDate || new Date().toISOString().split('T')[0]);
-    await FinanceController.logAudit(orgId, req.auth!.userId, 'CREDIT_NOTE_APPLIED', 'CreditNote', creditNoteId, result);
+    const result = await db.transaction(async (client) => {
+      const application = await SalesEngine.applyCreditNoteToInvoice(orgId, creditNoteId, invoiceId, amountToApply, applyDate || new Date().toISOString().split('T')[0], client);
+      await FinanceController.logAudit(orgId, req.auth!.userId, 'CREDIT_NOTE_APPLIED', 'CreditNote', creditNoteId, application, client);
+      return application;
+    });
     res.json(result);
   }
 
   public static async recordRefund(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
-    const result = await SalesEngine.recordRefund(orgId, req.body);
-    await FinanceController.logAudit(orgId, req.auth!.userId, 'CUSTOMER_REFUND_RECORDED', 'CustomerRefund', result.refundId, result);
+    const result = await db.transaction(async (client) => {
+      const refund = await SalesEngine.recordRefund(orgId, req.body, client);
+      await FinanceController.logAudit(orgId, req.auth!.userId, 'CUSTOMER_REFUND_RECORDED', 'CustomerRefund', refund.refundId, refund, client);
+      return refund;
+    });
     res.status(201).json(result);
   }
 
   public static async recordWriteOff(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
-    const result = await SalesEngine.recordWriteOff(orgId, { ...req.body, userId: req.auth!.userId });
-    await FinanceController.logAudit(orgId, req.auth!.userId, 'AR_WRITE_OFF_RECORDED', 'WriteOff', result.writeOffId, result);
+    const result = await db.transaction(async (client) => {
+      const writeOff = await SalesEngine.recordWriteOff(orgId, { ...req.body, userId: req.auth!.userId }, client);
+      await FinanceController.logAudit(orgId, req.auth!.userId, 'AR_WRITE_OFF_RECORDED', 'WriteOff', writeOff.writeOffId, writeOff, client);
+      return writeOff;
+    });
     res.status(201).json(result);
+  }
+
+  public static async getCustomerRefunds(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const result = await db.query('SELECT * FROM customer_refunds WHERE organization_id = $1 ORDER BY refund_date DESC, created_at DESC', [req.auth!.organizationId]);
+    res.json(result.rows);
+  }
+
+  public static async getReceivableWriteOffs(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const result = await db.query('SELECT * FROM ar_write_offs WHERE organization_id = $1 ORDER BY write_off_date DESC, created_at DESC', [req.auth!.organizationId]);
+    res.json(result.rows);
+  }
+
+  // --- VENDOR PAYMENTS, ADVANCES, CREDITS & WRITE-OFFS ---
+  public static async getVendorPayments(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const result = await db.query(
+      `SELECT * FROM payments_made
+        WHERE organization_id = $1
+        ORDER BY payment_date DESC, created_at DESC`,
+      [req.auth!.organizationId]
+    );
+    res.json(result.rows);
+  }
+
+  public static async recordVendorPayment(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const result = await db.transaction(async (client) => {
+      const payment = await PurchasesEngine.recordVendorPayment(orgId, req.body, client);
+      await FinanceController.logAudit(orgId, req.auth!.userId, 'VENDOR_PAYMENT_RECORDED', 'VendorPayment', payment.id, payment, client);
+      return payment;
+    });
+    res.status(201).json(result);
+  }
+
+  public static async reverseVendorPayment(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const result = await FinancialDestructiveActionsService.reverseVendorPayment(
+      req.auth!.organizationId,
+      req.params.id,
+      req.auth!.userId,
+      req.body?.reason
+    );
+    res.json(result);
+  }
+
+  public static async getVendorAdvances(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const result = await db.query(
+      `SELECT * FROM vendor_advances
+        WHERE organization_id = $1
+        ORDER BY paid_date DESC, created_at DESC`,
+      [req.auth!.organizationId]
+    );
+    res.json(result.rows);
+  }
+
+  public static async getVendorAdvanceApplications(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const result = await db.query('SELECT * FROM vendor_advance_applications WHERE organization_id = $1 ORDER BY created_at DESC', [req.auth!.organizationId]);
+    res.json(result.rows);
+  }
+
+  public static async recordVendorAdvance(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const result = await db.transaction(async (client) => {
+      const advance = await PurchasesEngine.recordVendorAdvance(orgId, req.body, client);
+      await FinanceController.logAudit(orgId, req.auth!.userId, 'VENDOR_ADVANCE_RECORDED', 'VendorAdvance', advance.id, advance, client);
+      return advance;
+    });
+    res.status(201).json(result);
+  }
+
+  public static async applyVendorAdvance(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const result = await db.transaction(async (client) => {
+      const application = await PurchasesEngine.applyVendorAdvance(orgId, req.body, client);
+      await FinanceController.logAudit(orgId, req.auth!.userId, 'VENDOR_ADVANCE_APPLIED', 'VendorAdvance', req.body.advanceId, application, client);
+      return application;
+    });
+    res.json(result);
+  }
+
+  public static async getDebitNotes(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const result = await db.query(
+      `SELECT * FROM vendor_credits
+        WHERE organization_id = $1
+        ORDER BY date DESC, created_at DESC`,
+      [req.auth!.organizationId]
+    );
+    res.json(result.rows);
+  }
+
+  public static async createDebitNote(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const result = await db.transaction(async (client) => {
+      const note = await PurchasesEngine.createDebitNote(orgId, req.body, client);
+      await FinanceController.logAudit(orgId, req.auth!.userId, 'DEBIT_NOTE_CREATED', 'DebitNote', note.id, note, client);
+      return note;
+    });
+    res.status(201).json(result);
+  }
+
+  public static async recordAPWriteOff(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const result = await db.transaction(async (client) => {
+      const writeOff = await PurchasesEngine.recordAPWriteOff(orgId, { ...req.body, userId: req.auth!.userId }, client);
+      await FinanceController.logAudit(orgId, req.auth!.userId, 'AP_WRITE_OFF_RECORDED', 'APWriteOff', writeOff.writeOffId, writeOff, client);
+      return writeOff;
+    });
+    res.status(201).json(result);
+  }
+
+  public static async getPayableWriteOffs(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const result = await db.query('SELECT * FROM ap_write_offs WHERE organization_id = $1 ORDER BY write_off_date DESC, created_at DESC', [req.auth!.organizationId]);
+    res.json(result.rows);
+  }
+
+  public static async reversePaymentReceived(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const result = await FinancialDestructiveActionsService.reversePaymentReceived(
+      req.auth!.organizationId,
+      req.params.id,
+      req.auth!.userId,
+      req.body?.reason
+    );
+    res.json(result);
+  }
+
+  public static async reverseCreditNote(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const result = await FinancialDestructiveActionsService.reverseCreditNote(
+      req.auth!.organizationId, req.params.id, req.auth!.userId, req.body?.reason
+    );
+    res.json(result);
+  }
+
+  public static async reverseCustomerRefund(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const result = await FinancialDestructiveActionsService.reverseCustomerRefund(
+      req.auth!.organizationId, req.params.id, req.auth!.userId, req.body?.reason
+    );
+    res.json(result);
+  }
+
+  public static async reverseReceivableWriteOff(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const result = await FinancialDestructiveActionsService.reverseReceivableWriteOff(
+      req.auth!.organizationId, req.params.id, req.auth!.userId, req.body?.reason
+    );
+    res.json(result);
+  }
+
+  public static async reversePayableWriteOff(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const result = await FinancialDestructiveActionsService.reversePayableWriteOff(
+      req.auth!.organizationId, req.params.id, req.auth!.userId, req.body?.reason
+    );
+    res.json(result);
+  }
+
+  public static async reverseVendorCredit(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const result = await FinancialDestructiveActionsService.reverseVendorCredit(
+      req.auth!.organizationId, req.params.id, req.auth!.userId, req.body?.reason
+    );
+    res.json(result);
+  }
+
+  public static async reverseVendorAdvance(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const result = await FinancialDestructiveActionsService.reverseVendorAdvance(
+      req.auth!.organizationId, req.params.id, req.auth!.userId, req.body?.reason
+    );
+    res.json(result);
+  }
+
+  public static async reverseCustomerAdvanceApplication(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const result = await FinancialDestructiveActionsService.reverseAdvanceApplication(
+      'customer', req.auth!.organizationId, req.params.id, req.auth!.userId, req.body?.reason
+    );
+    res.json(result);
+  }
+
+  public static async reverseVendorAdvanceApplication(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const result = await FinancialDestructiveActionsService.reverseAdvanceApplication(
+      'vendor', req.auth!.organizationId, req.params.id, req.auth!.userId, req.body?.reason
+    );
+    res.json(result);
   }
 
   // --- REPORTS & INTEGRITY ---
@@ -1463,7 +1531,6 @@ export class FinanceController {
     const orgId = req.auth!.organizationId;
     const userId = req.auth!.userId;
     const asset = await FixedAssetService.createAsset(orgId, userId, req.body);
-    await FinanceController.logAudit(orgId, userId, 'FIXED_ASSET_CREATED', 'FixedAsset', asset.id, asset);
     res.status(201).json(asset);
   }
 
@@ -1474,7 +1541,6 @@ export class FinanceController {
     const periodKey = req.body.periodKey || new Date().toISOString().slice(0, 7);
     try {
       const result = await FixedAssetService.postMonthlyDepreciation(orgId, userId, assetId, periodKey);
-      await FinanceController.logAudit(orgId, userId, 'DEPRECIATION_POSTED', 'FixedAsset', assetId, result);
       res.status(201).json(result);
     } catch (err: any) {
       res.status(400).json({ error: err.message });
@@ -1496,11 +1562,33 @@ export class FinanceController {
         proceedsBankAccountId,
         gainLossAccountId
       );
-      await FinanceController.logAudit(orgId, userId, 'FIXED_ASSET_DISPOSED', 'FixedAsset', assetId, result);
       res.json(result);
     } catch (err: any) {
       res.status(400).json({ error: err.message });
     }
+  }
+
+  public static async reverseFixedAssetDepreciation(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const result = await FixedAssetService.reverseDepreciation(
+      req.auth!.organizationId,
+      req.auth!.userId,
+      req.params.id,
+      req.body?.periodKey,
+      req.body?.reason,
+      req.body?.reversalDate
+    );
+    res.json(result);
+  }
+
+  public static async reverseFixedAssetDisposal(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const result = await FixedAssetService.reverseDisposal(
+      req.auth!.organizationId,
+      req.auth!.userId,
+      req.params.id,
+      req.body?.reason,
+      req.body?.reversalDate
+    );
+    res.json(result);
   }
 
   // --- PERIOD CLOSE WORKSPACE ---
@@ -1525,7 +1613,6 @@ export class FinanceController {
         periodStart,
         periodEnd
       );
-      await FinanceController.logAudit(orgId, userId, 'PERIOD_CLOSED', 'PeriodClose', periodKey, result);
       res.json(result);
     } catch (err: any) {
       res.status(400).json({ error: err.message });
@@ -1538,7 +1625,6 @@ export class FinanceController {
     const { periodKey, reason } = req.body;
     try {
       const result = await PeriodCloseService.reopenPeriod(orgId, userId, periodKey, reason);
-      await FinanceController.logAudit(orgId, userId, 'PERIOD_REOPENED', 'PeriodClose', periodKey, { reason });
       res.json(result);
     } catch (err: any) {
       res.status(400).json({ error: err.message });

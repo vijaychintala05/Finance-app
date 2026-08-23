@@ -260,7 +260,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
                 {!isSingleSub && (
                   <div className="flex items-center space-x-1" onClick={handleToggleChevron}>
-                    <span className="text-[10px] bg-white/15 text-blue-100 px-1.5 py-0.2 rounded font-mono">
+                    <span aria-hidden="true" className="text-[10px] bg-white/15 text-blue-100 px-1.5 py-0.2 rounded font-mono">
                       {section.subItems.length}
                     </span>
                     {isExpanded ? (

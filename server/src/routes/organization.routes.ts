@@ -5,6 +5,8 @@ import { protectAsyncRoutes } from './asyncRouter';
 
 const router = Router();
 
+router.get('/current', OrganizationController.getCurrent);
+router.patch('/current', OrganizationController.updateCurrent);
 router.post('/', OrganizationController.create);
 router.get('/', OrganizationController.listMyOrganizations);
 router.post('/switch', OrganizationController.switchOrganization);

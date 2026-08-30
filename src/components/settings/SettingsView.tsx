@@ -15,9 +15,11 @@ import { UsersRolesSettings } from './UsersRolesSettings';
 import { IdentitySettings } from './IdentitySettings';
 import { GovernanceSettings } from './GovernanceSettings';
 import { AuditLogsSettings } from './AuditLogsSettings';
+import { OrganizationSettings } from './OrganizationSettings';
 
 export type SettingsNavTab =
   | 'overview'
+  | 'org-profile'
   | 'sec-identity'
   | 'sec-governance'
   | 'sec-audit'
@@ -32,6 +34,12 @@ interface SettingsItem {
 
 const SETTINGS_ITEMS: SettingsItem[] = [
   {
+    id: 'org-profile',
+    label: 'Organization Profile & Settings',
+    description: 'Configure business details, tax credentials, address, invoicing defaults, and bank details.',
+    icon: Building2,
+  },
+  {
     id: 'sec-identity',
     label: 'Identity & Password',
     description: 'View your account and change your password.',
@@ -41,7 +49,7 @@ const SETTINGS_ITEMS: SettingsItem[] = [
     id: 'sec-governance',
     label: 'Workspace Governance',
     description: 'Verify tenant identity, status, and enforced controls.',
-    icon: Building2,
+    icon: Shield,
   },
   {
     id: 'sec-audit',
@@ -187,6 +195,7 @@ export const SettingsView: React.FC = () => {
           </aside>
 
           <section className="min-w-0 lg:col-span-8">
+            {activeTab === 'org-profile' && <OrganizationSettings />}
             {activeTab === 'sec-identity' && <IdentitySettings />}
             {activeTab === 'sec-governance' && <GovernanceSettings />}
             {activeTab === 'sec-audit' && <AuditLogsSettings />}

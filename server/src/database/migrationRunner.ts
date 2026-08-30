@@ -48,6 +48,36 @@ export class MigrationRunner {
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       )`,
 
+      `CREATE TABLE IF NOT EXISTS organization_profiles (
+        organization_id VARCHAR(64) PRIMARY KEY,
+        legal_name VARCHAR(255),
+        trade_name VARCHAR(255),
+        tax_id VARCHAR(50),
+        gstin VARCHAR(50),
+        pan VARCHAR(50),
+        address_line1 VARCHAR(255),
+        address_line2 VARCHAR(255),
+        city VARCHAR(100),
+        state VARCHAR(100),
+        postal_code VARCHAR(30),
+        country VARCHAR(100),
+        phone VARCHAR(50),
+        email VARCHAR(255),
+        website VARCHAR(255),
+        fiscal_year_start VARCHAR(20) DEFAULT 'April',
+        default_payment_terms VARCHAR(50) DEFAULT 'Net 30',
+        invoice_prefix VARCHAR(20) DEFAULT 'INV-',
+        estimate_prefix VARCHAR(20) DEFAULT 'EST-',
+        po_prefix VARCHAR(20) DEFAULT 'PO-',
+        bill_prefix VARCHAR(20) DEFAULT 'BILL-',
+        logo_url TEXT,
+        invoice_notes TEXT,
+        bank_name VARCHAR(120),
+        bank_account_number VARCHAR(60),
+        bank_ifsc_swift VARCHAR(40),
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      )`,
+
       `CREATE TABLE IF NOT EXISTS organization_members (
         id VARCHAR(64) PRIMARY KEY,
         organization_id VARCHAR(64) NOT NULL,

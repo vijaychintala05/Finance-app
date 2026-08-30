@@ -65,3 +65,5 @@ The authentication cookie is HttpOnly, Secure in production, SameSite=Strict, an
 - `src/context/BooksContext.tsx` — UI compatibility facade over server-authoritative data
 
 Architecture details are in [DESIGN.md](DESIGN.md), and accounting rules are in [docs/ACCOUNTING_ENGINE.md](docs/ACCOUNTING_ENGINE.md).
+
+NAS release branching, environment setup, health checks, and rollback guidance are in [docs/NAS_DEPLOYMENT.md](docs/NAS_DEPLOYMENT.md).

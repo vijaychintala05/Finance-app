@@ -7,6 +7,9 @@ import { SessionSecurity } from '../auth/SessionSecurity';
 import { newId } from '../utils/ids';
 import { OrganizationProvisioningService } from '../services/OrganizationProvisioningService';
 import { normalizeSupportedBaseCurrency } from '../utils/currency';
+import { IdentityInviteService } from '../auth/IdentityInviteService';
+import { MfaService } from '../auth/MfaService';
+import { SessionService } from '../auth/SessionService';
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -22,6 +25,18 @@ function setAuthCookie(res: Response, token: string): void {
 export class AuthController {
   public static async register(req: Request, res: Response): Promise<void> {
     try {
+      // 1. Enforce Bootstrap Lock in production / self-hosted mode (or when ENFORCE_BOOTSTRAP_LOCK is set)
+      const isPublicSignupDisabled = process.env.ALLOW_PUBLIC_SIGNUP !== 'true' && (process.env.NODE_ENV === 'production' || process.env.ENFORCE_BOOTSTRAP_LOCK === 'true');
+      if (isPublicSignupDisabled) {
+        const bootstrapAllowed = await IdentityInviteService.isBootstrapAllowed();
+        if (!bootstrapAllowed) {
+          res.status(403).json({
+            error: 'Public registration is disabled. Account creation is invite-only. Please contact your organization owner for an invitation link.',
+          });
+          return;
+        }
+      }
+
       const email = normalizedEmail(req.body?.email);
       const password = req.body?.password;
       const fullName = typeof req.body?.fullName === 'string' ? req.body.fullName.trim() : '';
@@ -74,15 +89,30 @@ export class AuthController {
            VALUES ($1, $2, $3, 'ORGANIZATION_REGISTERED', 'Organization', $2, $4)`,
           [newId('aud'), orgId, userId, JSON.stringify({ name: organizationName, orgCode, ownerUserId: userId, country, baseCurrency })]
         );
+
+        // Record initial user identity
+        await client.query(
+          `INSERT INTO user_identities (id, user_id, email, password_hash, account_state, email_verified_at, last_login_at)
+           VALUES ($1, $2, $3, $4, 'ACTIVE', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+           ON CONFLICT (email) DO NOTHING`,
+          [newId('iden'), userId, email, passwordHash]
+        );
+      });
+
+      const session = await SessionService.createSession(userId, {
+        ipAddress: req.ip,
+        userAgent: req.headers['user-agent'],
       });
 
       const token = JwtAuth.generateToken({ userId, email });
       setAuthCookie(res, token);
 
+      const isDev = process.env.NODE_ENV !== 'production';
+
       res.status(201).json({
         user: { id: userId, email, fullName },
         organizationId: orgId,
-        ...(process.env.NODE_ENV !== 'production' ? { token } : {}),
+        ...(isDev ? { token, sessionId: session.sessionId, sessionToken: session.sessionToken } : {}),
       });
     } catch (err: any) {
       if (err?.code === '23505' || String(err?.message).includes('duplicate key')) {
@@ -126,17 +156,102 @@ export class AuthController {
         return;
       }
 
+      // Check Multi-Factor Authentication requirement
+      const mfaStatus = await MfaService.getMfaStatus(user.id);
+      if (mfaStatus.isVerified) {
+        const mfaCode = typeof req.body?.mfaCode === 'string' ? req.body.mfaCode.trim() : '';
+        if (!mfaCode) {
+          // Generate single-use, 5-minute MFA challenge ticket bound to successful password verification
+          const mfaTicket = JwtAuth.generateToken({
+            userId: user.id,
+            email: user.email,
+            purpose: 'mfa_login_challenge',
+          });
+
+          res.status(200).json({
+            mfaRequired: true,
+            mfaTicket,
+            message: 'Two-factor authentication code required',
+          });
+          return;
+        }
+
+        const challenge = await MfaService.verifyMfaChallenge(user.id, mfaCode);
+        if (!challenge.success) {
+          await SessionSecurity.recordPersistentFailure(rateLimitKey);
+          res.status(401).json({ error: 'Invalid two-factor authentication code' });
+          return;
+        }
+      }
+
       await SessionSecurity.clearPersistentRateLimit(rateLimitKey);
+
+      const session = await SessionService.createSession(user.id, {
+        ipAddress: req.ip,
+        userAgent: req.headers['user-agent'],
+      });
 
       const token = JwtAuth.generateToken({ userId: user.id, email: user.email });
       setAuthCookie(res, token);
 
+      const isDev = process.env.NODE_ENV !== 'production';
+
       res.json({
         user: { id: user.id, email: user.email, fullName: user.full_name },
-        ...(process.env.NODE_ENV !== 'production' ? { token } : {}),
+        ...(isDev ? { token, sessionId: session.sessionId, sessionToken: session.sessionToken } : {}),
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Login failed' });
+    }
+  }
+
+  public static async verifyMfaLogin(req: Request, res: Response): Promise<void> {
+    try {
+      const mfaTicket = typeof req.body?.mfaTicket === 'string' ? req.body.mfaTicket.trim() : '';
+      const mfaCode = typeof req.body?.mfaCode === 'string' ? req.body.mfaCode.trim() : '';
+
+      if (!mfaTicket || !mfaCode) {
+        res.status(400).json({ error: 'mfaTicket and mfaCode are required' });
+        return;
+      }
+
+      // Verify and decode challenge ticket
+      const decoded = JwtAuth.verifyToken(mfaTicket);
+      if (!decoded || (decoded as any).purpose !== 'mfa_login_challenge') {
+        res.status(401).json({ error: 'Invalid or expired MFA login challenge ticket. Please log in again.' });
+        return;
+      }
+
+      const userId = decoded.userId;
+      const userRes = await db.query('SELECT * FROM users WHERE id = $1', [userId]);
+      if (userRes.rows.length === 0 || userRes.rows[0].status !== 'Active') {
+        res.status(401).json({ error: 'User account not found or inactive' });
+        return;
+      }
+
+      const user = userRes.rows[0];
+      const challenge = await MfaService.verifyMfaChallenge(userId, mfaCode);
+      if (!challenge.success) {
+        res.status(401).json({ error: 'Invalid two-factor authentication code' });
+        return;
+      }
+
+      const session = await SessionService.createSession(user.id, {
+        ipAddress: req.ip,
+        userAgent: req.headers['user-agent'],
+      });
+
+      const token = JwtAuth.generateToken({ userId: user.id, email: user.email });
+      setAuthCookie(res, token);
+
+      const isDev = process.env.NODE_ENV !== 'production';
+
+      res.json({
+        user: { id: user.id, email: user.email, fullName: user.full_name },
+        ...(isDev ? { token, sessionId: session.sessionId, sessionToken: session.sessionToken } : {}),
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'MFA verification failed' });
     }
   }
 

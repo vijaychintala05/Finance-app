@@ -37,6 +37,7 @@ const GSTComplianceView = lazyNamed(() => import('./components/accounting/GSTCom
 const TeamAccessView = lazyNamed(() => import('./components/settings/TeamAccessView'), 'TeamAccessView');
 const RecoveryCenterView = lazyNamed(() => import('./components/settings/RecoveryCenterView'), 'RecoveryCenterView');
 const SettlementWorkspace = lazyNamed(() => import('./components/accounting/SettlementWorkspace'), 'SettlementWorkspace');
+const SecurityCenterView = lazyNamed(() => import('./components/security/SecurityCenterView'), 'SecurityCenterView');
 
 const parseHashRoute = (): { tab: string; entityId?: string } => {
   if (typeof window === 'undefined') return { tab: 'dashboard' };
@@ -319,6 +320,9 @@ function MainAppLayout() {
         return <TeamAccessView />;
       case 'recovery_center':
         return <RecoveryCenterView />;
+      case 'security_center':
+      case 'identity_center':
+        return <SecurityCenterView />;
 
       default:
         return <DashboardView onNavigate={handleNavigate} />;

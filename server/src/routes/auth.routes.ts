@@ -13,6 +13,7 @@ const registrationLimitPerHour = isIsolatedTestDatabase ? 1000 : 20;
 // tenants without weakening any deployed environment.
 router.post('/register', persistentRateLimit('register', registrationLimitPerHour, 60 * 60), AuthController.register);
 router.post('/login', AuthController.login);
+router.post('/mfa/verify', AuthController.verifyMfaLogin);
 router.post('/logout', authMiddleware, AuthController.logout);
 router.get('/me', authMiddleware, AuthController.me);
 router.post('/refresh', authMiddleware, AuthController.refresh);

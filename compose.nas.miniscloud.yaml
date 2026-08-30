@@ -39,7 +39,13 @@ services:
       DB_QUERY_TIMEOUT_MS: 15000
       DB_STATEMENT_TIMEOUT_MS: 15000
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET before deployment}
+      AUTH_ENCRYPTION_KEY: ${AUTH_ENCRYPTION_KEY:?Set AUTH_ENCRYPTION_KEY in .env}
       ALLOWED_ORIGINS: ${APP_ORIGIN:?Set APP_ORIGIN before deployment}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-}
       TRUST_PROXY: ${TRUST_PROXY:-false}
       JSON_BODY_LIMIT: 1mb
       DATABASE_MODE: ""

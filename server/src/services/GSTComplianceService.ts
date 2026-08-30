@@ -27,7 +27,7 @@ export class GSTComplianceService {
     const { periodStart, periodEnd } = periodDates(periodKey);
     const [outwardRes, inwardRes, integrity] = await Promise.all([
       db.query(`SELECT COUNT(*) AS document_count, COALESCE(SUM(i.subtotal), 0) AS taxable_value, COALESCE(SUM(i.tax_total), 0) AS tax_amount,
-          COUNT(*) FILTER (WHERE NULLIF(TRIM(c.tax_id), '') IS NULL) AS missing_gstin_count
+          COALESCE(SUM(CASE WHEN c.tax_id IS NULL OR c.tax_id = '' THEN 1 ELSE 0 END), 0) AS missing_gstin_count
         FROM invoices i LEFT JOIN clients c ON c.id = i.client_id AND c.organization_id = i.organization_id
         WHERE i.organization_id = $1 AND i.issue_date >= $2 AND i.issue_date <= $3 AND UPPER(i.status) NOT IN ('VOID', 'VOIDED', 'DRAFT')`, [organizationId, periodStart, periodEnd]),
       db.query(`SELECT COUNT(*) AS document_count, COALESCE(SUM(subtotal), 0) AS taxable_value, COALESCE(SUM(tax_total), 0) AS tax_amount

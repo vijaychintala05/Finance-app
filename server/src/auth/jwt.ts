@@ -9,6 +9,7 @@ const JWT_AUDIENCE = 'firmbooks-web';
 export interface TokenPayload {
   userId: string;
   email: string;
+  purpose?: string;
   jti?: string;
   iat?: number;
   exp?: number;
@@ -16,8 +17,16 @@ export interface TokenPayload {
 
 export class JwtAuth {
   public static generateToken(payload: TokenPayload): string {
+    const claims: Record<string, any> = {
+      userId: payload.userId,
+      email: payload.email,
+    };
+    if (payload.purpose) {
+      claims.purpose = payload.purpose;
+    }
+
     return jwt.sign(
-      { userId: payload.userId, email: payload.email },
+      claims,
       getJwtSecret(),
       {
         expiresIn: JWT_EXPIRES_IN,

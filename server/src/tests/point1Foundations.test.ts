@@ -65,7 +65,7 @@ describe('Point-1 shared foundations', () => {
       expect(result.rows).toEqual([]);
     }
 
-    expect(CURRENT_SCHEMA_VERSION).toBe('2026.08.23-v3-point1-foundations');
+    expect(CURRENT_SCHEMA_VERSION).toBe('2026.08.30-v5-identity-fortress');
     expect(await MigrationRunner.isCurrent()).toBe(true);
   });
 });

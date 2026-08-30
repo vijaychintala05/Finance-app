@@ -3,6 +3,7 @@ import { JwtAuth } from '../auth/jwt';
 import { db } from '../database/db';
 import { RbacService, PermissionCode } from '../auth/RbacService';
 import { SessionSecurity } from '../auth/SessionSecurity';
+import { SessionService } from '../auth/SessionService';
 
 export interface AuthenticatedContext {
   userId: string;
@@ -19,6 +20,7 @@ export interface AuthenticatedRequest extends Request {
   };
   auth?: AuthenticatedContext;
   organizationId?: string;
+  sessionId?: string;
 }
 
 export const authMiddleware = async (
@@ -27,32 +29,50 @@ export const authMiddleware = async (
   next: NextFunction
 ): Promise<void> => {
   const authHeader = req.headers.authorization;
-  const cookieToken = req.headers.cookie
-    ?.split(';')
+  const cookieHeader = req.headers.cookie || '';
+  const cookieToken = cookieHeader
+    .split(';')
     .map((part) => part.trim())
-    .find((part) => part.startsWith('firmbooks_session='))
-    ?.slice('firmbooks_session='.length);
+    .find((part) => part.startsWith('firmbooks_session=') || part.startsWith('session_token='))
+    ?.split('=')[1];
 
   if ((authHeader && authHeader.startsWith('Bearer ')) || cookieToken) {
-    // The browser's HttpOnly cookie is authoritative when both mechanisms are
-    // present. This prevents stale development storage from overriding a valid
-    // production session; API clients without cookies continue to use Bearer.
-    const token = cookieToken || authHeader!.substring(7);
-    const decoded = JwtAuth.verifyToken(token);
-    if (decoded) {
-      if (!decoded.iat || (await SessionSecurity.isTokenRevoked(decoded.userId, decoded.iat))) {
-        res.status(401).json({ error: 'Unauthorized: Token has been revoked' });
-        return;
+    const token = cookieToken || authHeader!.substring(7).trim();
+
+    // 1. If token is a JWT (contains dot)
+    if (token.includes('.')) {
+      const decoded = JwtAuth.verifyToken(token);
+      if (decoded) {
+        if (!decoded.iat || (await SessionSecurity.isTokenRevoked(decoded.userId, decoded.iat))) {
+          res.status(401).json({ error: 'Unauthorized: Token has been revoked' });
+          return;
+        }
+        const userResult = await db.query('SELECT email, status FROM users WHERE id = $1', [decoded.userId]);
+        if (userResult.rows.length !== 1 || userResult.rows[0].status !== 'Active') {
+          res.status(401).json({ error: 'Unauthorized: User account is unavailable or inactive' });
+          return;
+        }
+        req.user = { userId: decoded.userId, email: userResult.rows[0].email };
+        return next();
       }
-      const userResult = await db.query('SELECT email, status FROM users WHERE id = $1', [decoded.userId]);
-      if (userResult.rows.length !== 1 || userResult.rows[0].status !== 'Active') {
-        res.status(401).json({ error: 'Unauthorized: User account is unavailable or inactive' });
-        return;
-      }
-      req.user = { userId: decoded.userId, email: userResult.rows[0].email };
-      return next();
     }
-    res.status(401).json({ error: 'Unauthorized: Invalid token' });
+
+    // 2. Try Opaque Session validation via SessionService
+    try {
+      const sessionValidation = await SessionService.validateSession(token);
+      if (sessionValidation.isValid && sessionValidation.userId) {
+        const userResult = await db.query('SELECT email, status FROM users WHERE id = $1', [sessionValidation.userId]);
+        if (userResult.rows.length === 1 && userResult.rows[0].status === 'Active') {
+          req.user = { userId: sessionValidation.userId, email: userResult.rows[0].email };
+          req.sessionId = sessionValidation.sessionId;
+          return next();
+        }
+      }
+    } catch {
+      // Fall through to 401
+    }
+
+    res.status(401).json({ error: 'Unauthorized: Invalid or expired authentication session' });
     return;
   }
 

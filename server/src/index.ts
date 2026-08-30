@@ -21,9 +21,10 @@ import { createInvitationAcceptanceRouter, createMembershipManagementRouter } fr
 import { requireTrustedFinanceFeature } from './middleware/trustedFeature.middleware';
 import recurringRoutes from './routes/recurring.routes';
 import recoveryRoutes from './routes/recovery.routes';
-
+import { identityRouter } from './routes/identity.routes';
 import phase8Routes from './routes/phase8.routes';
 import { Phase8Controller } from './controllers/Phase8Controller';
+import { EmailOutboxService } from './services/EmailOutboxService';
 
 const app = express();
 app.disable('x-powered-by');
@@ -61,14 +62,16 @@ export async function initDatabase(): Promise<void> {
     } else {
       await MigrationRunner.runMigrations();
     }
+    EmailOutboxService.startOutboxWorker();
   } catch (err) {
     console.error('[Database Init Fatal Error]', err);
     throw err;
   }
 }
 
-// Auth Routes (unprotected for login/register, protected internally)
+// Auth & Identity Routes (unprotected for login/register, protected internally)
 app.use('/api/v1/auth', authRoutes);
+app.use('/api/v1/identity', identityRouter);
 app.use('/api/v1/access', requireTrustedFinanceFeature('team-access'), createInvitationAcceptanceRouter());
 
 // Public Customer Quotation Portal (Unprotected by design for external clients)

@@ -692,4 +692,41 @@ describe('Financial Operations Atomicity, Concurrency Protection & Failure Injec
     expect(reversedNote.reversal_journal_id).toBeTruthy();
     expect(application.status).toBe('REVERSED');
   });
+
+  it('18. Period lock prevents recording payments on locked historical dates', async () => {
+    // Lock period for 2025
+    await db.query(
+      `INSERT INTO period_locks (id, organization_id, period_name, lock_date, is_locked, status)
+       VALUES ('lock-2025', $1, '2025-12', '2025-12-31', TRUE, 'Active')`,
+      [orgId]
+    );
+
+    const invoice = await SalesEngine.createAndPostInvoice(orgId, {
+      customerId: 'cust-atom-1', customerName: 'Test Customer', issueDate: '2026-08-01', dueDate: '2026-08-30',
+      lineItems: [{ description: 'Dev Service', quantity: 1, unitPrice: 500, taxRate: 0, amount: 500 }],
+    });
+
+    // Attempt backdated payment in locked period
+    await expect(
+      SalesEngine.recordPayment(orgId, {
+        customerId: 'cust-atom-1', customerName: 'Test Customer', paymentDate: '2025-10-15',
+        amount: 500, depositToAccountId: '1010', allocations: [{ invoiceId: invoice.id, amount: 500 }],
+      })
+    ).rejects.toThrow(/locked accounting period/i);
+  });
+
+  it('19. Prevents payment allocation exceeding outstanding invoice balance', async () => {
+    const invoice = await SalesEngine.createAndPostInvoice(orgId, {
+      customerId: 'cust-atom-1', customerName: 'Test Customer', issueDate: '2026-08-01', dueDate: '2026-08-30',
+      lineItems: [{ description: 'Dev Service', quantity: 1, unitPrice: 300, taxRate: 0, amount: 300 }],
+    });
+
+    // Attempt over-allocation ($500 allocated to $300 invoice)
+    await expect(
+      SalesEngine.recordPayment(orgId, {
+        customerId: 'cust-atom-1', customerName: 'Test Customer', paymentDate: '2026-08-10',
+        amount: 500, depositToAccountId: '1010', allocations: [{ invoiceId: invoice.id, amount: 500 }],
+      })
+    ).rejects.toThrow(/exceeds/i);
+  });
 });

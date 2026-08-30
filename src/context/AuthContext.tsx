@@ -14,7 +14,10 @@ interface AuthContextValue {
   user: AuthUser | null;
   loading: boolean;
   error: string | null;
+  mfaRequired: boolean;
   login(email: string, password: string): Promise<boolean>;
+  verifyMfa(code: string): Promise<boolean>;
+  cancelMfa(): void;
   register(input: RegistrationInput): Promise<boolean>;
   logout(): Promise<void>;
 }
@@ -32,6 +35,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [mfaRequired, setMfaRequired] = useState(false);
+  const [mfaTicket, setMfaTicket] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -54,9 +59,49 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = async (email: string, password: string): Promise<boolean> => {
     setError(null);
-    const response = await apiClient.post<{ user: AuthUser; token?: string }>('/auth/login', { email, password });
+    const response = await apiClient.post<{
+      user?: AuthUser;
+      token?: string;
+      mfaRequired?: boolean;
+      mfaTicket?: string;
+    }>('/auth/login', { email, password });
+
     if (!response.data) {
       setError(response.error || 'Login failed');
+      return false;
+    }
+
+    if (response.data.mfaRequired && response.data.mfaTicket) {
+      setMfaRequired(true);
+      setMfaTicket(response.data.mfaTicket);
+      return true;
+    }
+
+    if (response.data.user) {
+      storeSession(response.data.token);
+      const profile = await apiClient.get<{ user: AuthUser; organizations: Array<{ id: string }> }>('/auth/me');
+      if (!profile.data) {
+        localStorage.removeItem('auth_token');
+        setError(profile.error || 'Could not load account');
+        return false;
+      }
+      if (profile.data.organizations[0]?.id) localStorage.setItem('active_organization_id', profile.data.organizations[0].id);
+      setUser(profile.data.user);
+      return true;
+    }
+
+    return false;
+  };
+
+  const verifyMfa = async (code: string): Promise<boolean> => {
+    if (!mfaTicket) return false;
+    setError(null);
+    const response = await apiClient.post<{ user: AuthUser; token?: string }>('/auth/mfa/verify', {
+      mfaTicket,
+      mfaCode: code,
+    });
+    if (!response.data) {
+      setError(response.error || 'Invalid two-factor authentication code');
       return false;
     }
     storeSession(response.data.token);
@@ -68,7 +113,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     if (profile.data.organizations[0]?.id) localStorage.setItem('active_organization_id', profile.data.organizations[0].id);
     setUser(profile.data.user);
+    setMfaRequired(false);
+    setMfaTicket(null);
     return true;
+  };
+
+  const cancelMfa = (): void => {
+    setMfaRequired(false);
+    setMfaTicket(null);
+    setError(null);
   };
 
   const register = async (input: RegistrationInput): Promise<boolean> => {
@@ -89,9 +142,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.removeItem('active_organization_id');
     localStorage.removeItem('firmbooks_authenticated');
     setUser(null);
+    setMfaRequired(false);
+    setMfaTicket(null);
   };
 
-  const value = useMemo(() => ({ user, loading, error, login, register, logout }), [user, loading, error]);
+  const value = useMemo(
+    () => ({ user, loading, error, mfaRequired, login, verifyMfa, cancelMfa, register, logout }),
+    [user, loading, error, mfaRequired, mfaTicket]
+  );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 

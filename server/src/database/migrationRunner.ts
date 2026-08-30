@@ -1,9 +1,10 @@
 import { db } from './db';
 import { OrganizationProvisioningService } from '../services/OrganizationProvisioningService';
 import { applyPoint1Schema } from './point1Schema';
+import { applyIdentitySchema } from './identitySchema';
 import type { DbQueryResult } from './db';
 
-export const CURRENT_SCHEMA_VERSION = '2026.08.23-v4-coa-governance';
+export const CURRENT_SCHEMA_VERSION = '2026.08.30-v5-identity-fortress';
 
 export class MigrationRunner {
   public static async runMigrations(queryClient?: { query: (text: string, params?: any[]) => Promise<DbQueryResult> }): Promise<void> {
@@ -1483,12 +1484,13 @@ export class MigrationRunner {
     }
 
     await applyPoint1Schema(queryClient);
+    await applyIdentitySchema(queryClient);
 
     await queryClient.query(
       `INSERT INTO schema_migrations (version, description)
        VALUES ($1, $2)
        ON CONFLICT (version) DO NOTHING`,
-      [CURRENT_SCHEMA_VERSION, 'FirmBooks v4 chart of accounts governance']
+      [CURRENT_SCHEMA_VERSION, 'FirmBooks v5 self-hosted identity fortress']
     );
 
     console.log('[Migration] All PostgreSQL tables initialized successfully.');

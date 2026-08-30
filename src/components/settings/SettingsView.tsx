@@ -16,11 +16,13 @@ import { IdentitySettings } from './IdentitySettings';
 import { GovernanceSettings } from './GovernanceSettings';
 import { AuditLogsSettings } from './AuditLogsSettings';
 import { OrganizationSettings } from './OrganizationSettings';
+import { MfaSettings } from './MfaSettings';
 
 export type SettingsNavTab =
   | 'overview'
   | 'org-profile'
   | 'sec-identity'
+  | 'sec-mfa'
   | 'sec-governance'
   | 'sec-audit'
   | 'usr-preferences';
@@ -44,6 +46,12 @@ const SETTINGS_ITEMS: SettingsItem[] = [
     label: 'Identity & Password',
     description: 'View your account and change your password.',
     icon: UserCheck,
+  },
+  {
+    id: 'sec-mfa',
+    label: 'Two-Factor Authentication (2FA)',
+    description: 'Configure authenticator app (TOTP), 2FA enforcement, and emergency recovery codes.',
+    icon: Shield,
   },
   {
     id: 'sec-governance',
@@ -197,6 +205,7 @@ export const SettingsView: React.FC = () => {
           <section className="min-w-0 lg:col-span-8">
             {activeTab === 'org-profile' && <OrganizationSettings />}
             {activeTab === 'sec-identity' && <IdentitySettings />}
+            {activeTab === 'sec-mfa' && <MfaSettings />}
             {activeTab === 'sec-governance' && <GovernanceSettings />}
             {activeTab === 'sec-audit' && <AuditLogsSettings />}
             {activeTab === 'usr-preferences' && <UsersRolesSettings subTab="preferences" />}

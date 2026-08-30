@@ -3,6 +3,7 @@ import { User, ShieldCheck, Key, Mail, CheckCircle, RefreshCw, AlertTriangle, Fi
 import { useBooks } from '../../context/BooksContext';
 import { apiClient } from '../../api/client';
 import { useAuth } from '../../context/AuthContext';
+import { MfaEnrollmentModal } from '../security/MfaEnrollmentModal';
 
 export const IdentitySettings: React.FC = () => {
   const { currentUser } = useBooks();
@@ -14,10 +15,14 @@ export const IdentitySettings: React.FC = () => {
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [mfaStatus, setMfaStatus] = useState<{ isEnrolled: boolean; isVerified: boolean; isEnforced: boolean } | null>(null);
+  const [showMfaModal, setShowMfaModal] = useState(false);
 
   useEffect(() => {
     setFullName(currentUser?.fullName || '');
     setEmail(currentUser?.email || '');
+    apiClient.get<{ isEnrolled: boolean; isVerified: boolean; isEnforced: boolean }>('/identity/mfa/status')
+      .then((res) => { if (res.data) setMfaStatus(res.data); });
   }, [currentUser?.email, currentUser?.fullName]);
 
   const handleUpdateProfile = (e: React.FormEvent) => {
@@ -228,6 +233,53 @@ export const IdentitySettings: React.FC = () => {
           </form>
         </div>
       </div>
+
+      {/* Two-Factor Authentication (2FA) Card */}
+      <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-2xs space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="w-5 h-5 text-indigo-600" />
+            <div>
+              <h3 className="text-sm font-bold text-slate-800">Two-Factor Authentication (2FA / TOTP)</h3>
+              <p className="text-[11px] text-slate-500">Protect your account with RFC 6238 time-based one-time passcodes.</p>
+            </div>
+          </div>
+          <span
+            className={`px-2.5 py-1 rounded-full text-[10px] font-bold border flex items-center gap-1 w-fit ${
+              mfaStatus?.isVerified
+                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                : 'bg-amber-50 text-amber-700 border-amber-200'
+            }`}
+          >
+            {mfaStatus?.isVerified ? <CheckCircle className="w-3.5 h-3.5 text-emerald-600" /> : <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />}
+            {mfaStatus?.isVerified ? '2FA Enabled & Active' : '2FA Not Configured'}
+          </span>
+        </div>
+
+        <p className="text-xs text-slate-600 leading-relaxed">
+          When 2FA is active, signing in requires your password and a 6-digit verification code from an authenticator app (Google Authenticator, Apple Passwords, Authy, or 1Password).
+        </p>
+
+        <div className="pt-1">
+          <button
+            type="button"
+            onClick={() => setShowMfaModal(true)}
+            className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold cursor-pointer transition flex items-center space-x-2 shadow-xs"
+          >
+            <ShieldCheck className="w-4 h-4" />
+            <span>{mfaStatus?.isVerified ? 'Manage / Re-enroll Authenticator' : 'Set Up Two-Factor Authentication'}</span>
+          </button>
+        </div>
+      </div>
+
+      <MfaEnrollmentModal
+        isOpen={showMfaModal}
+        onClose={() => setShowMfaModal(false)}
+        onSuccess={() => {
+          apiClient.get<{ isEnrolled: boolean; isVerified: boolean; isEnforced: boolean }>('/identity/mfa/status')
+            .then((res) => { if (res.data) setMfaStatus(res.data); });
+        }}
+      />
     </div>
   );
 };

@@ -73,7 +73,7 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
             }`}
           >
             <Edit3 className="w-4 h-4" />
-            <span>Bulk Updates</span>
+            <span>Bulk Journal Entry</span>
           </button>
 
           <button

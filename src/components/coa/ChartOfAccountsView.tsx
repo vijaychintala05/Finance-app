@@ -237,6 +237,7 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
 
     return matchesSearch && matchesType && matchesSubCat;
   });
+  const accountNameById = new Map(accounts.map((account) => [account.id, account.name]));
 
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-7xl mx-auto">
@@ -520,7 +521,7 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
                           ) : (
                             <div className="ml-6 space-y-1.5">
                               {subTypeAccounts.map((acc) => {
-                                const isChild = !!acc.parentId;
+                                const parentName = acc.parentAccountId ? accountNameById.get(acc.parentAccountId) : undefined;
                                 return (
                                   <div
                                     key={acc.id}
@@ -543,6 +544,14 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
                                               <Layers className="w-2.5 h-2.5 text-amber-600" />
                                               <span>{acc.subCategory}</span>
                                             </span>
+                                          )}
+
+                                          {parentName && (
+                                            <span className="text-[10px] font-semibold text-slate-500">under {parentName}</span>
+                                          )}
+
+                                          {acc.status === 'Archived' && (
+                                            <span className="text-[10px] font-extrabold bg-slate-200 text-slate-700 border border-slate-300 px-1.5 py-0.2 rounded">Archived</span>
                                           )}
 
                                           {acc.isLocked && (
@@ -661,6 +670,8 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
                     </td>
                     <td className="p-3 font-semibold text-slate-900 flex items-center gap-2">
                       <span>{acc.name}</span>
+                      {acc.parentAccountId && accountNameById.get(acc.parentAccountId) && <span className="text-[10px] font-medium text-slate-500">under {accountNameById.get(acc.parentAccountId)}</span>}
+                      {acc.status === 'Archived' && <span className="text-[10px] font-extrabold bg-slate-200 text-slate-700 border border-slate-300 px-1.5 py-0.2 rounded shrink-0">Archived</span>}
                       {acc.isLocked && (
                         <span className="inline-flex items-center gap-1 text-[10px] font-extrabold bg-rose-100 text-rose-800 border border-rose-300 px-1.5 py-0.2 rounded shrink-0">
                           <Lock className="w-2.5 h-2.5 text-rose-600" />

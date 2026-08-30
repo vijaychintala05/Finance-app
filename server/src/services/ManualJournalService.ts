@@ -83,7 +83,7 @@ export class ManualJournalService {
       const uniqueAccIds = [...new Set(accIds)];
       const placeholders = uniqueAccIds.map((_, index) => `$${index + 2}`).join(', ');
       const accRes = await db.query(
-        `SELECT id, code, name, type, sub_type FROM accounts WHERE organization_id = $1 AND id IN (${placeholders})`,
+        `SELECT id, code, name, type, sub_type, status, allow_direct_posting FROM accounts WHERE organization_id = $1 AND id IN (${placeholders})`,
         [orgId, ...uniqueAccIds]
       );
       const accMap = new Map<string, any>();
@@ -92,6 +92,8 @@ export class ManualJournalService {
       for (const l of input.lines) {
         const acc = accMap.get(l.accountId);
         if (acc) {
+          if (acc.status !== 'Active') throw new Error(`JOURNAL_ACCOUNT_INACTIVE: Account ${acc.code} (${acc.name}) is archived`);
+          if (acc.allow_direct_posting === false) throw new Error(`JOURNAL_DIRECT_POSTING_RESTRICTED: Account ${acc.code} (${acc.name}) must be posted through its approved workflow.`);
           l.accountCode = l.accountCode || acc.code;
           l.accountName = l.accountName || acc.name;
 
@@ -127,6 +129,23 @@ export class ManualJournalService {
         [newId('aud'), orgId, userId, posting.entryId, JSON.stringify({ entryNumber, totalDebit: centsToSafeNumber(totalDebitCents, 'Journal total debit') })]
       );
       return { id: posting.entryId, entryNumber, status };
+    });
+  }
+
+  public static async createBulkJournals(
+    orgId: string,
+    userId: string,
+    entries: ManualJournalInput[]
+  ): Promise<Array<{ id: string; entryNumber: string; status: string }>> {
+    if (!Array.isArray(entries) || entries.length < 1 || entries.length > 100) {
+      throw new Error('BULK_JOURNAL_BATCH_INVALID: A batch must contain 1-100 journal entries');
+    }
+    return db.transaction(async () => {
+      const created: Array<{ id: string; entryNumber: string; status: string }> = [];
+      for (const entry of entries) {
+        created.push(await this.createJournal(orgId, userId, entry));
+      }
+      return created;
     });
   }
 

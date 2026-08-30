@@ -33,6 +33,7 @@ const DeliveryChallansView = lazyNamed(() => import('./components/sales/Delivery
 const PaymentsReceivedView = lazyNamed(() => import('./components/sales/PaymentsReceivedView'), 'PaymentsReceivedView');
 const FixedAssetsView = lazyNamed(() => import('./components/accounting/FixedAssetsView'), 'FixedAssetsView');
 const PeriodCloseView = lazyNamed(() => import('./components/accounting/PeriodCloseView'), 'PeriodCloseView');
+const GSTComplianceView = lazyNamed(() => import('./components/accounting/GSTComplianceView'), 'GSTComplianceView');
 const TeamAccessView = lazyNamed(() => import('./components/settings/TeamAccessView'), 'TeamAccessView');
 const RecoveryCenterView = lazyNamed(() => import('./components/settings/RecoveryCenterView'), 'RecoveryCenterView');
 const SettlementWorkspace = lazyNamed(() => import('./components/accounting/SettlementWorkspace'), 'SettlementWorkspace');
@@ -303,6 +304,8 @@ function MainAppLayout() {
         return <FixedAssetsView />;
       case 'period_close':
         return <PeriodCloseView />;
+      case 'gst_compliance':
+        return <GSTComplianceView />;
 
       // Reports
       case 'reports':

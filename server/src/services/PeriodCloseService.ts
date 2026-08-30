@@ -22,6 +22,37 @@ export interface PeriodCloseStatusResponse {
   warningsCount: number;
 }
 
+export interface CloseReviewTask {
+  code: string;
+  title: string;
+  completed: boolean;
+}
+
+export interface PeriodCloseWorkspace extends PeriodCloseStatusResponse {
+  review: { status: 'DRAFT' | 'IN_REVIEW' | 'READY_TO_CLOSE'; tasks: CloseReviewTask[]; note: string; updatedAt?: string } | null;
+  events: Array<{ id: string; eventType: string; eventAt: string; reason: string; actorId: string }>;
+}
+
+const REVIEW_TASKS: Array<Pick<CloseReviewTask, 'code' | 'title'>> = [
+  { code: 'REVIEW_TRIAL_BALANCE', title: 'Review trial balance and unusual balances' },
+  { code: 'REVIEW_AR_AGING', title: 'Review receivables aging and exceptions' },
+  { code: 'REVIEW_AP_AGING', title: 'Review payables aging and exceptions' },
+  { code: 'REVIEW_BANK_RECON', title: 'Review bank reconciliation exceptions' },
+];
+
+function parseReview(value: unknown): { tasks: CloseReviewTask[]; note: string; updatedAt?: string } {
+  let parsed: any = value;
+  if (typeof value === 'string') {
+    try { parsed = JSON.parse(value); } catch { parsed = {}; }
+  }
+  const completed = new Set(Array.isArray(parsed?.tasks) ? parsed.tasks.filter((task: any) => task?.completed).map((task: any) => task.code) : []);
+  return {
+    tasks: REVIEW_TASKS.map((task) => ({ ...task, completed: completed.has(task.code) })),
+    note: typeof parsed?.note === 'string' ? parsed.note : '',
+    updatedAt: typeof parsed?.updatedAt === 'string' ? parsed.updatedAt : undefined,
+  };
+}
+
 function validatePeriodIdentity(periodKey: string, periodStart: string, periodEnd: string): void {
   if (!/^\d{4}-\d{2}$/.test(periodKey) || !isIsoCalendarDate(periodStart) || !isIsoCalendarDate(periodEnd)) {
     throw new Error('PERIOD_CLOSE_INPUT_INVALID: Period key and dates must use YYYY-MM and YYYY-MM-DD formats');
@@ -86,6 +117,59 @@ export class PeriodCloseService {
     return validateWithClient(orgId, periodKey, periodStart, periodEnd, db);
   }
 
+  public static async getWorkspace(orgId: string, periodKey: string, periodStart: string, periodEnd: string): Promise<PeriodCloseWorkspace> {
+    const status = await this.validatePeriodClose(orgId, periodKey, periodStart, periodEnd);
+    const [reviewResult, eventResult] = await Promise.all([
+      db.query(`SELECT status, checklist_data FROM period_close_checklists WHERE organization_id=$1 AND period_key=$2`, [orgId, periodKey]),
+      db.query(`SELECT id, event_type, event_at, reason, actor_id FROM accounting_period_close_events WHERE organization_id=$1 AND period_key=$2 ORDER BY event_at DESC, id DESC`, [orgId, periodKey]),
+    ]);
+    const reviewRow = reviewResult.rows[0];
+    return {
+      ...status,
+      review: reviewRow ? { status: reviewRow.status, ...parseReview(reviewRow.checklist_data) } : null,
+      events: eventResult.rows.map((row: any) => ({ id: row.id, eventType: row.event_type, eventAt: row.event_at, reason: row.reason, actorId: row.actor_id })),
+    };
+  }
+
+  public static async saveReview(orgId: string, userId: string, periodKey: string, periodStart: string, periodEnd: string,
+    tasks: CloseReviewTask[], note: string): Promise<PeriodCloseWorkspace> {
+    validatePeriodIdentity(periodKey, periodStart, periodEnd);
+    if (!Array.isArray(tasks) || tasks.some((task) => !REVIEW_TASKS.some((required) => required.code === task.code) || typeof task.completed !== 'boolean')) {
+      throw new Error('PERIOD_CLOSE_REVIEW_INVALID: Review tasks are invalid');
+    }
+    const trimmedNote = String(note || '').trim();
+    if (trimmedNote.length > 2000) throw new Error('PERIOD_CLOSE_REVIEW_NOTE_INVALID: Review note cannot exceed 2000 characters');
+    await db.transaction(async (tx) => {
+      await tx.query(
+        `INSERT INTO accounting_period_closes (id, organization_id, period_key, period_start, period_end, status)
+         VALUES ($1,$2,$3,$4,$5,'OPEN') ON CONFLICT (organization_id, period_key) DO NOTHING`,
+        [newId('apc'), orgId, periodKey, periodStart, periodEnd]
+      );
+      const close = await tx.query(`SELECT * FROM accounting_period_closes WHERE organization_id=$1 AND period_key=$2 FOR UPDATE`, [orgId, periodKey]);
+      if (close.rows.length !== 1 || dbDate(close.rows[0].period_start) !== periodStart || dbDate(close.rows[0].period_end) !== periodEnd) {
+        throw new Error('PERIOD_CLOSE_RANGE_CONFLICT: Existing close record uses a different date range');
+      }
+      if (close.rows[0].status === 'CLOSED') throw new Error('PERIOD_CLOSE_REVIEW_LOCKED: A closed period cannot be edited; reopen it first');
+      const validation = await validateWithClient(orgId, periodKey, periodStart, periodEnd, tx);
+      const normalized = parseReview({ tasks, note: trimmedNote, updatedAt: new Date().toISOString() });
+      const allComplete = normalized.tasks.every((task) => task.completed);
+      const reviewStatus = allComplete && validation.canClose ? 'READY_TO_CLOSE' : 'IN_REVIEW';
+      await tx.query(
+        `INSERT INTO period_close_checklists (id, organization_id, period_key, status, checklist_data, closed_by, closed_at)
+         VALUES ($1,$2,$3,$4,$5,$6,CURRENT_TIMESTAMP)
+         ON CONFLICT (organization_id, period_key) DO UPDATE SET status=$4, checklist_data=$5, closed_by=$6, closed_at=CURRENT_TIMESTAMP`,
+        [newId('pcl'), orgId, periodKey, reviewStatus, JSON.stringify(normalized), userId]
+      );
+      await tx.query(`UPDATE accounting_period_closes SET status=$1 WHERE organization_id=$2 AND period_key=$3 AND status IN ('OPEN','IN_REVIEW','READY_TO_CLOSE','REOPENED')`, [reviewStatus, orgId, periodKey]);
+      await tx.query(
+        `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state)
+         VALUES ($1,$2,$3,'ACCOUNTING_PERIOD_REVIEW_UPDATED','AccountingPeriodClose',$4,$5)`,
+        [newId('aud'), orgId, userId, close.rows[0].id, JSON.stringify({ periodKey, reviewStatus, completedCount: normalized.tasks.filter((task) => task.completed).length })]
+      );
+    });
+    return this.getWorkspace(orgId, periodKey, periodStart, periodEnd);
+  }
+
   public static async closePeriod(orgId: string, userId: string, periodKey: string, periodStart: string,
     periodEnd: string): Promise<{ success: boolean; periodKey: string }> {
     validatePeriodIdentity(periodKey, periodStart, periodEnd);
@@ -137,11 +221,15 @@ export class PeriodCloseService {
       if (!validation.canClose) {
         throw new Error(`PERIOD_CLOSE_BLOCKED: Cannot close period ${periodKey} due to ${validation.blockingFailuresCount} blocking integrity failures.`);
       }
+      const review = await tx.query(`SELECT status FROM period_close_checklists WHERE organization_id=$1 AND period_key=$2 FOR UPDATE`, [orgId, periodKey]);
+      if (review.rows.length === 1 && review.rows[0].status !== 'READY_TO_CLOSE') {
+        throw new Error('PERIOD_CLOSE_REVIEW_INCOMPLETE: Complete the saved month-end review before closing this period');
+      }
       const closeUpdate = await tx.query(
         `UPDATE accounting_period_closes SET status='CLOSED', closed_by=$1, closed_at=CURRENT_TIMESTAMP,
-          reopened_by=NULL, reopened_at=NULL, reopen_reason=NULL, checklist_summary=$2
-          WHERE organization_id=$3 AND period_key=$4 AND status=$5`,
-        [userId, JSON.stringify(validation.checks), orgId, periodKey, before.status]
+          reopened_by=NULL, reopened_at=NULL, reopen_reason=NULL, checklist_summary=$2, close_evidence=$3
+          WHERE organization_id=$4 AND period_key=$5 AND status=$6`,
+        [userId, JSON.stringify(validation.checks), JSON.stringify({ validation, reviewStatus: review.rows[0]?.status || 'NOT_STARTED' }), orgId, periodKey, before.status]
       );
       if (closeUpdate.rowCount !== 1) throw new Error('PERIOD_CLOSE_CONFLICT: Period state changed during close');
       const eventId = newId('pcevt');

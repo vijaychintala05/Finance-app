@@ -34,6 +34,7 @@ router.post('/document-numbering/configure', requirePermission('settings.manage_
 router.get('/search', requirePermission(['invoices.view', 'purchases.view', 'reports.view']), Phase8Controller.globalSearch);
 
 // Real Data Dashboard Summary
+router.get('/dashboard', requirePermission('reports.view'), Phase8Controller.getDashboard);
 router.get('/dashboard-summary', requirePermission('reports.view'), Phase8Controller.getDashboardSummary);
 
 export default protectAsyncRoutes(router);

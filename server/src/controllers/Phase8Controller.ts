@@ -320,4 +320,20 @@ export class Phase8Controller {
       res.status(500).json({ error: err.message });
     }
   }
+
+  public static async getDashboard(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const dashboard = await DashboardSummaryService.getDashboard(
+        req.auth!.organizationId,
+        req.auth!.permissions,
+        req.query.view as string | undefined,
+        req.query.asOfDate as string | undefined,
+      );
+      res.json({ dashboard });
+    } catch (err: any) {
+      const message = err?.message || 'Failed to load dashboard';
+      const status = message.includes('_INVALID') ? 400 : message.includes('_FORBIDDEN') ? 403 : 500;
+      res.status(status).json({ error: message });
+    }
+  }
 }

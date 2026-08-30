@@ -90,7 +90,7 @@ interface BooksContextType {
 
   accounts: Account[];
   addAccount: (account: Omit<Account, 'id'>) => Promise<Account>;
-  updateAccount: (id: string, updated: Partial<Account>) => void;
+  updateAccount: (id: string, updated: Partial<Account>) => Promise<Account>;
 
   clients: Client[];
   addClient: (client: Omit<Client, 'id' | 'createdAt'>) => Promise<Client>;
@@ -779,8 +779,11 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return newAcc;
   };
 
-  const updateAccount = (id: string, updated: Partial<Account>) => {
-    window.alert('Account edits require an audited server workflow and are not enabled yet.');
+  const updateAccount = async (id: string, updated: Partial<Account>): Promise<Account> => {
+    const response = await apiClient.patch<Account>(`/finance/accounts/${id}`, updated);
+    if (!response.data) throw new Error(response.error || 'Account could not be updated');
+    await refreshAfterCommittedWrite();
+    return camelizeRecord(response.data) as Account;
   };
 
   const addClient = async (clientData: Omit<Client, 'id' | 'createdAt'>): Promise<Client> => {

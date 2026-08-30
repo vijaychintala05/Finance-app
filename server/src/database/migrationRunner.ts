@@ -3,7 +3,7 @@ import { OrganizationProvisioningService } from '../services/OrganizationProvisi
 import { applyPoint1Schema } from './point1Schema';
 import type { DbQueryResult } from './db';
 
-export const CURRENT_SCHEMA_VERSION = '2026.08.23-v3-point1-foundations';
+export const CURRENT_SCHEMA_VERSION = '2026.08.23-v4-coa-governance';
 
 export class MigrationRunner {
   public static async runMigrations(queryClient?: { query: (text: string, params?: any[]) => Promise<DbQueryResult> }): Promise<void> {
@@ -87,6 +87,12 @@ export class MigrationRunner {
         is_system_account BOOLEAN DEFAULT FALSE,
         is_locked BOOLEAN DEFAULT FALSE,
         status VARCHAR(20) DEFAULT 'Active',
+        parent_account_id VARCHAR(64),
+        reporting_group VARCHAR(100),
+        normal_balance VARCHAR(6) NOT NULL DEFAULT 'Debit',
+        allow_direct_posting BOOLEAN NOT NULL DEFAULT TRUE,
+        archived_at TIMESTAMP WITH TIME ZONE,
+        archived_by VARCHAR(64),
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         CONSTRAINT uk_org_account_code UNIQUE (organization_id, code)
       )`,
@@ -1273,6 +1279,12 @@ export class MigrationRunner {
       `DROP TRIGGER IF EXISTS audit_logs_immutable ON audit_logs`,
       `CREATE TRIGGER audit_logs_immutable BEFORE UPDATE OR DELETE ON audit_logs
         FOR EACH ROW EXECUTE FUNCTION prevent_audit_log_mutation()`,
+      `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS parent_account_id VARCHAR(64)`,
+      `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS reporting_group VARCHAR(100)`,
+      `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS normal_balance VARCHAR(6) NOT NULL DEFAULT 'Debit'`,
+      `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS allow_direct_posting BOOLEAN NOT NULL DEFAULT TRUE`,
+      `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP WITH TIME ZONE`,
+      `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS archived_by VARCHAR(64)`,
       `DO $$ BEGIN
         IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uk_invoices_org_id') THEN
           ALTER TABLE invoices ADD CONSTRAINT uk_invoices_org_id UNIQUE (organization_id, id);
@@ -1435,6 +1447,10 @@ export class MigrationRunner {
           ALTER TABLE ap_write_offs ADD CONSTRAINT fk_ap_write_off_account_org
           FOREIGN KEY (organization_id, write_off_account_id) REFERENCES accounts(organization_id, id) ON DELETE RESTRICT;
         END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_accounts_parent_org') THEN
+          ALTER TABLE accounts ADD CONSTRAINT fk_accounts_parent_org
+          FOREIGN KEY (organization_id, parent_account_id) REFERENCES accounts(organization_id, id) ON DELETE RESTRICT;
+        END IF;
       END $$`,
     ];
 
@@ -1472,7 +1488,7 @@ export class MigrationRunner {
       `INSERT INTO schema_migrations (version, description)
        VALUES ($1, $2)
        ON CONFLICT (version) DO NOTHING`,
-      [CURRENT_SCHEMA_VERSION, 'FirmBooks v3 Point-1 workflow certification foundations']
+      [CURRENT_SCHEMA_VERSION, 'FirmBooks v4 chart of accounts governance']
     );
 
     console.log('[Migration] All PostgreSQL tables initialized successfully.');

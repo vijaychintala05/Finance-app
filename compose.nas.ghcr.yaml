@@ -1,0 +1,67 @@
+name: firmbooks
+
+services:
+  database:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: firmbooks
+      POSTGRES_USER: firmbooks
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD before deployment}
+    volumes:
+      - /ufi/pool-raw/syspool/firm books/nas-data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U firmbooks -d firmbooks"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - database
+    security_opt:
+      - no-new-privileges:true
+
+  app:
+    image: ghcr.io/vijaychintala05/finance-app:latest
+    pull_policy: always
+    restart: unless-stopped
+    depends_on:
+      database:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgresql://firmbooks:${POSTGRES_PASSWORD}@database:5432/firmbooks
+      DATABASE_SSL: "false"
+      DB_POOL_MAX: ${DB_POOL_MAX:-10}
+      DB_QUERY_TIMEOUT_MS: 15000
+      DB_STATEMENT_TIMEOUT_MS: 15000
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET before deployment}
+      ALLOWED_ORIGINS: ${APP_ORIGIN:?Set APP_ORIGIN before deployment}
+      TRUST_PROXY: ${TRUST_PROXY:-false}
+      JSON_BODY_LIMIT: 1mb
+      DATABASE_MODE: ""
+      USE_PG_MEM: "false"
+    ports:
+      - "${APP_PORT:-55000}:3000"
+    networks:
+      - web
+      - database
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/readyz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+networks:
+  web:
+  database:
+    internal: true

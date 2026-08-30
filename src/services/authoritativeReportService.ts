@@ -8,13 +8,21 @@ export type CertifiedReportId =
   | 'trial_balance'
   | 'general_ledger';
 
-const endpointByReport: Record<CertifiedReportId, string> = {
-  pnl_standard: '/finance/reports/profit-loss',
-  balance_sheet_standard: '/finance/reports/balance-sheet',
-  aged_receivables: '/finance/reports/ar-aging',
-  aged_payables: '/finance/reports/ap-aging',
-  trial_balance: '/finance/reports/trial-balance',
-  general_ledger: '/finance/reports/general-ledger',
+export type ReportPeriodMode = 'range' | 'as_of';
+
+export interface AuthoritativeReportDefinition {
+  id: CertifiedReportId;
+  endpoint: string;
+  periodMode: ReportPeriodMode;
+}
+
+export const AUTHORITATIVE_REPORTS: Record<CertifiedReportId, AuthoritativeReportDefinition> = {
+  pnl_standard: { id: 'pnl_standard', endpoint: '/finance/reports/profit-loss', periodMode: 'range' },
+  balance_sheet_standard: { id: 'balance_sheet_standard', endpoint: '/finance/reports/balance-sheet', periodMode: 'as_of' },
+  aged_receivables: { id: 'aged_receivables', endpoint: '/finance/reports/ar-aging', periodMode: 'as_of' },
+  aged_payables: { id: 'aged_payables', endpoint: '/finance/reports/ap-aging', periodMode: 'as_of' },
+  trial_balance: { id: 'trial_balance', endpoint: '/finance/reports/trial-balance', periodMode: 'as_of' },
+  general_ledger: { id: 'general_ledger', endpoint: '/finance/reports/general-ledger', periodMode: 'range' },
 };
 
 export async function fetchAuthoritativeReport(
@@ -22,18 +30,19 @@ export async function fetchAuthoritativeReport(
   fromDate: string,
   toDate: string
 ): Promise<any> {
-  if (!endpointByReport[reportId]) throw new Error('This report is not in the certified reporting scope');
+  const definition = AUTHORITATIVE_REPORTS[reportId];
+  if (!definition) throw new Error('This report is not in the certified reporting scope');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(fromDate) || !/^\d{4}-\d{2}-\d{2}$/.test(toDate) || fromDate > toDate) {
     throw new Error('Select a valid report period');
   }
-  const asOfReport = reportId === 'balance_sheet_standard' || reportId === 'aged_receivables' || reportId === 'aged_payables';
+  const asOfReport = definition.periodMode === 'as_of';
   const trialBalanceReport = reportId === 'trial_balance';
   const query = asOfReport
     ? `asOfDate=${encodeURIComponent(toDate)}`
     : trialBalanceReport
     ? `toDate=${encodeURIComponent(toDate)}`
     : `fromDate=${encodeURIComponent(fromDate)}&toDate=${encodeURIComponent(toDate)}`;
-  const response = await apiClient.get<any>(`${endpointByReport[reportId]}?${query}`);
+  const response = await apiClient.get<any>(`${definition.endpoint}?${query}`);
   if (response.error || !response.data) throw new Error(response.error || 'The report returned no data');
   return response.data;
 }

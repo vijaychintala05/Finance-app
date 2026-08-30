@@ -33,6 +33,7 @@ import { DocumentNumberingEngine } from '../services/DocumentNumberingEngine';
 import { FinancialDestructiveActionsService } from '../accounting/FinancialDestructiveActionsService';
 import { isIsoCalendarDate } from '../utils/date';
 import { ExpensePostingService } from '../services/ExpensePostingService';
+import { GSTComplianceService } from '../services/GSTComplianceService';
 
 export class FinanceController {
   // --- AUDIT LOG UTILITY ---
@@ -124,20 +125,144 @@ export class FinanceController {
       return;
     }
 
+    const parentAccountId = typeof req.body.parentAccountId === 'string' && req.body.parentAccountId.trim()
+      ? req.body.parentAccountId.trim()
+      : null;
+    const reportingGroup = typeof req.body.reportingGroup === 'string' && req.body.reportingGroup.trim()
+      ? req.body.reportingGroup.trim()
+      : null;
+    if (reportingGroup && reportingGroup.length > 100) {
+      res.status(400).json({ error: 'Reporting group cannot exceed 100 characters' });
+      return;
+    }
+    if (req.body.allowDirectPosting !== undefined && typeof req.body.allowDirectPosting !== 'boolean') {
+      res.status(400).json({ error: 'allowDirectPosting must be true or false' });
+      return;
+    }
+    const normalBalance = ['Asset', 'Expense', 'Cost of Goods Sold', 'Other Expense'].includes(normalizedType) ? 'Debit' : 'Credit';
     const accId = newId('acc');
-    await db.transaction(async (client) => {
+    try {
+      await db.transaction(async (client) => {
+      if (parentAccountId) {
+        const parent = await client.query(
+          `SELECT id, type, status FROM accounts WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+          [orgId, parentAccountId]
+        );
+        if (parent.rows.length !== 1) throw new Error('ACCOUNT_PARENT_INVALID: Parent account does not belong to this organization');
+        if (parent.rows[0].status !== 'Active') throw new Error('ACCOUNT_PARENT_INACTIVE: An archived account cannot be a parent');
+        if (parent.rows[0].type !== normalizedType) throw new Error('ACCOUNT_PARENT_TYPE_MISMATCH: Parent and child must share an account type');
+      }
       await client.query(
-        `INSERT INTO accounts (id, organization_id, code, name, type, sub_type, balance, is_system_account, status)
-         VALUES ($1, $2, $3, $4, $5, $6, 0, FALSE, 'Active')`,
-        [accId, orgId, normalizedCode, name.trim(), normalizedType, normalizedSubType]
+        `INSERT INTO accounts (id, organization_id, code, name, type, sub_type, balance, is_system_account, status, parent_account_id, reporting_group, normal_balance, allow_direct_posting)
+         VALUES ($1, $2, $3, $4, $5, $6, 0, FALSE, 'Active', $7, $8, $9, $10)`,
+        [accId, orgId, normalizedCode, name.trim(), normalizedType, normalizedSubType, parentAccountId, reportingGroup, normalBalance, req.body.allowDirectPosting ?? true]
       );
       await client.query(
         `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state)
          VALUES ($1, $2, $3, 'ACCOUNT_CREATED', 'Account', $4, $5)`,
-        [newId('aud'), orgId, req.auth!.userId, accId, JSON.stringify({ code: normalizedCode, name: name.trim(), type: normalizedType, subType: normalizedSubType })]
+        [newId('aud'), orgId, req.auth!.userId, accId, JSON.stringify({ code: normalizedCode, name: name.trim(), type: normalizedType, subType: normalizedSubType, parentAccountId, reportingGroup, normalBalance, allowDirectPosting: req.body.allowDirectPosting ?? true })]
       );
-    });
-    res.status(201).json({ id: accId, code: normalizedCode, name: name.trim(), type: normalizedType, subType: normalizedSubType, balance: 0, status: 'Active' });
+      });
+      res.status(201).json({ id: accId, code: normalizedCode, name: name.trim(), type: normalizedType, subType: normalizedSubType, balance: 0, status: 'Active', parentAccountId, reportingGroup, normalBalance, allowDirectPosting: req.body.allowDirectPosting ?? true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Account could not be created';
+      const statusCode = message.startsWith('ACCOUNT_PARENT_') ? 400 : 409;
+      res.status(statusCode).json({ error: message.replace(/^[A-Z_]+: /, '') });
+    }
+  }
+
+  public static async updateAccount(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const accountId = req.params.id;
+    const { name, parentAccountId, reportingGroup, allowDirectPosting, status } = req.body;
+    if (name !== undefined && (typeof name !== 'string' || name.trim().length < 2 || name.trim().length > 160)) {
+      res.status(400).json({ error: 'Account name must contain 2-160 characters' });
+      return;
+    }
+    if (reportingGroup !== undefined && reportingGroup !== null && (typeof reportingGroup !== 'string' || reportingGroup.trim().length > 100)) {
+      res.status(400).json({ error: 'Reporting group cannot exceed 100 characters' });
+      return;
+    }
+    if (parentAccountId !== undefined && parentAccountId !== null && typeof parentAccountId !== 'string') {
+      res.status(400).json({ error: 'parentAccountId must be an account id or null' });
+      return;
+    }
+    if (allowDirectPosting !== undefined && typeof allowDirectPosting !== 'boolean') {
+      res.status(400).json({ error: 'allowDirectPosting must be true or false' });
+      return;
+    }
+    if (status !== undefined && status !== 'Active' && status !== 'Archived') {
+      res.status(400).json({ error: 'status must be Active or Archived' });
+      return;
+    }
+
+    try {
+      const updated = await db.transaction(async (client) => {
+        const existingResult = await client.query(
+          `SELECT * FROM accounts WHERE organization_id = $1 AND id = $2 FOR UPDATE`, [orgId, accountId]
+        );
+        if (existingResult.rows.length !== 1) throw new Error('ACCOUNT_NOT_FOUND: Account does not exist');
+        const existing = existingResult.rows[0];
+        if (existing.is_system_account || existing.is_locked) throw new Error('ACCOUNT_PROTECTED: System and locked accounts cannot be changed here');
+
+        const nextParentId = parentAccountId === undefined
+          ? existing.parent_account_id
+          : (typeof parentAccountId === 'string' && parentAccountId.trim() ? parentAccountId.trim() : null);
+        if (nextParentId === accountId) throw new Error('ACCOUNT_PARENT_CYCLE: An account cannot be its own parent');
+        if (nextParentId) {
+          const parents = await client.query(
+            `SELECT id, parent_account_id, type, status FROM accounts WHERE organization_id = $1 FOR UPDATE`, [orgId]
+          );
+          const byId = new Map(parents.rows.map((row: any) => [row.id, row]));
+          const parent = byId.get(nextParentId);
+          if (!parent) throw new Error('ACCOUNT_PARENT_INVALID: Parent account does not belong to this organization');
+          if (parent.status !== 'Active') throw new Error('ACCOUNT_PARENT_INACTIVE: An archived account cannot be a parent');
+          if (parent.type !== existing.type) throw new Error('ACCOUNT_PARENT_TYPE_MISMATCH: Parent and child must share an account type');
+          const seen = new Set<string>();
+          let cursor: any = parent;
+          while (cursor) {
+            if (cursor.id === accountId) throw new Error('ACCOUNT_PARENT_CYCLE: Parent assignment would create a cycle');
+            if (seen.has(cursor.id)) throw new Error('ACCOUNT_PARENT_CYCLE: Existing account hierarchy is cyclic');
+            seen.add(cursor.id);
+            cursor = cursor.parent_account_id ? byId.get(cursor.parent_account_id) : null;
+          }
+        }
+
+        const nextStatus = status ?? existing.status;
+        if (nextStatus === 'Archived') {
+          if (Number(existing.balance || 0) !== 0) throw new Error('ACCOUNT_ARCHIVE_BALANCE: A non-zero balance account cannot be archived');
+          const children = await client.query(`SELECT id FROM accounts WHERE organization_id = $1 AND parent_account_id = $2 AND status = 'Active' LIMIT 1 FOR UPDATE`, [orgId, accountId]);
+          if (children.rows.length > 0) throw new Error('ACCOUNT_ARCHIVE_CHILDREN: Reassign or archive active child accounts first');
+        }
+
+        const after = {
+          name: name === undefined ? existing.name : name.trim(),
+          parentAccountId: nextParentId,
+          reportingGroup: reportingGroup === undefined ? existing.reporting_group : (reportingGroup?.trim() || null),
+          allowDirectPosting: allowDirectPosting ?? existing.allow_direct_posting,
+          status: nextStatus,
+        };
+        const result = await client.query(
+          `UPDATE accounts SET name = $1, parent_account_id = $2, reporting_group = $3, allow_direct_posting = $4, status = $5,
+             archived_at = CASE WHEN $5 = 'Archived' THEN CURRENT_TIMESTAMP ELSE NULL END,
+             archived_by = CASE WHEN $5 = 'Archived' THEN $6 ELSE NULL END
+           WHERE organization_id = $7 AND id = $8 RETURNING *`,
+          [after.name, after.parentAccountId, after.reportingGroup, after.allowDirectPosting, after.status, req.auth!.userId, orgId, accountId]
+        );
+        await client.query(
+          `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state, after_state)
+           VALUES ($1, $2, $3, $4, 'Account', $5, $6, $7)`,
+          [newId('aud'), orgId, req.auth!.userId, nextStatus === 'Archived' ? 'ACCOUNT_ARCHIVED' : 'ACCOUNT_UPDATED', accountId,
+            JSON.stringify({ name: existing.name, parentAccountId: existing.parent_account_id, reportingGroup: existing.reporting_group, allowDirectPosting: existing.allow_direct_posting, status: existing.status }), JSON.stringify(after)]
+        );
+        return result.rows[0];
+      });
+      res.json(updated);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Account could not be updated';
+      const statusCode = message.startsWith('ACCOUNT_NOT_FOUND') ? 404 : 400;
+      res.status(statusCode).json({ error: message.replace(/^[A-Z_]+: /, '') });
+    }
   }
 
   // --- CLIENTS ---
@@ -1348,6 +1473,19 @@ export class FinanceController {
     res.json(overview);
   }
 
+  public static async getGSTReturnSummary(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const summary = await GSTComplianceService.getReturnSummary(
+        req.auth!.organizationId,
+        req.query.period as string | undefined,
+      );
+      res.json({ summary });
+    } catch (err: any) {
+      const message = err?.message || 'Failed to prepare GST return evidence';
+      res.status(message.includes('GST_PERIOD_INVALID') ? 400 : 500).json({ error: message });
+    }
+  }
+
   public static async getGeneralLedgerReport(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
     const report = await LedgerQueryService.getGeneralLedgerReport(orgId, {
@@ -1568,6 +1706,15 @@ export class FinanceController {
     }
   }
 
+  public static async createBulkJournals(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const result = await ManualJournalService.createBulkJournals(req.auth!.organizationId, req.auth!.userId, req.body?.entries);
+      res.status(201).json({ created: result, count: result.length });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  }
+
   public static async reverseFixedAssetDepreciation(req: AuthenticatedRequest, res: Response): Promise<void> {
     const result = await FixedAssetService.reverseDepreciation(
       req.auth!.organizationId,
@@ -1599,6 +1746,26 @@ export class FinanceController {
     const periodEnd = (req.query.periodEnd as string) || `${periodKey}-31`;
     const status = await PeriodCloseService.validatePeriodClose(orgId, periodKey, periodStart, periodEnd);
     res.json(status);
+  }
+
+  public static async getPeriodCloseWorkspace(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const periodKey = (req.query.periodKey as string) || new Date().toISOString().slice(0, 7);
+    const periodStart = (req.query.periodStart as string) || `${periodKey}-01`;
+    const periodEnd = (req.query.periodEnd as string) || `${periodKey}-31`;
+    try {
+      res.json(await PeriodCloseService.getWorkspace(req.auth!.organizationId, periodKey, periodStart, periodEnd));
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  }
+
+  public static async savePeriodCloseReview(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const { periodKey, periodStart, periodEnd, tasks, note } = req.body;
+    try {
+      res.json(await PeriodCloseService.saveReview(req.auth!.organizationId, req.auth!.userId, periodKey, periodStart, periodEnd, tasks, note));
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
   }
 
   public static async closePeriod(req: AuthenticatedRequest, res: Response): Promise<void> {

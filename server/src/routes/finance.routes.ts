@@ -8,10 +8,12 @@ const router = Router();
 
 // Accountant Workspace Overview
 router.get('/accountant/overview', requirePermission('audit.view'), requireTrustedFinanceFeature('accountant-overview'), FinanceController.getAccountantOverview);
+router.get('/gst/return-summary', requirePermission('reports.view'), FinanceController.getGSTReturnSummary);
 
 // Accounts & Transactions
 router.get('/accounts', requirePermission('accounting.view'), FinanceController.getAccounts);
 router.post('/accounts', requirePermission('settings.manage_accounts'), FinanceController.createAccount);
+router.patch('/accounts/:id', requirePermission('settings.manage_accounts'), FinanceController.updateAccount);
 router.get('/accounts/:id/transactions', requirePermission('accounting.view'), FinanceController.getAccountTransactions);
 
 // Clients, Customers & Vendors
@@ -108,6 +110,7 @@ router.get('/reports/ap-aging', requirePermission('reports.view'), FinanceContro
 // Manual & Recurring Journals
 router.get('/journals', requirePermission('accounting.view'), FinanceController.getJournals);
 router.post('/journals', requirePermission('accounting.post'), FinanceController.createJournal);
+router.post('/journals/bulk', requirePermission('accounting.post'), FinanceController.createBulkJournals);
 router.post('/journals/:id/reverse', requirePermission('accounting.post'), FinanceController.reverseJournal);
 router.get('/recurring-journals', requirePermission('accounting.view'), FinanceController.getRecurringJournals);
 router.post('/recurring-journals', requirePermission('accounting.post'), FinanceController.createRecurringJournal);
@@ -129,6 +132,8 @@ router.post('/fixed-assets/:id/disposal/reverse', requirePermission('accounting.
 
 // Period Close Workspace
 router.get('/period-close/validate', requirePermission('accounting.view'), FinanceController.validatePeriodClose);
+router.get('/period-close/workspace', requirePermission('accounting.view'), FinanceController.getPeriodCloseWorkspace);
+router.put('/period-close/review', requirePermission('settings.close_period'), FinanceController.savePeriodCloseReview);
 router.post('/period-close/close', requirePermission('settings.close_period'), requireTrustedFinanceFeature('period-close'), FinanceController.closePeriod);
 router.post('/period-close/reopen', requirePermission('settings.close_period'), requireTrustedFinanceFeature('period-close'), FinanceController.reopenPeriod);
 

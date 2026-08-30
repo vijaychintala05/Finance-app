@@ -21,6 +21,7 @@ export type NavigationTab =
   | 'transaction_locking'
   | 'fixed_assets'
   | 'period_close'
+  | 'gst_compliance'
   | 'team_access'
   | 'recovery_center'
   | 'reports'
@@ -135,6 +136,7 @@ export interface Account {
   balance: number; // Positive balance
   isSystemAccount?: boolean;
   parentId?: string;
+  parentAccountId?: string | null;
   parentName?: string;
   subCategory?: string; // Sub-category group (e.g. "Ply", "Laminates", "Hardware")
   isParent?: boolean; // True if account acts as a parent category header
@@ -143,7 +145,12 @@ export interface Account {
   lockedAt?: string;
   lockedReason?: string;
   lockedRegion?: string;
-  status?: 'Active' | 'Inactive';
+  reportingGroup?: string;
+  normalBalance?: 'Debit' | 'Credit';
+  allowDirectPosting?: boolean;
+  archivedAt?: string;
+  archivedBy?: string;
+  status?: 'Active' | 'Inactive' | 'Archived';
   bankName?: string;
   accountNumber?: string;
 }

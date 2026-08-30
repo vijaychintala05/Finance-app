@@ -127,6 +127,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         { id: 'journals', label: 'Manual Journals' },
         { id: 'coa', label: 'Chart of Accounts' },
         { id: 'transaction_locking', label: 'Period Locks' },
+        { id: 'gst_compliance', label: 'GST Compliance' },
         ...(enabledCapabilities.has('fixed-assets') ? [{ id: 'fixed_assets' as NavigationTab, label: 'Fixed Assets' }] : []),
         ...(enabledCapabilities.has('period-close') ? [{ id: 'period_close' as NavigationTab, label: 'Period Close' }] : []),
       ],

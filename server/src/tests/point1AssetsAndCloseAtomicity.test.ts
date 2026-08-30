@@ -104,6 +104,25 @@ describe('Point-1 fixed asset atomic lifecycle', () => {
 });
 
 describe('Point-1 period close and reopen atomic lifecycle', () => {
+  it('requires a saved review to be ready before close and retains the review evidence', async () => {
+    vi.spyOn(AccountingIntegrityService, 'verifyOrganizationIntegrity').mockResolvedValue(healthyIntegrity());
+    await PeriodCloseService.saveReview(orgId, userId, '2026-04', '2026-04-01', '2026-04-30', [], 'Initial close review');
+    await expect(PeriodCloseService.closePeriod(orgId, userId, '2026-04', '2026-04-01', '2026-04-30'))
+      .rejects.toThrow(/REVIEW_INCOMPLETE/);
+    await PeriodCloseService.saveReview(orgId, userId, '2026-04', '2026-04-01', '2026-04-30', [
+      { code: 'REVIEW_TRIAL_BALANCE', title: '', completed: true },
+      { code: 'REVIEW_AR_AGING', title: '', completed: true },
+      { code: 'REVIEW_AP_AGING', title: '', completed: true },
+      { code: 'REVIEW_BANK_RECON', title: '', completed: true },
+    ], 'All month-end review tasks completed');
+    const ready = await PeriodCloseService.getWorkspace(orgId, '2026-04', '2026-04-01', '2026-04-30');
+    expect(ready.review?.status).toBe('READY_TO_CLOSE');
+    await PeriodCloseService.closePeriod(orgId, userId, '2026-04', '2026-04-01', '2026-04-30');
+    const close = (await db.query("SELECT status, close_evidence FROM accounting_period_closes WHERE organization_id=$1 AND period_key='2026-04'", [orgId])).rows[0];
+    expect(close.status).toBe('CLOSED');
+    expect(close.close_evidence).toBeTruthy();
+  });
+
   it('locks, revalidates, records evidence and audit, and treats duplicate close as idempotent', async () => {
     const integrity = vi.spyOn(AccountingIntegrityService, 'verifyOrganizationIntegrity').mockResolvedValue(healthyIntegrity());
     await PeriodCloseService.closePeriod(orgId, userId, '2026-01', '2026-01-01', '2026-01-31');

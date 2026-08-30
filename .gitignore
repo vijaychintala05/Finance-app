@@ -8,3 +8,9 @@ playwright-report/
 *.log
 .env*
 !.env.example
+!.env.nas.example
+nas-data/
+compose.nas.resolved.yaml
+compose.nas.miniscloud.resolved.yaml
+compose.nas.ghcr.resolved.yaml
+firmbooks-nas-upload.zip

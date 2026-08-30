@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { AlertTriangle, ArrowLeft, Loader2, RefreshCw, ShieldCheck, Star } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Loader2, RefreshCw, ShieldCheck, Star, X } from 'lucide-react';
 import { INITIAL_REPORTS_CATALOG } from './reportCatalog';
 import { ReportCategory, ReportItem, SidebarGroup } from './reportTypes';
 import { useBooks } from '../../context/BooksContext';
@@ -9,9 +9,11 @@ import { ReportCardGrid } from './ReportCardGrid';
 import { AuthoritativeReportRenderer } from './AuthoritativeReportRenderer';
 import {
   CertifiedReportId,
+  AUTHORITATIVE_REPORTS,
   downloadAuthoritativeReportCsv,
   fetchAuthoritativeReport,
 } from '../../services/authoritativeReportService';
+import { fetchSavedReportViews, saveReportView, SavedReportView } from '../../services/savedReportViewsService';
 
 function localIsoDate(date: Date): string {
   const year = date.getFullYear();
@@ -33,6 +35,12 @@ export const ReportsView: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
+  const [savedViews, setSavedViews] = useState<SavedReportView[]>([]);
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const [savedViewName, setSavedViewName] = useState('');
+  const [saveVisibility, setSaveVisibility] = useState<'PRIVATE' | 'ORGANIZATION'>('PRIVATE');
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [savingView, setSavingView] = useState(false);
   const requestSequence = useRef(0);
 
   useEffect(() => {
@@ -68,6 +76,10 @@ export const ReportsView: React.FC = () => {
       });
   }, [selectedReportId, fromDate, toDate, reloadToken, settings.currencyCode, settings.currencySymbol]);
 
+  useEffect(() => {
+    fetchSavedReportViews().then(setSavedViews).catch(() => setSavedViews([]));
+  }, []);
+
   const handleToggleFavorite = (reportId: string, event: React.MouseEvent) => {
     event.stopPropagation();
     setReportsCatalog((previous) => previous.map((report) => (
@@ -88,12 +100,35 @@ export const ReportsView: React.FC = () => {
 
   const selectedReport = reportsCatalog.find((report) => report.id === selectedReportId);
   const categoriesList: ReportCategory[] = ['Business Overview', 'Receivables', 'Payables', 'Accountant'];
-  const periodLabel = selectedReportId === 'balance_sheet_standard'
-    || selectedReportId === 'aged_receivables'
-    || selectedReportId === 'aged_payables'
-    || selectedReportId === 'trial_balance'
+  const periodLabel = selectedReportId && AUTHORITATIVE_REPORTS[selectedReportId].periodMode === 'as_of'
     ? `As of ${toDate}`
     : `${fromDate} through ${toDate}`;
+
+  const saveCurrentView = async () => {
+    if (!selectedReportId || !savedViewName.trim()) {
+      setSaveError('Enter a name for this report view.');
+      return;
+    }
+    setSavingView(true);
+    setSaveError(null);
+    try {
+      await saveReportView({ name: savedViewName.trim(), reportId: selectedReportId, fromDate, toDate, visibility: saveVisibility });
+      setSavedViews(await fetchSavedReportViews());
+      setSaveDialogOpen(false);
+      setSavedViewName('');
+    } catch (saveViewError) {
+      setSaveError(saveViewError instanceof Error ? saveViewError.message : 'Unable to save this report view.');
+    } finally {
+      setSavingView(false);
+    }
+  };
+
+  const loadSavedView = (view: SavedReportView) => {
+    if (!AUTHORITATIVE_REPORTS[view.report_type]) return;
+    setFromDate(view.config?.fromDate || fromDate);
+    setToDate(view.config?.toDate || toDate);
+    setSelectedReportId(view.report_type);
+  };
 
   const exportCsv = () => {
     if (!selectedReportId || !reportData) return;
@@ -160,6 +195,12 @@ export const ReportsView: React.FC = () => {
                 toDate={toDate}
                 setToDate={setToDate}
                 onExportCSV={exportCsv}
+                periodMode={AUTHORITATIVE_REPORTS[selectedReportId].periodMode}
+                onSaveView={() => {
+                  setSaveError(null);
+                  setSavedViewName(`${selectedReport.name} view`);
+                  setSaveDialogOpen(true);
+                }}
                 exportDisabled={!reportData || loading}
               />
 
@@ -201,6 +242,29 @@ export const ReportsView: React.FC = () => {
           )}
         </main>
       </div>
+      {savedViews.length > 0 && !selectedReportId && (
+        <div className="border-t border-slate-200 bg-white px-3 py-3 dark:border-slate-800 dark:bg-slate-900 sm:px-6">
+          <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-2">
+            <span className="text-xs font-bold text-slate-500 dark:text-slate-400">Saved views</span>
+            {savedViews.map((view) => (
+              <button key={view.id} onClick={() => loadSavedView(view)} className="cursor-pointer rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:border-blue-300 hover:text-blue-700 dark:border-slate-700 dark:text-slate-200">
+                {view.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {saveDialogOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4" role="dialog" aria-modal="true" aria-label="Save report view">
+          <div className="w-full max-w-md rounded-lg bg-white p-5 shadow-xl dark:bg-slate-900">
+            <div className="flex items-center justify-between"><h2 className="text-base font-bold">Save report view</h2><button onClick={() => setSaveDialogOpen(false)} className="cursor-pointer p-1 text-slate-500"><X className="h-4 w-4" /></button></div>
+            <label className="mt-4 block text-xs font-semibold">Name<input autoFocus value={savedViewName} onChange={(event) => setSavedViewName(event.target.value)} maxLength={160} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950" /></label>
+            <label className="mt-3 block text-xs font-semibold">Visibility<select value={saveVisibility} onChange={(event) => setSaveVisibility(event.target.value as 'PRIVATE' | 'ORGANIZATION')} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"><option value="PRIVATE">Only me</option><option value="ORGANIZATION">Everyone in organization</option></select></label>
+            {saveError && <p className="mt-3 text-xs font-semibold text-rose-600">{saveError}</p>}
+            <div className="mt-5 flex justify-end gap-2"><button onClick={() => setSaveDialogOpen(false)} className="cursor-pointer rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold dark:border-slate-700">Cancel</button><button onClick={saveCurrentView} disabled={savingView} className="cursor-pointer rounded-lg bg-blue-600 px-3 py-2 text-xs font-bold text-white disabled:opacity-50">{savingView ? 'Saving...' : 'Save view'}</button></div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

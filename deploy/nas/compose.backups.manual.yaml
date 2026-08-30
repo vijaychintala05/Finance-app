@@ -1,0 +1,32 @@
+# Create a SEPARATE NAS Compose project named firmbooks-backups.
+# Verify Docker > Network contains firmbooks_database before deploying.
+# This file does not replace the existing FirmBooks or Tailscale Compose files.
+services:
+  backup:
+    image: ghcr.io/vijaychintala05/finance-app:backup-latest
+    pull_policy: always
+    restart: unless-stopped
+    environment:
+      PGHOST: database
+      PGPORT: "5432"
+      PGDATABASE: firmbooks
+      PGUSER: firmbooks
+      PGPASSWORD: "REPLACE_LOCALLY_WITH_CURRENT_DATABASE_PASSWORD"
+      PGCONNECT_TIMEOUT: "10"
+      PGAPPNAME: firmbooks-backup
+    volumes:
+      - "/ufi/pool-raw/syspool/firm books/database-backups:/backups"
+    networks:
+      - source_database
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  source_database:
+    external: true
+    name: firmbooks_database

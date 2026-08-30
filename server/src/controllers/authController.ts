@@ -17,9 +17,10 @@ function normalizedEmail(value: unknown): string {
   return typeof value === 'string' ? value.trim().toLowerCase() : '';
 }
 
-function setAuthCookie(res: Response, token: string): void {
-  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
-  res.setHeader('Set-Cookie', `firmbooks_session=${token}; HttpOnly; SameSite=Strict; Path=/api; Max-Age=900${secure}`);
+function setAuthCookie(req: Request, res: Response, token: string): void {
+  const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https' || (typeof req.headers['origin'] === 'string' && req.headers['origin'].startsWith('https://'));
+  const secure = isHttps ? '; Secure' : '';
+  res.setHeader('Set-Cookie', `firmbooks_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000${secure}`);
 }
 
 export class AuthController {
@@ -105,14 +106,14 @@ export class AuthController {
       });
 
       const token = JwtAuth.generateToken({ userId, email });
-      setAuthCookie(res, token);
-
-      const isDev = process.env.NODE_ENV !== 'production';
+      setAuthCookie(req, res, token);
 
       res.status(201).json({
         user: { id: userId, email, fullName },
         organizationId: orgId,
-        ...(isDev ? { token, sessionId: session.sessionId, sessionToken: session.sessionToken } : {}),
+        token,
+        sessionId: session.sessionId,
+        sessionToken: session.sessionToken,
       });
     } catch (err: any) {
       if (err?.code === '23505' || String(err?.message).includes('duplicate key')) {
@@ -192,13 +193,19 @@ export class AuthController {
       });
 
       const token = JwtAuth.generateToken({ userId: user.id, email: user.email });
-      setAuthCookie(res, token);
+      setAuthCookie(req, res, token);
 
-      const isDev = process.env.NODE_ENV !== 'production';
+      const orgRes = await db.query(
+        'SELECT organization_id as id FROM organization_members WHERE user_id = $1 ORDER BY joined_at LIMIT 1',
+        [user.id]
+      );
 
       res.json({
         user: { id: user.id, email: user.email, fullName: user.full_name },
-        ...(isDev ? { token, sessionId: session.sessionId, sessionToken: session.sessionToken } : {}),
+        organizationId: orgRes.rows[0]?.id || null,
+        token,
+        sessionId: session.sessionId,
+        sessionToken: session.sessionToken,
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Login failed' });
@@ -242,13 +249,19 @@ export class AuthController {
       });
 
       const token = JwtAuth.generateToken({ userId: user.id, email: user.email });
-      setAuthCookie(res, token);
+      setAuthCookie(req, res, token);
 
-      const isDev = process.env.NODE_ENV !== 'production';
+      const orgRes = await db.query(
+        'SELECT organization_id as id FROM organization_members WHERE user_id = $1 ORDER BY joined_at LIMIT 1',
+        [user.id]
+      );
 
       res.json({
         user: { id: user.id, email: user.email, fullName: user.full_name },
-        ...(isDev ? { token, sessionId: session.sessionId, sessionToken: session.sessionToken } : {}),
+        organizationId: orgRes.rows[0]?.id || null,
+        token,
+        sessionId: session.sessionId,
+        sessionToken: session.sessionToken,
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'MFA verification failed' });
@@ -292,7 +305,7 @@ export class AuthController {
     if (req.user) {
       await SessionSecurity.revokeAllUserTokens(req.user.userId);
     }
-    res.setHeader('Set-Cookie', 'firmbooks_session=; HttpOnly; SameSite=Strict; Path=/api; Max-Age=0');
+    res.setHeader('Set-Cookie', 'firmbooks_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0');
     res.json({ message: 'Logged out successfully' });
   }
 
@@ -302,8 +315,8 @@ export class AuthController {
       return;
     }
     const token = JwtAuth.generateToken({ userId: req.user.userId, email: req.user.email });
-    setAuthCookie(res, token);
-    res.json(process.env.NODE_ENV !== 'production' ? { token } : { refreshed: true });
+    setAuthCookie(req, res, token);
+    res.json({ token, refreshed: true });
   }
 
   public static async changePassword(req: AuthenticatedRequest, res: Response): Promise<void> {

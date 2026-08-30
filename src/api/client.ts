@@ -67,9 +67,7 @@ export class ApiClient {
     };
 
     if (typeof window !== 'undefined') {
-      // Deployed browsers authenticate only with the HttpOnly session cookie.
-      // Bearer storage exists solely for the non-production integration/dev API.
-      const token = import.meta.env.PROD ? null : localStorage.getItem('auth_token');
+      const token = localStorage.getItem('auth_token');
       if (token) {
         headers['Authorization'] = `Bearer ${token}`;
       }

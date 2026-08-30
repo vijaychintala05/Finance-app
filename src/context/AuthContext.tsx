@@ -25,8 +25,7 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 function storeSession(token?: string, organizationId?: string): void {
-  if (token && !import.meta.env.PROD) localStorage.setItem('auth_token', token);
-  else localStorage.removeItem('auth_token');
+  if (token) localStorage.setItem('auth_token', token);
   localStorage.setItem('firmbooks_authenticated', 'true');
   if (organizationId) localStorage.setItem('active_organization_id', organizationId);
 }
@@ -40,7 +39,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let active = true;
-    if (import.meta.env.PROD) localStorage.removeItem('auth_token');
     apiClient.get<{ user: AuthUser; organizations: Array<{ id: string }> }>('/auth/me').then((response) => {
       if (!active) return;
       if (response.data?.user) {

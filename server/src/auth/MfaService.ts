@@ -37,8 +37,8 @@ export class MfaService {
   }
 
   public static generateTotpSecret(): string {
-    // 20 bytes random = 160 bits (Standard TOTP secret length)
-    return crypto.randomBytes(20).toString('hex');
+    // 20 bytes random = 160 bits (Standard RFC 6238 Base32 secret length: 32 chars)
+    return encodeBase32(crypto.randomBytes(20));
   }
 
   public static generateRecoveryCodes(count: number = 10): { plainCodes: string[]; hashedCodes: string[] } {
@@ -55,18 +55,18 @@ export class MfaService {
   /**
    * RFC 6238 TOTP computation (30s time-step, 6 digits)
    */
-  public static computeTotp(secretHex: string, timeStepWindow: number = 0): string {
+  public static computeTotp(secret: string, timeStepWindow: number = 0): string {
     const epoch = Math.floor(Date.now() / 1000);
     const counter = Math.floor(epoch / 30) + timeStepWindow;
     const buffer = Buffer.alloc(8);
     buffer.writeBigInt64BE(BigInt(counter));
 
-    const secretBuf = Buffer.from(secretHex, 'hex');
+    const secretBuf = decodeBase32OrHex(secret);
     const hmac = crypto.createHmac('sha1', secretBuf).update(buffer).digest();
 
     const offset = hmac[hmac.length - 1] & 0x0f;
     const binaryCode =
-      ((hmmacCode(hmac[offset]) & 0x7f) << 24) |
+      ((hmac[offset] & 0x7f) << 24) |
       ((hmac[offset + 1] & 0xff) << 16) |
       ((hmac[offset + 2] & 0xff) << 8) |
       (hmac[offset + 3] & 0xff);
@@ -75,15 +75,15 @@ export class MfaService {
     return otp;
   }
 
-  public static verifyTotpCode(secretHex: string, userCode: string): boolean {
+  public static verifyTotpCode(secret: string, userCode: string): boolean {
     const cleanCode = (userCode || '').trim();
     if (cleanCode.length !== 6 || !/^\d{6}$/.test(cleanCode)) {
       return false;
     }
 
-    // Check current window and +/- 1 step for clock drift tolerance
+    // Check current window and +/- 1 step for clock drift tolerance (covers +/- 30s)
     for (let window = -1; window <= 1; window++) {
-      if (MfaService.computeTotp(secretHex, window) === cleanCode) {
+      if (MfaService.computeTotp(secret, window) === cleanCode) {
         return true;
       }
     }
@@ -233,6 +233,53 @@ export class MfaService {
   }
 }
 
-function hmmacCode(byte: number): number {
-  return byte;
+const BASE32_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+
+export function encodeBase32(buffer: Buffer): string {
+  let bits = 0;
+  let value = 0;
+  let output = '';
+
+  for (let i = 0; i < buffer.length; i++) {
+    value = (value << 8) | buffer[i];
+    bits += 8;
+
+    while (bits >= 5) {
+      output += BASE32_CHARS[(value >>> (bits - 5)) & 31];
+      bits -= 5;
+    }
+  }
+
+  if (bits > 0) {
+    output += BASE32_CHARS[(value << (5 - bits)) & 31];
+  }
+
+  return output;
+}
+
+export function decodeBase32OrHex(secret: string): Buffer {
+  const clean = (secret || '').trim();
+  if (/^[0-9a-fA-F]{40}$/.test(clean)) {
+    return Buffer.from(clean, 'hex');
+  }
+
+  const normalized = clean.toUpperCase().replace(/[^A-Z2-7]/g, '');
+  let bits = 0;
+  let value = 0;
+  const bytes: number[] = [];
+
+  for (let i = 0; i < normalized.length; i++) {
+    const idx = BASE32_CHARS.indexOf(normalized[i]);
+    if (idx === -1) continue;
+
+    value = (value << 5) | idx;
+    bits += 5;
+
+    if (bits >= 8) {
+      bytes.push((value >>> (bits - 8)) & 255);
+      bits -= 8;
+    }
+  }
+
+  return Buffer.from(bytes);
 }

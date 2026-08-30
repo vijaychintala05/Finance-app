@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { ShieldCheck, Copy, Check, Key, AlertTriangle, X, Download } from 'lucide-react';
+import QRCode from 'qrcode';
 import { apiClient } from '../../api/client';
 
 interface MfaEnrollmentModalProps {
@@ -12,6 +13,7 @@ export const MfaEnrollmentModal: React.FC<MfaEnrollmentModalProps> = ({ isOpen, 
   const [step, setStep] = useState<'SETUP' | 'RECOVERY_CODES'>('SETUP');
   const [secretKey, setSecretKey] = useState('');
   const [qrUri, setQrUri] = useState('');
+  const [qrImage, setQrImage] = useState('');
   const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
   const [verificationCode, setVerificationCode] = useState('');
   const [copiedKey, setCopiedKey] = useState(false);
@@ -24,14 +26,25 @@ export const MfaEnrollmentModal: React.FC<MfaEnrollmentModalProps> = ({ isOpen, 
       setStep('SETUP');
       setError('');
       setVerificationCode('');
+      setQrImage('');
       setBusy(true);
       apiClient.post<{ secretKey: string; qrUri: string; recoveryCodes: string[] }>('/identity/mfa/enroll', {})
-        .then((res) => {
+        .then(async (res) => {
           setBusy(false);
           if (res.data) {
             setSecretKey(res.data.secretKey);
             setQrUri(res.data.qrUri);
             setRecoveryCodes(res.data.recoveryCodes || []);
+            try {
+              const url = await QRCode.toDataURL(res.data.qrUri, {
+                width: 200,
+                margin: 2,
+                color: { dark: '#0f172a', light: '#ffffff' },
+              });
+              setQrImage(url);
+            } catch {
+              // fallback to secret key
+            }
           } else {
             setError(res.error || 'Failed to generate MFA credentials');
           }
@@ -102,20 +115,30 @@ export const MfaEnrollmentModal: React.FC<MfaEnrollmentModalProps> = ({ isOpen, 
         {step === 'SETUP' ? (
           <div className="space-y-4 text-xs">
             <p className="text-slate-600 dark:text-slate-400">
-              Scan this secret key or enter it manually into your authenticator app (Google Authenticator, 1Password, Authy):
+              Scan this QR code with your authenticator app (Google Authenticator, Microsoft Authenticator, 1Password, Authy), or enter the key manually:
             </p>
 
-            <div className="p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-200 dark:border-slate-700 flex justify-between items-center">
-              <div className="font-mono font-bold text-slate-800 dark:text-slate-200 break-all select-all pr-2">
-                {secretKey || 'Generating key...'}
+            {qrImage ? (
+              <div className="flex flex-col items-center justify-center p-4 bg-white rounded-xl border border-slate-200 shadow-inner">
+                <img src={qrImage} alt="MFA QR Code" className="w-44 h-44 rounded-lg" />
+                <span className="text-[10px] text-slate-500 mt-2 font-medium">Point your camera to scan QR Code</span>
               </div>
-              <button
-                type="button"
-                onClick={handleCopyKey}
-                className="p-1.5 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg text-slate-600 dark:text-slate-300 hover:text-slate-900 cursor-pointer flex items-center space-x-1"
-              >
-                {copiedKey ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
-              </button>
+            ) : null}
+
+            <div className="space-y-1">
+              <label className="block text-slate-600 dark:text-slate-400 font-semibold text-[11px]">Manual Secret Key:</label>
+              <div className="p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-200 dark:border-slate-700 flex justify-between items-center">
+                <div className="font-mono font-bold text-slate-800 dark:text-slate-200 tracking-wider break-all select-all pr-2">
+                  {secretKey || 'Generating key...'}
+                </div>
+                <button
+                  type="button"
+                  onClick={handleCopyKey}
+                  className="p-1.5 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg text-slate-600 dark:text-slate-300 hover:text-slate-900 cursor-pointer flex items-center space-x-1"
+                >
+                  {copiedKey ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                </button>
+              </div>
             </div>
 
             <form onSubmit={handleVerify} className="space-y-3 pt-2">

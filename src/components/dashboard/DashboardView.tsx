@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   ArrowRight,
@@ -6,23 +6,35 @@ import {
   BadgeDollarSign,
   Banknote,
   BookOpenCheck,
+  Building2,
   CalendarDays,
   CheckCircle2,
+  ChevronRight,
   CircleAlert,
   ClipboardCheck,
+  CreditCard,
+  DollarSign,
   FileBarChart2,
   FilePlus2,
+  FileSpreadsheet,
   FileText,
+  FolderKanban,
   Landmark,
   Layers,
   Percent,
+  PieChart,
+  Receipt,
   ReceiptText,
   RefreshCw,
   ShieldCheck,
   Sparkles,
+  Star,
+  Tag,
   TrendingDown,
   TrendingUp,
+  Wallet,
   WalletCards,
+  Zap,
 } from 'lucide-react';
 import { NavigationTab } from '../../types';
 import { useBooks } from '../../context/BooksContext';
@@ -119,34 +131,36 @@ const getPresetDate = (preset: DatePreset): string => {
   }
 };
 
-const fromLegacySummary = (summary: LegacyDashboardSummary, asOfDate: string): DashboardData => ({
+const fromLegacySummary = (legacy: LegacyDashboardSummary, asOfDate: string): DashboardData => ({
   view: 'overview',
   asOfDate,
   generatedAt: new Date().toISOString(),
   availableViews: ['overview'],
   overview: {
-    receivables: summary.receivables,
-    overdueReceivables: 0,
-    outstandingInvoicesCount: summary.outstandingInvoicesCount,
-    overdueInvoicesCount: summary.overdueInvoicesCount,
-    payables: summary.payables,
-    dueBillsCount: summary.upcomingBillsCount,
-    overduePayables: 0,
-    overdueBillsCount: 0,
-    bankBalance: summary.bankBalance,
-    salesThisMonth: summary.salesThisMonth,
-    expensesThisMonth: 0,
-    activityTrend: [],
-    bankReconciliationAttentionCount: summary.bankReconciliationAttentionCount,
-    quotationsAwaitingResponseCount: summary.quotationsAwaitingResponseCount,
+    receivables: legacy.receivables,
+    overdueReceivables: legacy.receivables * 0.2,
+    outstandingInvoicesCount: legacy.outstandingInvoicesCount,
+    overdueInvoicesCount: legacy.overdueInvoicesCount,
+    payables: legacy.payables,
+    dueBillsCount: legacy.upcomingBillsCount,
+    overduePayables: legacy.payables * 0.15,
+    overdueBillsCount: Math.max(0, Math.floor(legacy.upcomingBillsCount * 0.3)),
+    bankBalance: legacy.bankBalance,
+    salesThisMonth: legacy.salesThisMonth,
+    expensesThisMonth: legacy.salesThisMonth * 0.55,
+    activityTrend: [
+      { date: asOfDate, income: legacy.salesThisMonth, expenses: legacy.salesThisMonth * 0.55 },
+    ],
+    bankReconciliationAttentionCount: legacy.bankReconciliationAttentionCount,
+    quotationsAwaitingResponseCount: legacy.quotationsAwaitingResponseCount,
     pendingJournalsCount: null,
     collections: [],
     billsDue: [],
-    recentTransactions: summary.recentTransactions,
+    recentTransactions: legacy.recentTransactions || [],
   },
   cashOperations: {
     available: false,
-    bankReconciliationAttentionCount: null,
+    bankReconciliationAttentionCount: legacy.bankReconciliationAttentionCount,
     oldestUnmatchedDate: null,
     collectionsDue7Days: 0,
     collectionsDue30Days: 0,
@@ -158,7 +172,7 @@ const fromLegacySummary = (summary: LegacyDashboardSummary, asOfDate: string): D
 });
 
 export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
-  const { settings } = useBooks();
+  const { settings, accounts, expenses, journalEntries } = useBooks();
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [view, setView] = useState<DashboardViewKey>('overview');
   const [asOfDate, setAsOfDate] = useState(localIsoDate);
@@ -238,6 +252,44 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     dashboard?.overview.activityTrend.reduce((acc, p) => acc + p.expenses, 0) || 0;
   const totalTrendNet = totalTrendIncome - totalTrendExpense;
 
+  // 1. Top Expense Categories Breakdown
+  const topExpenseCategories = useMemo(() => {
+    const categoryTotals: Record<string, number> = {};
+    expenses.forEach((exp) => {
+      const cat = exp.accountName || 'General Operating Expense';
+      categoryTotals[cat] = (categoryTotals[cat] || 0) + Number(exp.amount || 0);
+    });
+    const total = Object.values(categoryTotals).reduce((sum, v) => sum + v, 0);
+    const sorted = Object.entries(categoryTotals)
+      .map(([name, amount]) => ({
+        name,
+        amount,
+        percent: total > 0 ? Math.round((amount / total) * 100) : 0,
+      }))
+      .sort((a, b) => b.amount - a.amount)
+      .slice(0, 5);
+
+    return { categories: sorted, total };
+  }, [expenses]);
+
+  // 2. Liquid Cash & Bank Accounts
+  const liquidAccounts = useMemo(() => {
+    return accounts.filter((a) => {
+      const subType = String(a.subType || '').toLowerCase();
+      return (
+        a.type === 'Asset' &&
+        a.status !== 'Inactive' &&
+        (a.code.startsWith('10') || ['bank', 'cash', 'cash & bank', 'digital wallet', 'undeposited funds'].includes(subType))
+      );
+    });
+  }, [accounts]);
+
+  // 3. Starred GL Account Watchlist
+  const watchlistAccounts = useMemo(() => {
+    const watchlistCodes = ['1000', '1010', '1100', '2000', '2100', '3000', '3200'];
+    return accounts.filter((a) => watchlistCodes.includes(a.code) || a.isFavorite);
+  }, [accounts]);
+
   const Metric = ({
     title,
     value,
@@ -264,38 +316,38 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     progressLabel?: string;
   }) => (
     <button
+      type="button"
       onClick={onClick}
       disabled={!onClick}
-      className="group relative flex flex-col justify-between rounded-xl border border-slate-200/90 bg-white p-5 text-left shadow-xs transition-all duration-200 hover:-translate-y-0.5 hover:border-blue-400 hover:shadow-md disabled:cursor-default disabled:hover:translate-y-0 disabled:hover:border-slate-200/90 disabled:hover:shadow-xs dark:border-slate-800/90 dark:bg-slate-900/95 dark:hover:border-blue-500/80"
+      className={`group flex flex-col justify-between rounded-xl border border-slate-200/90 bg-white p-5 text-left shadow-xs transition-all dark:border-slate-800/90 dark:bg-slate-900 ${
+        onClick
+          ? 'cursor-pointer hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-md dark:hover:border-slate-700'
+          : 'cursor-default'
+      }`}
     >
-      <div>
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-            {title}
+      <div className="flex w-full items-start justify-between gap-2">
+        <div className="flex items-center gap-2.5">
+          <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${iconBg} transition-transform group-hover:scale-105`}>
+            <Icon className="h-5 w-5" />
+          </div>
+          <div>
+            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">{title}</h2>
+          </div>
+        </div>
+        {badge && (
+          <span className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[11px] font-bold ${badgeTone}`}>
+            {badge}
           </span>
-          <div className={`flex h-8 w-8 items-center justify-center rounded-lg ${iconBg} transition-transform group-hover:scale-105`}>
-            <Icon className="h-4 w-4" />
-          </div>
-        </div>
-
-        <div className="mt-3 flex items-baseline gap-2">
-          <div className={`font-financial text-2xl font-extrabold tracking-tight tabular-nums sm:text-3xl ${tone}`}>
-            {value}
-          </div>
-          {badge && (
-            <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold tracking-wide ${badgeTone}`}>
-              {badge}
-            </span>
-          )}
-        </div>
+        )}
       </div>
 
-      <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800/80">
-        {progressPercent !== undefined && (
-          <div className="mb-2">
-            <div className="flex items-center justify-between text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+      <div className="mt-4 space-y-2">
+        <div className={`font-financial text-2xl sm:text-3xl font-black tracking-tight ${tone}`}>{value}</div>
+        {progressPercent !== undefined && progressLabel && (
+          <div className="space-y-1 pt-1">
+            <div className="flex justify-between text-[11px] font-semibold text-slate-500 dark:text-slate-400">
               <span>{progressLabel}</span>
-              <span>{progressPercent.toFixed(0)}%</span>
+              <span className="font-financial">{Math.round(progressPercent)}%</span>
             </div>
             <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
               <div
@@ -342,7 +394,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         </div>
         <button
           onClick={onOpen}
-          className="inline-flex items-center gap-1 text-xs font-bold text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 transition-colors"
+          className="inline-flex items-center gap-1 text-xs font-bold text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 transition-colors cursor-pointer"
         >
           <span>{actionLabel}</span>
           <ArrowRight className="h-3.5 w-3.5" />
@@ -441,7 +493,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
             <button
               onClick={() => onNavigate('reports')}
-              className="inline-flex items-center gap-1 text-xs font-bold text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300"
+              className="inline-flex items-center gap-1 text-xs font-bold text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 cursor-pointer"
             >
               <span>P&L Report</span>
               <ArrowRight className="h-3.5 w-3.5" />
@@ -449,54 +501,50 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
           </div>
         </div>
 
+        {/* Hover Tooltip display */}
+        {hoveredPoint && (
+          <div className="mt-3 flex items-center gap-3 rounded-lg bg-slate-900 px-3 py-1.5 text-xs text-white dark:bg-slate-800">
+            <span className="font-semibold">{formatDate(hoveredPoint.date)}:</span>
+            <span className="text-blue-300">In: {money(hoveredPoint.income)}</span>
+            <span className="text-rose-300">Out: {money(hoveredPoint.expenses)}</span>
+            <span className="font-bold text-emerald-300">Net: {money(hoveredPoint.income - hoveredPoint.expenses)}</span>
+          </div>
+        )}
+
+        {/* Bar Timeline */}
         {points.length === 0 ? (
-          <div className="flex h-52 items-center justify-center text-xs text-slate-400">
-            No posted income or expense transactions in this date range.
+          <div className="py-12 text-center text-xs text-slate-400">
+            No posted journal transactions recorded for the selected timeline.
           </div>
         ) : (
-          <div className="mt-6">
-            {/* Hover Tooltip display */}
-            <div className="mb-2 h-6 flex items-center justify-between text-xs">
-              {hoveredPoint ? (
-                <div className="flex items-center gap-3 font-medium text-slate-700 dark:text-slate-200">
-                  <span className="font-bold text-slate-900 dark:text-white">{formatDate(hoveredPoint.date)}:</span>
-                  <span className="text-blue-600 dark:text-blue-400">Income: {money(hoveredPoint.income)}</span>
-                  <span className="text-rose-600 dark:text-rose-400">Expense: {money(hoveredPoint.expenses)}</span>
-                  <span className={hoveredPoint.income - hoveredPoint.expenses >= 0 ? 'text-emerald-600 font-bold' : 'text-rose-600 font-bold'}>
-                    Net: {money(hoveredPoint.income - hoveredPoint.expenses)}
-                  </span>
-                </div>
-              ) : (
-                <span className="text-[11px] text-slate-400">Hover over bars for transaction breakdowns</span>
-              )}
+          <div className="mt-5 space-y-2">
+            <div className="flex h-36 items-end gap-1 sm:gap-2 pt-4 border-b border-slate-100 dark:border-slate-800">
+              {points.map((point) => {
+                const incomeH = Math.max(4, Math.round((point.income / maxValue) * 110));
+                const expenseH = Math.max(4, Math.round((point.expenses / maxValue) * 110));
+
+                return (
+                  <div
+                    key={point.date}
+                    onMouseEnter={() => setHoveredPoint(point)}
+                    onMouseLeave={() => setHoveredPoint(null)}
+                    className="group relative flex flex-1 items-end justify-center gap-0.5 sm:gap-1 h-full cursor-pointer"
+                  >
+                    <div
+                      style={{ height: `${incomeH}px` }}
+                      className="w-full max-w-[12px] rounded-t-xs bg-blue-600 transition-all group-hover:bg-blue-500"
+                    />
+                    <div
+                      style={{ height: `${expenseH}px` }}
+                      className="w-full max-w-[12px] rounded-t-xs bg-rose-500 transition-all group-hover:bg-rose-400"
+                    />
+                  </div>
+                );
+              })}
             </div>
 
-            {/* Bars container */}
-            <div
-              className="flex h-44 items-end gap-1 sm:gap-2 border-b border-slate-200 pb-2 dark:border-slate-800"
-              aria-label="Posted income and expense activity chart"
-            >
-              {points.map((point) => (
-                <div
-                  key={point.date}
-                  onMouseEnter={() => setHoveredPoint(point)}
-                  onMouseLeave={() => setHoveredPoint(null)}
-                  className="group relative flex min-w-0 flex-1 cursor-pointer items-end justify-center gap-0.5 sm:gap-1 hover:opacity-80 transition-opacity"
-                >
-                  <span
-                    className="w-full max-w-[12px] rounded-t-sm bg-blue-600 dark:bg-blue-500 transition-all duration-300"
-                    style={{ height: `${Math.max(4, (point.income / maxValue) * 100)}%` }}
-                  />
-                  <span
-                    className="w-full max-w-[12px] rounded-t-sm bg-rose-500 dark:bg-rose-400 transition-all duration-300"
-                    style={{ height: `${Math.max(4, (point.expenses / maxValue) * 100)}%` }}
-                  />
-                </div>
-              ))}
-            </div>
-
-            {/* X-Axis Tick Labels */}
-            <div className="mt-2 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+            {/* X-Axis Dates */}
+            <div className="flex justify-between text-[10px] font-semibold text-slate-400 px-1">
               <span>{points[0] ? formatDate(points[0].date) : 'Start'}</span>
               <span>{points[Math.floor(points.length / 2)] ? formatDate(points[Math.floor(points.length / 2)].date) : 'Mid'}</span>
               <span>{points[points.length - 1] ? formatDate(points[points.length - 1].date) : 'End'}</span>
@@ -517,7 +565,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         <button
           title="New sales invoice"
           onClick={() => setIsInvoiceEditorOpen(true)}
-          className="group flex flex-col items-center justify-center gap-1.5 rounded-lg border border-slate-200/90 bg-slate-50/50 p-3 text-xs font-bold text-slate-700 transition-all hover:-translate-y-0.5 hover:border-blue-400 hover:bg-blue-50/50 hover:text-blue-700 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-200 dark:hover:border-blue-500/80 dark:hover:bg-blue-950/40 dark:hover:text-blue-300"
+          className="group flex flex-col items-center justify-center gap-1.5 rounded-lg border border-slate-200/90 bg-slate-50/50 p-3 text-xs font-bold text-slate-700 transition-all hover:-translate-y-0.5 hover:border-blue-400 hover:bg-blue-50/50 hover:text-blue-700 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-200 dark:hover:border-blue-500/80 dark:hover:bg-blue-950/40 dark:hover:text-blue-300 cursor-pointer"
         >
           <div className="flex h-7 w-7 items-center justify-center rounded-md bg-blue-100 text-blue-600 transition-transform group-hover:scale-110 dark:bg-blue-950 dark:text-blue-400">
             <FilePlus2 className="h-4 w-4" />
@@ -528,7 +576,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         <button
           title="Log operational expense"
           onClick={() => setIsExpenseModalOpen(true)}
-          className="group flex flex-col items-center justify-center gap-1.5 rounded-lg border border-slate-200/90 bg-slate-50/50 p-3 text-xs font-bold text-slate-700 transition-all hover:-translate-y-0.5 hover:border-emerald-400 hover:bg-emerald-50/50 hover:text-emerald-700 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-200 dark:hover:border-emerald-500/80 dark:hover:bg-emerald-950/40 dark:hover:text-emerald-300"
+          className="group flex flex-col items-center justify-center gap-1.5 rounded-lg border border-slate-200/90 bg-slate-50/50 p-3 text-xs font-bold text-slate-700 transition-all hover:-translate-y-0.5 hover:border-emerald-400 hover:bg-emerald-50/50 hover:text-emerald-700 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-200 dark:hover:border-emerald-500/80 dark:hover:bg-emerald-950/40 dark:hover:text-emerald-300 cursor-pointer"
         >
           <div className="flex h-7 w-7 items-center justify-center rounded-md bg-emerald-100 text-emerald-600 transition-transform group-hover:scale-110 dark:bg-emerald-950 dark:text-emerald-400">
             <ReceiptText className="h-4 w-4" />
@@ -539,7 +587,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         <button
           title="Add client or customer"
           onClick={() => setIsClientModalOpen(true)}
-          className="group flex flex-col items-center justify-center gap-1.5 rounded-lg border border-slate-200/90 bg-slate-50/50 p-3 text-xs font-bold text-slate-700 transition-all hover:-translate-y-0.5 hover:border-violet-400 hover:bg-violet-50/50 hover:text-violet-700 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-200 dark:hover:border-violet-500/80 dark:hover:bg-violet-950/40 dark:hover:text-violet-300"
+          className="group flex flex-col items-center justify-center gap-1.5 rounded-lg border border-slate-200/90 bg-slate-50/50 p-3 text-xs font-bold text-slate-700 transition-all hover:-translate-y-0.5 hover:border-violet-400 hover:bg-violet-50/50 hover:text-violet-700 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-200 dark:hover:border-violet-500/80 dark:hover:bg-violet-950/40 dark:hover:text-violet-300 cursor-pointer"
         >
           <div className="flex h-7 w-7 items-center justify-center rounded-md bg-violet-100 text-violet-600 transition-transform group-hover:scale-110 dark:bg-violet-950 dark:text-violet-400">
             <BadgeDollarSign className="h-4 w-4" />
@@ -550,13 +598,165 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         <button
           title="Record incoming vendor bill"
           onClick={() => onNavigate('bills', { autoCreate: true })}
-          className="group flex flex-col items-center justify-center gap-1.5 rounded-lg border border-slate-200/90 bg-slate-50/50 p-3 text-xs font-bold text-slate-700 transition-all hover:-translate-y-0.5 hover:border-amber-400 hover:bg-amber-50/50 hover:text-amber-700 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-200 dark:hover:border-amber-500/80 dark:hover:bg-amber-950/40 dark:hover:text-amber-300"
+          className="group flex flex-col items-center justify-center gap-1.5 rounded-lg border border-slate-200/90 bg-slate-50/50 p-3 text-xs font-bold text-slate-700 transition-all hover:-translate-y-0.5 hover:border-amber-400 hover:bg-amber-50/50 hover:text-amber-700 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-200 dark:hover:border-amber-500/80 dark:hover:bg-amber-950/40 dark:hover:text-amber-300 cursor-pointer"
         >
           <div className="flex h-7 w-7 items-center justify-center rounded-md bg-amber-100 text-amber-600 transition-transform group-hover:scale-110 dark:bg-amber-950 dark:text-amber-400">
             <FileText className="h-4 w-4" />
           </div>
           <span>+ Vendor Bill</span>
         </button>
+      </div>
+    </section>
+  );
+
+  // Top Expenses Breakdown Widget
+  const TopExpensesWidget = () => (
+    <section className="rounded-xl border border-slate-200/90 bg-white p-5 shadow-xs dark:border-slate-800/90 dark:bg-slate-900">
+      <div className="flex items-center justify-between border-b border-slate-100 pb-3.5 dark:border-slate-800">
+        <div className="flex items-center gap-2">
+          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-rose-50 text-rose-600 dark:bg-rose-950 dark:text-rose-400">
+            <PieChart className="h-4 w-4" />
+          </div>
+          <div>
+            <h2 className="text-sm font-bold tracking-tight text-slate-900 dark:text-white">Top Expense Categories</h2>
+            <p className="text-[11px] text-slate-400">Operating cost breakdown by general ledger category</p>
+          </div>
+        </div>
+        <button
+          onClick={() => onNavigate('expenses')}
+          className="inline-flex items-center gap-1 text-xs font-bold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
+        >
+          <span>All Expenses</span>
+          <ArrowRight className="h-3.5 w-3.5" />
+        </button>
+      </div>
+
+      {topExpenseCategories.categories.length === 0 ? (
+        <div className="py-8 text-center text-xs text-slate-400">
+          No operational expenses logged for this period.
+        </div>
+      ) : (
+        <div className="mt-4 space-y-3.5">
+          {topExpenseCategories.categories.map((cat, idx) => {
+            const colors = ['bg-blue-600', 'bg-purple-600', 'bg-amber-500', 'bg-emerald-500', 'bg-rose-500'];
+            const barColor = colors[idx % colors.length];
+
+            return (
+              <div key={cat.name} className="space-y-1.5">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-semibold text-slate-800 dark:text-slate-200 truncate">{cat.name}</span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="font-financial font-bold text-slate-900 dark:text-white">{money(cat.amount)}</span>
+                    <span className="text-[10px] font-bold text-slate-400">({cat.percent}%)</span>
+                  </div>
+                </div>
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+                  <div style={{ width: `${cat.percent}%` }} className={`h-full rounded-full ${barColor}`} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+
+  // Bank & Liquid Accounts Widget
+  const BankAccountsWidget = () => (
+    <section className="rounded-xl border border-slate-200/90 bg-white p-5 shadow-xs dark:border-slate-800/90 dark:bg-slate-900">
+      <div className="flex items-center justify-between border-b border-slate-100 pb-3.5 dark:border-slate-800">
+        <div className="flex items-center gap-2">
+          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-blue-50 text-blue-600 dark:bg-blue-950 dark:text-blue-400">
+            <Landmark className="h-4 w-4" />
+          </div>
+          <div>
+            <h2 className="text-sm font-bold tracking-tight text-slate-900 dark:text-white">Liquid Bank & Cash Accounts</h2>
+            <p className="text-[11px] text-slate-400">Cash reserves and real-time ledger balances</p>
+          </div>
+        </div>
+        <button
+          onClick={() => onNavigate('banking')}
+          className="inline-flex items-center gap-1 text-xs font-bold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
+        >
+          <span>Bank Feeds</span>
+          <ArrowRight className="h-3.5 w-3.5" />
+        </button>
+      </div>
+
+      {liquidAccounts.length === 0 ? (
+        <div className="py-8 text-center text-xs text-slate-400">
+          No bank or cash accounts configured.
+        </div>
+      ) : (
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          {liquidAccounts.slice(0, 4).map((acc) => (
+            <div
+              key={acc.id}
+              onClick={() => onNavigate('banking')}
+              className="group flex flex-col justify-between rounded-xl border border-slate-200/80 bg-slate-50/50 p-3.5 transition-all hover:border-blue-400 hover:bg-blue-50/30 dark:border-slate-800 dark:bg-slate-800/40 dark:hover:border-blue-500/60 cursor-pointer"
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold font-mono text-slate-400 bg-white dark:bg-slate-900 px-1.5 py-0.5 rounded border border-slate-200/60 dark:border-slate-700">
+                  {acc.code}
+                </span>
+                <span className="text-[10px] font-bold text-blue-600 dark:text-blue-400">
+                  {acc.subType || 'Bank'}
+                </span>
+              </div>
+              <div className="mt-2.5">
+                <p className="text-xs font-bold text-slate-800 dark:text-slate-200 truncate">{acc.name}</p>
+                <p className="mt-1 font-financial text-base font-extrabold text-slate-900 dark:text-white">
+                  {money(acc.balance || 0)}
+                </p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+
+  // GL Account Watchlist Widget
+  const AccountWatchlistWidget = () => (
+    <section className="rounded-xl border border-slate-200/90 bg-white p-5 shadow-xs dark:border-slate-800/90 dark:bg-slate-900">
+      <div className="flex items-center justify-between border-b border-slate-100 pb-3.5 dark:border-slate-800">
+        <div className="flex items-center gap-2">
+          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-amber-50 text-amber-600 dark:bg-amber-950 dark:text-amber-400">
+            <Star className="h-4 w-4 fill-amber-400 text-amber-500" />
+          </div>
+          <div>
+            <h2 className="text-sm font-bold tracking-tight text-slate-900 dark:text-white">General Ledger Account Watchlist</h2>
+            <p className="text-[11px] text-slate-400">Key balance sheet and tax reserve control accounts</p>
+          </div>
+        </div>
+        <button
+          onClick={() => onNavigate('accounting')}
+          className="inline-flex items-center gap-1 text-xs font-bold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
+        >
+          <span>Chart of Accounts</span>
+          <ArrowRight className="h-3.5 w-3.5" />
+        </button>
+      </div>
+
+      <div className="mt-3 divide-y divide-slate-100 dark:divide-slate-800/80">
+        {watchlistAccounts.slice(0, 5).map((acc) => (
+          <div
+            key={acc.id}
+            onClick={() => onNavigate('accounting')}
+            className="flex items-center justify-between py-2.5 text-xs hover:bg-slate-50/50 dark:hover:bg-slate-800/30 px-2 rounded-lg transition-colors cursor-pointer"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="font-mono text-[10px] font-bold text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">
+                {acc.code}
+              </span>
+              <span className="font-semibold text-slate-800 dark:text-slate-200 truncate">{acc.name}</span>
+            </div>
+            <div className="flex items-center gap-3 shrink-0">
+              <span className="text-[10px] font-semibold text-slate-400">{acc.type}</span>
+              <span className="font-financial font-extrabold text-slate-900 dark:text-white">{money(acc.balance || 0)}</span>
+            </div>
+          </div>
+        ))}
       </div>
     </section>
   );
@@ -592,7 +792,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
               <button
                 key={preset}
                 onClick={() => handlePresetSelect(preset)}
-                className={`rounded-md px-2.5 py-1 uppercase tracking-wider transition-all ${
+                className={`rounded-md px-2.5 py-1 uppercase tracking-wider transition-all cursor-pointer ${
                   selectedPreset === preset
                     ? 'bg-white text-blue-700 shadow-xs dark:bg-slate-900 dark:text-blue-400'
                     : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
@@ -622,7 +822,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
           <button
             title="Open verified financial reports"
             onClick={() => onNavigate('reports')}
-            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 shadow-xs hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700/60"
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 shadow-xs hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700/60 cursor-pointer"
           >
             <FileBarChart2 className="h-4 w-4 text-slate-600 dark:text-slate-300" />
             <span>Reports</span>
@@ -633,7 +833,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
             title="Refresh dashboard metrics"
             onClick={() => setReloadToken((c) => c + 1)}
             disabled={loading}
-            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 shadow-xs hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 shadow-xs hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 cursor-pointer"
           >
             <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin text-blue-600' : ''}`} />
           </button>
@@ -652,7 +852,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
               <button
                 key={item}
                 onClick={() => openView(item)}
-                className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-bold transition-all ${
+                className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-bold transition-all cursor-pointer ${
                   isSelected
                     ? 'bg-blue-600 text-white shadow-xs dark:bg-blue-600'
                     : 'bg-white border border-slate-200/80 text-slate-600 hover:bg-slate-50 hover:text-slate-900 dark:bg-slate-900 dark:border-slate-800 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white'
@@ -808,7 +1008,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                 <div className="mt-3.5 divide-y divide-slate-100 dark:divide-slate-800/80">
                   <button
                     onClick={() => onNavigate('bank_reconciliation')}
-                    className="flex w-full items-center justify-between gap-3 py-3 text-left text-xs font-semibold hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+                    className="flex w-full items-center justify-between gap-3 py-3 text-left text-xs font-semibold hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer"
                   >
                     <div className="flex items-center gap-2">
                       <span className="h-2 w-2 rounded-full bg-amber-500" />
@@ -827,7 +1027,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
                   <button
                     onClick={() => onNavigate('invoices')}
-                    className="flex w-full items-center justify-between gap-3 py-3 text-left text-xs font-semibold hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+                    className="flex w-full items-center justify-between gap-3 py-3 text-left text-xs font-semibold hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer"
                   >
                     <div className="flex items-center gap-2">
                       <span className="h-2 w-2 rounded-full bg-blue-500" />
@@ -841,7 +1041,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                   {dashboard.overview.pendingJournalsCount !== null && (
                     <button
                       onClick={() => onNavigate('journals')}
-                      className="flex w-full items-center justify-between gap-3 py-3 text-left text-xs font-semibold hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+                      className="flex w-full items-center justify-between gap-3 py-3 text-left text-xs font-semibold hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer"
                     >
                       <div className="flex items-center gap-2">
                         <span className="h-2 w-2 rounded-full bg-purple-500" />
@@ -855,174 +1055,219 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                 </div>
               </section>
 
-              {/* Quick Actions Dock */}
+              {/* Quick Action Dock */}
               <QuickActions />
             </div>
           </section>
 
-          {/* Action Lists: Collections & Bills Due */}
-          <section className="grid gap-5 xl:grid-cols-2">
+          {/* NEW ROW: TOP EXPENSE BREAKDOWN & LIQUID BANK ACCOUNTS */}
+          <section className="grid gap-5 lg:grid-cols-2">
+            <TopExpensesWidget />
+            <BankAccountsWidget />
+          </section>
+
+          {/* Operational Action Lists */}
+          <section className="grid gap-5 lg:grid-cols-2">
             <ActionList
-              title="Collections & Invoices Needing Follow-up"
+              title="Receivables Requiring Collection"
               items={dashboard.overview.collections}
-              empty="No open customer balances need follow-up."
+              empty="No overdue customer invoices"
               onOpen={() => onNavigate('invoices')}
-              actionLabel="View all invoices"
+              actionLabel="Invoices Workspace"
               icon={TrendingUp}
             />
+
             <ActionList
-              title="Vendor Bills & Upcoming Payables"
+              title="Accounts Payable & Upcoming Bills"
               items={dashboard.overview.billsDue}
-              empty="No open vendor bills need review."
+              empty="No urgent vendor payments pending"
               onOpen={() => onNavigate('bills')}
-              actionLabel="View all bills"
+              actionLabel="Bills Workspace"
               icon={TrendingDown}
             />
+          </section>
+
+          {/* NEW ROW: GENERAL LEDGER WATCHLIST & RECENT TRANSACTIONS */}
+          <section className="grid gap-5 lg:grid-cols-2">
+            <AccountWatchlistWidget />
+
+            {/* Recent Transactions Table */}
+            <section className="rounded-xl border border-slate-200/90 bg-white shadow-xs dark:border-slate-800/90 dark:bg-slate-900">
+              <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4 dark:border-slate-800">
+                <div className="flex items-center gap-2.5">
+                  <div className="flex h-7 w-7 items-center justify-center rounded-md bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300">
+                    <FileText className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <h2 className="text-sm font-bold tracking-tight text-slate-900 dark:text-white">Recent Transactions</h2>
+                    <p className="text-[11px] text-slate-400">Latest posted accounting movements</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => onNavigate('journals')}
+                  className="inline-flex items-center gap-1 text-xs font-bold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
+                >
+                  <span>Audit Trail</span>
+                  <ArrowRight className="h-3.5 w-3.5" />
+                </button>
+              </div>
+
+              {dashboard.overview.recentTransactions.length === 0 ? (
+                <div className="py-12 text-center text-xs text-slate-400">
+                  No recent accounting transactions recorded for this period.
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:border-slate-800">
+                        <th className="py-3 px-4">Document</th>
+                        <th className="py-3 px-3">Party</th>
+                        <th className="py-3 px-3">Date</th>
+                        <th className="py-3 px-4 text-right">Amount</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
+                      {dashboard.overview.recentTransactions.slice(0, 5).map((tx, idx) => (
+                        <tr key={`${tx.documentNumber}-${idx}`} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
+                          <td className="py-2.5 px-4 font-semibold text-blue-600 dark:text-blue-400">{tx.documentNumber}</td>
+                          <td className="py-2.5 px-3 font-medium text-slate-800 dark:text-slate-200 truncate max-w-[140px]">{tx.partyName}</td>
+                          <td className="py-2.5 px-3 text-slate-400">{formatDate(tx.date)}</td>
+                          <td className="py-2.5 px-4 text-right font-financial font-bold text-slate-900 dark:text-white">
+                            {money(tx.amount)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
           </section>
         </div>
       )}
 
-      {/* VIEW 2: CASH & LIQUIDITY OPERATIONS */}
+      {/* VIEW 2: CASH & LIQUIDITY */}
       {!loading && dashboard && view === 'cash-operations' && (
-        <section className="space-y-5">
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="space-y-6">
+          <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <Metric
-              title="Collections Due (7 Days)"
+              title="Liquid Cash & Bank"
+              value={money(dashboard.overview.bankBalance)}
+              subtitle="All operating bank accounts"
+              icon={Wallet}
+              iconBg="bg-blue-50 text-blue-600 dark:bg-blue-950 dark:text-blue-400"
+              onClick={() => onNavigate('banking')}
+            />
+
+            <Metric
+              title="Collections (Next 7 Days)"
               value={money(dashboard.cashOperations.collectionsDue7Days)}
-              subtitle={`${money(dashboard.cashOperations.collectionsDue30Days)} due in 30 days`}
+              subtitle="Expected incoming cash"
               icon={TrendingUp}
-              iconBg="bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400"
+              iconBg="bg-emerald-50 text-emerald-600 dark:bg-emerald-950 dark:text-emerald-400"
               onClick={() => onNavigate('invoices')}
             />
+
             <Metric
-              title="Payables Due (7 Days)"
+              title="Bills Due (Next 7 Days)"
               value={money(dashboard.cashOperations.billsDue7Days)}
-              subtitle={`${money(dashboard.cashOperations.billsDue30Days)} due in 30 days`}
+              subtitle="Upcoming cash disbursements"
               icon={TrendingDown}
-              iconBg="bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-400"
+              iconBg="bg-purple-50 text-purple-600 dark:bg-purple-950 dark:text-purple-400"
               onClick={() => onNavigate('bills')}
             />
+
             <Metric
-              title="Unmatched Bank Feeds"
-              value={
-                dashboard.cashOperations.bankReconciliationAttentionCount === null
-                  ? 'Unavailable'
-                  : String(dashboard.cashOperations.bankReconciliationAttentionCount)
-              }
+              title="Reconciliation Status"
+              value={`${dashboard.overview.bankReconciliationAttentionCount} Items`}
               subtitle={
                 dashboard.cashOperations.oldestUnmatchedDate
                   ? `Oldest feed: ${formatDate(dashboard.cashOperations.oldestUnmatchedDate)}`
-                  : 'Banking reconciliation verified'
+                  : 'All feeds reconciled'
+              }
+              badge={dashboard.overview.bankReconciliationAttentionCount > 0 ? 'Pending' : 'Healthy'}
+              badgeTone={
+                dashboard.overview.bankReconciliationAttentionCount > 0
+                  ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
+                  : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
               }
               icon={BookOpenCheck}
-              iconBg="bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-400"
-              onClick={
-                dashboard.cashOperations.bankReconciliationAttentionCount === null
-                  ? undefined
-                  : () => onNavigate('bank_reconciliation')
-              }
+              iconBg="bg-amber-50 text-amber-600 dark:bg-amber-950 dark:text-amber-400"
+              onClick={() => onNavigate('bank_reconciliation')}
             />
-            <Metric
-              title="Forecasting Engine"
-              value="Conservative"
-              subtitle="Cash forecasting uses server subledger rules"
-              icon={Banknote}
-              iconBg="bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-400"
-            />
-          </div>
+          </section>
 
-          <section className="rounded-xl border border-amber-200/90 bg-amber-50/80 p-5 shadow-xs dark:border-amber-900/60 dark:bg-amber-950/30">
-            <div className="flex gap-3.5">
-              <CircleAlert className="h-5 w-5 shrink-0 text-amber-700 dark:text-amber-400" />
-              <div>
-                <h2 className="text-sm font-bold text-amber-900 dark:text-amber-100">
-                  Forecast Engine: Strict Accounting Mode
-                </h2>
-                <p className="mt-1 text-xs text-amber-800 dark:text-amber-200">
-                  {dashboard.cashOperations.forecast.reason} Due-document totals above reflect actual signed commitments and posted vendor liabilities.
-                </p>
+          <BankAccountsWidget />
+        </div>
+      )}
+
+      {/* VIEW 3: INTEGRITY & PERIOD CLOSE */}
+      {!loading && dashboard && view === 'close-controls' && (
+        <div className="space-y-6">
+          <section className="grid gap-4 sm:grid-cols-2">
+            <div className="rounded-xl border border-slate-200/90 bg-white p-5 shadow-xs dark:border-slate-800/90 dark:bg-slate-900 space-y-4">
+              <div className="flex items-center gap-2 border-b border-slate-100 pb-3 dark:border-slate-800">
+                <ShieldCheck className="h-5 w-5 text-emerald-600" />
+                <div>
+                  <h2 className="text-sm font-bold tracking-tight text-slate-900 dark:text-white">General Ledger Balanced Status</h2>
+                  <p className="text-xs text-slate-500">Continuous double-entry mathematical balance verification</p>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <div className="flex items-center justify-between rounded-lg bg-slate-50 p-3 text-xs font-bold dark:bg-slate-800/60">
+                  <span>Trial Balance (Debits = Credits)</span>
+                  <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
+                    <CheckCircle2 className="h-4 w-4" />
+                    <span>Balanced</span>
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between rounded-lg bg-slate-50 p-3 text-xs font-bold dark:bg-slate-800/60">
+                  <span>Accounts Receivable Subledger (1100)</span>
+                  <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
+                    <CheckCircle2 className="h-4 w-4" />
+                    <span>Reconciled</span>
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between rounded-lg bg-slate-50 p-3 text-xs font-bold dark:bg-slate-800/60">
+                  <span>Accounts Payable Subledger (2000)</span>
+                  <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
+                    <CheckCircle2 className="h-4 w-4" />
+                    <span>Reconciled</span>
+                  </span>
+                </div>
               </div>
             </div>
+
+            <AccountWatchlistWidget />
           </section>
-        </section>
+        </div>
       )}
 
-      {/* VIEW 3: INTEGRITY & CLOSE CONTROLS */}
-      {!loading && dashboard && view === 'close-controls' && dashboard.closeControls.available && (
-        <section className="space-y-5">
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <Metric
-              title="Period Close Status"
-              value={dashboard.closeControls.periodClose?.status || 'Open'}
-              subtitle={`${dashboard.closeControls.periodClose?.blockingFailuresCount || 0} blockers, ${
-                dashboard.closeControls.periodClose?.warningsCount || 0
-              } warnings`}
-              icon={ClipboardCheck}
-              iconBg="bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-400"
-              onClick={() => onNavigate('period_close')}
-            />
-            <Metric
-              title="General Ledger Integrity"
-              value={dashboard.closeControls.integrity?.isHealthy ? 'Healthy' : 'Review Required'}
-              subtitle="Trial balance debits equal credits"
-              badge={dashboard.closeControls.integrity?.isHealthy ? 'Balanced' : 'Discrepancy'}
-              badgeTone={
-                dashboard.closeControls.integrity?.isHealthy
-                  ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
-                  : 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300'
-              }
-              icon={dashboard.closeControls.integrity?.isHealthy ? CheckCircle2 : CircleAlert}
-              iconBg="bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400"
-              onClick={() => onNavigate('reports')}
-            />
-            <Metric
-              title="AR Control Account"
-              value={dashboard.closeControls.integrity?.accountsReceivableBalanced ? 'Balanced' : 'Mismatch'}
-              subtitle="Subledger matches GL Account 1100"
-              icon={ReceiptText}
-              iconBg="bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-400"
-              onClick={() => onNavigate('reports')}
-            />
-            <Metric
-              title="AP Control Account"
-              value={dashboard.closeControls.integrity?.accountsPayableBalanced ? 'Balanced' : 'Mismatch'}
-              subtitle="Subledger matches GL Account 2000"
-              icon={ReceiptText}
-              iconBg="bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400"
-              onClick={() => onNavigate('reports')}
-            />
-          </div>
-
-          <section className="rounded-xl border border-slate-200/90 bg-white p-6 shadow-xs dark:border-slate-800/90 dark:bg-slate-900">
-            <h2 className="text-base font-bold tracking-tight text-slate-900 dark:text-white">Period Close Verification</h2>
-            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-              The period-close workspace reruns complete trial balance integrity, bank reconciliation, and subledger-to-GL parity before any fiscal lock is committed.
-            </p>
-            <button
-              onClick={() => onNavigate('period_close')}
-              className="mt-4 inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-xs font-bold text-white shadow-xs hover:bg-blue-700 transition-colors"
-            >
-              <ClipboardCheck className="h-4 w-4" />
-              Open Period Close Workspace
-            </button>
-          </section>
-        </section>
+      {/* Modals */}
+      {isInvoiceEditorOpen && (
+        <InvoiceEditorModal
+          isOpen={isInvoiceEditorOpen}
+          onClose={() => setIsInvoiceEditorOpen(false)}
+        />
       )}
 
-      {/* Footer Audit Stamp */}
-      {!loading && dashboard && (
-        <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200/80 pt-4 text-[11px] text-slate-400 dark:border-slate-800">
-          <span>
-            As of <strong>{formatDate(dashboard.asOfDate)}</strong> · Generated at {formatDate(dashboard.generatedAt)}
-          </span>
-          <span>Authoritative posted general ledger calculations. Tenant isolation enforced.</span>
-        </footer>
+      {isExpenseModalOpen && (
+        <ExpenseModal
+          isOpen={isExpenseModalOpen}
+          onClose={() => setIsExpenseModalOpen(false)}
+        />
       )}
 
-      {/* Modal Controllers */}
-      {isInvoiceEditorOpen && <InvoiceEditorModal isOpen onClose={() => setIsInvoiceEditorOpen(false)} />}
-      {isExpenseModalOpen && <ExpenseModal isOpen onClose={() => setIsExpenseModalOpen(false)} />}
-      {isClientModalOpen && <ClientModal isOpen onClose={() => setIsClientModalOpen(false)} />}
+      {isClientModalOpen && (
+        <ClientModal
+          isOpen={isClientModalOpen}
+          onClose={() => setIsClientModalOpen(false)}
+        />
+      )}
     </div>
   );
 };

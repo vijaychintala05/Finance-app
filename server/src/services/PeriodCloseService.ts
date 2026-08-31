@@ -174,6 +174,16 @@ export class PeriodCloseService {
     periodEnd: string): Promise<{ success: boolean; periodKey: string }> {
     validatePeriodIdentity(periodKey, periodStart, periodEnd);
     return db.transaction(async (tx) => {
+      if (!db.isMemoryMode()) {
+        try {
+          await tx.query(
+            `SELECT pg_advisory_xact_lock(hashtext('firmbooks_period_close:' || $1 || ':' || $2))`,
+            [orgId, periodKey]
+          );
+        } catch {
+          // Safe fallback
+        }
+      }
       await tx.query(
         `INSERT INTO accounting_period_closes
           (id, organization_id, period_key, period_start, period_end, status)

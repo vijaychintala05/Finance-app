@@ -29,7 +29,7 @@ export class JwtAuth {
       claims,
       getJwtSecret(),
       {
-        expiresIn: JWT_EXPIRES_IN,
+        expiresIn: payload.purpose === 'mfa_login_challenge' ? '5m' : JWT_EXPIRES_IN,
         issuer: JWT_ISSUER,
         audience: JWT_AUDIENCE,
         jwtid: newId('tok'),
@@ -38,13 +38,16 @@ export class JwtAuth {
     );
   }
 
-  public static verifyToken(token: string): TokenPayload | null {
+  public static verifyToken(token: string, purpose?: 'mfa_login_challenge'): TokenPayload | null {
     try {
-      return jwt.verify(token, getJwtSecret(), {
+      const decoded = jwt.verify(token, getJwtSecret(), {
         issuer: JWT_ISSUER,
         audience: JWT_AUDIENCE,
         algorithms: ['HS256'],
       }) as TokenPayload;
+      // Challenge tokens are never access tokens, including at refresh endpoints.
+      if (decoded.purpose !== purpose || !decoded.userId || !decoded.email || !decoded.jti) return null;
+      return decoded;
     } catch (e) {
       return null;
     }

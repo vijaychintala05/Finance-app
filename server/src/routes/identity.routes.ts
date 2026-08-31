@@ -13,6 +13,7 @@ import { GoogleOAuthService } from '../auth/GoogleOAuthService';
 import { EmailOutboxService } from '../services/EmailOutboxService';
 import { JwtAuth } from '../auth/jwt';
 import { db } from '../database/db';
+import { AuthController } from '../controllers/authController';
 
 export const identityRouter = Router();
 
@@ -178,7 +179,7 @@ identityRouter.post('/mfa/enroll', authMiddleware, async (req: AuthenticatedRequ
     const result = await MfaService.enrollMfa(userId, email);
     res.json(result);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(err.message.startsWith('MFA_ALREADY_ENABLED') ? 409 : 500).json({ error: err.message });
   }
 });
 
@@ -189,23 +190,16 @@ identityRouter.post('/mfa/confirm', authMiddleware, async (req: AuthenticatedReq
     const success = await MfaService.confirmEnrollment(userId, code);
     res.json({ success });
   } catch (err: any) {
+    if (err.message === 'MFA_RATE_LIMITED') {
+      res.setHeader('Retry-After', '900');
+      res.status(429).json({ error: 'Too many verification attempts. Try again in 15 minutes.' });
+      return;
+    }
     res.status(400).json({ error: err.message });
   }
 });
 
-identityRouter.post('/mfa/challenge', async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const { userId, code } = req.body;
-    if (!userId || !code) {
-      res.status(400).json({ error: 'userId and code are required' });
-      return;
-    }
-    const result = await MfaService.verifyMfaChallenge(userId, code);
-    res.json(result);
-  } catch (err: any) {
-    res.status(400).json({ error: err.message });
-  }
-});
+identityRouter.post('/mfa/challenge', AuthController.verifyMfaLogin);
 
 identityRouter.get('/mfa/status', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
   try {
@@ -266,12 +260,21 @@ identityRouter.get('/google/callback', async (req: AuthenticatedRequest, res: Re
     }
 
     const profile = await GoogleOAuthService.exchangeCodeForProfile(code, redirectUri, state);
+    if (!profile.email_verified) {
+      res.status(401).json({ error: 'Google email must be verified' });
+      return;
+    }
     const metadata = {
       ipAddress: req.ip || (req.headers['x-forwarded-for'] as string) || '127.0.0.1',
       userAgent: req.headers['user-agent'],
     };
 
     const authResult = await GoogleOAuthService.authenticateGoogleUser(profile.sub, profile.email, metadata);
+
+    if (authResult.mfaRequired) {
+      res.json({ mfaRequired: true, mfaTicket: authResult.mfaTicket });
+      return;
+    }
 
     const token = JwtAuth.generateToken({ userId: authResult.userId, email: authResult.email });
     const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../index';
 import { db } from '../database/db';
@@ -10,6 +10,7 @@ import { EmailOutboxService } from '../services/EmailOutboxService';
 import { GoogleOAuthService } from '../auth/GoogleOAuthService';
 import { PasswordRecoveryService } from '../auth/PasswordRecoveryService';
 import { assertProductionConfiguration } from '../config/environment';
+import { SessionSecurity } from '../auth/SessionSecurity';
 
 describe('Identity & Security Center HTTP Boundary Test Suite', () => {
   beforeEach(async () => {
@@ -215,6 +216,137 @@ describe('Identity & Security Center HTTP Boundary Test Suite', () => {
   });
 
   describe('5. MFA Login Enforcement & Challenge Flow [P1 #5, P1 #1]', () => {
+    const ticket = () => JwtAuth.generateToken({
+      userId: 'usr_owner_a', email: 'owner@acme.com', purpose: 'mfa_login_challenge',
+    });
+
+    it('expires MFA tickets after five minutes', () => {
+      vi.useFakeTimers();
+      try {
+        const challenge = ticket();
+        vi.setSystemTime(Date.now() + 301000);
+        expect(JwtAuth.verifyToken(challenge, 'mfa_login_challenge')).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('returns only a challenge after password verification for an MFA-enabled user', async () => {
+      const password = 'Test-Mfa-Password-123!';
+      await db.query('UPDATE users SET password_hash = $1 WHERE id = $2',
+        [await SessionSecurity.hashPassword(password), 'usr_owner_a']);
+      const enrollment = await MfaService.enrollMfa('usr_owner_a', 'owner@acme.com');
+      await MfaService.confirmEnrollment('usr_owner_a', MfaService.computeTotp(enrollment.secretKey));
+      const result = await request(app).post('/api/v1/auth/login').send({ email: 'owner@acme.com', password });
+      expect(result.status).toBe(200);
+      expect(result.body.mfaRequired).toBe(true);
+      expect(result.body.token).toBeUndefined();
+      expect(result.body.sessionToken).toBeUndefined();
+      expect(result.headers['set-cookie']).toBeUndefined();
+      expect((await db.query('SELECT id FROM auth_sessions WHERE user_id = $1', ['usr_owner_a'])).rows).toHaveLength(0);
+      const complete = await request(app).post('/api/v1/auth/mfa/verify')
+        .send({ mfaTicket: result.body.mfaTicket, mfaCode: enrollment.recoveryCodes[0] });
+      expect(complete.status).toBe(200);
+      expect(complete.body.token).toBeDefined();
+    });
+
+    it('rejects MFA tickets as bearer and cookie credentials, including refresh', async () => {
+      const challenge = ticket();
+      const claims = JwtAuth.verifyToken(challenge, 'mfa_login_challenge')!;
+      expect(claims.exp! - claims.iat!).toBe(300);
+      expect(JwtAuth.verifyToken(challenge)).toBeNull();
+      for (const headers of [{ Authorization: `Bearer ${challenge}` }, { Cookie: `firmbooks_session=${challenge}` }]) {
+        expect((await request(app).get('/api/v1/auth/me').set(headers)).status).toBe(401);
+        const refresh = await request(app).post('/api/v1/auth/refresh').set(headers).send({});
+        expect(refresh.status).toBe(401);
+        expect(refresh.body.token).toBeUndefined();
+        expect(refresh.headers['set-cookie']).toBeUndefined();
+        expect((await request(app).get('/api/v1/identity/sessions').set(headers)).status).toBe(401);
+      }
+    });
+
+    it('does not expose an unauthenticated OTP oracle or accept access tokens as tickets', async () => {
+      const access = JwtAuth.generateToken({ userId: 'usr_owner_a', email: 'owner@acme.com' });
+      expect((await request(app).post('/api/v1/identity/mfa/challenge')
+        .send({ userId: 'usr_owner_a', code: '123456' })).status).toBe(400);
+      expect((await request(app).post('/api/v1/auth/mfa/verify')
+        .send({ mfaTicket: access, mfaCode: '123456' })).status).toBe(401);
+    });
+
+    it('rejects reused tickets even when a different valid recovery code is supplied', async () => {
+      const enrollment = await MfaService.enrollMfa('usr_owner_a', 'owner@acme.com');
+      await MfaService.confirmEnrollment('usr_owner_a', MfaService.computeTotp(enrollment.secretKey));
+      const challenge = ticket();
+      const first = await request(app).post('/api/v1/auth/mfa/verify')
+        .send({ mfaTicket: challenge, mfaCode: enrollment.recoveryCodes[0] });
+      expect(first.status).toBe(200);
+      expect((await request(app).get('/api/v1/auth/me').set('Authorization', `Bearer ${first.body.token}`)).status).toBe(200);
+      const replay = await request(app).post('/api/v1/auth/mfa/verify')
+        .send({ mfaTicket: challenge, mfaCode: enrollment.recoveryCodes[1] });
+      expect(replay.status).toBe(401);
+      expect(replay.body.token).toBeUndefined();
+      expect((await db.query('SELECT id FROM auth_sessions WHERE user_id = $1', ['usr_owner_a'])).rows).toHaveLength(1);
+    });
+
+    it('rejects TOTP replay and prevents overwriting enabled MFA', async () => {
+      const enrollment = await MfaService.enrollMfa('usr_owner_a', 'owner@acme.com');
+      const code = MfaService.computeTotp(enrollment.secretKey);
+      await MfaService.confirmEnrollment('usr_owner_a', code);
+      expect((await MfaService.verifyMfaChallenge('usr_owner_a', code)).success).toBe(true);
+      expect((await MfaService.verifyMfaChallenge('usr_owner_a', code)).success).toBe(false);
+      await expect(MfaService.enrollMfa('usr_owner_a', 'owner@acme.com')).rejects.toThrow('MFA_ALREADY_ENABLED');
+      expect((await MfaService.getMfaStatus('usr_owner_a')).isVerified).toBe(true);
+    });
+
+    it('consumes recovery codes once under concurrent requests without losing other removals', async () => {
+      const enrollment = await MfaService.enrollMfa('usr_owner_a', 'owner@acme.com');
+      await MfaService.confirmEnrollment('usr_owner_a', MfaService.computeTotp(enrollment.secretKey));
+      const duplicate = await Promise.all([
+        MfaService.verifyMfaChallenge('usr_owner_a', enrollment.recoveryCodes[0]),
+        MfaService.verifyMfaChallenge('usr_owner_a', enrollment.recoveryCodes[0]),
+      ]);
+      expect(duplicate.filter(result => result.success)).toHaveLength(1);
+      const distinct = await Promise.all([
+        MfaService.verifyMfaChallenge('usr_owner_a', enrollment.recoveryCodes[1]),
+        MfaService.verifyMfaChallenge('usr_owner_a', enrollment.recoveryCodes[2]),
+      ]);
+      expect(distinct.every(result => result.success)).toBe(true);
+      expect((await MfaService.getMfaStatus('usr_owner_a')).remainingRecoveryCodes).toBe(7);
+    });
+
+    it('limits code guesses across different tickets and both verification routes', async () => {
+      const enrollment = await MfaService.enrollMfa('usr_owner_a', 'owner@acme.com');
+      await MfaService.confirmEnrollment('usr_owner_a', MfaService.computeTotp(enrollment.secretKey));
+      for (let i = 0; i < 5; i++) {
+        expect((await request(app).post('/api/v1/auth/mfa/verify')
+          .send({ mfaTicket: ticket(), mfaCode: 'not-a-code' })).status).toBe(401);
+      }
+      const blocked = await request(app).post('/api/v1/identity/mfa/challenge')
+        .send({ mfaTicket: ticket(), mfaCode: enrollment.recoveryCodes[0] });
+      expect(blocked.status).toBe(429);
+      expect(blocked.headers['retry-after']).toBeDefined();
+    });
+
+    it('rejects outstanding MFA tickets after global token revocation', async () => {
+      const challenge = ticket();
+      await SessionSecurity.revokeAllUserTokens('usr_owner_a');
+      expect((await request(app).post('/api/v1/auth/mfa/verify')
+        .send({ mfaTicket: challenge, mfaCode: '123456' })).status).toBe(401);
+    });
+
+    it('requires MFA after Google sign-in without creating a session or cookie', async () => {
+      const enrollment = await MfaService.enrollMfa('usr_owner_a', 'owner@acme.com');
+      await MfaService.confirmEnrollment('usr_owner_a', MfaService.computeTotp(enrollment.secretKey));
+      const { state } = await GoogleOAuthService.getOAuthUrl('http://localhost:3000/api/v1/identity/google/callback');
+      const result = await request(app).get('/api/v1/identity/google/callback')
+        .query({ code: 'mock-email:owner@acme.com', state });
+      expect(result.status).toBe(200);
+      expect(result.body.mfaRequired).toBe(true);
+      expect(result.body.token).toBeUndefined();
+      expect(result.headers['set-cookie']).toBeUndefined();
+      expect((await db.query('SELECT id FROM auth_sessions WHERE user_id = $1', ['usr_owner_a'])).rows).toHaveLength(0);
+    });
+
     it('requires mfaTicket challenge and rejects bare OTP verification without valid ticket', async () => {
       // Enroll and verify MFA for owner A
       const enrollment = await MfaService.enrollMfa('usr_owner_a', 'owner@acme.com');

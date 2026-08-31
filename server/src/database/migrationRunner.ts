@@ -2,9 +2,10 @@ import { db } from './db';
 import { OrganizationProvisioningService } from '../services/OrganizationProvisioningService';
 import { applyPoint1Schema } from './point1Schema';
 import { applyIdentitySchema } from './identitySchema';
+import { applyEnterpriseHardeningSchema } from './enterpriseHardeningSchema';
 import type { DbQueryResult } from './db';
 
-export const CURRENT_SCHEMA_VERSION = '2026.08.30-v5-identity-fortress';
+export const CURRENT_SCHEMA_VERSION = '2026.08.30-v6-enterprise-fortress';
 
 export class MigrationRunner {
   public static async runMigrations(queryClient?: { query: (text: string, params?: any[]) => Promise<DbQueryResult> }): Promise<void> {
@@ -1515,12 +1516,13 @@ export class MigrationRunner {
 
     await applyPoint1Schema(queryClient);
     await applyIdentitySchema(queryClient);
+    await applyEnterpriseHardeningSchema(queryClient);
 
     await queryClient.query(
       `INSERT INTO schema_migrations (version, description)
        VALUES ($1, $2)
        ON CONFLICT (version) DO NOTHING`,
-      [CURRENT_SCHEMA_VERSION, 'FirmBooks v5 self-hosted identity fortress']
+      [CURRENT_SCHEMA_VERSION, 'FirmBooks v6 enterprise PostgreSQL fortress with RLS, hash-chaining, and integrity views']
     );
 
     console.log('[Migration] All PostgreSQL tables initialized successfully.');

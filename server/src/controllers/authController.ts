@@ -208,7 +208,12 @@ export class AuthController {
         sessionToken: session.sessionToken,
       });
     } catch (err: any) {
-      res.status(500).json({ error: err.message || 'Login failed' });
+      if (err.message === 'MFA_RATE_LIMITED') {
+        res.setHeader('Retry-After', '900');
+        res.status(429).json({ error: 'Too many verification attempts. Try again in 15 minutes.' });
+        return;
+      }
+      res.status(500).json({ error: 'Login failed' });
     }
   }
 
@@ -223,13 +228,21 @@ export class AuthController {
       }
 
       // Verify and decode challenge ticket
-      const decoded = JwtAuth.verifyToken(mfaTicket);
+      const decoded = JwtAuth.verifyToken(mfaTicket, 'mfa_login_challenge');
       if (!decoded || (decoded as any).purpose !== 'mfa_login_challenge') {
         res.status(401).json({ error: 'Invalid or expired MFA login challenge ticket. Please log in again.' });
         return;
       }
 
       const userId = decoded.userId;
+      if (!decoded.iat || await SessionSecurity.isTokenRevoked(userId, decoded.iat)) {
+        res.status(401).json({ error: 'Invalid or expired MFA login challenge ticket. Please log in again.' });
+        return;
+      }
+      if (await MfaService.isLoginTicketConsumed(userId, decoded.jti!)) {
+        res.status(401).json({ error: 'MFA login challenge already used. Please log in again.' });
+        return;
+      }
       const userRes = await db.query('SELECT * FROM users WHERE id = $1', [userId]);
       if (userRes.rows.length === 0 || userRes.rows[0].status !== 'Active') {
         res.status(401).json({ error: 'User account not found or inactive' });
@@ -240,6 +253,11 @@ export class AuthController {
       const challenge = await MfaService.verifyMfaChallenge(userId, mfaCode);
       if (!challenge.success) {
         res.status(401).json({ error: 'Invalid two-factor authentication code' });
+        return;
+      }
+
+      if (!await MfaService.consumeLoginTicket(userId, decoded.jti!)) {
+        res.status(401).json({ error: 'MFA login challenge already used. Please log in again.' });
         return;
       }
 
@@ -264,7 +282,12 @@ export class AuthController {
         sessionToken: session.sessionToken,
       });
     } catch (err: any) {
-      res.status(500).json({ error: err.message || 'MFA verification failed' });
+      if (err.message === 'MFA_RATE_LIMITED') {
+        res.setHeader('Retry-After', '900');
+        res.status(429).json({ error: 'Too many verification attempts. Try again in 15 minutes.' });
+        return;
+      }
+      res.status(500).json({ error: 'MFA verification failed' });
     }
   }
 

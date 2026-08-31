@@ -19,8 +19,17 @@ class DatabaseService {
   private isUsingMemoryFallback: boolean = false;
   private memDbInstance: IMemoryDb | null = null;
   private transactionContext = new AsyncLocalStorage<DbQueryClient>();
+  private currentOrgContext = new AsyncLocalStorage<string>();
   private savepointSequence = 0;
   private memTxMutex: Promise<void> = Promise.resolve();
+
+  public withOrganizationContext<T>(organizationId: string, callback: () => Promise<T>): Promise<T> {
+    return this.currentOrgContext.run(organizationId, callback);
+  }
+
+  public getCurrentOrganizationId(): string | undefined {
+    return this.currentOrgContext.getStore();
+  }
 
   private acquireMemTxLock(): Promise<() => void> {
     let release!: () => void;
@@ -174,7 +183,11 @@ class DatabaseService {
     return Promise.resolve(this.executeInMemoryQuery<T>(text, params));
   }
 
-  public async transaction<T>(callback: (client: DbQueryClient) => Promise<T>): Promise<T> {
+  public async transaction<T>(
+    callback: (client: DbQueryClient) => Promise<T>,
+    options?: { organizationId?: string }
+  ): Promise<T> {
+    const orgId = options?.organizationId || this.currentOrgContext.getStore();
     const ambientClient = this.transactionContext.getStore();
     if (ambientClient) {
       if (this.memDbInstance) {
@@ -232,6 +245,13 @@ class DatabaseService {
         const client = await this.pool.connect();
         try {
           await client.query('BEGIN');
+          if (orgId && !this.isMemoryMode()) {
+            try {
+              await client.query(`SET LOCAL app.current_org_id = $1`, [orgId]);
+            } catch {
+              // Non-blocking in case setting is not configured
+            }
+          }
           const transactionClient: DbQueryClient = {
             query: async (text, params) => {
               const r = await client.query(text, params);

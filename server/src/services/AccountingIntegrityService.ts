@@ -452,4 +452,49 @@ export class AccountingIntegrityService {
       },
     };
   }
+
+  /**
+   * High-performance in-engine SQL diagnostic verification querying ledger summary and subledger discrepancy views
+   */
+  public static async runDatabaseInvariantDiagnostics(organizationId: string): Promise<{
+    trialBalanceImbalance: string;
+    arDiscrepanciesCount: number;
+    apDiscrepanciesCount: number;
+    isClean: boolean;
+  }> {
+    try {
+      const tbRes = await db.query(
+        `SELECT imbalance FROM vw_ledger_trial_balance_summary WHERE organization_id = $1`,
+        [organizationId]
+      );
+      const arRes = await db.query(
+        `SELECT COUNT(*) as count FROM vw_ar_subledger_discrepancies WHERE organization_id = $1 AND discrepancy <> 0`,
+        [organizationId]
+      );
+      const apRes = await db.query(
+        `SELECT COUNT(*) as count FROM vw_ap_subledger_discrepancies WHERE organization_id = $1 AND discrepancy <> 0`,
+        [organizationId]
+      );
+
+      const imbalance = String(tbRes.rows[0]?.imbalance || '0.00');
+      const arCount = Number(arRes.rows[0]?.count || 0);
+      const apCount = Number(apRes.rows[0]?.count || 0);
+
+      return {
+        trialBalanceImbalance: imbalance,
+        arDiscrepanciesCount: arCount,
+        apDiscrepanciesCount: apCount,
+        isClean: Number(imbalance) === 0 && arCount === 0 && apCount === 0,
+      };
+    } catch {
+      // Fallback for pg-mem or environments where views run in memory mode
+      const result = await this.verifyOrganizationIntegrity(organizationId);
+      return {
+        trialBalanceImbalance: result.checks.trialBalance.difference,
+        arDiscrepanciesCount: result.checks.accountsReceivable.isBalanced ? 0 : 1,
+        apDiscrepanciesCount: result.checks.accountsPayable.isBalanced ? 0 : 1,
+        isClean: result.isHealthy,
+      };
+    }
+  }
 }

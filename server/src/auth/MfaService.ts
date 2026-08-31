@@ -6,6 +6,44 @@ import { getAuthEncryptionKey } from '../config/environment';
 export class MfaService {
   private static ALGORITHM = 'aes-256-gcm';
 
+  private static async consumeProof(userId: string, type: string, proof: string): Promise<boolean> {
+    // Unique audit IDs provide atomic, persistent replay protection across workers.
+    const id = crypto.createHash('sha256').update(JSON.stringify([userId, type, proof])).digest('hex');
+    try {
+      await db.query(
+        `INSERT INTO security_events (id, user_id, event_type) VALUES ($1, $2, $3)`,
+        [id, userId, type]
+      );
+      return true;
+    } catch (error: any) {
+      if (error.code === '23505') return false;
+      throw error;
+    }
+  }
+
+  public static consumeLoginTicket(userId: string, ticketId: string): Promise<boolean> {
+    return this.consumeProof(userId, 'MFA_LOGIN_TICKET_CONSUMED', ticketId);
+  }
+
+  public static async isLoginTicketConsumed(userId: string, ticketId: string): Promise<boolean> {
+    const id = crypto.createHash('sha256').update(JSON.stringify([userId, 'MFA_LOGIN_TICKET_CONSUMED', ticketId])).digest('hex');
+    return (await db.query('SELECT id FROM security_events WHERE id = $1', [id])).rows.length > 0;
+  }
+
+  private static async reserveAttempt(userId: string): Promise<string> {
+    const key = crypto.createHash('sha256').update(`mfa:${userId}`).digest('hex');
+    const cutoff = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+    await db.query('DELETE FROM auth_rate_limits WHERE key_hash = $1 AND last_attempt_at < $2', [key, cutoff]);
+    const result = await db.query(
+      `INSERT INTO auth_rate_limits (key_hash, attempt_count, last_attempt_at)
+       VALUES ($1, 1, CURRENT_TIMESTAMP)
+       ON CONFLICT (key_hash) DO UPDATE SET attempt_count = auth_rate_limits.attempt_count + 1
+       RETURNING attempt_count`, [key]
+    );
+    if (result.rows.length !== 1 || Number(result.rows[0].attempt_count) > 5) throw new Error('MFA_RATE_LIMITED');
+    return key;
+  }
+
   private static getEncryptionKey(): Buffer {
     const rawKey = getAuthEncryptionKey();
     return crypto.createHash('sha256').update(rawKey).digest();
@@ -55,8 +93,8 @@ export class MfaService {
   /**
    * RFC 6238 TOTP computation (30s time-step, 6 digits)
    */
-  public static computeTotp(secret: string, timeStepWindow: number = 0): string {
-    const epoch = Math.floor(Date.now() / 1000);
+  public static computeTotp(secret: string, timeStepWindow: number = 0, now: number = Date.now()): string {
+    const epoch = Math.floor(now / 1000);
     const counter = Math.floor(epoch / 30) + timeStepWindow;
     const buffer = Buffer.alloc(8);
     buffer.writeBigInt64BE(BigInt(counter));
@@ -101,12 +139,15 @@ export class MfaService {
     await db.query(
       `INSERT INTO mfa_credentials (id, user_id, totp_secret_encrypted, is_enforced, is_verified, recovery_code_hashes)
        VALUES ($1, $2, $3, FALSE, FALSE, $4)
-       ON CONFLICT (user_id) DO UPDATE
-       SET totp_secret_encrypted = EXCLUDED.totp_secret_encrypted,
-           is_verified = FALSE,
-           recovery_code_hashes = EXCLUDED.recovery_code_hashes`,
+       ON CONFLICT (user_id) DO NOTHING`,
       [newId('mfa'), userId, encryptedSecret, JSON.stringify(hashedCodes)]
     );
+    const enrollment = await db.query(
+      `UPDATE mfa_credentials SET totp_secret_encrypted = $1, recovery_code_hashes = $2
+       WHERE user_id = $3 AND is_verified = FALSE RETURNING id`,
+      [encryptedSecret, JSON.stringify(hashedCodes), userId]
+    );
+    if (enrollment.rows.length !== 1) throw new Error('MFA_ALREADY_ENABLED: Existing MFA cannot be overwritten.');
 
     const qrUri = `otpauth://totp/FirmBooks:${encodeURIComponent(email)}?secret=${rawSecret}&issuer=FirmBooks&algorithm=SHA1&digits=6&period=30`;
 
@@ -118,6 +159,7 @@ export class MfaService {
   }
 
   public static async confirmEnrollment(userId: string, code: string): Promise<boolean> {
+    const rateKey = await this.reserveAttempt(userId);
     const res = await db.query(
       `SELECT id, totp_secret_encrypted FROM mfa_credentials WHERE user_id = $1`,
       [userId]
@@ -135,10 +177,13 @@ export class MfaService {
       return false;
     }
 
-    await db.query(
-      `UPDATE mfa_credentials SET is_verified = TRUE WHERE user_id = $1`,
-      [userId]
+    const confirmed = await db.query(
+      `UPDATE mfa_credentials SET is_verified = TRUE
+       WHERE user_id = $1 AND totp_secret_encrypted = $2 AND is_verified = FALSE RETURNING id`,
+      [userId, totp_secret_encrypted]
     );
+    if (confirmed.rows.length !== 1) return false;
+    await db.query('DELETE FROM auth_rate_limits WHERE key_hash = $1', [rateKey]);
 
     await db.query(
       `INSERT INTO security_events (id, user_id, event_type, metadata)
@@ -153,6 +198,7 @@ export class MfaService {
     userId: string,
     codeOrRecoveryCode: string
   ): Promise<{ success: boolean; method?: 'TOTP' | 'RECOVERY_CODE'; remainingRecoveryCodes?: number }> {
+    const rateKey = await this.reserveAttempt(userId);
     const res = await db.query(
       `SELECT id, totp_secret_encrypted, is_verified, recovery_code_hashes
        FROM mfa_credentials
@@ -171,7 +217,12 @@ export class MfaService {
 
     // 1. Try TOTP 6-digit verification
     if (inputTrimmed.length === 6 && /^\d{6}$/.test(inputTrimmed)) {
-      if (MfaService.verifyTotpCode(rawSecret, inputTrimmed)) {
+      const now = Date.now();
+      for (let window = -1; window <= 1; window++) {
+        if (MfaService.computeTotp(rawSecret, window, now) !== inputTrimmed) continue;
+        const step = Math.floor(now / 30000) + window;
+        if (!await this.consumeProof(userId, 'MFA_TOTP_CONSUMED', `${rawSecret}:${step}`)) return { success: false };
+        await db.query('DELETE FROM auth_rate_limits WHERE key_hash = $1', [rateKey]);
         return { success: true, method: 'TOTP' };
       }
     }
@@ -185,20 +236,29 @@ export class MfaService {
     const hashIndex = hashes.indexOf(inputHash);
 
     if (hashIndex !== -1) {
-      // Consume recovery code (single-use)
-      hashes.splice(hashIndex, 1);
-      await db.query(
-        `UPDATE mfa_credentials SET recovery_code_hashes = $1 WHERE user_id = $2`,
-        [JSON.stringify(hashes), userId]
-      );
-
-      await db.query(
-        `INSERT INTO security_events (id, user_id, event_type, metadata)
-         VALUES ($1, $2, 'RECOVERY_CODE_CONSUMED', $3)`,
-        [newId('sec'), userId, JSON.stringify({ remainingCodes: hashes.length })]
-      );
-
-      return { success: true, method: 'RECOVERY_CODE', remainingRecoveryCodes: hashes.length };
+      return db.transaction(async (client) => {
+        // Serialize code consumption so concurrent requests cannot reuse or restore codes.
+        const current = await client.query(
+          `SELECT recovery_code_hashes FROM mfa_credentials WHERE user_id = $1 AND is_verified = TRUE FOR UPDATE`, [userId]
+        );
+        if (!current.rows.length) return { success: false };
+        const stored = current.rows[0].recovery_code_hashes;
+        const remaining: string[] = typeof stored === 'string' ? JSON.parse(stored) : (stored || []);
+        const index = remaining.indexOf(inputHash);
+        if (index === -1) return { success: false };
+        remaining.splice(index, 1);
+        await client.query(
+          `UPDATE mfa_credentials SET recovery_code_hashes = $1 WHERE user_id = $2`,
+          [JSON.stringify(remaining), userId]
+        );
+        await client.query(
+          `INSERT INTO security_events (id, user_id, event_type, metadata)
+           VALUES ($1, $2, 'RECOVERY_CODE_CONSUMED', $3)`,
+          [newId('sec'), userId, JSON.stringify({ remainingCodes: remaining.length })]
+        );
+        await client.query('DELETE FROM auth_rate_limits WHERE key_hash = $1', [rateKey]);
+        return { success: true, method: 'RECOVERY_CODE' as const, remainingRecoveryCodes: remaining.length };
+      });
     }
 
     return { success: false };

@@ -79,6 +79,7 @@ const normalizeBillForUi = (record: any): Bill => {
 interface BooksContextType {
   organizations: OrganizationMeta[];
   currentOrg: OrganizationMeta;
+  refreshOrganizations: () => Promise<void>;
   switchOrganization: (orgId: string) => void;
   createOrganization: (input: CreateOrganizationInput) => Promise<OrganizationMeta>;
   deleteOrganization: (orgId: string) => boolean;
@@ -387,9 +388,10 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const currentOrg = organizations.find((o) => o.id === currentOrgId) || organizations[0] || defaultOrgMeta;
 
-  useEffect(() => {
+  const refreshOrganizations = useCallback(async () => {
     if (!localStorage.getItem('firmbooks_authenticated')) return;
-    apiClient.get<any[]>('/organizations').then((response) => {
+    await apiClient.get<any[]>('/organizations').then((response) => {
+      if (response.error) throw new Error(response.error);
       if (!Array.isArray(response.data) || response.data.length === 0) return;
       const serverOrganizations = response.data.map((org) => ({
         id: org.id,
@@ -408,11 +410,13 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         status: org.status || 'Active',
       })) as OrganizationMeta[];
       setOrganizations(serverOrganizations);
-      if (!serverOrganizations.some((org) => org.id === currentOrgId)) {
-        setCurrentOrgId(serverOrganizations[0].id);
-      }
+      setCurrentOrgId(activeId => serverOrganizations.some(org => org.id === activeId) ? activeId : serverOrganizations[0].id);
     });
   }, []);
+
+  useEffect(() => {
+    void refreshOrganizations().catch(error => console.error('Organization list could not be refreshed:', error));
+  }, [refreshOrganizations]);
 
   // Global User Identity State ("A Person Exists Only Once")
   const [currentUser, setCurrentUser] = useState<UserIdentity>({
@@ -1199,6 +1203,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       organizations,
       currentOrg,
       switchOrganization,
+      refreshOrganizations,
       createOrganization,
       deleteOrganization,
       exportOrganizationJSON,

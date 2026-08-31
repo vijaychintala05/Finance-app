@@ -1,5 +1,53 @@
+import crypto from 'node:crypto';
 import { db } from '../database/db';
 import { newId } from '../utils/ids';
+
+export const GENESIS_HASH = '0000000000000000000000000000000000000000000000000000000000000000';
+
+function normalizeJson(val: any): string {
+  if (val === null || val === undefined || val === '') return '';
+  if (typeof val === 'string') {
+    try {
+      return JSON.stringify(JSON.parse(val));
+    } catch {
+      return val.trim();
+    }
+  }
+  return JSON.stringify(val);
+}
+
+function normalizeTimestamp(ts: any): string {
+  if (!ts) return new Date(0).toISOString();
+  if (ts instanceof Date) return ts.toISOString();
+  try {
+    const d = new Date(ts);
+    if (!Number.isNaN(d.getTime())) return d.toISOString();
+  } catch {
+    // Fall through
+  }
+  return String(ts);
+}
+
+export function calculateAuditEntryHash(
+  previousHash: string,
+  logId: string,
+  organizationId: string,
+  userId: string,
+  action: string,
+  entityType: string,
+  entityId: string,
+  timestamp: any,
+  beforeState: any,
+  afterState: any,
+  metadata: any
+): string {
+  const normTs = normalizeTimestamp(timestamp);
+  const normBefore = normalizeJson(beforeState);
+  const normAfter = normalizeJson(afterState);
+  const normMeta = normalizeJson(metadata);
+  const payload = `${previousHash}|${logId}|${organizationId}|${userId}|${action}|${entityType}|${entityId}|${normTs}|${normBefore}|${normAfter}|${normMeta}`;
+  return crypto.createHash('sha256').update(payload).digest('hex');
+}
 
 export interface AuditLogParams {
   organizationId: string;
@@ -25,6 +73,8 @@ export interface AuditLogEntry {
   beforeState: any;
   afterState: any;
   metadata: any;
+  previousHash?: string;
+  currentHash?: string;
 }
 
 export class AuditTrailService {
@@ -40,9 +90,36 @@ export class AuditTrailService {
       ...(params.metadata || {}),
     });
 
+    let previousHash = GENESIS_HASH;
+    try {
+      const latest = await db.query(
+        `SELECT current_hash FROM audit_logs WHERE organization_id = $1 AND current_hash IS NOT NULL ORDER BY timestamp DESC, id DESC LIMIT 1`,
+        [params.organizationId]
+      );
+      if (latest.rows.length > 0 && latest.rows[0].current_hash) {
+        previousHash = latest.rows[0].current_hash;
+      }
+    } catch {
+      // Fallback to genesis hash if query fails or table is fresh
+    }
+
+    const currentHash = calculateAuditEntryHash(
+      previousHash,
+      logId,
+      params.organizationId,
+      params.userId,
+      params.action,
+      params.entityType,
+      params.entityId,
+      now,
+      beforeStateJson,
+      afterStateJson,
+      metadataJson
+    );
+
     await db.query(
-      `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, timestamp, before_state, after_state, metadata)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, timestamp, before_state, after_state, metadata, previous_hash, current_hash)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
       [
         logId,
         params.organizationId,
@@ -54,6 +131,8 @@ export class AuditTrailService {
         beforeStateJson,
         afterStateJson,
         metadataJson,
+        previousHash,
+        currentHash,
       ]
     );
 
@@ -68,6 +147,8 @@ export class AuditTrailService {
       beforeState: params.beforeState || null,
       afterState: params.afterState || null,
       metadata: params.metadata || {},
+      previousHash,
+      currentHash,
     };
   }
 
@@ -112,7 +193,7 @@ export class AuditTrailService {
       params.push(filters.endDate);
     }
 
-    sql += ' ORDER BY timestamp DESC';
+    sql += ' ORDER BY timestamp DESC, id DESC';
     const limit = filters?.limit || 100;
     sql += ` LIMIT $${pIdx++}`;
     params.push(limit);
@@ -125,11 +206,50 @@ export class AuditTrailService {
       action: row.action,
       entityType: row.entity_type || row.entityType,
       entityId: row.entity_id || row.entityId,
-      timestamp: row.timestamp,
+      timestamp: normalizeTimestamp(row.timestamp),
       beforeState: typeof row.before_state === 'string' ? JSON.parse(row.before_state) : row.before_state,
       afterState: typeof row.after_state === 'string' ? JSON.parse(row.after_state) : row.after_state,
       metadata: typeof row.metadata === 'string' ? JSON.parse(row.metadata) : row.metadata,
+      previousHash: row.previous_hash || row.previousHash,
+      currentHash: row.current_hash || row.currentHash,
     }));
+  }
+
+  public static async verifyHashChain(organizationId: string): Promise<{ isValid: boolean; verifiedCount: number; brokenAtLogId?: string }> {
+    const res = await db.query(
+      `SELECT * FROM audit_logs WHERE organization_id = $1 ORDER BY timestamp ASC, id ASC`,
+      [organizationId]
+    );
+    let expectedPrevHash = GENESIS_HASH;
+    for (let i = 0; i < res.rows.length; i++) {
+      const row = res.rows[i];
+      const rowPrevHash = row.previous_hash || row.previousHash;
+      const rowCurrHash = row.current_hash || row.currentHash;
+
+      if (rowPrevHash && rowPrevHash !== expectedPrevHash) {
+        return { isValid: false, verifiedCount: i, brokenAtLogId: row.id };
+      }
+      if (rowCurrHash) {
+        const calculated = calculateAuditEntryHash(
+          rowPrevHash || expectedPrevHash,
+          row.id,
+          row.organization_id || row.organizationId,
+          row.user_id || row.userId,
+          row.action,
+          row.entity_type || row.entityType,
+          row.entity_id || row.entityId,
+          row.timestamp,
+          row.before_state || row.beforeState,
+          row.after_state || row.afterState,
+          row.metadata
+        );
+        if (calculated !== rowCurrHash) {
+          return { isValid: false, verifiedCount: i, brokenAtLogId: row.id };
+        }
+        expectedPrevHash = rowCurrHash;
+      }
+    }
+    return { isValid: true, verifiedCount: res.rows.length };
   }
 
   public static async verifyImmutability(organizationId: string, logId: string): Promise<void> {

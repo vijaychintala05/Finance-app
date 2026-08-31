@@ -63,8 +63,19 @@ export class DocumentNumberingEngine {
     const fy = this.getFinancialYear(dateStr);
     const seqId = newId('seq');
 
-    // Upsert and increment atomically
+    // Upsert and increment atomically with transactional advisory lock
     const queryExecutor = transactionClient || db;
+    if (!db.isMemoryMode()) {
+      try {
+        await queryExecutor.query(
+          `SELECT pg_advisory_xact_lock(hashtext('firmbooks_doc_seq:' || $1 || ':' || $2 || ':' || $3))`,
+          [organizationId, docType, fy]
+        );
+      } catch {
+        // Safe fallback if advisory lock is not supported
+      }
+    }
+
     const res = await queryExecutor.query(
       `INSERT INTO document_sequences (id, organization_id, document_type, prefix, financial_year, next_number, padding_length)
        VALUES ($1, $2, $3, $4, $5, 2, 4)

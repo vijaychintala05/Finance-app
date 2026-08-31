@@ -2,6 +2,8 @@ import crypto from 'crypto';
 import { db } from '../database/db';
 import { newId } from '../utils/ids';
 import { SessionService } from './SessionService';
+import { MfaService } from './MfaService';
+import { JwtAuth } from './jwt';
 
 export interface GoogleUserInfo {
   sub: string;
@@ -201,7 +203,7 @@ export class GoogleOAuthService {
     providerSubject: string,
     providerEmail: string,
     metadata?: { ipAddress?: string; userAgent?: string }
-  ): Promise<{ userId: string; email: string; sessionId: string; sessionToken: string }> {
+  ): Promise<{ userId: string; email: string; sessionId?: string; sessionToken?: string; mfaRequired?: boolean; mfaTicket?: string }> {
     const cleanEmail = providerEmail.toLowerCase().trim();
 
     // 1. Look up existing link
@@ -236,7 +238,14 @@ export class GoogleOAuthService {
       throw new Error('USER_NOT_ACTIVE: User account is deactivated.');
     }
 
-    // 3. Create active session
+    if ((await MfaService.getMfaStatus(userId)).isVerified) {
+      return {
+        userId, email: cleanEmail, mfaRequired: true,
+        mfaTicket: JwtAuth.generateToken({ userId, email: cleanEmail, purpose: 'mfa_login_challenge' }),
+      };
+    }
+
+    // 3. Create active session only after all required factors.
     const session = await SessionService.createSession(userId, {
       ipAddress: metadata?.ipAddress,
       userAgent: metadata?.userAgent,

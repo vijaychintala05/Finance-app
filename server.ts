@@ -1,6 +1,8 @@
 import express from "express";
 import 'dotenv/config';
 import path from "path";
+import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 import { createServer as createViteServer } from "vite";
 import apiApp, { initDatabase } from "./server/src/index";
 import { db } from "./server/src/database/db";
@@ -23,7 +25,19 @@ async function startServer() {
   // Mount Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      configFile: false,
+      root: process.cwd(),
+      plugins: [react(), tailwindcss()],
+      resolve: {
+        alias: {
+          "@": path.resolve(process.cwd(), "."),
+        },
+      },
+      server: {
+        middlewareMode: true,
+        hmr: process.env.DISABLE_HMR !== "true",
+        watch: process.env.DISABLE_HMR === "true" ? null : {},
+      },
       appType: "spa",
     });
     apiApp.use(vite.middlewares);

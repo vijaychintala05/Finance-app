@@ -1,0 +1,60 @@
+{
+  "version": "2.0.0",
+  "date": "2026-08-30",
+  "mode": "daily",
+  "scope": "focused NAS readiness and authentication",
+  "diff_mode": false,
+  "source_revision": "dbd2418",
+  "deployed_revision": "unverified",
+  "decision": "HOLD_REAL_DATA",
+  "findings": [
+    {
+      "id": 1,
+      "severity": "HIGH",
+      "confidence": 10,
+      "status": "VERIFIED",
+      "category": "Authentication",
+      "title": "MFA challenge token accepted as completed authentication",
+      "file": "server/src/middleware/organizationIsolation.middleware.ts",
+      "line": 44,
+      "verification": "Self-verified with disposable local pg-mem HTTP reproduction; challenge ticket accessed /auth/me and refreshed without OTP. Not exploited on NAS.",
+      "recommendation": "Reject challenge-purpose tokens in access middleware and enforce separate single-use challenge lifecycle."
+    },
+    {
+      "id": 2,
+      "severity": "HIGH",
+      "confidence": 10,
+      "status": "VERIFIED",
+      "category": "Authentication",
+      "title": "Revocation and logout leave alternate login credentials active",
+      "file": "server/src/auth/SessionService.ts",
+      "line": 160,
+      "verification": "Self-verified locally: paired JWT still returns 200 after session revocation; opaque session still returns 200 after logout. No NAS mutations.",
+      "recommendation": "Bind all access credentials to a revocable server-side session and invalidate them consistently."
+    },
+    {
+      "id": 3,
+      "severity": "HIGH",
+      "confidence": 9,
+      "status": "VERIFIED",
+      "category": "Transport security",
+      "title": "HTTP app entry point and HTTP-compatible login cookies",
+      "file": "server/src/controllers/authController.ts",
+      "line": 20,
+      "verification": "Live HTTP app responds without redirect; source accepts HTTP login and omits Secure on HTTP. Live authenticated login and HTTPS endpoint untested.",
+      "recommendation": "Verify canonical HTTPS endpoint, restrict backend exposure and require secure production authentication."
+    }
+  ],
+  "totals": { "critical": 0, "high": 3, "medium": 0 },
+  "supply_chain_summary": {
+    "critical_cves": 0,
+    "high_cves": 0,
+    "local_npm_audit_total": 0,
+    "lockfile_present": true,
+    "tools_skipped": ["NAS image and firmware scan", "full history secrets audit"]
+  },
+  "tests": { "files_passed": 5, "tests_passed": 45, "new_security_reproductions": "confirmed gaps despite passing existing tests" },
+  "unverified": ["NAS image revision", "HTTPS Serve endpoint", "Tailscale MFA and ACLs", "leaked key revocation", "NAS administrator MFA", "router forwarding", "disk encryption and health", "scheduled off-NAS backups", "database restore drill"],
+  "report": "2026-08-30-nas-readiness.md",
+  "disclaimer": "AI-assisted focused review, not a substitute for a professional security audit or a guarantee of security."
+}

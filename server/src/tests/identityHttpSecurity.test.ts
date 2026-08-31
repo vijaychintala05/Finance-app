@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../index';
 import { db } from '../database/db';
@@ -12,7 +12,26 @@ import { PasswordRecoveryService } from '../auth/PasswordRecoveryService';
 import { assertProductionConfiguration } from '../config/environment';
 import { SessionSecurity } from '../auth/SessionSecurity';
 
+// Simulate Google at the network boundary; application code never accepts mock identities.
+function configureGoogleFixture() {
+  vi.stubEnv('GOOGLE_CLIENT_ID', 'test-client.apps.googleusercontent.com');
+  vi.stubEnv('GOOGLE_CLIENT_SECRET', 'test-client-secret');
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const url = new URL(String(input));
+    if (url.href === 'https://oauth2.googleapis.com/token') {
+      const code = new URLSearchParams(String(init?.body)).get('code') || '';
+      return new Response(JSON.stringify({ id_token: code.replace('mock-email:', '') }));
+    }
+    if (url.origin === 'https://oauth2.googleapis.com' && url.pathname === '/tokeninfo') {
+      const email = url.searchParams.get('id_token') || '';
+      return new Response(JSON.stringify({ aud: process.env.GOOGLE_CLIENT_ID, sub: `google-${email}`, email, email_verified: true }));
+    }
+    throw new Error('Unexpected network call in Google fixture');
+  });
+}
+
 describe('Identity & Security Center HTTP Boundary Test Suite', () => {
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
   beforeEach(async () => {
     process.env.NODE_ENV = 'test';
     process.env.AUTH_ENCRYPTION_KEY = 'test-firmbooks-auth-encryption-key-32-chars-long!';
@@ -335,6 +354,7 @@ describe('Identity & Security Center HTTP Boundary Test Suite', () => {
     });
 
     it('requires MFA after Google sign-in without creating a session or cookie', async () => {
+      configureGoogleFixture();
       const enrollment = await MfaService.enrollMfa('usr_owner_a', 'owner@acme.com');
       await MfaService.confirmEnrollment('usr_owner_a', MfaService.computeTotp(enrollment.secretKey));
       const { state } = await GoogleOAuthService.getOAuthUrl('http://localhost:3000/api/v1/identity/google/callback');
@@ -442,7 +462,18 @@ describe('Identity & Security Center HTTP Boundary Test Suite', () => {
   });
 
   describe('7. Google OAuth State Validation & Sign-In [P2 #6]', () => {
+    it('returns a clear unavailable response when Google credentials are absent', async () => {
+      vi.stubEnv('GOOGLE_CLIENT_ID', '');
+      vi.stubEnv('GOOGLE_CLIENT_SECRET', '');
+      const response = await request(app).get('/api/v1/identity/google/auth-url');
+      expect(response.status).toBe(503);
+      expect(response.body.error).toContain('Google sign-in is not configured');
+      expect(response.body.url).toBeUndefined();
+      expect((await db.query('SELECT state FROM oauth_states')).rows).toHaveLength(0);
+    });
+
     it('validates state parameter and links invited FirmBooks identity', async () => {
+      configureGoogleFixture();
       // 1. Request auth URL
       const authUrlRes = await request(app).get('/api/v1/identity/google/auth-url');
       expect(authUrlRes.status).toBe(200);

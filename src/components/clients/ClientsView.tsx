@@ -4,7 +4,7 @@ import { Client } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 import { formatCurrency } from '../../utils/formatters';
 import { ClientModal } from './ClientModal';
-import { ClientDetailsModal } from './ClientDetailsModal';
+import { CustomerWorkspace } from './CustomerWorkspace';
 
 interface ClientsViewProps {
   autoOpenCreateModal?: boolean;
@@ -36,12 +36,37 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
 
   React.useEffect(() => {
     if (selectedEntityId) {
-      const found = clients.find((c) => c.id === selectedEntityId || c.name === selectedEntityId);
+      const found = clients.find((c) => c.id === selectedEntityId || c.name === selectedEntityId || c.companyName === selectedEntityId);
       if (found) {
         setViewingClient(found);
       }
     }
   }, [selectedEntityId, clients]);
+
+  // If a client is selected, render the dedicated Full-Page Customer Workspace!
+  if (viewingClient) {
+    return (
+      <>
+        <CustomerWorkspace
+          client={viewingClient}
+          onBack={() => {
+            setViewingClient(null);
+            if (onSelectedEntityClosed) onSelectedEntityClosed();
+          }}
+          onEdit={(client) => {
+            setClientToEdit(client);
+            setIsModalOpen(true);
+          }}
+        />
+
+        <ClientModal
+          isOpen={isModalOpen}
+          onClose={() => setIsModalOpen(false)}
+          clientToEdit={clientToEdit}
+        />
+      </>
+    );
+  }
 
   const filteredClients = clients.filter(
     (c) =>
@@ -60,7 +85,7 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
             <span>Clients & Customers</span>
           </h2>
           <p className="text-xs text-slate-500 mt-1">
-            Manage firm clients, payment terms, and billing contact details
+            Manage customer accounts, sales histories, quotations, and account statements.
           </p>
         </div>
 
@@ -69,7 +94,7 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
             setClientToEdit(null);
             setIsModalOpen(true);
           }}
-          className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-xl text-xs font-semibold flex items-center space-x-1.5 shadow-sm transition-all cursor-pointer"
+          className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-xl text-xs font-semibold flex items-center space-x-1.5 shadow-xs transition-all cursor-pointer"
         >
           <Plus className="w-4 h-4" />
           <span>Add Client</span>
@@ -94,7 +119,7 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
       <div className="block lg:hidden space-y-3">
         {filteredClients.map((client) => {
           const clientInvoices = invoices.filter(
-            (i) => i.clientId === client.id && i.status !== 'Void'
+            (i) => (i.clientId === client.id || i.clientName === client.companyName) && i.status !== 'Void'
           );
           const totalAR = clientInvoices.reduce((sum, i) => sum + i.balanceDue, 0);
           const clientProjects = projects.filter((p) => p.clientId === client.id);
@@ -103,32 +128,41 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
             <div
               key={client.id}
               onClick={() => setViewingClient(client)}
-              className="bg-white rounded-2xl border border-slate-200/90 p-4 shadow-2xs space-y-3 cursor-pointer hover:bg-slate-50 transition-colors"
+              className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs space-y-3 cursor-pointer hover:border-blue-400 transition-colors"
             >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-3">
-                  <div className="w-10 h-10 rounded-2xl bg-blue-600 text-white flex items-center justify-center font-black text-sm shadow-2xs">
-                    {client.companyName ? client.companyName.charAt(0).toUpperCase() : 'C'}
-                  </div>
-                  <div>
-                    <h4 className="text-xs font-bold text-slate-900">{client.companyName}</h4>
-                    <p className="text-[11px] text-slate-500">{client.name}</p>
-                  </div>
+              <div className="flex items-start justify-between">
+                <div>
+                  <h3 className="font-extrabold text-sm text-slate-900 dark:text-slate-100">
+                    {client.companyName}
+                  </h3>
+                  <p className="text-xs text-slate-500">{client.name}</p>
                 </div>
 
-                <button
-                  onClick={() => {
-                    setClientToEdit(client);
-                    setIsModalOpen(true);
-                  }}
-                  className="p-1.5 text-slate-600 hover:text-blue-600 bg-slate-100 rounded-xl cursor-pointer"
-                >
-                  <Edit className="w-4 h-4" />
-                </button>
+                <div className="flex items-center space-x-1" onClick={(e) => e.stopPropagation()}>
+                  <button
+                    onClick={() => {
+                      setClientToEdit(client);
+                      setIsModalOpen(true);
+                    }}
+                    className="p-1 text-slate-400 hover:text-blue-600 rounded-md"
+                  >
+                    <Edit className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (window.confirm(`Delete client ${client.name}? Linked invoices will remain.`)) {
+                        deleteClient(client.id);
+                      }
+                    }}
+                    className="p-1 text-slate-400 hover:text-rose-600 rounded-md"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
 
               {/* Quick Contact Buttons Row */}
-              <div className="grid grid-cols-2 gap-2 text-xs">
+              <div className="grid grid-cols-2 gap-2 text-xs" onClick={(e) => e.stopPropagation()}>
                 {client.phone ? (
                   <a
                     href={`tel:${client.phone}`}
@@ -164,7 +198,7 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
 
                 <div>
                   <span className="text-[10px] text-slate-400 mr-1">AR Due:</span>
-                  <span className="font-mono font-black text-amber-600">
+                  <span className="font-financial font-black text-amber-600">
                     {formatCurrency(totalAR, settings.currencySymbol)}
                   </span>
                 </div>
@@ -192,7 +226,7 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {filteredClients.map((client) => {
                 const clientInvoices = invoices.filter(
-                  (i) => i.clientId === client.id && i.status !== 'Void'
+                  (i) => (i.clientId === client.id || i.clientName === client.companyName) && i.status !== 'Void'
                 );
                 const totalBilled = clientInvoices.reduce((sum, i) => sum + i.totalAmount, 0);
                 const totalAR = clientInvoices.reduce((sum, i) => sum + i.balanceDue, 0);
@@ -202,10 +236,10 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
                   <tr
                     key={client.id}
                     onClick={() => setViewingClient(client)}
-                    className="hover:bg-slate-50/50 dark:hover:bg-slate-800/40 transition-colors cursor-pointer"
+                    className="hover:bg-slate-50/50 dark:hover:bg-slate-800/40 transition-colors cursor-pointer group"
                   >
                     <td className="p-3 pl-4">
-                      <div className="font-bold text-slate-900 dark:text-slate-100">
+                      <div className="font-bold text-slate-900 dark:text-slate-100 group-hover:text-blue-600 transition-colors">
                         {client.companyName}
                       </div>
                       <div className="text-[11px] text-slate-500">{client.name}</div>
@@ -234,15 +268,15 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
                       {clientProjects.length} projects
                     </td>
 
-                    <td className="p-3 font-bold text-slate-900 dark:text-slate-100">
+                    <td className="p-3 font-bold font-financial text-slate-900 dark:text-slate-100">
                       {formatCurrency(totalBilled, settings.currencySymbol)}
                     </td>
 
-                    <td className="p-3 font-bold text-amber-600 dark:text-amber-400">
+                    <td className={`p-3 font-bold font-financial ${totalAR > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-slate-500'}`}>
                       {formatCurrency(totalAR, settings.currencySymbol)}
                     </td>
 
-                    <td className="p-3 pr-4 text-right space-x-2">
+                    <td className="p-3 pr-4 text-right space-x-2" onClick={(e) => e.stopPropagation()}>
                       <button
                         onClick={() => {
                           setClientToEdit(client);
@@ -281,19 +315,6 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
         clientToEdit={clientToEdit}
-      />
-
-      <ClientDetailsModal
-        isOpen={!!viewingClient}
-        onClose={() => {
-          setViewingClient(null);
-          if (onSelectedEntityClosed) onSelectedEntityClosed();
-        }}
-        client={viewingClient}
-        onEdit={(client) => {
-          setClientToEdit(client);
-          setIsModalOpen(true);
-        }}
       />
     </div>
   );

@@ -7,6 +7,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [busy, setBusy] = useState(false);
   const [googleBusy, setGoogleBusy] = useState(false);
+  const [googleError, setGoogleError] = useState<string | null>(null);
   const [mfaCode, setMfaCode] = useState('');
   const [form, setForm] = useState({
     email: '',
@@ -50,17 +51,20 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
 
   const handleGoogleSignIn = async () => {
     setGoogleBusy(true);
+    setGoogleError(null);
     try {
       const redirectUri = `${window.location.origin}/api/v1/identity/google/callback`;
       const res = await fetch(`/api/v1/identity/google/auth-url?redirectUri=${encodeURIComponent(redirectUri)}`, {
         credentials: 'include',
       });
       const data = await res.json();
-      if (data.url) {
-        window.location.href = data.url;
+      if (!res.ok || !data.url) {
+        setGoogleError(data.error || 'Google sign-in is unavailable. Please use email and password.');
+        return;
       }
-    } catch (err) {
-      console.error('Failed to initiate Google OAuth:', err);
+      window.location.href = data.url;
+    } catch {
+      setGoogleError('Unable to connect to Google sign-in. Please try again or use email and password.');
     } finally {
       setGoogleBusy(false);
     }
@@ -201,6 +205,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
           onChange={(e) => setForm({ ...form, password: e.target.value })}
         />
         {auth.error && <p role="alert" className="text-sm text-red-600">{auth.error}</p>}
+        {googleError && <p role="alert" className="text-sm text-red-600">{googleError}</p>}
         <button
           disabled={busy || googleBusy}
           className="w-full rounded-lg bg-indigo-600 py-3 font-semibold text-white hover:bg-indigo-700 transition disabled:opacity-50"

@@ -13,7 +13,22 @@ export interface GoogleUserInfo {
   email_verified?: boolean;
 }
 
+export class GoogleOAuthConfigurationError extends Error {
+  constructor() {
+    super('Google sign-in is not configured for this server. Use email and password, or ask the administrator to configure Google sign-in.');
+    this.name = 'GoogleOAuthConfigurationError';
+  }
+}
+
 export class GoogleOAuthService {
+  private static credentials(): { clientId: string; clientSecret: string } {
+    const clientId = process.env.GOOGLE_CLIENT_ID?.trim();
+    const clientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim();
+    if (!clientId || !clientSecret || clientId === 'mock-google-client-id.apps.googleusercontent.com') {
+      throw new GoogleOAuthConfigurationError();
+    }
+    return { clientId, clientSecret };
+  }
   public static async createPkceSession(): Promise<{ state: string; codeVerifier: string; codeChallenge: string }> {
     // 1. Generate high-entropy 43-128 char code verifier
     const codeVerifier = crypto.randomBytes(32).toString('base64url');
@@ -60,7 +75,7 @@ export class GoogleOAuthService {
   }
 
   public static async getOAuthUrl(redirectUri: string): Promise<{ url: string; state: string }> {
-    const clientId = process.env.GOOGLE_CLIENT_ID || 'mock-google-client-id.apps.googleusercontent.com';
+    const { clientId } = GoogleOAuthService.credentials();
     const { state, codeChallenge } = await GoogleOAuthService.createPkceSession();
 
     const params = new URLSearchParams({
@@ -86,25 +101,11 @@ export class GoogleOAuthService {
     redirectUri: string,
     state?: string
   ): Promise<GoogleUserInfo> {
-    const clientId = process.env.GOOGLE_CLIENT_ID;
-    const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+    const { clientId, clientSecret } = GoogleOAuthService.credentials();
 
     let codeVerifier: string | undefined;
     if (state) {
       codeVerifier = await GoogleOAuthService.consumeOAuthState(state);
-    }
-
-    // In test or development mock mode
-    if (!clientId || !clientSecret || process.env.NODE_ENV === 'test' || code.startsWith('mock-')) {
-      // Mock code exchange for testing
-      const email = code.startsWith('mock-email:') ? code.replace('mock-email:', '') : 'google-user@firmbooks.local';
-      const sub = `google-sub-${crypto.createHash('sha256').update(email).digest('hex').slice(0, 16)}`;
-      return {
-        sub,
-        email,
-        name: 'Google User',
-        email_verified: true,
-      };
     }
 
     // Real Google OAuth 2.0 PKCE Token Exchange

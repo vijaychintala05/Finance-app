@@ -9,7 +9,7 @@ import { SessionService } from '../auth/SessionService';
 import { MfaService } from '../auth/MfaService';
 import { IdentityInviteService } from '../auth/IdentityInviteService';
 import { PasswordRecoveryService } from '../auth/PasswordRecoveryService';
-import { GoogleOAuthService } from '../auth/GoogleOAuthService';
+import { GoogleOAuthService, GoogleOAuthConfigurationError } from '../auth/GoogleOAuthService';
 import { EmailOutboxService } from '../services/EmailOutboxService';
 import { JwtAuth } from '../auth/jwt';
 import { db } from '../database/db';
@@ -244,7 +244,7 @@ identityRouter.get('/google/auth-url', async (req: AuthenticatedRequest, res: Re
     const { url, state } = await GoogleOAuthService.getOAuthUrl(redirectUri);
     res.json({ url, state });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to generate Google OAuth URL' });
+    res.status(err instanceof GoogleOAuthConfigurationError ? 503 : 500).json({ error: err.message || 'Failed to generate Google OAuth URL' });
   }
 });
 

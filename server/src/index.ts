@@ -30,7 +30,7 @@ const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', process.env.TRUST_PROXY === 'true' ? 1 : false);
 app.use('/api', requestSecurityMiddleware);
-app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '1mb', strict: true }));
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '4mb', strict: true }));
 
 app.get('/api/healthz', (_req, res) => {
   res.json({ status: 'ok' });

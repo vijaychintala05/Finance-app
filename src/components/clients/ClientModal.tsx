@@ -51,7 +51,7 @@ export const ClientModal: React.FC<ClientModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || !email.trim() || isSubmitting) return;
+    if (!name.trim() || isSubmitting) return;
 
     const submittedCurrency = settings.currencyCode.toUpperCase();
     if (!/^[A-Z]{3}$/.test(submittedCurrency)) {
@@ -141,13 +141,12 @@ export const ClientModal: React.FC<ClientModalProps> = ({
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-slate-600 dark:text-slate-300 font-medium mb-1">
-                Email Address
+                Email Address (optional)
               </label>
               <input
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                required
                 placeholder="billing@company.com"
                 className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-2 text-slate-800 dark:text-slate-200"
               />

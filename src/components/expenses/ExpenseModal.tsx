@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Receipt, ShieldCheck, X } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { AlertTriangle, ImagePlus, Receipt, ShieldCheck, Trash2, X } from 'lucide-react';
 import { useBooks } from '../../context/BooksContext';
-import { Expense } from '../../types';
+import { Expense, ExpenseReceiptUpload } from '../../types';
 
 interface ExpenseModalProps {
   isOpen: boolean;
@@ -12,6 +12,48 @@ interface ExpenseModalProps {
 }
 
 const today = () => new Date().toISOString().slice(0, 10);
+
+const MAX_RECEIPT_IMAGES = 3;
+const MAX_RECEIPT_BYTES = 900 * 1024;
+
+async function compressReceiptImage(file: File): Promise<ExpenseReceiptUpload> {
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+    throw new Error(`${file.name} is not a supported image. Use JPEG, PNG, or WebP.`);
+  }
+  const imageUrl = URL.createObjectURL(file);
+  try {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const element = new Image();
+      element.onload = () => resolve(element);
+      element.onerror = () => reject(new Error(`Could not read ${file.name}.`));
+      element.src = imageUrl;
+    });
+    const longestSide = Math.max(image.naturalWidth, image.naturalHeight);
+    const scale = Math.min(1, 1600 / Math.max(1, longestSide));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Image compression is unavailable in this browser.');
+    context.fillStyle = '#ffffff';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    let quality = 0.88;
+    let blob: Blob | null = null;
+    while (quality >= 0.45) {
+      blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality));
+      if (blob && blob.size <= MAX_RECEIPT_BYTES) break;
+      quality -= 0.1;
+    }
+    if (!blob || blob.size > MAX_RECEIPT_BYTES) throw new Error(`${file.name} is too detailed to compress under 900 KB.`);
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    let binary = '';
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return { name: file.name.replace(/\.[^.]+$/, '') + '.jpg', mimeType: 'image/jpeg', dataBase64: btoa(binary) };
+  } finally {
+    URL.revokeObjectURL(imageUrl);
+  }
+}
 
 export const ExpenseModal: React.FC<ExpenseModalProps> = ({
   isOpen,
@@ -46,6 +88,8 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
   const [projectId, setProjectId] = useState(defaultProjectId || '');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [receiptFiles, setReceiptFiles] = useState<File[]>([]);
+  const receiptInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -58,6 +102,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
     setProjectId(defaultProjectId || '');
     setError('');
     setIsSubmitting(false);
+    setReceiptFiles([]);
   }, [isOpen, expenseAccounts, paymentAccounts]);
 
   if (!isOpen) return null;
@@ -92,6 +137,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
     const vendor = vendors.find((candidate) => candidate.id === vendorId);
     setIsSubmitting(true);
     try {
+      const receiptImages = await Promise.all(receiptFiles.map(compressReceiptImage));
       await addExpense({
         vendorId: vendor?.id,
         vendorName: vendor?.companyName || vendor?.name,
@@ -106,6 +152,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
         projectId: projectId || undefined,
         clientId: projects.find((project) => project.id === projectId)?.clientId || defaultClientId,
         isBillable: false,
+        receiptImages,
         paymentStatus: 'Paid',
         description: description.trim() || `Expense paid${vendor ? ` to ${vendor.companyName || vendor.name}` : ''}`,
       });
@@ -264,11 +311,51 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                   className="w-full resize-none rounded-xl border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                 />
               </label>
+              <div className="space-y-2 sm:col-span-2">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">Receipt images (optional)</span>
+                  <button
+                    type="button"
+                    onClick={() => receiptInputRef.current?.click()}
+                    disabled={receiptFiles.length >= MAX_RECEIPT_IMAGES || isSubmitting}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                  >
+                    <ImagePlus className="h-4 w-4" /> Add images
+                  </button>
+                  <input
+                    ref={receiptInputRef}
+                    className="sr-only"
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    capture="environment"
+                    multiple
+                    onChange={(event) => {
+                      const incoming = Array.from(event.target.files || []);
+                      const next = [...receiptFiles, ...incoming].slice(0, MAX_RECEIPT_IMAGES);
+                      if (incoming.length + receiptFiles.length > MAX_RECEIPT_IMAGES) setError('Attach up to three receipt images.');
+                      setReceiptFiles(next);
+                      event.target.value = '';
+                    }}
+                  />
+                </div>
+                {receiptFiles.length > 0 && (
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                    {receiptFiles.map((file, index) => (
+                      <div key={`${file.name}-${file.lastModified}-${index}`} className="flex min-w-0 items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs dark:border-slate-700 dark:bg-slate-800">
+                        <span className="truncate text-slate-700 dark:text-slate-200">{file.name}</span>
+                        <button type="button" title={`Remove ${file.name}`} onClick={() => setReceiptFiles((files) => files.filter((_, currentIndex) => currentIndex !== index))} className="text-slate-400 hover:text-rose-600">
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
           <div className="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-6 py-4 dark:border-slate-700 dark:bg-slate-800/60">
-            <p className="text-xs text-slate-500">Tax, FX, attachments, and itemization remain disabled until their ledger workflows are certified.</p>
+            <p className="text-xs text-slate-500">Receipt images are stored with this expense. Tax, FX, and itemization remain unavailable.</p>
             <div className="flex shrink-0 gap-2">
               <button type="button" onClick={onClose} disabled={isSubmitting} className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
                 Cancel

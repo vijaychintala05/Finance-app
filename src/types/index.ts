@@ -331,6 +331,19 @@ export interface ExpenseItem {
   amount: number;
 }
 
+export interface ExpenseReceiptAttachment {
+  id: string;
+  fileName: string;
+  mimeType: 'image/jpeg' | 'image/png' | 'image/webp';
+  byteSize: number;
+}
+
+export interface ExpenseReceiptUpload {
+  name: string;
+  mimeType: 'image/jpeg' | 'image/png' | 'image/webp';
+  dataBase64: string;
+}
+
 export interface Expense {
   id: string;
   organizationId?: string;
@@ -359,6 +372,8 @@ export interface Expense {
   description: string;
   notes?: string;
   receiptFileName?: string;
+  receiptAttachments?: ExpenseReceiptAttachment[];
+  receiptImages?: ExpenseReceiptUpload[];
   createdAt: string;
 }
 

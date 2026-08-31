@@ -926,8 +926,8 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (Number(expenseData.taxAmount || 0) !== 0) {
       throw new Error('Expense tax posting is not enabled. Record a bill with verified tax lines instead.');
     }
-    if (expenseData.invoiceNumber || expenseData.receiptFileName) {
-      throw new Error('Vendor references and receipt attachments require durable server storage and are not enabled yet.');
+    if (expenseData.invoiceNumber) {
+      throw new Error('Vendor references are not enabled until their server workflow is certified.');
     }
     if (expenseData.currency && expenseData.currency !== settings.currencyCode) {
       throw new Error('Foreign-currency expenses require a server-verified exchange-rate workflow.');
@@ -942,6 +942,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       projectId: expenseData.projectId,
       clientId: expenseData.clientId,
       isBillable: expenseData.isBillable,
+      receiptImages: expenseData.receiptImages,
     });
     if (!response.data) throw new Error(response.error || 'Expense could not be posted');
     await refreshAfterCommittedWrite();

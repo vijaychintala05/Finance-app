@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Edit3, FileText, History, Plus, Trash2, X } from 'lucide-react';
-import { Invoice, InvoiceEditHistory, InvoiceItem } from '../../types';
+import { Invoice, InvoiceEditHistory, InvoiceItem, Estimate } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 import { formatCurrency } from '../../utils/formatters';
 import { QuickAddClientModal } from '../common/QuickAddClientModal';
@@ -14,6 +14,8 @@ interface InvoiceEditorModalProps {
   onInvoiceUpdated?: (invoice: Invoice) => void;
   defaultProjectId?: string;
   defaultClientId?: string;
+  initialClientId?: string;
+  initialEstimate?: Estimate | null;
 }
 
 export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
@@ -24,6 +26,8 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
   onInvoiceUpdated,
   defaultProjectId,
   defaultClientId,
+  initialClientId,
+  initialEstimate,
 }) => {
   const { clients, projects, accounts, settings, salespersons, addInvoice, updateInvoice } = useBooks();
 
@@ -121,9 +125,34 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
             ]
       );
       setEditReason('');
+    } else if (initialEstimate) {
+      setClientId(initialEstimate.clientId || clients[0]?.id || '');
+      setProjectId(initialEstimate.projectId || '');
+      setSalespersonId(initialEstimate.salespersonId || '');
+      setIssueDate(new Date().toISOString().split('T')[0]);
+      setDueDate(new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0]);
+      setDiscount('0');
+      setNotes(initialEstimate.notes || `Converted from Quote #${initialEstimate.estimateNumber}`);
+      setTerms('Net 30. Please remit payment via bank transfer.');
+      setItems(
+        initialEstimate.items && initialEstimate.items.length > 0
+          ? initialEstimate.items.map((it, idx) => ({ ...it, id: `item-${Date.now()}-${idx + 1}` }))
+          : [
+              {
+                id: `item-${Date.now()}-1`,
+                description: 'Service',
+                accountId: revenueAccounts[0]?.id || '',
+                quantity: 1,
+                unitPrice: 0,
+                taxRate: settings.defaultTaxRate,
+                amount: 0,
+              },
+            ]
+      );
+      setEditReason('');
     } else {
       const targetProj = projects.find((p) => p.id === defaultProjectId);
-      const resolvedClientId = defaultClientId || targetProj?.clientId || clients[0]?.id || '';
+      const resolvedClientId = initialClientId || defaultClientId || targetProj?.clientId || clients[0]?.id || '';
       setClientId(resolvedClientId);
       setProjectId(defaultProjectId || '');
       setSalespersonId('');
@@ -147,7 +176,7 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
       ]);
       setEditReason('');
     }
-  }, [editingInvoice, isOpen, defaultProjectId, defaultClientId]);
+  }, [editingInvoice, isOpen, defaultProjectId, defaultClientId, initialClientId, initialEstimate]);
 
   if (!isOpen) return null;
 

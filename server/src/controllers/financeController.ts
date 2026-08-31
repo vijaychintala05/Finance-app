@@ -33,6 +33,7 @@ import { DocumentNumberingEngine } from '../services/DocumentNumberingEngine';
 import { FinancialDestructiveActionsService } from '../accounting/FinancialDestructiveActionsService';
 import { isIsoCalendarDate } from '../utils/date';
 import { ExpensePostingService } from '../services/ExpensePostingService';
+import { ExpenseReceiptService } from '../services/ExpenseReceiptService';
 import { GSTComplianceService } from '../services/GSTComplianceService';
 
 export class FinanceController {
@@ -865,6 +866,7 @@ export class FinanceController {
   public static async getExpenses(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
     const result = await db.query('SELECT * FROM expenses WHERE organization_id = $1 ORDER BY date DESC', [orgId]);
+    const attachmentsByExpense = await ExpenseReceiptService.listForExpenses(db, orgId);
     res.json(result.rows.map((expense) => ({
       id: expense.id, organizationId: expense.organization_id, referenceNumber: expense.expense_number,
       vendorName: expense.vendor_name || undefined, accountId: expense.expense_account_id,
@@ -872,6 +874,8 @@ export class FinanceController {
       amount: Number(expense.amount), taxAmount: Number(expense.tax_amount || 0),
       projectId: expense.project_id || undefined, clientId: expense.client_id || undefined,
       isBillable: Boolean(expense.is_billable), paymentStatus: 'Paid', status: expense.status || 'POSTED', description: expense.description || '', createdAt: expense.created_at,
+      receiptAttachments: attachmentsByExpense.get(expense.id) || [],
+      receiptFileName: attachmentsByExpense.get(expense.id)?.[0]?.fileName,
     })));
   }
 
@@ -887,6 +891,18 @@ export class FinanceController {
       const message = error.message || 'Expense could not be posted';
       res.status(message.startsWith('EXPENSE_INPUT_INVALID:') ? 400 : 422).json({ error: message });
     }
+  }
+
+  public static async getExpenseReceipt(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const receipt = await ExpenseReceiptService.getContent(db, req.auth!.organizationId, req.params.id, req.params.receiptId);
+    if (!receipt) {
+      res.status(404).json({ error: 'Receipt image not found' });
+      return;
+    }
+    res.setHeader('Content-Type', receipt.mimeType);
+    res.setHeader('Content-Length', String(receipt.content.length));
+    res.setHeader('Content-Disposition', `inline; filename="${receipt.fileName.replaceAll('"', '')}"`);
+    res.send(receipt.content);
   }
 
   public static async voidExpense(req: AuthenticatedRequest, res: Response): Promise<void> {

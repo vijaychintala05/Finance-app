@@ -3,6 +3,7 @@ import { ServerPostingEngine } from '../accounting/postingEngine';
 import { DocumentNumberingEngine } from './DocumentNumberingEngine';
 import { newId } from '../utils/ids';
 import { isIsoCalendarDate } from '../utils/date';
+import { ExpenseReceiptService, type ExpenseReceiptUpload } from './ExpenseReceiptService';
 
 export interface ExpensePostingInput {
   id?: string;
@@ -16,6 +17,7 @@ export interface ExpensePostingInput {
   clientId?: string;
   isBillable?: boolean;
   sourceOccurrenceKey?: string;
+  receiptImages?: ExpenseReceiptUpload[];
 }
 
 export class ExpensePostingService {
@@ -24,8 +26,9 @@ export class ExpensePostingService {
     userId: string,
     input: ExpensePostingInput,
     transactionClient?: DbQueryClient
-  ): Promise<{ id: string; expenseNumber: string; amount: number; journalEntryId: string }> {
+  ): Promise<{ id: string; expenseNumber: string; amount: number; journalEntryId: string; receiptAttachments: Array<{ id: string; fileName: string; mimeType: string; byteSize: number }> }> {
     const execute = async (client: DbQueryClient) => {
+      const receipts = ExpenseReceiptService.validateUploads(input.receiptImages);
       const amount = Number(input.amount);
       if (!isIsoCalendarDate(input.date) || !input.expenseAccountId || !input.paidFromAccountId ||
           !Number.isFinite(amount) || amount <= 0 || Math.round(amount * 100) / 100 !== amount) {
@@ -76,6 +79,7 @@ export class ExpensePostingService {
           input.vendorName || '', input.date, amount, input.description || '', input.projectId || null,
           input.clientId || null, Boolean(input.isBillable), input.sourceOccurrenceKey || null]
       );
+      const receiptAttachments = await ExpenseReceiptService.attachToExpense(client, organizationId, id, receipts);
       const posting = await ServerPostingEngine.postEntry({
         organizationId,
         entryNumber: `JRN-EXP-${id}`,
@@ -96,7 +100,7 @@ export class ExpensePostingService {
          VALUES ($1, $2, $3, 'EXPENSE_CREATED', 'Expense', $4, $5)`,
         [newId('aud'), organizationId, userId, id, JSON.stringify({ amount, expenseNumber, journalEntryId: posting.entryId })]
       );
-      return { id, expenseNumber, amount, journalEntryId: posting.entryId };
+      return { id, expenseNumber, amount, journalEntryId: posting.entryId, receiptAttachments };
     };
     return transactionClient ? execute(transactionClient) : db.transaction(execute);
   }

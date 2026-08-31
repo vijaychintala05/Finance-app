@@ -5,7 +5,7 @@ import { applyIdentitySchema } from './identitySchema';
 import { applyEnterpriseHardeningSchema } from './enterpriseHardeningSchema';
 import type { DbQueryResult } from './db';
 
-export const CURRENT_SCHEMA_VERSION = '2026.08.30-v6-enterprise-fortress';
+export const CURRENT_SCHEMA_VERSION = '2026.08.31-v7-expense-receipts';
 
 export class MigrationRunner {
   public static async runMigrations(queryClient?: { query: (text: string, params?: any[]) => Promise<DbQueryResult> }): Promise<void> {

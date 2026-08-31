@@ -9,6 +9,7 @@ import {
   CreditCard,
   Download,
   Edit2,
+  ExternalLink,
   FileCheck,
   FilePlus2,
   FileSpreadsheet,
@@ -24,6 +25,8 @@ import {
   Printer,
   Receipt,
   RotateCcw,
+  ShieldAlert,
+  ShieldCheck,
   Sparkles,
   Tag,
   Trash2,
@@ -31,12 +34,13 @@ import {
   TrendingUp,
   User,
   Wallet,
-  X,
+  Zap,
 } from 'lucide-react';
 import { Client, Invoice, Estimate, PaymentReceipt, CreditNote } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate, getStatusBadgeStyle } from '../../utils/formatters';
 import { InvoiceEditorModal } from '../invoices/InvoiceEditorModal';
+import { RecordCustomerPaymentModal } from '../sales/RecordCustomerPaymentModal';
 
 interface CustomerWorkspaceProps {
   client: Client;
@@ -65,6 +69,9 @@ export const CustomerWorkspace: React.FC<CustomerWorkspaceProps> = ({
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('details');
   const [statementPeriod, setStatementPeriod] = useState<StatementPeriod>('ytd');
   const [isInvoiceModalOpen, setIsInvoiceModalOpen] = useState(false);
+  const [selectedEstimateForConvert, setSelectedEstimateForConvert] = useState<Estimate | null>(null);
+  const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
+  const [selectedInvoiceForPayment, setSelectedInvoiceForPayment] = useState<Invoice | null>(null);
 
   const money = (value: number) => formatCurrency(value, settings.currencySymbol);
 
@@ -98,15 +105,113 @@ export const CustomerWorkspace: React.FC<CustomerWorkspaceProps> = ({
   const totalInvoiced = clientInvoices.reduce((sum, i) => sum + i.totalAmount, 0);
   const totalPaid = clientInvoices.reduce((sum, i) => sum + i.paidAmount, 0);
   const totalReceivable = clientInvoices.reduce((sum, i) => sum + i.balanceDue, 0);
-  const overdueReceivable = clientInvoices
-    .filter((i) => i.status === 'Overdue' || (i.balanceDue > 0 && new Date(i.dueDate) < new Date()))
-    .reduce((sum, i) => sum + i.balanceDue, 0);
+
+  // Aging Radar Calculation
+  const agingBuckets = useMemo(() => {
+    const today = new Date().getTime();
+    let current0_30 = 0;
+    let days31_60 = 0;
+    let days61_90 = 0;
+    let days90Plus = 0;
+
+    clientInvoices.forEach((inv) => {
+      if (inv.balanceDue <= 0) return;
+      const dueTime = new Date(inv.dueDate).getTime();
+      const diffDays = Math.floor((today - dueTime) / (1000 * 60 * 60 * 24));
+
+      if (diffDays <= 0 || diffDays <= 30) {
+        current0_30 += inv.balanceDue;
+      } else if (diffDays <= 60) {
+        days31_60 += inv.balanceDue;
+      } else if (diffDays <= 90) {
+        days61_90 += inv.balanceDue;
+      } else {
+        days90Plus += inv.balanceDue;
+      }
+    });
+
+    const overdueTotal = days31_60 + days61_90 + days90Plus;
+
+    return {
+      current0_30,
+      days31_60,
+      days61_90,
+      days90Plus,
+      overdueTotal,
+    };
+  }, [clientInvoices]);
+
+  // Days Sales Outstanding (DSO) / Payment Velocity Metric
+  const dsoStats = useMemo(() => {
+    if (clientPayments.length === 0) {
+      return {
+        avgDays: null,
+        label: 'New Customer · No payment history yet',
+        badge: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400',
+      };
+    }
+
+    let totalDays = 0;
+    let countedInvoices = 0;
+
+    clientInvoices.forEach((inv) => {
+      if (inv.paidAmount > 0) {
+        const invDate = new Date(inv.issueDate).getTime();
+        // Find matching payment or use created date
+        const matchPayment = clientPayments.find((p) => p.invoiceId === inv.id || p.invoiceNumber === inv.invoiceNumber);
+        if (matchPayment) {
+          const pmtDate = new Date(matchPayment.paymentDate).getTime();
+          const days = Math.max(0, Math.round((pmtDate - invDate) / (1000 * 60 * 60 * 24)));
+          totalDays += days;
+          countedInvoices++;
+        }
+      }
+    });
+
+    const avgDays = countedInvoices > 0 ? Math.round(totalDays / countedInvoices) : 15;
+
+    if (agingBuckets.days90Plus > 0) {
+      return {
+        avgDays,
+        label: `⚠️ High Risk (${avgDays}d avg turnaround · 90d+ overdue)`,
+        badge: 'bg-rose-50 text-rose-700 border border-rose-200 dark:bg-rose-950 dark:text-rose-300 dark:border-rose-800',
+      };
+    } else if (avgDays <= 15) {
+      return {
+        avgDays,
+        label: `⚡ Fast Payer (~${avgDays} days avg settlement)`,
+        badge: 'bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-800',
+      };
+    } else if (avgDays <= 35) {
+      return {
+        avgDays,
+        label: `🟢 Standard Terms (~${avgDays} days avg settlement)`,
+        badge: 'bg-blue-50 text-blue-700 border border-blue-200 dark:bg-blue-950 dark:text-blue-300 dark:border-blue-800',
+      };
+    } else {
+      return {
+        avgDays,
+        label: `⚠️ Extended Terms (~${avgDays} days avg settlement)`,
+        badge: 'bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-800',
+      };
+    }
+  }, [clientInvoices, clientPayments, agingBuckets]);
 
   const handleDelete = () => {
     if (confirm(`Are you sure you want to delete customer "${client.companyName}"? This action cannot be undone.`)) {
       deleteClient(client.id);
       onBack();
     }
+  };
+
+  const handleConvertToInvoice = (est: Estimate) => {
+    setSelectedEstimateForConvert(est);
+    setIsInvoiceModalOpen(true);
+  };
+
+  const handleOpenPaymentModal = (inv: Invoice) => {
+    setSelectedInvoiceForPayment(inv);
+    setIsPaymentModalOpen(true);
   };
 
   // Activity Timeline Events
@@ -252,7 +357,7 @@ export const CustomerWorkspace: React.FC<CustomerWorkspaceProps> = ({
           <div className="flex items-center gap-2">
             <button
               onClick={onBack}
-              className="group inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-bold text-slate-700 shadow-xs hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+              className="group inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-bold text-slate-700 shadow-xs hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 cursor-pointer"
             >
               <ArrowLeft className="h-3.5 w-3.5 transition-transform group-hover:-translate-x-0.5" />
               <span>Back to Customers</span>
@@ -273,6 +378,9 @@ export const CustomerWorkspace: React.FC<CustomerWorkspaceProps> = ({
                 <span className="inline-flex items-center rounded-full bg-blue-50 px-2.5 py-0.5 text-[10px] font-bold text-blue-700 border border-blue-200/60 dark:bg-blue-950/60 dark:text-blue-300 dark:border-blue-800/50">
                   CUST #{client.id.slice(-6).toUpperCase()}
                 </span>
+                <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[10px] font-bold ${dsoStats.badge}`}>
+                  {dsoStats.label}
+                </span>
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400">
                 Primary Contact: <strong>{client.name}</strong> · {client.email} · {client.phone || 'No phone'}
@@ -284,15 +392,28 @@ export const CustomerWorkspace: React.FC<CustomerWorkspaceProps> = ({
         {/* Action Controls */}
         <div className="flex flex-wrap items-center gap-2">
           <button
-            onClick={() => setIsInvoiceModalOpen(true)}
-            className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-blue-600 px-4 text-xs font-bold text-white shadow-xs hover:bg-blue-700 transition-colors"
+            onClick={() => {
+              setSelectedEstimateForConvert(null);
+              setIsInvoiceModalOpen(true);
+            }}
+            className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-blue-600 px-4 text-xs font-bold text-white shadow-xs hover:bg-blue-700 transition-colors cursor-pointer"
           >
             <FilePlus2 className="h-4 w-4" />
             <span>+ Invoice</span>
           </button>
           <button
+            onClick={() => {
+              setSelectedInvoiceForPayment(null);
+              setIsPaymentModalOpen(true);
+            }}
+            className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-emerald-600 px-4 text-xs font-bold text-white shadow-xs hover:bg-emerald-700 transition-colors cursor-pointer"
+          >
+            <Wallet className="h-4 w-4" />
+            <span>+ Record Payment</span>
+          </button>
+          <button
             onClick={() => onEdit(client)}
-            className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 text-xs font-bold text-slate-700 shadow-xs hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+            className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 text-xs font-bold text-slate-700 shadow-xs hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 cursor-pointer"
           >
             <Edit2 className="h-3.5 w-3.5 text-slate-500" />
             <span>Edit Profile</span>
@@ -300,7 +421,7 @@ export const CustomerWorkspace: React.FC<CustomerWorkspaceProps> = ({
           <button
             onClick={handleDelete}
             title="Delete customer"
-            className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-400 shadow-xs hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-rose-950/40"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-400 shadow-xs hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-rose-950/40 cursor-pointer"
           >
             <Trash2 className="h-4 w-4" />
           </button>
@@ -361,14 +482,84 @@ export const CustomerWorkspace: React.FC<CustomerWorkspaceProps> = ({
               <Clock className="h-3.5 w-3.5" />
             </div>
           </div>
-          <div className={`mt-2 font-financial text-2xl font-extrabold ${overdueReceivable > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-900 dark:text-white'}`}>
-            {money(overdueReceivable)}
+          <div className={`mt-2 font-financial text-2xl font-extrabold ${agingBuckets.overdueTotal > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-900 dark:text-white'}`}>
+            {money(agingBuckets.overdueTotal)}
           </div>
           <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-            {overdueReceivable > 0 ? 'Urgent collection follow-up required' : 'All accounts within terms'}
+            {agingBuckets.overdueTotal > 0 ? 'Urgent collection follow-up required' : 'All accounts within terms'}
           </p>
         </div>
       </section>
+
+      {/* RECEIVABLES AGING RADAR BAR */}
+      {totalReceivable > 0 && (
+        <section className="rounded-2xl border border-slate-200/90 bg-white p-5 shadow-xs dark:border-slate-800/90 dark:bg-slate-900 space-y-3">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+            <div>
+              <h2 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                <ShieldCheck className="h-4 w-4 text-blue-600" />
+                <span>Receivables Aging Radar & Risk Exposure</span>
+              </h2>
+              <p className="text-[11px] text-slate-500">Aging breakdown across outstanding unpaid customer balances</p>
+            </div>
+            <div className="text-xs font-bold text-slate-700 dark:text-slate-300">
+              Total Open: <span className="font-financial font-extrabold text-blue-600 dark:text-blue-400">{money(totalReceivable)}</span>
+            </div>
+          </div>
+
+          {/* Segmented Progress Bar */}
+          <div className="flex h-3 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+            {agingBuckets.current0_30 > 0 && (
+              <div
+                style={{ width: `${(agingBuckets.current0_30 / totalReceivable) * 100}%` }}
+                className="bg-emerald-500 transition-all"
+                title={`Current 0-30d: ${money(agingBuckets.current0_30)}`}
+              />
+            )}
+            {agingBuckets.days31_60 > 0 && (
+              <div
+                style={{ width: `${(agingBuckets.days31_60 / totalReceivable) * 100}%` }}
+                className="bg-amber-500 transition-all"
+                title={`31-60d Overdue: ${money(agingBuckets.days31_60)}`}
+              />
+            )}
+            {agingBuckets.days61_90 > 0 && (
+              <div
+                style={{ width: `${(agingBuckets.days61_90 / totalReceivable) * 100}%` }}
+                className="bg-orange-500 transition-all"
+                title={`61-90d Overdue: ${money(agingBuckets.days61_90)}`}
+              />
+            )}
+            {agingBuckets.days90Plus > 0 && (
+              <div
+                style={{ width: `${(agingBuckets.days90Plus / totalReceivable) * 100}%` }}
+                className="bg-rose-600 transition-all"
+                title={`90d+ Overdue: ${money(agingBuckets.days90Plus)}`}
+              />
+            )}
+          </div>
+
+          {/* Aging Chips */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
+            <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 p-2.5 text-xs dark:border-emerald-950 dark:bg-emerald-950/30">
+              <span className="font-semibold text-emerald-700 dark:text-emerald-300 text-[11px]">Current (0-30 Days)</span>
+              <p className="mt-0.5 font-financial font-extrabold text-emerald-800 dark:text-emerald-200">{money(agingBuckets.current0_30)}</p>
+            </div>
+            <div className="rounded-xl border border-amber-100 bg-amber-50/50 p-2.5 text-xs dark:border-amber-950 dark:bg-amber-950/30">
+              <span className="font-semibold text-amber-700 dark:text-amber-300 text-[11px]">31-60 Days Overdue</span>
+              <p className="mt-0.5 font-financial font-extrabold text-amber-800 dark:text-amber-200">{money(agingBuckets.days31_60)}</p>
+            </div>
+            <div className="rounded-xl border border-orange-100 bg-orange-50/50 p-2.5 text-xs dark:border-orange-950 dark:bg-orange-950/30">
+              <span className="font-semibold text-orange-700 dark:text-orange-300 text-[11px]">61-90 Days Overdue</span>
+              <p className="mt-0.5 font-financial font-extrabold text-orange-800 dark:text-orange-200">{money(agingBuckets.days61_90)}</p>
+            </div>
+            <div className="rounded-xl border border-rose-100 bg-rose-50/50 p-2.5 text-xs dark:border-rose-950 dark:bg-rose-950/30">
+              <span className="font-semibold text-rose-700 dark:text-rose-300 text-[11px]">90+ Days Overdue</span>
+              <p className="mt-0.5 font-financial font-extrabold text-rose-800 dark:text-rose-200">{money(agingBuckets.days90Plus)}</p>
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* 6 WORKSPACE TABS */}
       <div className="flex border-b border-slate-200/90 gap-2 overflow-x-auto pb-2 dark:border-slate-800">
@@ -386,7 +577,7 @@ export const CustomerWorkspace: React.FC<CustomerWorkspaceProps> = ({
             <button
               key={tab.key}
               onClick={() => setActiveTab(tab.key as WorkspaceTab)}
-              className={`inline-flex shrink-0 items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-bold transition-all ${
+              className={`inline-flex shrink-0 items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-bold transition-all cursor-pointer ${
                 isSelected
                   ? 'bg-blue-600 text-white shadow-xs'
                   : 'bg-white border border-slate-200/80 text-slate-600 hover:bg-slate-50 hover:text-slate-900 dark:bg-slate-900 dark:border-slate-800 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white'
@@ -585,6 +776,7 @@ export const CustomerWorkspace: React.FC<CustomerWorkspaceProps> = ({
                     <th className="py-3 px-3">Expiry</th>
                     <th className="py-3 px-3">Status</th>
                     <th className="py-3 px-3 text-right">Amount</th>
+                    <th className="py-3 px-3 text-right pr-4">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
@@ -600,6 +792,15 @@ export const CustomerWorkspace: React.FC<CustomerWorkspaceProps> = ({
                       </td>
                       <td className="py-3 px-3 text-right font-financial font-extrabold text-slate-900 dark:text-white">
                         {money(est.totalAmount)}
+                      </td>
+                      <td className="py-3 px-3 text-right pr-4">
+                        <button
+                          onClick={() => handleConvertToInvoice(est)}
+                          className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1 text-[11px] font-bold text-blue-700 shadow-xs hover:bg-blue-100 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-300 cursor-pointer"
+                        >
+                          <Zap className="h-3 w-3" />
+                          <span>Convert to Invoice</span>
+                        </button>
                       </td>
                     </tr>
                   ))}
@@ -619,8 +820,11 @@ export const CustomerWorkspace: React.FC<CustomerWorkspaceProps> = ({
               <p className="text-xs text-slate-500 dark:text-slate-400">All posted invoices and payment settlements.</p>
             </div>
             <button
-              onClick={() => setIsInvoiceModalOpen(true)}
-              className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-blue-700"
+              onClick={() => {
+                setSelectedEstimateForConvert(null);
+                setIsInvoiceModalOpen(true);
+              }}
+              className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-blue-700 cursor-pointer"
             >
               <Plus className="h-3.5 w-3.5" />
               <span>New Invoice</span>
@@ -645,6 +849,7 @@ export const CustomerWorkspace: React.FC<CustomerWorkspaceProps> = ({
                     <th className="py-3 px-3 text-right">Total</th>
                     <th className="py-3 px-3 text-right">Paid</th>
                     <th className="py-3 px-3 text-right">Balance Due</th>
+                    <th className="py-3 px-3 text-right pr-4">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
@@ -667,6 +872,22 @@ export const CustomerWorkspace: React.FC<CustomerWorkspaceProps> = ({
                       <td className={`py-3 px-3 text-right font-financial font-extrabold ${inv.balanceDue > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-500'}`}>
                         {money(inv.balanceDue)}
                       </td>
+                      <td className="py-3 px-3 text-right pr-4">
+                        {inv.balanceDue > 0 ? (
+                          <button
+                            onClick={() => handleOpenPaymentModal(inv)}
+                            className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700 shadow-xs hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 cursor-pointer"
+                          >
+                            <Wallet className="h-3 w-3" />
+                            <span>Record Payment</span>
+                          </button>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600">
+                            <CheckCircle2 className="h-3 w-3" />
+                            <span>Settled</span>
+                          </span>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -684,6 +905,16 @@ export const CustomerWorkspace: React.FC<CustomerWorkspaceProps> = ({
               <h2 className="text-sm font-bold tracking-tight text-slate-900 dark:text-white">Payment Receipts</h2>
               <p className="text-xs text-slate-500 dark:text-slate-400">All customer cash and bank remittances.</p>
             </div>
+            <button
+              onClick={() => {
+                setSelectedInvoiceForPayment(null);
+                setIsPaymentModalOpen(true);
+              }}
+              className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-700 cursor-pointer"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              <span>Record Payment</span>
+            </button>
           </div>
 
           {clientPayments.length === 0 ? (
@@ -742,7 +973,7 @@ export const CustomerWorkspace: React.FC<CustomerWorkspaceProps> = ({
                   <button
                     key={p}
                     onClick={() => setStatementPeriod(p)}
-                    className={`rounded-md px-2.5 py-1 uppercase tracking-wider transition-all ${
+                    className={`rounded-md px-2.5 py-1 uppercase tracking-wider transition-all cursor-pointer ${
                       statementPeriod === p
                         ? 'bg-white text-blue-700 shadow-xs dark:bg-slate-900 dark:text-blue-400'
                         : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
@@ -755,7 +986,7 @@ export const CustomerWorkspace: React.FC<CustomerWorkspaceProps> = ({
 
               <button
                 onClick={() => window.print()}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 shadow-xs hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 shadow-xs hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 cursor-pointer"
               >
                 <Printer className="h-3.5 w-3.5" />
                 <span>Print Statement</span>
@@ -823,8 +1054,25 @@ export const CustomerWorkspace: React.FC<CustomerWorkspaceProps> = ({
       {isInvoiceModalOpen && (
         <InvoiceEditorModal
           isOpen={isInvoiceModalOpen}
-          onClose={() => setIsInvoiceModalOpen(false)}
+          onClose={() => {
+            setIsInvoiceModalOpen(false);
+            setSelectedEstimateForConvert(null);
+          }}
           initialClientId={client.id}
+          initialEstimate={selectedEstimateForConvert}
+        />
+      )}
+
+      {/* Record Customer Payment Modal */}
+      {isPaymentModalOpen && (
+        <RecordCustomerPaymentModal
+          isOpen={isPaymentModalOpen}
+          onClose={() => {
+            setIsPaymentModalOpen(false);
+            setSelectedInvoiceForPayment(null);
+          }}
+          clientId={client.id}
+          targetInvoice={selectedInvoiceForPayment}
         />
       )}
     </div>

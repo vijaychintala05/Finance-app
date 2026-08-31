@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ArrowLeft,
   Building2,
@@ -17,6 +17,7 @@ import {
 import { Expense } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate } from '../../utils/formatters';
+import { apiClient } from '../../api/client';
 
 interface ExpenseDetailsModalProps {
   isOpen: boolean;
@@ -31,6 +32,31 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
 }) => {
   const { settings, deleteExpense } = useBooks();
   const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const [receiptUrls, setReceiptUrls] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    let active = true;
+    const urls: string[] = [];
+    const loadReceipts = async () => {
+      if (!isOpen || !expense?.receiptAttachments?.length) {
+        setReceiptUrls({});
+        return;
+      }
+      const loaded = await Promise.all(expense.receiptAttachments.map(async (attachment) => {
+        const response = await apiClient.getBlob(`/finance/expenses/${expense.id}/receipts/${attachment.id}`);
+        if (!response.data) return null;
+        const url = URL.createObjectURL(response.data);
+        urls.push(url);
+        return [attachment.id, url] as const;
+      }));
+      if (active) setReceiptUrls(Object.fromEntries(loaded.filter((item): item is readonly [string, string] => Boolean(item))));
+    };
+    void loadReceipts();
+    return () => {
+      active = false;
+      urls.forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, [expense?.id, expense?.receiptAttachments, isOpen]);
 
   if (!isOpen || !expense) return null;
 
@@ -118,11 +144,37 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
                   ? 'Receipt Attached'
                   : 'No Receipt'}
               </span>
-              {expense.receiptFileName && (
+              {expense.receiptAttachments?.length ? (
+                <span className="text-[9px] text-emerald-600 font-bold mt-0.5">{expense.receiptAttachments.length} image{expense.receiptAttachments.length === 1 ? '' : 's'}</span>
+              ) : expense.receiptFileName && (
                 <span className="text-[9px] text-emerald-600 font-bold mt-0.5">Uploaded</span>
               )}
             </div>
           </div>
+
+          {expense.receiptAttachments && expense.receiptAttachments.length > 0 && (
+            <section>
+              <p className="mb-2 text-xs font-semibold text-slate-500 dark:text-slate-400">Receipt images</p>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                {expense.receiptAttachments.map((attachment) => (
+                  <a
+                    key={attachment.id}
+                    href={receiptUrls[attachment.id] || undefined}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="block overflow-hidden rounded-xl border border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800"
+                  >
+                    {receiptUrls[attachment.id] ? (
+                      <img src={receiptUrls[attachment.id]} alt={attachment.fileName} className="aspect-square w-full object-cover" />
+                    ) : (
+                      <div className="grid aspect-square place-items-center text-xs text-slate-400">Loading receipt…</div>
+                    )}
+                    <span className="block truncate px-2 py-1.5 text-[10px] font-medium text-slate-600 dark:text-slate-300">{attachment.fileName}</span>
+                  </a>
+                ))}
+              </div>
+            </section>
+          )}
 
           {/* BILLABLE / NON-BILLABLE TAG */}
           <div>

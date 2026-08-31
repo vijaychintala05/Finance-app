@@ -5,11 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
+    "build": "vite build --configLoader native && node scripts/build-server.mjs",
     "start": "node dist/server.cjs",
     "preview": "vite preview",
     "clean": "node -e \"const fs=require('node:fs'); for (const p of ['dist','server.js']) fs.rmSync(p,{recursive:true,force:true})\"",
-    "test": "vitest run",
+    "test": "vitest run --configLoader native",
     "test:e2e": "playwright test",
     "lint": "tsc --noEmit"
   },

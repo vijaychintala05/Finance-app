@@ -146,6 +146,22 @@ export class ApiClient {
     return this.request<T>(endpoint, { method: 'GET' });
   }
 
+  async getBlob(endpoint: string): Promise<ApiResponse<Blob>> {
+    try {
+      const response = await fetch(`${this.baseUrl}${endpoint}`, {
+        credentials: 'same-origin',
+        headers: this.getAuthHeaders(),
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: response.statusText }));
+        return { data: null, error: errorData.error || response.statusText, status: response.status };
+      }
+      return { data: await response.blob(), error: null, status: response.status };
+    } catch (error: any) {
+      return { data: null, error: error.message || 'Receipt image could not be loaded', status: 500 };
+    }
+  }
+
   async post<T>(endpoint: string, body?: any): Promise<ApiResponse<T>> {
     return this.request<T>(endpoint, {
       method: 'POST',

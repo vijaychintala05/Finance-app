@@ -145,6 +145,7 @@ router.post('/saved-reports/:id/favorite', requirePermission('reports.view'), Fi
 // Expenses
 router.get('/expenses', requirePermission('expenses.view'), FinanceController.getExpenses);
 router.post('/expenses', requirePermission('expenses.create'), FinanceController.createExpense);
+router.get('/expenses/:id/receipts/:receiptId', requirePermission('expenses.view'), FinanceController.getExpenseReceipt);
 router.post('/expenses/:id/void', requirePermission('expenses.create'), FinanceController.voidExpense);
 
 // Bills

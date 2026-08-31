@@ -40,6 +40,7 @@ export const TENANT_SCOPED_TABLES = [
   'vendor_advance_applications',
   'ap_write_offs',
   'expenses',
+  'expense_receipt_attachments',
   'journal_entries',
   'period_locks',
   'period_close_checklists',
@@ -66,6 +67,18 @@ export const TENANT_SCOPED_TABLES = [
 
 export async function applyEnterpriseHardeningSchema(client: DbQueryClient): Promise<void> {
   const additiveStatements = [
+    `CREATE TABLE IF NOT EXISTS expense_receipt_attachments (
+      id VARCHAR(64) PRIMARY KEY,
+      organization_id VARCHAR(64) NOT NULL,
+      expense_id VARCHAR(64) NOT NULL,
+      file_name VARCHAR(180) NOT NULL,
+      mime_type VARCHAR(32) NOT NULL,
+      byte_size INTEGER NOT NULL,
+      content BYTEA NOT NULL,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT fk_expense_receipt_expense FOREIGN KEY (expense_id) REFERENCES expenses(id) ON DELETE RESTRICT
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_expense_receipts_org_expense ON expense_receipt_attachments (organization_id, expense_id)`,
     // 1. Audit Log Hash-Chaining Columns
     `ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS previous_hash VARCHAR(64)`,
     `ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS current_hash VARCHAR(64)`,

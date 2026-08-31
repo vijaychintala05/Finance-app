@@ -1,10 +1,14 @@
 import React, { useState } from 'react';
 import {
   Building2,
+  ChevronRight,
+  CreditCard,
   Edit2,
+  ExternalLink,
   Mail,
   Phone,
   Plus,
+  Receipt,
   Search,
   Trash2,
   User,
@@ -12,6 +16,7 @@ import {
 import { useBooks } from '../../context/BooksContext';
 import { Vendor } from '../../types';
 import { formatCurrency } from '../../utils/formatters';
+import { VendorWorkspace } from './VendorWorkspace';
 
 interface VendorsViewProps {
   autoOpenCreateModal?: boolean;
@@ -31,6 +36,7 @@ export const VendorsView: React.FC<VendorsViewProps> = ({
   const [search, setSearch] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedVendor, setSelectedVendor] = useState<Vendor | null>(null);
+  const [viewingVendor, setViewingVendor] = useState<Vendor | null>(null);
 
   React.useEffect(() => {
     if (autoOpenCreateModal) {
@@ -43,7 +49,7 @@ export const VendorsView: React.FC<VendorsViewProps> = ({
     if (selectedEntityId) {
       const found = vendors.find((v) => v.id === selectedEntityId || v.name === selectedEntityId);
       if (found) {
-        handleOpenEdit(found);
+        setViewingVendor(found);
       }
     }
   }, [selectedEntityId, vendors]);
@@ -108,7 +114,19 @@ export const VendorsView: React.FC<VendorsViewProps> = ({
         paymentTerms,
         address,
       });
-      return;
+      // Also update viewingVendor state if active
+      if (viewingVendor && viewingVendor.id === selectedVendor.id) {
+        setViewingVendor({
+          ...viewingVendor,
+          name,
+          contactPerson,
+          email,
+          phone,
+          taxId,
+          paymentTerms,
+          address,
+        });
+      }
     } else {
       try {
         await addVendor({
@@ -132,23 +150,38 @@ export const VendorsView: React.FC<VendorsViewProps> = ({
     handleCloseModal();
   };
 
+  // If viewing a single vendor workspace, render VendorWorkspace full page
+  if (viewingVendor) {
+    const liveVendor = vendors.find((v) => v.id === viewingVendor.id) || viewingVendor;
+    return (
+      <VendorWorkspace
+        vendor={liveVendor}
+        onBack={() => {
+          setViewingVendor(null);
+          if (onSelectedEntityClosed) onSelectedEntityClosed();
+        }}
+        onEdit={(v) => handleOpenEdit(v)}
+      />
+    );
+  }
+
   return (
-    <div className="p-4 sm:p-6 space-y-6 max-w-7xl mx-auto">
+    <div className="p-4 sm:p-6 space-y-6 max-w-7xl mx-auto animate-fade-in">
       {/* Header */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
-          <h2 className="text-xl font-bold text-slate-900 flex items-center space-x-2">
-            <Building2 className="w-6 h-6 text-indigo-600" />
+          <h2 className="text-xl font-bold text-slate-900 dark:text-white flex items-center space-x-2">
+            <Building2 className="w-6 h-6 text-purple-600" />
             <span>Vendors & Suppliers</span>
           </h2>
-          <p className="text-xs text-slate-500 mt-1">
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
             Maintain vendor directories, contact details, payment terms, tax IDs, and outstanding payables
           </p>
         </div>
 
         <button
           onClick={handleOpenCreate}
-          className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-2xs cursor-pointer transition-colors"
+          className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-2xs cursor-pointer transition-colors"
         >
           <Plus className="w-4 h-4" />
           <span>Add Vendor</span>
@@ -164,7 +197,7 @@ export const VendorsView: React.FC<VendorsViewProps> = ({
             placeholder="Search vendor name, contact person, email..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white pl-9 pr-3 py-2 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium"
+            className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white pl-9 pr-3 py-2 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-purple-500 font-medium"
           />
         </div>
       </div>
@@ -184,7 +217,7 @@ export const VendorsView: React.FC<VendorsViewProps> = ({
                 <th className="p-3 text-right pr-4">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
               {filteredVendors.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="p-8 text-center text-slate-400">
@@ -193,13 +226,20 @@ export const VendorsView: React.FC<VendorsViewProps> = ({
                 </tr>
               ) : (
                 filteredVendors.map((v) => (
-                  <tr key={v.id} className="hover:bg-slate-50 transition-colors">
-                    <td className="p-3 pl-4 font-bold text-slate-800">
-                      <div>{v.name}</div>
+                  <tr
+                    key={v.id}
+                    onClick={() => setViewingVendor(v)}
+                    className="hover:bg-purple-50/40 dark:hover:bg-slate-800/50 transition-colors cursor-pointer group"
+                  >
+                    <td className="p-3 pl-4 font-bold text-slate-900 dark:text-white">
+                      <div className="flex items-center gap-1.5">
+                        <span>{v.name}</span>
+                        <ChevronRight className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 text-purple-600 transition-opacity" />
+                      </div>
                       {v.taxId && <div className="text-[10px] font-mono text-slate-400">Tax ID: {v.taxId}</div>}
                     </td>
-                    <td className="p-3 text-slate-600 font-medium">{v.contactPerson || '—'}</td>
-                    <td className="p-3 text-slate-600">
+                    <td className="p-3 text-slate-600 dark:text-slate-300 font-medium">{v.contactPerson || '—'}</td>
+                    <td className="p-3 text-slate-600 dark:text-slate-300">
                       <div className="flex items-center gap-1">
                         <Mail className="w-3 h-3 text-slate-400" />
                         <span>{v.email || '—'}</span>
@@ -211,26 +251,32 @@ export const VendorsView: React.FC<VendorsViewProps> = ({
                         </div>
                       )}
                     </td>
-                    <td className="p-3 font-semibold text-slate-700">{v.paymentTerms || 'Net 30'}</td>
-                    <td className="p-3 text-right font-mono font-bold text-indigo-600">
+                    <td className="p-3 font-semibold text-slate-700 dark:text-slate-300">{v.paymentTerms || 'Net 30'}</td>
+                    <td className="p-3 text-right font-financial font-bold text-purple-600 dark:text-purple-400">
                       {formatCurrency(v.payablesBalance || 0, settings.currencySymbol)}
                     </td>
                     <td className="p-3 text-center">
-                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-100 text-emerald-800 border border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300">
                         {v.status || 'Active'}
                       </span>
                     </td>
-                    <td className="p-3 text-right pr-4">
+                    <td className="p-3 text-right pr-4" onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center justify-end space-x-2">
                         <button
                           onClick={() => handleOpenEdit(v)}
-                          className="p-1 text-slate-400 hover:text-indigo-600 cursor-pointer"
+                          className="p-1 text-slate-400 hover:text-purple-600 dark:hover:text-purple-400 cursor-pointer"
+                          title="Edit Vendor"
                         >
                           <Edit2 className="w-3.5 h-3.5" />
                         </button>
                         <button
-                          onClick={() => deleteVendor(v.id)}
-                          className="p-1 text-slate-400 hover:text-rose-600 cursor-pointer"
+                          onClick={() => {
+                            if (window.confirm(`Delete vendor "${v.name}"?`)) {
+                              deleteVendor(v.id);
+                            }
+                          }}
+                          className="p-1 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 cursor-pointer"
+                          title="Delete Vendor"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
@@ -249,109 +295,112 @@ export const VendorsView: React.FC<VendorsViewProps> = ({
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
           <div className="bg-white dark:bg-slate-900 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-xl border border-slate-200 dark:border-slate-800">
             <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
-              <Building2 className="w-5 h-5 text-indigo-600" />
+              <Building2 className="w-5 h-5 text-purple-600" />
               <span>{selectedVendor ? 'Edit Vendor Details' : 'Add New Vendor'}</span>
             </h3>
 
             <form onSubmit={handleSubmit} className="space-y-3">
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Vendor Company Name</label>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Vendor Company Name</label>
                 <input
                   type="text"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="e.g. AWS Cloud Services"
-                  className="w-full border border-slate-300 rounded-lg p-2 text-xs font-medium"
+                  placeholder="e.g. AWS Cloud Services / Century Plywood"
+                  className="w-full border border-slate-300 dark:border-slate-700 rounded-lg p-2 text-xs font-medium dark:bg-slate-800 dark:text-white"
                   required
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">Contact Person</label>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Contact Person</label>
                   <input
                     type="text"
                     value={contactPerson}
                     onChange={(e) => setContactPerson(e.target.value)}
-                    placeholder="e.g. Sarah Jenkins"
-                    className="w-full border border-slate-300 rounded-lg p-2 text-xs font-medium"
+                    placeholder="e.g. Rajesh Sharma"
+                    className="w-full border border-slate-300 dark:border-slate-700 rounded-lg p-2 text-xs font-medium dark:bg-slate-800 dark:text-white"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">Tax ID / GSTIN</label>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Tax ID / GSTIN</label>
                   <input
                     type="text"
                     value={taxId}
                     onChange={(e) => setTaxId(e.target.value)}
-                    placeholder="e.g. US99881122"
-                    className="w-full border border-slate-300 rounded-lg p-2 text-xs font-mono"
+                    placeholder="e.g. 36AABCU9603R1ZM"
+                    className="w-full border border-slate-300 dark:border-slate-700 rounded-lg p-2 text-xs font-mono dark:bg-slate-800 dark:text-white"
                   />
                 </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">Email</label>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Email</label>
                   <input
                     type="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    placeholder="billing@vendor.com"
-                    className="w-full border border-slate-300 rounded-lg p-2 text-xs font-medium"
+                    placeholder="accounts@vendor.com"
+                    className="w-full border border-slate-300 dark:border-slate-700 rounded-lg p-2 text-xs font-medium dark:bg-slate-800 dark:text-white"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">Phone</label>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Phone</label>
                   <input
-                    type="text"
+                    type="tel"
                     value={phone}
                     onChange={(e) => setPhone(e.target.value)}
-                    placeholder="+1 (555) 019-2834"
-                    className="w-full border border-slate-300 rounded-lg p-2 text-xs font-medium"
+                    placeholder="+91 98765 43210"
+                    className="w-full border border-slate-300 dark:border-slate-700 rounded-lg p-2 text-xs font-medium dark:bg-slate-800 dark:text-white"
                   />
                 </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Payment Terms</label>
-                <select
-                  value={paymentTerms}
-                  onChange={(e) => setPaymentTerms(e.target.value)}
-                  className="w-full border border-slate-300 rounded-lg p-2 text-xs font-medium"
-                >
-                  <option value="Due on Receipt">Due on Receipt</option>
-                  <option value="Net 15">Net 15</option>
-                  <option value="Net 30">Net 30</option>
-                  <option value="Net 60">Net 60</option>
-                </select>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Payment Terms</label>
+                  <select
+                    value={paymentTerms}
+                    onChange={(e) => setPaymentTerms(e.target.value)}
+                    className="w-full border border-slate-300 dark:border-slate-700 rounded-lg p-2 text-xs font-medium dark:bg-slate-800 dark:text-white"
+                  >
+                    <option value="Due on Receipt">Due on Receipt</option>
+                    <option value="Net 15">Net 15 Days</option>
+                    <option value="Net 30">Net 30 Days</option>
+                    <option value="Net 45">Net 45 Days (MSME)</option>
+                    <option value="Net 60">Net 60 Days</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Address</label>
+                  <input
+                    type="text"
+                    value={address}
+                    onChange={(e) => setAddress(e.target.value)}
+                    placeholder="City, State"
+                    className="w-full border border-slate-300 dark:border-slate-700 rounded-lg p-2 text-xs font-medium dark:bg-slate-800 dark:text-white"
+                  />
+                </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Address</label>
-                <textarea
-                  rows={2}
-                  value={address}
-                  onChange={(e) => setAddress(e.target.value)}
-                  placeholder="Street address, City, State..."
-                  className="w-full border border-slate-300 rounded-lg p-2 text-xs font-medium"
-                />
-              </div>
-
-              <div className="flex justify-end gap-2 pt-2">
+              <div className="flex justify-end space-x-3 pt-3 border-t border-slate-100 dark:border-slate-800">
                 <button
                   type="button"
                   onClick={handleCloseModal}
-                  className="px-4 py-2 border border-slate-300 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-50 cursor-pointer"
+                  className="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800 transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold shadow-2xs cursor-pointer transition-colors"
+                  className="px-4 py-2 rounded-xl text-xs font-bold text-white bg-purple-600 hover:bg-purple-700 transition-colors cursor-pointer"
                 >
-                  {selectedVendor ? 'Update Vendor' : 'Save Vendor'}
+                  {selectedVendor ? 'Save Changes' : 'Create Vendor'}
                 </button>
               </div>
             </form>

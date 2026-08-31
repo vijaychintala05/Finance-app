@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import {
+  CreditCard,
   FileText,
   Plus,
   Receipt,
@@ -9,6 +10,7 @@ import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate } from '../../utils/formatters';
 import { Bill } from '../../types';
 import { BillDetailsModal } from './BillDetailsModal';
+import { RecordVendorPaymentModal } from './RecordVendorPaymentModal';
 
 interface BillsViewProps {
   autoOpenCreateModal?: boolean;
@@ -32,6 +34,8 @@ export const BillsView: React.FC<BillsViewProps> = ({
   const [search, setSearch] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [viewingBill, setViewingBill] = useState<Bill | null>(null);
+  const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
+  const [selectedBillForPayment, setSelectedBillForPayment] = useState<Bill | null>(null);
 
   React.useEffect(() => {
     if (autoOpenCreateModal) {
@@ -108,22 +112,22 @@ export const BillsView: React.FC<BillsViewProps> = ({
 
     setIsSubmitting(true);
     try {
-    await addBill({
-      billNumber: '',
-      vendorName: targetVendor.companyName || targetVendor.name,
-      billDate,
-      dueDate,
-      totalAmount: parsedAmount,
-      amountPaid: 0,
-      status: 'Unpaid',
-      notes: notes.trim(),
-      vendorId: targetVendor.id,
-      expenseAccountId: expenseAccount.id,
-    });
+      await addBill({
+        billNumber: '',
+        vendorName: targetVendor.companyName || targetVendor.name,
+        billDate,
+        dueDate,
+        totalAmount: parsedAmount,
+        amountPaid: 0,
+        status: 'Unpaid',
+        notes: notes.trim(),
+        vendorId: targetVendor.id,
+        expenseAccountId: expenseAccount.id,
+      });
 
-    setIsModalOpen(false);
-    setAmount('');
-    setNotes('');
+      setIsModalOpen(false);
+      setAmount('');
+      setNotes('');
     } catch (error: any) {
       setFormError(error.message || 'Bill could not be posted. No financial data was changed.');
     } finally {
@@ -134,26 +138,28 @@ export const BillsView: React.FC<BillsViewProps> = ({
   const getStatusBadge = (status: Bill['status']) => {
     switch (status) {
       case 'Unpaid':
-        return 'bg-amber-100 text-amber-800 border-amber-200';
+        return 'bg-amber-100 text-amber-800 border-amber-200 dark:bg-amber-950 dark:text-amber-300';
       case 'Partially Paid':
-        return 'bg-blue-100 text-blue-800 border-blue-200';
+        return 'bg-blue-100 text-blue-800 border-blue-200 dark:bg-blue-950 dark:text-blue-300';
       case 'Paid':
-        return 'bg-emerald-100 text-emerald-800 border-emerald-200';
+        return 'bg-emerald-100 text-emerald-800 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300';
       case 'Overdue':
-        return 'bg-rose-100 text-rose-800 border-rose-200';
+        return 'bg-rose-100 text-rose-800 border-rose-200 dark:bg-rose-950 dark:text-rose-300';
+      default:
+        return 'bg-slate-100 text-slate-800 border-slate-200';
     }
   };
 
   return (
-    <div className="p-4 sm:p-6 space-y-6 max-w-7xl mx-auto">
+    <div className="p-4 sm:p-6 space-y-6 max-w-7xl mx-auto animate-fade-in">
       {/* Header */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
-          <h2 className="text-xl font-bold text-slate-900 flex items-center space-x-2">
+          <h2 className="text-xl font-bold text-slate-900 dark:text-white flex items-center space-x-2">
             <FileText className="w-6 h-6 text-amber-600" />
             <span>Vendor Bills (Accounts Payable)</span>
           </h2>
-          <p className="text-xs text-slate-500 mt-1">
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
             Track received vendor invoices, due dates, outstanding liabilities, and bill payment statuses
           </p>
         </div>
@@ -199,47 +205,83 @@ export const BillsView: React.FC<BillsViewProps> = ({
                 <th className="p-3 text-right pr-4">Action</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
-              {filtered.map((b) => (
-                <tr
-                  key={b.id}
-                  onClick={() => setViewingBill(b)}
-                  className="hover:bg-slate-50 transition-colors cursor-pointer"
-                >
-                  <td className="p-3 pl-4 font-mono font-bold text-amber-600">{b.billNumber}</td>
-                  <td className="p-3 font-bold text-slate-800">{b.vendorName}</td>
-                  <td className="p-3 text-slate-500">{formatDate(b.billDate)}</td>
-                  <td className="p-3 text-slate-500">{formatDate(b.dueDate)}</td>
-                  <td className="p-3 text-right font-mono font-bold text-slate-900">
-                    {formatCurrency(b.totalAmount, settings.currencySymbol)}
-                  </td>
-                  <td className="p-3 text-right font-mono font-bold text-amber-600">
-                    {formatCurrency(b.totalAmount - b.amountPaid, settings.currencySymbol)}
-                  </td>
-                  <td className="p-3 text-center">
-                    <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold border ${getStatusBadge(b.status)}`}>
-                      {b.status}
-                    </span>
-                  </td>
-                  <td className="p-3 text-right pr-4" onClick={(e) => e.stopPropagation()}>
-                    {b.status !== 'Paid' && (
-                      <button
-                        disabled
-                        title="Vendor payment posting is not enabled yet"
-                        className="text-xs font-bold text-slate-400 cursor-not-allowed"
-                      >
-                        Payment workflow pending
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
+              {filtered.map((b) => {
+                const bal =
+                  b.balanceDue !== undefined
+                    ? b.balanceDue
+                    : Math.max(0, b.totalAmount - (b.amountPaid || 0));
+
+                return (
+                  <tr
+                    key={b.id}
+                    onClick={() => setViewingBill(b)}
+                    className="hover:bg-slate-50/60 dark:hover:bg-slate-800/40 transition-colors cursor-pointer"
+                  >
+                    <td className="p-3 pl-4 font-mono font-bold text-amber-600">{b.billNumber}</td>
+                    <td className="p-3 font-bold text-slate-800 dark:text-slate-200">{b.vendorName}</td>
+                    <td className="p-3 text-slate-500 dark:text-slate-400">{formatDate(b.billDate)}</td>
+                    <td className="p-3 text-slate-500 dark:text-slate-400">{formatDate(b.dueDate)}</td>
+                    <td className="p-3 text-right font-financial font-bold text-slate-900 dark:text-white">
+                      {formatCurrency(b.totalAmount, settings.currencySymbol)}
+                    </td>
+                    <td className="p-3 text-right font-financial font-bold text-rose-600 dark:text-rose-400">
+                      {formatCurrency(bal, settings.currencySymbol)}
+                    </td>
+                    <td className="p-3 text-center">
+                      <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold border ${getStatusBadge(b.status)}`}>
+                        {b.status}
+                      </span>
+                    </td>
+                    <td className="p-3 text-right pr-4" onClick={(e) => e.stopPropagation()}>
+                      {bal > 0 && (
+                        <button
+                          onClick={() => {
+                            setSelectedBillForPayment(b);
+                            setIsPaymentModalOpen(true);
+                          }}
+                          className="inline-flex items-center gap-1 rounded-lg bg-purple-50 px-2 py-1 text-[11px] font-bold text-purple-700 hover:bg-purple-100 dark:bg-purple-950 dark:text-purple-300 cursor-pointer"
+                        >
+                          <CreditCard className="h-3 w-3" />
+                          <span>Pay</span>
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
       </div>
 
-      {/* Modal */}
+      {/* Bill Details Modal */}
+      <BillDetailsModal
+        isOpen={!!viewingBill}
+        bill={viewingBill}
+        onClose={() => {
+          setViewingBill(null);
+          if (onSelectedEntityClosed) onSelectedEntityClosed();
+        }}
+        onRecordPayment={(bill) => {
+          setSelectedBillForPayment(bill);
+          setIsPaymentModalOpen(true);
+        }}
+      />
+
+      {/* Record Vendor Payment Modal */}
+      {isPaymentModalOpen && (
+        <RecordVendorPaymentModal
+          isOpen={isPaymentModalOpen}
+          onClose={() => {
+            setIsPaymentModalOpen(false);
+            setSelectedBillForPayment(null);
+          }}
+          initialBill={selectedBillForPayment}
+        />
+      )}
+
+      {/* Create Modal */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
           <div className="bg-white dark:bg-slate-900 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-xl border border-slate-200 dark:border-slate-800">
@@ -248,96 +290,115 @@ export const BillsView: React.FC<BillsViewProps> = ({
               <span>Record Vendor Bill</span>
             </h3>
 
-            <p className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-200">
-              The bill, accounts-payable journal, balance, document number, and audit record commit atomically.
-            </p>
-
-            {formError && <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs font-semibold text-rose-800">{formError}</p>}
+            {formError && (
+              <div className="bg-rose-50 text-rose-700 border border-rose-200 rounded-lg p-2.5 text-xs font-semibold">
+                {formError}
+              </div>
+            )}
 
             <form onSubmit={handleCreateBill} className="space-y-3">
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Vendor / Supplier</label>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Vendor</label>
                 <select
                   value={vendorId}
                   onChange={(e) => setVendorId(e.target.value)}
-                  className="w-full border border-slate-300 rounded-lg p-2 text-xs font-medium"
+                  className="w-full border border-slate-300 dark:border-slate-700 rounded-lg p-2 text-xs font-medium dark:bg-slate-800 dark:text-white"
+                  required
                 >
                   {vendors.map((v) => (
                     <option key={v.id} value={v.id}>
-                      {v.name}
+                      {v.companyName || v.name}
                     </option>
                   ))}
                 </select>
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Expense Account</label>
-                <select required value={expenseAccountId} onChange={(e) => setExpenseAccountId(e.target.value)} className="w-full border border-slate-300 rounded-lg p-2 text-xs font-medium">
-                  {expenseAccounts.map((account) => <option key={account.id} value={account.id}>{account.code} — {account.name}</option>)}
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Expense Account</label>
+                <select
+                  value={expenseAccountId}
+                  onChange={(e) => setExpenseAccountId(e.target.value)}
+                  className="w-full border border-slate-300 dark:border-slate-700 rounded-lg p-2 text-xs font-medium dark:bg-slate-800 dark:text-white"
+                  required
+                >
+                  {expenseAccounts.map((account) => (
+                    <option key={account.id} value={account.id}>
+                      {account.code} - {account.name}
+                    </option>
+                  ))}
                 </select>
               </div>
 
-              <p className="rounded-lg bg-slate-50 p-2.5 text-xs text-slate-500 dark:bg-slate-800">The internal bill number is allocated by the server when this posting commits.</p>
-
               <div className="grid grid-cols-2 gap-3">
-                <div><label className="block text-xs font-bold text-slate-700 mb-1">Bill Date</label><input required type="date" value={billDate} onChange={(e) => setBillDate(e.target.value)} className="w-full border border-slate-300 rounded-lg p-2 text-xs font-medium" /></div>
-                <div><label className="block text-xs font-bold text-slate-700 mb-1">Due Date</label><input required type="date" min={billDate} value={dueDate} onChange={(e) => setDueDate(e.target.value)} className="w-full border border-slate-300 rounded-lg p-2 text-xs font-medium" /></div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Bill Date</label>
+                  <input
+                    type="date"
+                    value={billDate}
+                    onChange={(e) => setBillDate(e.target.value)}
+                    className="w-full border border-slate-300 dark:border-slate-700 rounded-lg p-2 text-xs font-medium dark:bg-slate-800 dark:text-white"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Due Date</label>
+                  <input
+                    type="date"
+                    value={dueDate}
+                    onChange={(e) => setDueDate(e.target.value)}
+                    className="w-full border border-slate-300 dark:border-slate-700 rounded-lg p-2 text-xs font-medium dark:bg-slate-800 dark:text-white"
+                    required
+                  />
+                </div>
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Total Amount ({settings.currencySymbol})</label>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  Total Bill Amount ({settings.currencySymbol})
+                </label>
                 <input
                   type="number"
-                  min="0.01"
-                  step="0.01"
+                  step="any"
                   value={amount}
                   onChange={(e) => setAmount(e.target.value)}
-                  className="w-full border border-slate-300 rounded-lg p-2 text-xs font-mono font-bold"
+                  placeholder="0.00"
+                  className="w-full border border-slate-300 dark:border-slate-700 rounded-lg p-2 text-xs font-bold font-financial dark:bg-slate-800 dark:text-white"
                   required
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Bill Notes / Particulars</label>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Line Item / Notes</label>
                 <textarea
-                  rows={2}
-                  placeholder="Details regarding received inventory or service billed..."
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
-                  className="w-full border border-slate-300 rounded-lg p-2 text-xs font-medium"
+                  placeholder="Item details, description, internal PO reference..."
+                  rows={2}
+                  className="w-full border border-slate-300 dark:border-slate-700 rounded-lg p-2 text-xs font-medium dark:bg-slate-800 dark:text-white"
                 />
               </div>
 
-              <div className="flex justify-end gap-2 pt-2">
+              <div className="flex justify-end space-x-3 pt-3 border-t border-slate-100 dark:border-slate-800">
                 <button
                   type="button"
                   onClick={() => setIsModalOpen(false)}
-                  disabled={isSubmitting}
-                  className="px-4 py-2 border border-slate-300 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-50 cursor-pointer"
+                  className="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800 transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={isSubmitting}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold shadow-2xs cursor-pointer transition-colors"
+                  className="px-4 py-2 rounded-xl text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 transition-colors cursor-pointer disabled:opacity-50"
                 >
-                  {isSubmitting ? 'Posting…' : 'Post Bill'}
+                  {isSubmitting ? 'Posting...' : 'Record Bill'}
                 </button>
               </div>
             </form>
           </div>
         </div>
       )}
-      {/* Bill Details Modal */}
-      <BillDetailsModal
-        isOpen={!!viewingBill}
-        onClose={() => {
-          setViewingBill(null);
-          if (onSelectedEntityClosed) onSelectedEntityClosed();
-        }}
-        bill={viewingBill}
-      />
     </div>
   );
 };

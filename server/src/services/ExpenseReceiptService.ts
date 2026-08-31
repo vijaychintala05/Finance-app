@@ -16,7 +16,7 @@ export interface ExpenseReceiptMetadata {
 }
 
 interface ValidatedReceipt extends ExpenseReceiptMetadata {
-  content: Buffer;
+  dataBase64: string;
 }
 
 const MAX_RECEIPTS_PER_EXPENSE = 3;
@@ -58,7 +58,7 @@ export class ExpenseReceiptService {
         throw new Error('EXPENSE_RECEIPT_INVALID: Receipt images together must be under 2 MB.');
       }
       const baseName = path.basename(upload.name).replace(/[^A-Za-z0-9._ -]/g, '_').slice(0, 180) || 'receipt-image';
-      return { id: newId('rcpt'), fileName: baseName, mimeType, byteSize: content.length, content };
+      return { id: newId('rcpt'), fileName: baseName, mimeType, byteSize: content.length, dataBase64: upload.dataBase64 };
     });
   }
 
@@ -71,9 +71,9 @@ export class ExpenseReceiptService {
     for (const receipt of receipts) {
       await client.query(
         `INSERT INTO expense_receipt_attachments
-          (id, organization_id, expense_id, file_name, mime_type, byte_size, content)
+          (id, organization_id, expense_id, file_name, mime_type, byte_size, content_base64)
          VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [receipt.id, organizationId, expenseId, receipt.fileName, receipt.mimeType, receipt.byteSize, receipt.content]
+        [receipt.id, organizationId, expenseId, receipt.fileName, receipt.mimeType, receipt.byteSize, receipt.dataBase64]
       );
     }
     return receipts.map(({ id, fileName, mimeType, byteSize }) => ({ id, fileName, mimeType, byteSize }));
@@ -98,13 +98,13 @@ export class ExpenseReceiptService {
 
   public static async getContent(client: DbQueryClient, organizationId: string, expenseId: string, receiptId: string): Promise<{ fileName: string; mimeType: string; content: Buffer } | null> {
     const result = await client.query(
-      `SELECT file_name, mime_type, content
+      `SELECT file_name, mime_type, content_base64
          FROM expense_receipt_attachments
         WHERE organization_id = $1 AND expense_id = $2 AND id = $3`,
       [organizationId, expenseId, receiptId]
     );
     if (!result.rows.length) return null;
     const row = result.rows[0];
-    return { fileName: row.file_name, mimeType: row.mime_type, content: Buffer.isBuffer(row.content) ? row.content : Buffer.from(row.content) };
+    return { fileName: row.file_name, mimeType: row.mime_type, content: Buffer.from(row.content_base64, 'base64') };
   }
 }

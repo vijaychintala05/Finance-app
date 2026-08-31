@@ -74,7 +74,7 @@ export async function applyEnterpriseHardeningSchema(client: DbQueryClient): Pro
       file_name VARCHAR(180) NOT NULL,
       mime_type VARCHAR(32) NOT NULL,
       byte_size INTEGER NOT NULL,
-      content BYTEA NOT NULL,
+      content_base64 TEXT NOT NULL,
       created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
       CONSTRAINT fk_expense_receipt_expense FOREIGN KEY (expense_id) REFERENCES expenses(id) ON DELETE RESTRICT
     )`,

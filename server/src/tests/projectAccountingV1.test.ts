@@ -61,6 +61,48 @@ describe('v1 authoritative project accounting', () => {
     });
   });
 
+  it('stores receipt images with the expense and never exposes them across organizations', async () => {
+    const fixture = await projectFixture('expense-receipt');
+    const other = await projectFixture('expense-receipt-other');
+    const accounts = await db.query('SELECT id, code FROM accounts WHERE organization_id = $1', [fixture.orgId]);
+    const expense = await request(app).post('/api/v1/finance/expenses').set(fixture.auth).send({
+      expenseAccountId: accounts.rows.find((row) => row.code === '6000').id,
+      paidFromAccountId: accounts.rows.find((row) => row.code === '1000').id,
+      date: '2026-08-12', amount: 25, description: 'Taxi receipt',
+      receiptImages: [{ name: 'taxi.jpg', mimeType: 'image/jpeg', dataBase64: '/9j/' }],
+    });
+    expect(expense.status).toBe(201);
+    expect(expense.body.receiptAttachments).toHaveLength(1);
+
+    const expenses = await request(app).get('/api/v1/finance/expenses').set(fixture.auth);
+    const saved = expenses.body.find((row: any) => row.id === expense.body.id);
+    expect(saved.receiptFileName).toBe('taxi.jpg');
+    expect(saved.receiptAttachments).toHaveLength(1);
+
+    const receiptId = saved.receiptAttachments[0].id;
+    const image = await request(app).get(`/api/v1/finance/expenses/${expense.body.id}/receipts/${receiptId}`).set(fixture.auth);
+    expect(image.status).toBe(200);
+    expect(image.headers['content-type']).toContain('image/jpeg');
+    expect(image.body.length).toBeGreaterThan(0);
+
+    const otherTenantRead = await request(app).get(`/api/v1/finance/expenses/${expense.body.id}/receipts/${receiptId}`).set(other.auth);
+    expect(otherTenantRead.status).toBe(404);
+  });
+
+  it('rolls back an expense when a receipt is invalid', async () => {
+    const fixture = await projectFixture('invalid-expense-receipt');
+    const accounts = await db.query('SELECT id, code FROM accounts WHERE organization_id = $1', [fixture.orgId]);
+    const before = await db.query('SELECT id FROM expenses WHERE organization_id = $1', [fixture.orgId]);
+    const response = await request(app).post('/api/v1/finance/expenses').set(fixture.auth).send({
+      expenseAccountId: accounts.rows.find((row) => row.code === '6000').id,
+      paidFromAccountId: accounts.rows.find((row) => row.code === '1000').id,
+      date: '2026-08-12', amount: 25,
+      receiptImages: [{ name: 'not-an-image.jpg', mimeType: 'image/jpeg', dataBase64: 'aGVsbG8=' }],
+    });
+    expect(response.status).toBe(400);
+    expect((await db.query('SELECT id FROM expenses WHERE organization_id = $1', [fixture.orgId])).rows).toHaveLength(before.rows.length);
+  });
+
   it('atomically posts an invoice and seals all included time entries', async () => {
     const fixture = await projectFixture('time-invoice');
     for (const [taskName, hours] of [['Analysis', 1.5], ['Build', 2]] as const) {

@@ -889,7 +889,7 @@ export class FinanceController {
       res.status(201).json(result);
     } catch (error: any) {
       const message = error.message || 'Expense could not be posted';
-      res.status(message.startsWith('EXPENSE_INPUT_INVALID:') ? 400 : 422).json({ error: message });
+      res.status(message.startsWith('EXPENSE_INPUT_INVALID:') || message.startsWith('EXPENSE_RECEIPT_INVALID:') ? 400 : 422).json({ error: message });
     }
   }
 

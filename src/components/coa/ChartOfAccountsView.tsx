@@ -1,7 +1,5 @@
 import React, { useState } from 'react';
 import {
-  BookOpen,
-  Building2,
   ChevronDown,
   ChevronRight,
   Eye,
@@ -112,7 +110,9 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
   const [search, setSearch] = useState('');
   const [selectedTypeFilter, setSelectedTypeFilter] = useState<string>('All');
   const [selectedSubCategoryFilter, setSelectedSubCategoryFilter] = useState<string>('All');
+  const [selectedStatusFilter, setSelectedStatusFilter] = useState<'Active' | 'Archived' | 'All'>('Active');
   const [viewMode, setViewMode] = useState<'tree' | 'table'>('table');
+  const [showPostingDefaults, setShowPostingDefaults] = useState(false);
 
   // Collapse / Expand state for tree sections
   const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({
@@ -221,8 +221,9 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
 
     const matchesSubCat =
       selectedSubCategoryFilter === 'All' || acc.subCategory === selectedSubCategoryFilter;
+    const matchesStatus = selectedStatusFilter === 'All' || (acc.status || 'Active') === selectedStatusFilter;
 
-    return matchesSearch && matchesType && matchesSubCat;
+    return matchesSearch && matchesType && matchesSubCat && matchesStatus;
   });
   const accountNameById = new Map(accounts.map((account) => [account.id, account.name]));
   const activeChildCountByParentId = accounts.reduce((counts, account) => {
@@ -234,154 +235,119 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
   const formatSystemRole = (systemRole: string) => systemRole.toLowerCase().split('_').map((word) => word[0].toUpperCase() + word.slice(1)).join(' ');
 
   return (
-    <div className="max-w-none space-y-4 p-4 sm:p-6">
-      {/* Page Header */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-        <div>
-          <h2 className="flex items-center space-x-2 text-lg font-bold text-slate-900 dark:text-slate-100">
-            <Building2 className="h-5 w-5 text-blue-600" />
-            <span>Chart of Accounts</span>
-          </h2>
-          <p className="mt-1 text-xs text-slate-500">{accounts.length} accounts</p>
+    <div className="max-w-none space-y-0 bg-white dark:bg-slate-900">
+      <div className="flex min-h-16 flex-col justify-between gap-3 border-b border-slate-200 px-4 py-3 sm:flex-row sm:items-center sm:px-6 dark:border-slate-800">
+        <div className="flex min-w-0 items-center gap-3">
+          <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">Chart of Accounts</h2>
+          <label className="sr-only" htmlFor="account-status-filter">Account status</label>
+          <select
+            id="account-status-filter"
+            value={selectedStatusFilter}
+            onChange={(event) => setSelectedStatusFilter(event.target.value as 'Active' | 'Archived' | 'All')}
+            className="min-w-0 border-0 bg-transparent py-1 text-sm font-semibold text-slate-700 outline-none focus:ring-2 focus:ring-blue-500 dark:text-slate-200"
+          >
+            <option value="Active">Active accounts</option>
+            <option value="Archived">Archived accounts</option>
+            <option value="All">All accounts</option>
+          </select>
+          <span className="hidden text-xs font-medium text-slate-400 sm:inline">{filteredAccounts.length} shown</span>
         </div>
 
         <div className="flex items-center gap-2">
-          {/* View Mode Switcher */}
-          <div className="flex items-center gap-1 rounded-md border border-slate-200 bg-slate-100 p-1">
+          <div className="flex items-center rounded-md border border-slate-200 p-0.5 dark:border-slate-700">
             <button
               onClick={() => setViewMode('tree')}
-              className={`rounded px-2.5 py-1.5 text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 ${
-                viewMode === 'tree' ? 'bg-white text-blue-700 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+              className={`rounded p-1.5 transition-colors cursor-pointer ${
+                viewMode === 'tree' ? 'bg-slate-100 text-blue-700 dark:bg-slate-800' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900 dark:hover:bg-slate-800'
               }`}
+              title="Hierarchy view"
+              aria-label="Hierarchy view"
             >
-              <FolderTree className="w-3.5 h-3.5" />
-              <span>Hierarchy</span>
+              <FolderTree className="h-4 w-4" />
             </button>
             <button
               onClick={() => setViewMode('table')}
-              className={`rounded px-2.5 py-1.5 text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 ${
-                viewMode === 'table' ? 'bg-white text-blue-700 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+              className={`rounded p-1.5 transition-colors cursor-pointer ${
+                viewMode === 'table' ? 'bg-slate-100 text-blue-700 dark:bg-slate-800' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900 dark:hover:bg-slate-800'
               }`}
+              title="List view"
+              aria-label="List view"
             >
-              <List className="w-3.5 h-3.5" />
-              <span>List</span>
+              <List className="h-4 w-4" />
             </button>
           </div>
 
           <button
             onClick={() => setIsQuickAccountModalOpen(true)}
-            className="bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-2 rounded-md text-xs font-semibold flex items-center space-x-1.5 shadow-sm transition-all cursor-pointer"
+            className="rounded-md border border-slate-200 p-2 text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-900 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800 cursor-pointer"
+            title="Add cash or bank account"
+            aria-label="Add cash or bank account"
           >
             <Landmark className="w-4 h-4" />
-            <span>Add Cash / Bank Account</span>
           </button>
 
           <button
             onClick={handleOpenNewModal}
-            className="bg-blue-600 hover:bg-blue-500 text-white px-3 py-2 rounded-md text-xs font-semibold flex items-center space-x-1.5 shadow-sm transition-all cursor-pointer"
+            className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-md text-xs font-semibold flex items-center space-x-1.5 transition-colors cursor-pointer"
           >
             <Plus className="w-4 h-4" />
-            <span>New Account</span>
+            <span>New</span>
           </button>
         </div>
       </div>
 
-      <AccountingDefaultsPanel accounts={accounts} />
-
-      {/* Sub-Category Quick Filter Pills */}
-      {subCategoriesList.length > 0 && (
-        <div className="bg-blue-50/60 border border-blue-200/80 rounded-2xl p-3 flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-1 text-xs font-extrabold text-blue-900 mr-2">
-            <FolderTree className="w-4 h-4 text-blue-600" />
-            <span>Custom Groupings:</span>
-          </div>
-          <button
-            onClick={() => setSelectedSubCategoryFilter('All')}
-            className={`px-3 py-1 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
-              selectedSubCategoryFilter === 'All'
-                ? 'bg-blue-600 text-white shadow-xs'
-                : 'bg-white border border-blue-200 text-blue-700 hover:bg-blue-100'
-            }`}
+      <div className="flex flex-col gap-3 border-b border-slate-200 px-4 py-3 sm:flex-row sm:items-center sm:px-6 dark:border-slate-800">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+          <label className="sr-only" htmlFor="account-type-filter">Account category</label>
+          <select
+            id="account-type-filter"
+            value={selectedTypeFilter}
+            onChange={(event) => setSelectedTypeFilter(event.target.value)}
+            className="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700 outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
           >
-            All Groups
+            <option value="All">All categories</option>
+            {CATEGORY_TREE_SPECIFICATION.map((spec) => <option key={spec.label} value={spec.label}>{spec.label}</option>)}
+          </select>
+          {subCategoriesList.length > 0 && (
+            <>
+              <label className="sr-only" htmlFor="account-group-filter">Account group</label>
+              <select
+                id="account-group-filter"
+                value={selectedSubCategoryFilter}
+                onChange={(event) => setSelectedSubCategoryFilter(event.target.value)}
+                className="h-8 max-w-44 rounded-md border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700 outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+              >
+                <option value="All">All groups</option>
+                {subCategoriesList.map((category) => <option key={category} value={category}>{category}</option>)}
+              </select>
+            </>
+          )}
+          <button
+            type="button"
+            onClick={() => setShowPostingDefaults((value) => !value)}
+            className={`rounded-md p-2 transition-colors cursor-pointer ${showPostingDefaults ? 'bg-blue-50 text-blue-700' : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:hover:bg-slate-800'}`}
+            title="Posting defaults"
+            aria-label="Show posting defaults"
+            aria-pressed={showPostingDefaults}
+          >
+            <SlidersHorizontal className="h-4 w-4" />
           </button>
-          {subCategoriesList.map((cat) => (
-            <button
-              key={cat}
-              onClick={() => setSelectedSubCategoryFilter(cat)}
-              className={`px-3 py-1 rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center gap-1 ${
-                selectedSubCategoryFilter === cat
-                  ? 'bg-blue-600 text-white shadow-xs'
-                  : 'bg-white border border-blue-200 text-slate-700 hover:bg-blue-100'
-              }`}
-            >
-              <Layers className="w-3 h-3 text-blue-500" />
-              <span>{cat}</span>
-              <span className="text-[10px] opacity-75">
-                ({accounts.filter((a) => a.subCategory === cat).length})
-              </span>
-            </button>
-          ))}
         </div>
-      )}
-
-      {/* Search and Category Quick Filters */}
-      <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs flex flex-col md:flex-row justify-between items-center gap-3">
-        <div className="relative w-full md:w-80">
-          <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
+        <div className="relative w-full sm:w-72">
+          <Search className="w-4 h-4 absolute left-3 top-2 text-slate-400" />
           <input
             type="text"
-            placeholder="Search code, account name, Ply, 18mm..."
+            placeholder="Search accounts"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white pl-9 pr-3 py-2 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="h-8 w-full rounded-md border border-slate-200 bg-white pl-9 pr-3 text-xs font-medium text-slate-900 outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-700 dark:bg-slate-900 dark:text-white"
           />
         </div>
-
-        <div className="flex items-center gap-1 overflow-x-auto w-full md:w-auto text-xs pb-1 md:pb-0">
-          <button
-            onClick={() => setSelectedTypeFilter('All')}
-            className={`px-3 py-1.5 rounded-lg font-bold transition-colors cursor-pointer whitespace-nowrap ${
-              selectedTypeFilter === 'All'
-                ? 'bg-blue-600 text-white shadow-xs'
-                : 'text-slate-600 hover:bg-slate-100'
-            }`}
-          >
-            All (5 Categories)
-          </button>
-          {CATEGORY_TREE_SPECIFICATION.map((spec) => (
-            <button
-              key={spec.label}
-              onClick={() => setSelectedTypeFilter(spec.label)}
-              className={`px-2.5 py-1.5 rounded-lg font-bold transition-colors cursor-pointer whitespace-nowrap ${
-                selectedTypeFilter === spec.label
-                  ? 'bg-blue-600 text-white shadow-xs'
-                  : 'text-slate-600 hover:bg-slate-100'
-              }`}
-            >
-              {spec.label}
-            </button>
-          ))}
-        </div>
-
-        {viewMode === 'tree' && (
-          <div className="flex items-center gap-2 text-xs font-bold">
-            <button
-              onClick={handleExpandAll}
-              className="text-blue-600 hover:underline cursor-pointer"
-            >
-              Expand All
-            </button>
-            <span className="text-slate-300">•</span>
-            <button
-              onClick={handleCollapseAll}
-              className="text-slate-500 hover:underline cursor-pointer"
-            >
-              Collapse All
-            </button>
-          </div>
-        )}
       </div>
+
+      {showPostingDefaults && <div className="border-b border-slate-200 px-4 py-3 sm:px-6 dark:border-slate-800"><AccountingDefaultsPanel accounts={accounts} /></div>}
+
+      {viewMode === 'tree' && <div className="flex items-center justify-end gap-2 border-b border-slate-200 px-4 py-2 text-xs font-semibold dark:border-slate-800 sm:px-6"><button onClick={handleExpandAll} className="text-blue-600 hover:underline cursor-pointer">Expand all</button><span className="text-slate-300">/</span><button onClick={handleCollapseAll} className="text-slate-600 hover:underline cursor-pointer">Collapse all</button></div>}
 
       {/* Main Content Area */}
       {viewMode === 'tree' ? (
@@ -645,95 +611,64 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
         </div>
       ) : (
         /* FLAT TABLE VIEW */
-        <div className="grid gap-4 lg:grid-cols-[210px_minmax(0,1fr)]">
-          <aside className="h-fit border border-slate-200 bg-white p-2 dark:border-slate-800 dark:bg-slate-900">
-            <div className="px-2 pb-2 pt-1 text-[10px] font-bold uppercase tracking-wide text-slate-400">Categories</div>
-            <button onClick={() => setSelectedTypeFilter('All')} className={`flex w-full items-center justify-between rounded px-2 py-2 text-left text-xs font-semibold ${selectedTypeFilter === 'All' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50'}`}><span>All accounts</span><span>{accounts.length}</span></button>
-            {CATEGORY_TREE_SPECIFICATION.map((category) => {
-              const count = accounts.filter((account) => getCategoryLabelForAccount(account) === category.label).length;
-              return <button key={category.label} onClick={() => setSelectedTypeFilter(category.label)} className={`mt-0.5 flex w-full items-center justify-between rounded px-2 py-2 text-left text-xs font-semibold ${selectedTypeFilter === category.label ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50'}`}><span>{category.label}</span><span>{count}</span></button>;
-            })}
-          </aside>
-          <div className="overflow-hidden border border-slate-200 bg-white shadow-xs dark:border-slate-800 dark:bg-slate-900">
-          <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-800">
-            <span className="flex items-center gap-1.5">
-              <BookOpen className="w-4 h-4 text-blue-600" />
-              <span>Accounts</span>
-            </span>
-            <span className="font-bold text-slate-700">
-              {filteredAccounts.length} listed
-            </span>
-          </div>
-
+        <div className="overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
+            <table className="w-full min-w-[780px] text-left text-xs">
               <thead className="border-b border-slate-200 bg-slate-50 text-[10px] font-bold uppercase tracking-wide text-slate-500 dark:border-slate-800 dark:bg-slate-800">
                 <tr>
-                  <th className="p-3 pl-4">Code</th>
-                  <th className="p-3">Account Name</th>
-                  <th className="p-3">Classification</th>
-                  <th className="p-3">Subtype</th>
-                  <th className="p-3">Posting</th>
-                  <th className="p-3 text-right">Balance</th>
-                  <th className="p-3 text-right pr-4">Actions</th>
+                  <th className="w-[35%] px-6 py-3">Account name</th>
+                  <th className="w-[14%] px-3 py-3">Account code</th>
+                  <th className="w-[20%] px-3 py-3">Account type</th>
+                  <th className="w-[20%] px-3 py-3">Parent account</th>
+                  <th className="w-[11%] px-3 py-3 text-right">Balance</th>
+                  <th className="w-12 px-4 py-3"><span className="sr-only">Actions</span></th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100">
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                 {filteredAccounts.map((acc) => (
                   <tr
                     key={acc.id}
                     onClick={() => setSelectedLedgerAccount(acc)}
-                    className="hover:bg-blue-50/50 transition-colors cursor-pointer group"
+                    className="group h-14 cursor-pointer transition-colors hover:bg-blue-50/50 dark:hover:bg-slate-800/70"
                   >
-                    <td className="p-3 pl-4 font-mono font-bold text-blue-600 group-hover:underline">
+                    <td className="px-6 py-3">
+                      <div className="flex items-center gap-2">
+                        {acc.isSystemAccount && <Lock className="h-3.5 w-3.5 shrink-0 text-slate-400" title={acc.systemRole ? `System role: ${formatSystemRole(acc.systemRole)}` : 'System account'} />}
+                        <span className="font-semibold text-blue-600 group-hover:underline">{acc.name}</span>
+                        {acc.status === 'Archived' && <span className="rounded border border-slate-300 bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-600">Archived</span>}
+                      </div>
+                      {acc.description && <p className="mt-0.5 max-w-md truncate text-[10px] text-slate-400">{acc.description}</p>}
+                    </td>
+                    <td className="px-3 py-3 font-mono font-medium text-slate-600 dark:text-slate-300">
                       {acc.code}
                     </td>
-                    <td className="p-3 font-semibold text-slate-900 dark:text-white">
-                      <div className="flex flex-wrap items-center gap-1.5"><span>{acc.name}</span>{acc.isSystemAccount && <span className="rounded border border-violet-200 bg-violet-50 px-1.5 py-0.5 text-[10px] font-bold text-violet-800" title={acc.systemRole ? `System role: ${formatSystemRole(acc.systemRole)}` : 'Provisioned system account'}>System</span>}{acc.status === 'Archived' && <span className="rounded border border-slate-300 bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-700">Archived</span>}</div>
-                      {acc.parentAccountId && accountNameById.get(acc.parentAccountId) && <div className="mt-0.5 text-[10px] font-medium text-slate-500">Under {accountNameById.get(acc.parentAccountId)}</div>}
+                    <td className="px-3 py-3 text-slate-800 dark:text-slate-200">
+                      <div>{acc.subType}</div>
+                      <div className="mt-0.5 text-[10px] text-slate-400">{acc.type} · {acc.normalBalance === 'Credit' ? 'Cr' : 'Dr'}</div>
                     </td>
-                    <td className="p-3">
-                      <span className="text-[10px] font-bold px-2 py-0.5 rounded border bg-slate-100 text-slate-700 border-slate-200">
-                        {acc.type}
-                      </span>
+                    <td className="px-3 py-3 text-slate-600 dark:text-slate-300">
+                      {acc.parentAccountId && accountNameById.get(acc.parentAccountId) ? accountNameById.get(acc.parentAccountId) : <span className="text-slate-300">-</span>}
                     </td>
-                    <td className="p-3 text-slate-600"><div>{acc.subType}</div><div className="mt-0.5 text-[10px] text-slate-400">{acc.normalBalance === 'Credit' ? 'Cr' : 'Dr'} normal</div></td>
-                    <td className="p-3 text-slate-600">{(activeChildCountByParentId.get(acc.id) || 0) > 0 ? 'Group' : acc.allowDirectPosting === false ? 'Restricted' : 'Postable'}</td>
-                    <td className="p-3 text-right font-mono font-bold text-slate-900">
+                    <td className="px-3 py-3 text-right font-mono font-semibold text-slate-800 dark:text-slate-100">
                       {formatCurrency(acc.balance, settings.currencySymbol)}
                     </td>
-                    <td className="p-3 pr-4 text-right">
-                      <div className="flex items-center justify-end gap-2">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleOpenEditModal(acc);
-                          }}
-                          className="rounded p-1.5 text-slate-600 hover:bg-amber-50 hover:text-amber-800 transition-colors cursor-pointer"
-                          title={`Edit ${acc.name}`}
-                          aria-label={`Edit ${acc.name}`}
-                        >
-                          <Pencil className="w-3 h-3 text-amber-600" />
-                        </button>
-
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setSelectedLedgerAccount(acc);
-                          }}
-                          className="rounded p-1.5 text-slate-600 hover:bg-blue-50 hover:text-blue-700 transition-colors cursor-pointer"
-                          title={`Open ledger for ${acc.name}`}
-                          aria-label={`Open ledger for ${acc.name}`}
-                        >
-                          <Eye className="w-3 h-3 text-blue-600" />
-                        </button>
-                      </div>
+                    <td className="px-4 py-3 text-right">
+                      <button
+                        onClick={(event) => { event.stopPropagation(); handleOpenEditModal(acc); }}
+                        className="rounded p-1.5 text-slate-500 opacity-0 transition-all hover:bg-slate-100 hover:text-slate-900 group-hover:opacity-100 focus:opacity-100 dark:hover:bg-slate-800 cursor-pointer"
+                        title={`Edit ${acc.name}`}
+                        aria-label={`Edit ${acc.name}`}
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
                     </td>
                   </tr>
                 ))}
+                {filteredAccounts.length === 0 && (
+                  <tr><td colSpan={6} className="px-6 py-16 text-center text-sm text-slate-500">No accounts match these filters.</td></tr>
+                )}
               </tbody>
             </table>
-          </div>
           </div>
         </div>
       )}

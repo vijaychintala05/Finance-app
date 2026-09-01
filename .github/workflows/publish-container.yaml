@@ -62,6 +62,7 @@ jobs:
             -e PORT=3000 \
             -e DATABASE_URL=postgres://firmbooks:firmbooks-ci-password@firmbooks-postgres:5432/firmbooks \
             -e JWT_SECRET=firmbooks-ci-jwt-secret-with-at-least-thirty-two-characters \
+            -e AUTH_ENCRYPTION_KEY=firmbooks-ci-auth-encryption-key-at-least-thirty-two-characters \
             -e ALLOWED_ORIGINS=http://localhost:3000 \
             firmbooks-ci:${{ github.sha }}
           for attempt in {1..60}; do

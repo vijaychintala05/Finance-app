@@ -73,24 +73,29 @@ export const PaymentsMadeView: React.FC<PaymentsMadeViewProps> = ({
     if (onSelectedEntityClosed) onSelectedEntityClosed();
   };
 
-  const handleRecordPayment = (e: React.FormEvent) => {
+  const handleRecordPayment = async (e: React.FormEvent) => {
     e.preventDefault();
-    const targetVendor = vendorName || vendors[0]?.name || 'Unassigned Vendor';
+    const targetVendor = vendors.find((v) => v.name === vendorName) || vendors[0];
+    const targetVendorName = targetVendor?.name || vendorName || 'Unassigned Vendor';
 
-    const created = addPaymentMade({
-      paymentNumber: `PAY-2026-00${paymentsMade.length + 1}`,
-      vendorName: targetVendor,
-      billNumber: billNum || 'N/A',
-      paymentDate: new Date().toISOString().split('T')[0],
-      paymentMethod,
-      referenceNumber,
-      amount: Number(amount) || 0,
-    });
-    if (!created) return;
+    try {
+      await addPaymentMade({
+        paymentNumber: `PAY-2026-00${paymentsMade.length + 1}`,
+        vendorName: targetVendorName,
+        vendorId: targetVendor?.id,
+        billNumber: billNum || 'N/A',
+        paymentDate: new Date().toISOString().split('T')[0],
+        paymentMethod,
+        referenceNumber,
+        amount: Number(amount) || 0,
+      });
 
-    setIsModalOpen(false);
-    setReferenceNumber('');
-    if (onSelectedEntityClosed) onSelectedEntityClosed();
+      setIsModalOpen(false);
+      setReferenceNumber('');
+      if (onSelectedEntityClosed) onSelectedEntityClosed();
+    } catch (err: any) {
+      alert(err.message || 'Failed to record vendor payment');
+    }
   };
 
   return (

@@ -38,15 +38,23 @@ import { GSTComplianceService } from '../services/GSTComplianceService';
 
 export class FinanceController {
   // --- AUDIT LOG UTILITY ---
-  private static async logAudit(
+  public static async logAudit(
     orgId: string,
     userId: string,
     action: string,
     entityType: string,
     entityId: string,
     afterState: any = null,
-    queryClient: DbQueryClient = db
-  ) {
+    queryClient: DbQueryClient = db,
+    strict: boolean = false
+  ): Promise<void> {
+    if (strict || queryClient !== db) {
+      await queryClient.query(
+        'INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+        [newId('aud'), orgId, userId, action, entityType, entityId, JSON.stringify(afterState)]
+      );
+      return;
+    }
     try {
       await queryClient.query(
         'INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state) VALUES ($1, $2, $3, $4, $5, $6, $7)',
@@ -766,7 +774,8 @@ export class FinanceController {
         notes,
         status: 'POSTED',
         createdBy: req.auth!.userId,
-      });
+        approvedDraftId: req.body.approvedDraftId,
+      } as any);
       res.status(201).json({
         id: invoice.id,
         invoiceNumber: invoice.invoiceNumber,
@@ -852,7 +861,8 @@ export class FinanceController {
         notes: notes || '',
         amount: parsedAmount,
         allocations: invoiceId ? [{ invoiceId, amount: parsedAmount }] : undefined,
-      });
+        actorId: req.auth!.userId,
+      } as any);
 
       await FinanceController.logAudit(orgId, req.auth!.userId, 'PAYMENT_RECORDED', 'PaymentReceived', result.id, result);
 
@@ -967,6 +977,10 @@ export class FinanceController {
     const expenseAccountId = req.body.expenseAccountId;
     const payableAccountId = req.body.payableAccountId;
     const amounts = [parsedSubtotal, parsedTax, parsedTotal];
+    if (req.body.approvedDraftId) {
+      res.status(400).json({ error: 'APPROVED_DRAFT_ID_FORBIDDEN: approvedDraftId is deprecated and forbidden. Use postApprovedBill.' });
+      return;
+    }
     if (!vendorId || !isIsoCalendarDate(billDate) || !isIsoCalendarDate(dueDate) || dueDate < billDate || amounts.some((value) => !Number.isFinite(value) || value < 0 || Math.round(value * 100) / 100 !== value) || parsedTotal <= 0 || Math.abs(parsedSubtotal + parsedTax - parsedTotal) > 0.009) {
       res.status(400).json({ error: 'A tenant vendor, valid dates, and reconciling non-negative subtotal, tax, and total amounts are required' });
       return;
@@ -1329,7 +1343,7 @@ export class FinanceController {
   public static async recordVendorPayment(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
     const result = await db.transaction(async (client) => {
-      const payment = await PurchasesEngine.recordVendorPayment(orgId, req.body, client);
+      const payment = await PurchasesEngine.recordVendorPayment(orgId, { ...req.body, createdBy: req.auth!.userId }, client);
       await FinanceController.logAudit(orgId, req.auth!.userId, 'VENDOR_PAYMENT_RECORDED', 'VendorPayment', payment.id, payment, client);
       return payment;
     });
@@ -1859,5 +1873,67 @@ export class FinanceController {
     const orgId = req.auth!.organizationId;
     const report = await AccountingIntegrityService.verifyOrganizationIntegrity(orgId);
     res.json(report);
+  }
+
+  // --- POST APPROVED FINANCIAL DRAFTS ---
+
+  public static async postApprovedInvoice(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const userId = req.auth!.userId;
+    const invoiceId = req.params.id;
+    const postedInvoice = await db.transaction(async (txClient) => {
+      const result = await SalesEngine.postApprovedInvoice(orgId, userId, invoiceId, txClient);
+      await FinanceController.logAudit(orgId, userId, 'INVOICE_POSTED_AFTER_APPROVAL', 'Invoice', invoiceId, result, txClient, true);
+      return result;
+    });
+    res.status(200).json(postedInvoice);
+  }
+
+  public static async postApprovedPaymentReceived(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const userId = req.auth!.userId;
+    const paymentId = req.params.id;
+    const postedPayment = await db.transaction(async (txClient) => {
+      const result = await SalesEngine.postApprovedPayment(orgId, userId, paymentId, txClient);
+      await FinanceController.logAudit(orgId, userId, 'PAYMENT_RECEIVED_POSTED_AFTER_APPROVAL', 'PaymentReceived', paymentId, result, txClient, true);
+      return result;
+    });
+    res.status(200).json(postedPayment);
+  }
+
+  public static async postApprovedBill(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const userId = req.auth!.userId;
+    const billId = req.params.id;
+    const postedBill = await db.transaction(async (txClient) => {
+      const result = await PurchasesEngine.postApprovedBill(orgId, userId, billId, txClient);
+      await FinanceController.logAudit(orgId, userId, 'BILL_POSTED_AFTER_APPROVAL', 'VendorBill', billId, result, txClient, true);
+      return result;
+    });
+    res.status(200).json(postedBill);
+  }
+
+  public static async postApprovedVendorPayment(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const userId = req.auth!.userId;
+    const paymentId = req.params.id;
+    const postedPayment = await db.transaction(async (txClient) => {
+      const result = await PurchasesEngine.postApprovedVendorPayment(orgId, userId, paymentId, txClient);
+      await FinanceController.logAudit(orgId, userId, 'VENDOR_PAYMENT_POSTED_AFTER_APPROVAL', 'VendorPayment', paymentId, result, txClient, true);
+      return result;
+    });
+    res.status(200).json(postedPayment);
+  }
+
+  public static async postApprovedJournal(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const userId = req.auth!.userId;
+    const journalId = req.params.id;
+    const postedJournal = await db.transaction(async (txClient) => {
+      const result = await ManualJournalService.postApprovedJournal(orgId, userId, journalId, txClient);
+      await FinanceController.logAudit(orgId, userId, 'JOURNAL_POSTED_AFTER_APPROVAL', 'ManualJournal', journalId, result, txClient, true);
+      return result;
+    });
+    res.status(200).json(postedJournal);
   }
 }

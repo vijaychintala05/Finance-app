@@ -343,7 +343,7 @@ export class AccountingIntegrityService {
   public static async verifyGSTIntegrity(organizationId: string): Promise<IntegrityCheckResult> {
     const now = new Date().toISOString();
 
-    // Invoice Output GST
+    // 1. Invoice Output GST
     const invRes = await db.query<any>(
       `SELECT COALESCE(SUM(tax_total), 0) as total
        FROM invoices
@@ -352,7 +352,22 @@ export class AccountingIntegrityService {
     );
     const invoiceOutputCents = databaseMoneyToCents(invRes.rows[0]?.total, 'Invoice output tax');
 
-    // Bill Input GST
+    // 2. Credit Notes Tax Reversal
+    const cnRes = await db.query<any>(
+      `SELECT COALESCE(SUM(jl.debit), 0) as total
+       FROM journal_lines jl
+       JOIN journal_entries je ON jl.journal_entry_id = je.id
+       JOIN accounts a ON a.id = jl.account_id
+       WHERE je.organization_id = $1
+         AND a.code IN ('2100', '2200')
+         AND (je.entry_number LIKE 'JE-CN%' OR je.description LIKE '%Credit Note%')
+         AND UPPER(je.status) = 'POSTED'`,
+      [organizationId]
+    );
+    const cnTaxReversalCents = databaseMoneyToCents(cnRes.rows[0]?.total, 'Credit note tax reversal');
+    const netDocumentOutputCents = invoiceOutputCents - cnTaxReversalCents;
+
+    // 3. Bill Input GST
     const billRes = await db.query<any>(
       `SELECT COALESCE(SUM(tax_total), 0) as total
        FROM bills
@@ -361,34 +376,35 @@ export class AccountingIntegrityService {
     );
     const billInputCents = databaseMoneyToCents(billRes.rows[0]?.total, 'Bill input tax');
 
-    // GL Output GST balance
+    // 4. GL Output GST balance
     const glOutputRes = await db.query<any>(
       `SELECT COALESCE(SUM(jl.credit - jl.debit), 0) as balance
        FROM journal_lines jl
        JOIN journal_entries je ON jl.journal_entry_id = je.id
        JOIN accounts a ON a.id = jl.account_id AND a.organization_id = je.organization_id
        WHERE je.organization_id = $1
-         AND a.code = '2200'
+         AND a.code IN ('2100', '2200')
          AND UPPER(je.status) = 'POSTED'`,
       [organizationId]
     );
     const glOutputCents = databaseMoneyToCents(glOutputRes.rows[0]?.balance, 'Output tax control balance');
 
-    // GL Input Tax balance
+    // 5. GL Input Tax balance
     const glInputRes = await db.query<any>(
       `SELECT COALESCE(SUM(jl.debit - jl.credit), 0) as balance
        FROM journal_lines jl
        JOIN journal_entries je ON jl.journal_entry_id = je.id
        JOIN accounts a ON a.id = jl.account_id AND a.organization_id = je.organization_id
        WHERE je.organization_id = $1
-         AND a.code = '1200'
+         AND (a.code = '2110' OR (a.code = '1200' AND LOWER(a.name) LIKE '%tax%'))
          AND UPPER(je.status) = 'POSTED'`,
       [organizationId]
     );
     const glInputCents = databaseMoneyToCents(glInputRes.rows[0]?.balance, 'Input tax control balance');
-    const outputDifferenceCents = absoluteCents(invoiceOutputCents - glOutputCents);
+
+    const outputDifferenceCents = absoluteCents(netDocumentOutputCents - glOutputCents);
     const inputDifferenceCents = absoluteCents(billInputCents - glInputCents);
-    const totalExpectedCents = invoiceOutputCents + billInputCents;
+    const totalExpectedCents = netDocumentOutputCents + billInputCents;
     const totalActualCents = glOutputCents + glInputCents;
     const totalDifferenceCents = outputDifferenceCents + inputDifferenceCents;
 
@@ -401,13 +417,15 @@ export class AccountingIntegrityService {
       checkedAt: now,
       details: {
         invoiceOutputTax: centsDetail(invoiceOutputCents, 'Invoice output tax'),
+        creditNoteOutputTaxReversal: centsDetail(cnTaxReversalCents, 'Credit note tax reversal'),
+        netDocumentOutputTax: centsDetail(netDocumentOutputCents, 'Net document output tax'),
         billInputTax: centsDetail(billInputCents, 'Bill input tax'),
         glOutputTax: centsDetail(glOutputCents, 'Output tax control balance'),
         glInputTax: centsDetail(glInputCents, 'Input tax control balance'),
         outputDifference: centsDetail(outputDifferenceCents, 'Output tax difference'),
         inputDifference: centsDetail(inputDifferenceCents, 'Input tax difference'),
-        outputControlAccount: '2200',
-        inputControlAccount: '1200',
+        outputControlAccount: '2100/2200',
+        inputControlAccount: '1200/2110',
       },
     };
   }

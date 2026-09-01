@@ -20,6 +20,10 @@ export interface BackupPayload {
 
 export class BackupRestoreService {
   private static TENANT_TABLES = [
+    'organization_settings',
+    'roles',
+    'role_permissions',
+    'organization_members',
     'accounts',
     'bank_accounts',
     'bank_statement_imports',
@@ -41,6 +45,7 @@ export class BackupRestoreService {
     'payments_received',
     'payment_received_allocations',
     'customer_advances',
+    'customer_advance_applications',
     'customer_refunds',
     'ar_write_offs',
     'credit_notes',
@@ -51,10 +56,12 @@ export class BackupRestoreService {
     'payments_made',
     'payment_made_allocations',
     'vendor_advances',
+    'vendor_advance_applications',
     'vendor_credits',
     'debit_note_applications',
     'ap_write_offs',
     'expenses',
+    'expense_receipt_attachments',
     'journal_entries',
     'journal_lines',
     'period_locks',
@@ -63,9 +70,13 @@ export class BackupRestoreService {
     'quotation_revisions',
     'quotation_templates',
     'document_sequences',
-    'audit_logs',
     'approval_rules',
     'approval_requests',
+    'recurring_transaction_profiles',
+    'recurring_transaction_occurrences',
+    'fixed_assets',
+    'financial_reversals',
+    'audit_logs',
   ];
 
   public static async createBackup(organizationId: string, createdBy: string): Promise<BackupPayload> {
@@ -79,13 +90,15 @@ export class BackupRestoreService {
           query = `SELECT jl.* FROM journal_lines jl JOIN journal_entries je ON jl.journal_entry_id = je.id WHERE je.organization_id = $1`;
         } else if (table === 'invoice_items') {
           query = `SELECT ii.* FROM invoice_items ii JOIN invoices i ON ii.invoice_id = i.id WHERE i.organization_id = $1`;
+        } else if (table === 'role_permissions') {
+          query = `SELECT rp.* FROM role_permissions rp JOIN roles r ON rp.role_id = r.id WHERE r.organization_id = $1`;
         }
 
         const res = await db.query(query, [organizationId]);
         backupData[table] = res.rows || [];
         totalRecords += res.rows.length;
-      } catch (err) {
-        // Table may not exist yet or no records
+      } catch {
+        // Some optional module tables are absent in older installations.
         backupData[table] = [];
       }
     }
@@ -153,6 +166,49 @@ export class BackupRestoreService {
     return { isValid: true, recordCount: count };
   }
 
+  public static async getStoredBackup(organizationId: string, backupId: string): Promise<BackupPayload> {
+    const result = await db.query(
+      `SELECT id, organization_id, created_by, created_at, schema_version, record_count, checksum, data
+         FROM backups
+        WHERE id = $1 AND organization_id = $2`,
+      [backupId, organizationId]
+    );
+
+    if (result.rows.length !== 1) {
+      throw new Error('Backup not found for this organization.');
+    }
+
+    const row = result.rows[0];
+    let data: Record<string, any[]>;
+    try {
+      data = typeof row.data === 'string' ? JSON.parse(row.data) : row.data;
+    } catch {
+      throw new Error('Stored backup payload is unreadable.');
+    }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      throw new Error('Stored backup payload has an invalid data shape.');
+    }
+
+    const payload: BackupPayload = {
+      metadata: {
+        id: row.id,
+        organizationId: row.organization_id,
+        createdBy: row.created_by,
+        createdAt: row.created_at,
+        schemaVersion: row.schema_version,
+        recordCount: Number(row.record_count),
+        checksum: row.checksum,
+      },
+      data,
+    };
+    const verification = this.verifyBackup(payload);
+    if (!verification.isValid || verification.recordCount !== payload.metadata.recordCount) {
+      throw new Error(`Stored backup verification failed: ${verification.error || 'record count mismatch'}`);
+    }
+
+    return payload;
+  }
+
   public static async restoreBackup(
     organizationId: string,
     payload: BackupPayload,
@@ -181,6 +237,11 @@ export class BackupRestoreService {
               `DELETE FROM invoice_items WHERE invoice_id IN (SELECT id FROM invoices WHERE organization_id = $1)`,
               [organizationId]
             );
+          } else if (table === 'role_permissions') {
+            await tx.query(
+              `DELETE FROM role_permissions WHERE role_id IN (SELECT id FROM roles WHERE organization_id = $1)`,
+              [organizationId]
+            );
           } else {
             await tx.query(`DELETE FROM ${table} WHERE organization_id = $1`, [organizationId]);
           }
@@ -199,11 +260,7 @@ export class BackupRestoreService {
           const placeholders = keys.map((_, idx) => `$${idx + 1}`).join(', ');
           const vals = keys.map((k) => row[k]);
 
-          try {
-            await tx.query(`INSERT INTO ${table} (${cols}) VALUES (${placeholders}) ON CONFLICT DO NOTHING`, vals);
-          } catch (insertErr) {
-            // Ignore row conflict during restoration
-          }
+          await tx.query(`INSERT INTO ${table} (${cols}) VALUES (${placeholders}) ON CONFLICT DO NOTHING`, vals);
         }
       }
     });

@@ -1,15 +1,12 @@
 import { test, expect } from '@playwright/test';
+import { registerTenant } from './helpers';
 
 test.describe('Self-Hosted FirmBooks Identity & Security Lifecycle', () => {
-  test('authenticates via opaque session, accesses security center, and navigates active devices', async ({ page }) => {
-    // Navigate to root app
-    await page.goto('/');
-
-    // Verify main app navigation
-    await expect(page.locator('body')).toBeVisible();
+  test('authenticates via opaque session, accesses security center, and navigates active devices', async ({ page }, testInfo) => {
+    await registerTenant(page, testInfo);
 
     // Navigate to Security Center view via hash routing
-    await page.goto('/#security_center');
+    await page.goto('/#/security_center');
 
     // Verify Identity & Security Center header
     await expect(page.getByText('Identity & Security Center')).toBeVisible();

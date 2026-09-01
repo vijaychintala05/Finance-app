@@ -1,9 +1,10 @@
-import { db } from '../database/db';
+import { db, type DbQueryClient } from '../database/db';
 import { ServerPostingEngine } from '../accounting/postingEngine';
 import { newId } from '../utils/ids';
 import { DocumentNumberingEngine } from './DocumentNumberingEngine';
 import { centsToSafeNumber, moneyInputToCents } from '../utils/money';
 import { isIsoCalendarDate } from '../utils/date';
+import { ApprovalWorkflowService } from '../approvals/ApprovalWorkflowService';
 
 export interface ManualJournalLineInput {
   accountId: string;
@@ -26,6 +27,7 @@ export interface ManualJournalInput {
   narration?: string;
   lines: ManualJournalLineInput[];
   status?: 'Draft' | 'Submitted' | 'Approved' | 'Posted';
+  draftId?: string;
 }
 
 export class ManualJournalService {
@@ -108,12 +110,76 @@ export class ManualJournalService {
       }
     }
 
-    const status = input.status || 'Posted';
-    if (status !== 'Posted') {
-      throw new Error('JOURNAL_WORKFLOW_REQUIRED: Draft and submitted journals must use the approval workflow');
+    const totalDebit = centsToSafeNumber(totalDebitCents, 'Journal total debit');
+    const requiresApproval = await ApprovalWorkflowService.requiresApproval(orgId, 'MANUAL_JOURNAL', totalDebit);
+
+    // If approval is required and no approved draft is supplied, persist as a Submitted draft and register approval request.
+    if (requiresApproval && !input.draftId) {
+      return db.transaction(async (tx) => {
+        const draftId = newId('jrn');
+        const entryNumber = await DocumentNumberingEngine.getNextNumber(orgId, 'JOURNAL', input.date, undefined, tx);
+
+        await tx.query(
+          `INSERT INTO journal_entries
+            (id, organization_id, entry_number, date, reference, description, status)
+           VALUES ($1, $2, $3, $4, $5, $6, 'Submitted')`,
+          [draftId, orgId, entryNumber, input.date, input.reference || '', input.narration || 'Manual journal']
+        );
+
+        for (const line of input.lines) {
+          await tx.query(
+            `INSERT INTO journal_lines
+              (id, journal_entry_id, account_id, account_code, account_name, debit, credit, description)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [newId('jln'), draftId, line.accountId, line.accountCode || null, line.accountName || null, line.debit, line.credit, line.description || '']
+          );
+        }
+
+        const req = await ApprovalWorkflowService.submitForApproval(orgId, 'MANUAL_JOURNAL', draftId, userId, totalDebit, tx);
+
+        await tx.query(
+          `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state)
+           VALUES ($1, $2, $3, 'MANUAL_JOURNAL_SUBMITTED', 'JournalEntry', $4, $5)`,
+          [newId('aud'), orgId, userId, draftId, JSON.stringify({ entryNumber, totalDebit, status: 'Submitted', approvalRequestId: req.id })]
+        );
+
+        return { id: draftId, entryNumber, status: 'Submitted' };
+      });
     }
 
+    // Posting branch: If approval was required, strictly verify and consume the approved request in PostgreSQL!
     return db.transaction(async (tx) => {
+      if (requiresApproval && input.draftId) {
+        await ApprovalWorkflowService.consumeApproval(orgId, 'MANUAL_JOURNAL', input.draftId, tx);
+
+        const draftRes = await tx.query(
+          `SELECT * FROM journal_entries WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+          [orgId, input.draftId]
+        );
+        if (draftRes.rows.length === 0) throw new Error('JOURNAL_DRAFT_NOT_FOUND: Submitted journal draft does not exist');
+        if (draftRes.rows[0].status === 'Posted') throw new Error('JOURNAL_ALREADY_POSTED: This journal is already posted');
+
+        // Post lines to accounts
+        for (const line of input.lines) {
+          const accRes = await tx.query(`SELECT type FROM accounts WHERE id = $1 AND organization_id = $2`, [line.accountId, orgId]);
+          const accType = accRes.rows[0]?.type || 'Asset';
+          const normalDebit = ['Asset', 'Expense', 'Cost of Goods Sold', 'Other Expense'].includes(accType);
+          const balanceDelta = normalDebit ? line.debit - line.credit : line.credit - line.debit;
+          await tx.query('UPDATE accounts SET balance = balance + $1 WHERE id = $2 AND organization_id = $3', [balanceDelta, line.accountId, orgId]);
+        }
+
+        await tx.query(`UPDATE journal_entries SET status = 'Posted' WHERE id = $1 AND organization_id = $2`, [input.draftId, orgId]);
+
+        await tx.query(
+          `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state)
+           VALUES ($1, $2, $3, 'MANUAL_JOURNAL_POSTED', 'JournalEntry', $4, $5)`,
+          [newId('aud'), orgId, userId, input.draftId, JSON.stringify({ entryNumber: draftRes.rows[0].entry_number, totalDebit, status: 'Posted' })]
+        );
+
+        return { id: input.draftId, entryNumber: draftRes.rows[0].entry_number, status: 'Posted' };
+      }
+
+      // If approval is not required, post directly via ServerPostingEngine
       const entryNumber = await DocumentNumberingEngine.getNextNumber(orgId, 'JOURNAL', input.date, undefined, tx);
       const posting = await ServerPostingEngine.postEntry({
         organizationId: orgId,
@@ -126,10 +192,64 @@ export class ManualJournalService {
       await tx.query(
         `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state)
          VALUES ($1, $2, $3, 'MANUAL_JOURNAL_CREATED', 'JournalEntry', $4, $5)`,
-        [newId('aud'), orgId, userId, posting.entryId, JSON.stringify({ entryNumber, totalDebit: centsToSafeNumber(totalDebitCents, 'Journal total debit') })]
+        [newId('aud'), orgId, userId, posting.entryId, JSON.stringify({ entryNumber, totalDebit })]
       );
-      return { id: posting.entryId, entryNumber, status };
+      return { id: posting.entryId, entryNumber, status: 'Posted' };
     });
+  }
+
+  public static async postApprovedJournal(
+    orgId: string,
+    userId: string,
+    draftId: string,
+    transactionClient?: DbQueryClient
+  ): Promise<{ id: string; entryNumber: string; status: string }> {
+    const execute = async (tx: DbQueryClient) => {
+      const draftRes = await tx.query(
+        `SELECT * FROM journal_entries WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, draftId]
+      );
+      if (draftRes.rows.length === 0) throw new Error('JOURNAL_DRAFT_NOT_FOUND: Journal draft does not exist');
+      if (draftRes.rows[0].status === 'Posted') throw new Error('JOURNAL_ALREADY_POSTED: Journal is already posted');
+
+      const linesRes = await tx.query(
+        `SELECT * FROM journal_lines WHERE journal_entry_id = $1 ORDER BY id ASC`,
+        [draftId]
+      );
+      if (linesRes.rows.length < 2) throw new Error('JOURNAL_LINES_INVALID: Draft journal has invalid lines');
+
+      const lines: ManualJournalLineInput[] = linesRes.rows.map((r) => ({
+        accountId: r.account_id,
+        accountCode: r.account_code,
+        accountName: r.account_name,
+        debit: Number(r.debit || 0),
+        credit: Number(r.credit || 0),
+        description: r.description,
+      }));
+
+      await ApprovalWorkflowService.consumeApproval(orgId, 'MANUAL_JOURNAL', draftId, tx);
+
+      for (const line of lines) {
+        const accRes = await tx.query(`SELECT type FROM accounts WHERE id = $1 AND organization_id = $2`, [line.accountId, orgId]);
+        const accType = accRes.rows[0]?.type || 'Asset';
+        const normalDebit = ['Asset', 'Expense', 'Cost of Goods Sold', 'Other Expense'].includes(accType);
+        const balanceDelta = normalDebit ? line.debit - line.credit : line.credit - line.debit;
+        await tx.query('UPDATE accounts SET balance = balance + $1 WHERE id = $2 AND organization_id = $3', [balanceDelta, line.accountId, orgId]);
+      }
+
+      await tx.query(`UPDATE journal_entries SET status = 'Posted' WHERE id = $1 AND organization_id = $2`, [draftId, orgId]);
+
+      await tx.query(
+        `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state)
+         VALUES ($1, $2, $3, 'MANUAL_JOURNAL_POSTED', 'JournalEntry', $4, $5)`,
+        [newId('aud'), orgId, userId, draftId, JSON.stringify({ entryNumber: draftRes.rows[0].entry_number, status: 'Posted' })]
+      );
+
+      return { id: draftId, entryNumber: draftRes.rows[0].entry_number, status: 'Posted' };
+    };
+
+    if (transactionClient) return await execute(transactionClient);
+    return await db.transaction(execute);
   }
 
   public static async createBulkJournals(

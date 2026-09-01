@@ -177,19 +177,19 @@ describe('Phase 8.4B.1C — Backend Customer Search, Isolation & RBAC Test Suite
   });
 
   // --- 3. Purchase Role RBAC Tests ---
-  it('9. Purchase role GET /finance/customers returns HTTP 200', async () => {
+  it('9. Purchase role GET /finance/customers returns HTTP 403 Forbidden (Segregated)', async () => {
     const res = await request(app)
       .get('/api/v1/finance/customers')
       .set('Authorization', `Bearer ${purchaseToken}`);
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(403);
   });
 
-  it('10. Purchase role POST /finance/customers returns HTTP 201', async () => {
+  it('10. Purchase role POST /finance/customers returns HTTP 403 Forbidden (Segregated)', async () => {
     const res = await request(app)
       .post('/api/v1/finance/customers')
       .set('Authorization', `Bearer ${purchaseToken}`)
       .send({ name: 'Purchase Added Customer' });
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(403);
   });
 
   it('11. Purchase role GET /finance/projects returns HTTP 200', async () => {
@@ -199,12 +199,12 @@ describe('Phase 8.4B.1C — Backend Customer Search, Isolation & RBAC Test Suite
     expect(res.status).toBe(200);
   });
 
-  it('12. Purchase role POST /finance/projects returns HTTP 201', async () => {
+  it('12. Purchase role POST /finance/projects returns HTTP 403 Forbidden (Segregated)', async () => {
     const res = await request(app)
       .post('/api/v1/finance/projects')
       .set('Authorization', `Bearer ${purchaseToken}`)
       .send({ code: 'PRJ-PURCH', name: 'Purchase Added Project' });
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(403);
   });
 
   it('13. Purchase role GET /items returns HTTP 200', async () => {

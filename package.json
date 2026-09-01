@@ -5,13 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build --configLoader native",
+    "build": "vite build --configLoader native && node scripts/build-server.mjs",
     "start": "tsx server.ts",
     "preview": "vite preview",
     "clean": "node -e \"const fs=require('node:fs'); for (const p of ['dist','server.js']) fs.rmSync(p,{recursive:true,force:true})\"",
     "test": "vitest run --configLoader native",
     "test:e2e": "playwright test",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit -p tsconfig.build.json"
   },
   "engines": {
     "node": ">=22.0.0"
@@ -57,10 +57,11 @@
     "@types/supertest": "^7.2.1",
     "autoprefixer": "^10.4.21",
     "esbuild": "^0.25.0",
-    "tsx": "^4.21.0",
+    "fast-check": "^4.9.0",
     "jsdom": "^30.0.1",
     "supertest": "^7.2.2",
     "tailwindcss": "^4.1.14",
+    "tsx": "^4.21.0",
     "typescript": "~5.8.2",
     "vite": "^6.2.3",
     "vitest": "^4.1.10"

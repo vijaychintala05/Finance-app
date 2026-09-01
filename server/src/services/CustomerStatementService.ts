@@ -54,10 +54,15 @@ export class CustomerStatementService {
       `SELECT COALESCE(SUM(amount), 0) as total FROM payments_received WHERE organization_id = $1 AND client_id = $2 AND UPPER(status) <> 'REVERSED' AND payment_date < $3`,
       [orgId, customerId, fromDate]
     );
+    const cnOpen = await db.query(
+      `SELECT COALESCE(SUM(total_amount), 0) as total FROM credit_notes WHERE organization_id = $1 AND client_id = $2 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT') AND date < $3`,
+      [orgId, customerId, fromDate]
+    );
 
     const openingBalance =
       Number(invOpen.rows[0]?.total || 0) -
-      Number(payOpen.rows[0]?.total || 0);
+      Number(payOpen.rows[0]?.total || 0) -
+      Number(cnOpen.rows[0]?.total || 0);
 
     // 2. In-range transactions
     const invoices = await db.query(
@@ -67,6 +72,11 @@ export class CustomerStatementService {
 
     const payments = await db.query(
       `SELECT id, payment_number as number, payment_date as date, amount, reference FROM payments_received WHERE organization_id = $1 AND client_id = $2 AND UPPER(status) <> 'REVERSED' AND payment_date >= $3 AND payment_date <= $4`,
+      [orgId, customerId, fromDate, toDate]
+    );
+
+    const creditNotes = await db.query(
+      `SELECT id, credit_note_number as number, date, total_amount as amount, reason FROM credit_notes WHERE organization_id = $1 AND client_id = $2 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT') AND date >= $3 AND date <= $4`,
       [orgId, customerId, fromDate, toDate]
     );
 
@@ -95,6 +105,18 @@ export class CustomerStatementService {
         date: pmt.date,
         type: 'Payment Received',
         reference: pmt.number || 'PAY',
+        debit: 0,
+        credit: amt,
+      });
+    }
+
+    for (const cn of creditNotes.rows) {
+      const amt = Math.round(Number(cn.amount || 0) * 100) / 100;
+      totalCredits += amt;
+      rawTxns.push({
+        date: cn.date,
+        type: 'Credit Note',
+        reference: cn.number || 'CN',
         debit: 0,
         credit: amt,
       });

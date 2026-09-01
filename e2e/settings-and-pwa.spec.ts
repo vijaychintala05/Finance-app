@@ -20,11 +20,12 @@ test.describe('V1 settings and PWA shell', () => {
     await expect(page.getByRole('button', { name: /Workspace Governance/ })).toBeVisible();
     await expect(page.getByRole('button', { name: /Security & Audit Logs/ })).toBeVisible();
     await expect(page.getByRole('button', { name: /Display Preferences/ })).toBeVisible();
+    await expect(page.getByRole('button', { name: /Approval Workflows/ })).toBeVisible();
     await expect(page.getByText('Custom Domain', { exact: true })).toHaveCount(0);
     await expect(page.getByText('Automation', { exact: true })).toHaveCount(0);
 
     const workspace = page.locator('.settings-workspace');
-    await expect(workspace.locator('.settings-category')).toHaveCount(4);
+    await expect(workspace.locator('.settings-category')).toHaveCount(5);
     await page.screenshot({ path: testInfo.outputPath('settings-overview.png'), fullPage: true });
     expect(await workspace.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
 
@@ -37,11 +38,12 @@ test.describe('V1 settings and PWA shell', () => {
     await page.getByLabel('City', { exact: true }).fill('Pune');
     // Searching from a form must preserve its draft.
     await page.getByRole('searchbox', { name: 'Search settings' }).fill('not-a-real-setting');
-    await expect(page.getByRole('heading', { name: 'No settings found' })).toBeVisible();
+    await expect(page.getByText('No settings matched your query.')).toBeVisible();
     await page.getByRole('button', { name: 'Clear search', exact: true }).first().click();
     await expect(page.getByLabel('City', { exact: true })).toHaveValue('Pune');
     page.once('dialog', dialog => dialog.dismiss());
     await page.getByRole('button', { name: 'Back to all settings' }).click();
+    await workspace.getByRole('button', { name: /Taxes & Address/ }).click();
     await expect(page.getByLabel('City', { exact: true })).toHaveValue('Pune');
     await page.route('**/api/v1/organizations/current', async route => {
       if (route.request().method() === 'PATCH') {
@@ -61,7 +63,7 @@ test.describe('V1 settings and PWA shell', () => {
     await workspace.getByRole('button', { name: /Taxes & Address/ }).click();
     await expect(page.getByLabel('City', { exact: true })).toHaveValue('Pune');
     await page.getByRole('button', { name: 'Back to all settings' }).click();
-    await workspace.getByRole('button', { name: /Invoicing & Fiscal Defaults/ }).click();
+    await workspace.getByRole('button', { name: /Invoicing & Sequences/ }).click();
     await expect(page.getByLabel('Default Payment Terms', { exact: true })).toBeVisible();
     await page.getByLabel('Default Payment Terms', { exact: true }).selectOption('Net 45');
     await page.getByRole('button', { name: 'Reset', exact: true }).click();

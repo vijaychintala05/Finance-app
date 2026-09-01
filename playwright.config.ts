@@ -12,7 +12,7 @@ export default defineConfig({
   workers: process.env.CI ? 1 : undefined,
   reporter: 'list',
   use: {
-    baseURL: 'http://localhost:3000',
+    baseURL: process.env.PLAYWRIGHT_TEST_BASE_URL || 'http://localhost:3100',
     trace: 'on-first-retry',
   },
   projects: [
@@ -32,15 +32,18 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'npm run dev',
+    command: 'npx tsx server.ts',
     env: {
       ...process.env,
+      PORT: '3100',
       NODE_ENV: 'test',
       DATABASE_MODE: 'memory',
       USE_PG_MEM: 'true',
+      DISABLE_HMR: 'true',
+      JWT_SECRET: 'e2e-isolated-test-jwt-secret-do-not-use-in-production-12345',
     },
-    url: 'http://localhost:3000',
-    reuseExistingServer: !process.env.CI,
+    url: 'http://localhost:3100',
+    reuseExistingServer: false,
     timeout: 120 * 1000,
   },
 });

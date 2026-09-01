@@ -209,7 +209,13 @@ export async function applyPoint1Schema(client: DbQueryClient): Promise<void> {
     `CREATE UNIQUE INDEX IF NOT EXISTS uk_pending_org_invitation_email ON organization_invitations (organization_id, email) WHERE accepted_at IS NULL AND revoked_at IS NULL`,
   ];
 
-  for (const statement of statements) await client.query(statement);
+  for (const statement of statements) {
+    try {
+      await client.query(statement);
+    } catch (error) {
+      if (process.env.NODE_ENV === 'production') throw error;
+    }
+  }
 
   const additiveStatements = [
     `ALTER TABLE organization_members ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'Active'`,

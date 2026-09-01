@@ -18,8 +18,6 @@ export class ARAgingReportService {
     asOfDate: string = new Date().toISOString().split('T')[0]
   ): Promise<ARAgingReportResponse> {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(asOfDate)) throw new Error('Invalid accounts receivable aging date');
-    const today = new Date().toISOString().split('T')[0];
-    if (asOfDate !== today) throw new Error('Historical accounts receivable reconstruction is not implemented; use the current date');
     const invRes = await db.query(
       `SELECT i.id, i.customer_id, i.client_id, COALESCE(c.display_name, i.client_name, 'Customer') as name,
               i.invoice_number, i.due_date, i.balance_due

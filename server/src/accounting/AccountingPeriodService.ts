@@ -38,6 +38,7 @@ export class AccountingPeriodService {
     const lockId = `lock-${organizationId}-${year}-${month}`;
     const now = new Date().toISOString();
     const periodName = `${year}-${String(month).padStart(2, '0')}`;
+    const lastDayOfMonth = new Date(year, month, 0).toISOString().split('T')[0];
 
     const existing = await db.query(
       `SELECT id FROM period_locks WHERE organization_id = $1 AND year = $2 AND month = $3`,
@@ -47,15 +48,15 @@ export class AccountingPeriodService {
     if (existing.rows.length > 0) {
       await db.query(
         `UPDATE period_locks
-         SET is_locked = TRUE, locked_by = $1, locked_at = $2
-         WHERE organization_id = $3 AND year = $4 AND month = $5`,
-        [userId, now, organizationId, year, month]
+         SET is_locked = TRUE, lock_date = $1, status = 'Active', locked_by = $2, locked_at = $3
+         WHERE organization_id = $4 AND year = $5 AND month = $6`,
+        [lastDayOfMonth, userId, now, organizationId, year, month]
       );
     } else {
       await db.query(
-        `INSERT INTO period_locks (id, organization_id, year, month, period_name, is_locked, locked_by, locked_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [lockId, organizationId, year, month, periodName, true, userId, now]
+        `INSERT INTO period_locks (id, organization_id, year, month, period_name, is_locked, lock_date, status, locked_by, locked_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [lockId, organizationId, year, month, periodName, true, lastDayOfMonth, 'Active', userId, now]
       );
     }
 

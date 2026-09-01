@@ -18,8 +18,6 @@ export class APAgingReportService {
     asOfDate: string = new Date().toISOString().split('T')[0]
   ): Promise<APAgingReportResponse> {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(asOfDate)) throw new Error('Invalid accounts payable aging date');
-    const today = new Date().toISOString().split('T')[0];
-    if (asOfDate !== today) throw new Error('Historical accounts payable reconstruction is not implemented; use the current date');
     const billsRes = await db.query(
       `SELECT b.id, b.vendor_id, COALESCE(v.name, v.company_name, b.vendor_name, 'Vendor') as name,
               b.bill_number, b.due_date, b.balance_due

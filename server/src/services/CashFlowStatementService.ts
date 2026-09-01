@@ -102,7 +102,7 @@ export class CashFlowStatementService {
       investingActivities: { total: investingTotal, lines: investingLines },
       financingActivities: { total: financingTotal, lines: financingLines },
       netCashFlow: roundMoney(netCashFlow), closingCashBalance, closingCashBankBalance: closingCashBalance,
-      isReconciled: Math.abs(difference) < 0.01, reconciledWithGL: Math.abs(difference) < 0.01, difference,
+      isReconciled: Math.abs(difference) < 0.01, isBalanced: Math.abs(difference) < 0.01, reconciledWithGL: Math.abs(difference) < 0.01, difference,
     };
   }
 
@@ -111,7 +111,7 @@ export class CashFlowStatementService {
       organizationId: orgId, fromDate, toDate, openingCashBalance: 0,
       operatingActivities: { total: 0, lines: [] }, investingActivities: { total: 0, lines: [] }, financingActivities: { total: 0, lines: [] },
       netCashFlow: 0, closingCashBalance: 0, closingCashBankBalance: 0,
-      isReconciled: true, reconciledWithGL: true, difference: 0,
+      isReconciled: true, isBalanced: true, reconciledWithGL: true, difference: 0,
     };
   }
 }

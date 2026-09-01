@@ -185,8 +185,25 @@ interface BooksContextType {
   deleteVendorCredit: (id: string) => void;
 
   paymentsMade: PaymentMade[];
-  addPaymentMade: (payment: Omit<PaymentMade, 'id'>) => PaymentMade | null;
-  deletePaymentMade: (id: string) => void;
+  addPaymentMade: (payment: Omit<PaymentMade, 'id'> & { vendorId?: string; billId?: string; paidFromAccountId?: string; allocations?: Array<{ billId: string; amount: number }> }) => Promise<PaymentMade>;
+  deletePaymentMade: (id: string) => Promise<void>;
+  addVendorAdvance: (advance: {
+    vendorId: string;
+    vendorName?: string;
+    amount: number;
+    paidFromAccountId: string;
+    paidDate?: string;
+    paymentMode?: string;
+    reference?: string;
+    notes?: string;
+  }) => Promise<any>;
+  applyVendorAdvance: (application: {
+    advanceId: string;
+    vendorId: string;
+    billId: string;
+    amount: number;
+    appliedDate?: string;
+  }) => Promise<any>;
 
   recurringExpenses: RecurringExpense[];
   addRecurringExpense: (expense: Omit<RecurringExpense, 'id'>) => RecurringExpense | null;
@@ -537,7 +554,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       const endpoints = [
         'accounts', 'clients', 'vendors', 'projects', 'invoices', 'estimates',
         'expenses', 'journals', 'period-locks', 'sales-orders', 'delivery-challans', 'time-entries', 'project-summaries',
-        'payments-received', 'credit-notes', 'bills', 'audit',
+        'payments-received', 'credit-notes', 'bills', 'vendor-payments', 'audit',
       ] as const;
       const responses = await Promise.all(endpoints.map((endpoint) => apiClient.get<any[]>(`/finance/${endpoint}`)));
       const failure = responses.find((response) => response.error && response.status !== 403);
@@ -563,6 +580,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setPaymentsReceived(data['payments-received']);
       setCreditNotes(data['credit-notes']);
       setBills((data.bills || []).map(normalizeBillForUi));
+      setPaymentsMade(data['vendor-payments'] || []);
       setAuditLogs((data.audit || []).map((row: any) => {
         const metadata = typeof row.metadata === 'string'
           ? (() => { try { return JSON.parse(row.metadata); } catch { return {}; } })()
@@ -1159,12 +1177,105 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     window.alert('Posted vendor credits are immutable and require an audited reversal.');
   };
 
-  const addPaymentMade = (paymentData: Omit<PaymentMade, 'id'>): PaymentMade | null => {
-    window.alert('Vendor payments are paused until their atomic allocation and posting workflow is certified.');
-    return null;
+  const addPaymentMade = async (
+    paymentData: Omit<PaymentMade, 'id'> & {
+      vendorId?: string;
+      billId?: string;
+      paidFromAccountId?: string;
+      allocations?: Array<{ billId: string; amount: number }>;
+    }
+  ): Promise<PaymentMade> => {
+    const targetVendor = vendors.find((v) => v.id === paymentData.vendorId || v.name === paymentData.vendorName);
+    const vendorId = targetVendor?.id || paymentData.vendorId;
+
+    if (!paymentData.paidFromAccountId) {
+      throw new Error('Disbursement bank or cash account (paidFromAccountId) is required.');
+    }
+
+    const payload = {
+      vendorId,
+      vendorName: targetVendor?.name || paymentData.vendorName,
+      amount: Number(paymentData.amount),
+      paidFromAccountId: paymentData.paidFromAccountId,
+      paymentDate: paymentData.paymentDate || new Date().toISOString().slice(0, 10),
+      paymentMode: paymentData.paymentMethod || 'Bank Wire / NEFT / RTGS',
+      reference: paymentData.referenceNumber,
+      allocations: paymentData.allocations || (paymentData.billId ? [{ billId: paymentData.billId, amount: Number(paymentData.amount) }] : []),
+    };
+
+    const response = await apiClient.post<any>('/finance/vendor-payments', payload);
+    if (response.error || !response.data) {
+      throw new Error(response.error || 'Vendor payment could not be recorded.');
+    }
+
+    const newPayment: PaymentMade = {
+      id: response.data.id,
+      paymentNumber: response.data.paymentNumber || paymentData.paymentNumber,
+      vendorName: targetVendor?.name || paymentData.vendorName,
+      billNumber: paymentData.billNumber || 'DIRECT-PAYMENT',
+      paymentDate: response.data.paymentDate || paymentData.paymentDate,
+      paymentMethod: response.data.paymentMode || paymentData.paymentMethod,
+      referenceNumber: response.data.reference || paymentData.referenceNumber,
+      amount: Number(response.data.amount || paymentData.amount),
+    };
+
+    await refreshAfterCommittedWrite();
+    return newPayment;
   };
-  const deletePaymentMade = (id: string) => {
-    window.alert('Posted payments cannot be deleted. Use the audited payment-reversal workflow.');
+
+  const addVendorAdvance = async (advanceData: {
+    vendorId: string;
+    vendorName?: string;
+    amount: number;
+    paidFromAccountId: string;
+    paidDate?: string;
+    paymentMode?: string;
+    reference?: string;
+    notes?: string;
+  }): Promise<any> => {
+    if (!advanceData.paidFromAccountId) {
+      throw new Error('Disbursement bank or cash account (paidFromAccountId) is required.');
+    }
+    const response = await apiClient.post<any>('/finance/vendor-advances', {
+      vendorId: advanceData.vendorId,
+      vendorName: advanceData.vendorName,
+      amount: Number(advanceData.amount),
+      paidFromAccountId: advanceData.paidFromAccountId,
+      paidDate: advanceData.paidDate || new Date().toISOString().slice(0, 10),
+      paymentMode: advanceData.paymentMode || 'Bank Wire / NEFT / RTGS',
+      reference: advanceData.reference,
+      notes: advanceData.notes,
+    });
+    if (response.error || !response.data) {
+      throw new Error(response.error || 'Vendor advance could not be recorded.');
+    }
+    await refreshAfterCommittedWrite();
+    return response.data;
+  };
+
+  const applyVendorAdvance = async (applicationData: {
+    advanceId: string;
+    vendorId: string;
+    billId: string;
+    amount: number;
+    appliedDate?: string;
+  }): Promise<any> => {
+    const response = await apiClient.post<any>('/finance/vendor-advances/apply', applicationData);
+    if (response.error || !response.data) {
+      throw new Error(response.error || 'Vendor advance could not be applied to bill.');
+    }
+    await refreshAfterCommittedWrite();
+    return response.data;
+  };
+
+  const deletePaymentMade = async (id: string): Promise<void> => {
+    const reason = window.prompt('Reason for reversing this payment (required for the audit trail):')?.trim();
+    if (!reason) return;
+    const response = await apiClient.post<any>(`/finance/vendor-payments/${id}/reverse`, { reason });
+    if (response.error || !response.data) {
+      throw new Error(response.error || 'Vendor payment could not be reversed.');
+    }
+    await refreshAfterCommittedWrite();
   };
 
   const addRecurringExpense = (expenseData: Omit<RecurringExpense, 'id'>): RecurringExpense | null => {
@@ -1288,6 +1399,8 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       paymentsMade,
       addPaymentMade,
       deletePaymentMade,
+      addVendorAdvance,
+      applyVendorAdvance,
       recurringExpenses,
       addRecurringExpense,
       updateRecurringExpense,

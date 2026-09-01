@@ -10,18 +10,25 @@ export const CURRENT_SCHEMA_VERSION = '2026.08.31-v7-expense-receipts';
 export class MigrationRunner {
   public static async runMigrations(queryClient?: { query: (text: string, params?: any[]) => Promise<DbQueryResult> }): Promise<void> {
     if (!queryClient) {
+      if (db.isMemoryMode()) {
+        await this.runMigrations(db);
+        return;
+      }
       await db.transaction((client) => this.runMigrations(client));
       return;
     }
     console.log('[Migration] Starting PostgreSQL schema migrations...');
 
-    await queryClient.query(
-      `CREATE TABLE IF NOT EXISTS schema_migrations (
-        version VARCHAR(64) PRIMARY KEY,
-        description VARCHAR(255) NOT NULL,
-        applied_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
-      )`
-    );
+    const migTableCheck = await queryClient.query(`SELECT 1 FROM information_schema.tables WHERE table_name = 'schema_migrations'`);
+    if (migTableCheck.rows.length === 0) {
+      await queryClient.query(
+        `CREATE TABLE schema_migrations (
+          version VARCHAR(64) PRIMARY KEY,
+          description VARCHAR(255) NOT NULL,
+          applied_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`
+      );
+    }
 
     const tables = [
       `CREATE TABLE IF NOT EXISTS users (
@@ -844,8 +851,10 @@ export class MigrationRunner {
         is_required BOOLEAN DEFAULT FALSE,
         threshold_amount NUMERIC(15, 2),
         approver_role VARCHAR(50) DEFAULT 'Admin',
+        allow_self_approval BOOLEAN DEFAULT FALSE,
         CONSTRAINT uk_org_entity_approval UNIQUE (organization_id, entity_type)
       )`,
+      `ALTER TABLE approval_rules ADD COLUMN IF NOT EXISTS allow_self_approval BOOLEAN DEFAULT FALSE`,
 
       `CREATE TABLE IF NOT EXISTS approval_requests (
         id VARCHAR(64) PRIMARY KEY,
@@ -1165,6 +1174,8 @@ export class MigrationRunner {
       `CREATE UNIQUE INDEX IF NOT EXISTS uk_org_bill_number ON bills (organization_id, bill_number)`,
       `CREATE UNIQUE INDEX IF NOT EXISTS uk_org_expense_number ON expenses (organization_id, expense_number)`,
       `CREATE UNIQUE INDEX IF NOT EXISTS uk_org_payment_made_number ON payments_made (organization_id, payment_number)`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS uk_org_credit_note_number ON credit_notes (organization_id, credit_note_number)`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS uk_org_vendor_credit_number ON vendor_credits (organization_id, credit_number)`,
       `CREATE UNIQUE INDEX IF NOT EXISTS uk_estimate_public_token ON estimates (public_token) WHERE public_token IS NOT NULL`,
       `CREATE UNIQUE INDEX IF NOT EXISTS uk_invoice_source_estimate ON invoices (organization_id, estimate_id) WHERE estimate_id IS NOT NULL`,
       `CREATE UNIQUE INDEX IF NOT EXISTS uk_sales_order_source_estimate ON sales_orders (organization_id, estimate_id) WHERE estimate_id IS NOT NULL`,
@@ -1176,6 +1187,7 @@ export class MigrationRunner {
       `CREATE INDEX IF NOT EXISTS idx_budget_lines_org_budget ON budget_lines (organization_id, budget_id)`,
       `CREATE INDEX IF NOT EXISTS idx_fixed_assets_org_status ON fixed_assets (organization_id, status)`,
       `CREATE UNIQUE INDEX IF NOT EXISTS uk_projects_org_code ON projects (organization_id, LOWER(code))`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS uk_roles_org_name_ci ON roles (organization_id, LOWER(name)) WHERE organization_id IS NOT NULL`,
       `DO $$ BEGIN
         UPDATE journal_entries AS original
            SET status = 'Posted',

@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { JwtAuth } from '../auth/jwt';
 import { db } from '../database/db';
-import { RbacService, PermissionCode } from '../auth/RbacService';
+import { RbacService } from '../auth/RbacService';
 import { SessionSecurity } from '../auth/SessionSecurity';
 import { SessionService } from '../auth/SessionService';
 
@@ -130,7 +130,7 @@ export const organizationIsolationMiddleware = async (
   }
 
   // 3. Resolve permissions for role via RbacService
-  const permissionsList = RbacService.getPermissionsForRole(userRole);
+  const permissionsList = await RbacService.getPermissionsForRoleAsync(requestedOrgId, userRole);
 
   req.auth = {
     userId: req.user.userId,
@@ -144,15 +144,20 @@ export const organizationIsolationMiddleware = async (
   next();
 };
 
-export const requirePermission = (permissionCode: PermissionCode | PermissionCode[]) => {
-  return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
+export const requirePermission = (permissionCode: string | string[]) => {
+  return async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
     if (!req.auth) {
       res.status(401).json({ error: 'Unauthorized: Authentication required' });
       return;
     }
 
     const codes = Array.isArray(permissionCode) ? permissionCode : [permissionCode];
-    const hasAny = codes.some((code) => req.auth!.permissions.includes(code));
+    const permissionChecks = await Promise.all(
+      codes.map((code) =>
+        RbacService.hasPermissionAsync(req.auth!.organizationId, req.auth!.role, code)
+      )
+    );
+    const hasAny = permissionChecks.some(Boolean);
 
     if (!hasAny) {
       res.status(403).json({

@@ -171,7 +171,93 @@ describe('BooksContext State Management & Financial Mutations', () => {
     expect(result.current.settings.userPreferences.currencyFormat).toBe('1.234.567,89');
   });
 
-  it('7. useBooks throws if called outside BooksProvider', () => {
+  it('7. addPaymentMade posts vendor payment to server and returns created record', async () => {
+    const mockVendorPayment = {
+      id: 'pay-made-1',
+      paymentNumber: 'PAY-2026-001',
+      vendorId: 'vend-1',
+      vendorName: 'Global Cloud Services',
+      paymentDate: '2026-08-15',
+      amount: 500,
+      paymentMode: 'Bank Wire / NEFT / RTGS',
+      reference: 'UTR-123456',
+    };
+
+    vi.spyOn(apiClient, 'post').mockResolvedValueOnce({ data: mockVendorPayment, error: null, status: 201 });
+    vi.spyOn(apiClient, 'get').mockResolvedValue({ data: [], error: null, status: 200 });
+
+    const { result } = renderHook(() => useBooks(), { wrapper });
+
+    let created: any;
+    await act(async () => {
+      created = await result.current.addPaymentMade({
+        paymentNumber: 'PAY-2026-001',
+        vendorId: 'vend-1',
+        vendorName: 'Global Cloud Services',
+        billNumber: 'BILL-001',
+        paymentDate: '2026-08-15',
+        paymentMethod: 'Bank Wire / NEFT / RTGS',
+        paidFromAccountId: 'acc-bank-1',
+        referenceNumber: 'UTR-123456',
+        amount: 500,
+      });
+    });
+
+    expect(created).toBeDefined();
+    expect(created?.id).toBe('pay-made-1');
+    expect(created?.amount).toBe(500);
+  });
+
+  it('8. addPaymentMade throws if paidFromAccountId is missing', async () => {
+    const { result } = renderHook(() => useBooks(), { wrapper });
+    await expect(
+      result.current.addPaymentMade({
+        paymentNumber: 'PAY-2026-002',
+        vendorId: 'vend-1',
+        vendorName: 'Global Cloud Services',
+        billNumber: 'BILL-001',
+        paymentDate: '2026-08-15',
+        paymentMethod: 'Bank Wire / NEFT / RTGS',
+        referenceNumber: 'UTR-123456',
+        amount: 500,
+      } as any)
+    ).rejects.toThrow('Disbursement bank or cash account (paidFromAccountId) is required.');
+  });
+
+  it('9. addVendorAdvance posts to /finance/vendor-advances and returns created advance', async () => {
+    const mockVendorAdvance = {
+      id: 'adv-srv-1',
+      advanceNumber: 'ADV-2026-001',
+      vendorId: 'vend-1',
+      amount: 1500,
+      unappliedAmount: 1500,
+      status: 'AVAILABLE',
+    };
+
+    vi.spyOn(apiClient, 'post').mockResolvedValueOnce({ data: mockVendorAdvance, error: null, status: 201 });
+    vi.spyOn(apiClient, 'get').mockResolvedValue({ data: [], error: null, status: 200 });
+
+    const { result } = renderHook(() => useBooks(), { wrapper });
+
+    let created: any;
+    await act(async () => {
+      created = await result.current.addVendorAdvance({
+        vendorId: 'vend-1',
+        vendorName: 'Global Cloud Services',
+        amount: 1500,
+        paidFromAccountId: 'acc-bank-1',
+        paidDate: '2026-08-15',
+        paymentMode: 'Bank Wire / NEFT / RTGS',
+        reference: 'ADV-REF-1',
+      });
+    });
+
+    expect(created).toBeDefined();
+    expect(created?.id).toBe('adv-srv-1');
+    expect(created?.amount).toBe(1500);
+  });
+
+  it('10. useBooks throws if called outside BooksProvider', () => {
     expect(() => renderHook(() => useBooks())).toThrow('useBooks must be used within a BooksProvider');
   });
 });

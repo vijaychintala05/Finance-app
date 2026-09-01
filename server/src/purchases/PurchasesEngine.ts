@@ -4,6 +4,7 @@ import { AccountingService } from '../../../src/services/accountingService';
 import { PeriodLock } from '../../../src/types';
 import { newId } from '../utils/ids';
 import { DocumentNumberingEngine } from '../services/DocumentNumberingEngine';
+import { ApprovalWorkflowService } from '../approvals/ApprovalWorkflowService';
 
 export interface VendorMaster {
   id: string;
@@ -87,10 +88,11 @@ export interface BillModel {
   amountDebited?: number;
   amountWrittenOff?: number;
   balanceDue: number;
-  status: 'DRAFT' | 'POSTED' | 'PARTIALLY_PAID' | 'PAID' | 'OVERDUE' | 'VOIDED' | 'WRITTEN_OFF';
+  status: 'DRAFT' | 'SUBMITTED' | 'POSTED' | 'PARTIALLY_PAID' | 'PAID' | 'OVERDUE' | 'VOIDED' | 'WRITTEN_OFF';
   lineItems: any[];
   notes?: string;
   journalEntryId?: string;
+  createdBy?: string;
   createdAt?: string;
 }
 
@@ -111,6 +113,7 @@ export interface VendorPaymentModel {
   allocations?: { billId: string; amount: number }[];
   _debugFailPoint?: 'after_journal' | 'after_payment' | 'after_first_allocation';
   journalEntryId?: string;
+  createdBy?: string;
   createdAt?: string;
 }
 
@@ -371,10 +374,15 @@ export class PurchasesEngine {
     const id = newId('po');
     const poNum = await DocumentNumberingEngine.getNextNumber(orgId, 'PURCHASE_ORDER', orderDate);
 
-    const subtotal = data.subtotal || 0;
+    const itemsList = data.lineItems || (data as any).items || [];
+    const calculatedSubtotal = itemsList.reduce(
+      (sum: number, it: any) => sum + (it.amount !== undefined ? Number(it.amount) : ((Number(it.quantity) || 0) * (Number(it.unitPrice) || 0))),
+      0
+    );
+    const subtotal = data.subtotal !== undefined ? data.subtotal : calculatedSubtotal;
     const taxTotal = data.taxTotal || 0;
     const discount = data.discount || 0;
-    const totalAmount = data.totalAmount || Math.round((subtotal + taxTotal - discount) * 100) / 100;
+    const totalAmount = data.totalAmount !== undefined ? data.totalAmount : Math.round((subtotal + taxTotal - discount) * 100) / 100;
 
     await db.query(
       `INSERT INTO purchase_orders (id, organization_id, purchase_order_number, vendor_id, vendor_name, vendor_snapshot, order_date, expected_delivery, subtotal, tax_total, discount, total_amount, billed_amount, status, line_items, notes, created_at)
@@ -514,6 +522,19 @@ export class PurchasesEngine {
       const billDate = data.billDate || new Date().toISOString().split('T')[0];
       await this.checkPeriodLock(orgId, billDate, client);
 
+      // Validate that vendor belongs to this organization
+      if (data.vendorId) {
+        const vendorRes = await client.query(
+          `SELECT id, name, email FROM vendors WHERE organization_id = $1 AND id = $2`,
+          [orgId, data.vendorId]
+        );
+        if (vendorRes.rows.length === 0) {
+          throw new Error('Bill vendor does not belong to this organization');
+        }
+        data.vendorName = vendorRes.rows[0].name || data.vendorName;
+        data.vendorEmail = vendorRes.rows[0].email || data.vendorEmail;
+      }
+
       // Duplicate Vendor Invoice Number Guard
       if (data.vendorInvoiceNumber && data.vendorId) {
         const dupCheck = await client.query(
@@ -522,6 +543,25 @@ export class PurchasesEngine {
         );
         if (dupCheck.rows.length > 0) {
           throw new Error(`Duplicate Vendor Invoice Number '${data.vendorInvoiceNumber}' already exists for this vendor.`);
+        }
+      }
+
+      // Purchase Order Validation and Locking Guard (DEF-CON-009)
+      let sourcePurchaseOrder: any = null;
+      if (data.purchaseOrderId) {
+        const poRes = await client.query(
+          `SELECT id, organization_id, vendor_id, total_amount, billed_amount, status
+             FROM purchase_orders
+            WHERE organization_id = $1 AND id = $2
+              FOR UPDATE`,
+          [orgId, data.purchaseOrderId]
+        );
+        if (poRes.rows.length !== 1) {
+          throw new Error('Purchase order does not belong to this organization or does not exist');
+        }
+        sourcePurchaseOrder = poRes.rows[0];
+        if (data.vendorId && sourcePurchaseOrder.vendor_id && sourcePurchaseOrder.vendor_id !== data.vendorId) {
+          throw new Error('Bill vendor does not match its source purchase order vendor');
         }
       }
 
@@ -539,8 +579,27 @@ export class PurchasesEngine {
       const amountPaid = data.amountPaid || 0;
       const balanceDue = Math.round((totalAmount - amountPaid) * 100) / 100;
 
+      // Validate that bill amount does not exceed remaining unbilled PO balance
+      if (sourcePurchaseOrder) {
+        const poTotal = Number(sourcePurchaseOrder.total_amount || 0);
+        const poBilled = Number(sourcePurchaseOrder.billed_amount || 0);
+        const remainingUnbilled = Math.round((poTotal - poBilled) * 100) / 100;
+        if (remainingUnbilled <= 0 || totalAmount - remainingUnbilled > 0.009) {
+          throw new Error(
+            `Bill amount ₹${totalAmount} exceeds the remaining unbilled purchase order balance ₹${remainingUnbilled}`
+          );
+        }
+      }
+
+      if ((data as any)?.approvedDraftId) {
+        throw new Error('APPROVED_DRAFT_ID_FORBIDDEN: approvedDraftId is deprecated and forbidden. Use the dedicated postApprovedBill endpoint.');
+      }
+
+      const requiresApproval = await ApprovalWorkflowService.requiresApproval(orgId, 'VENDOR_BILL', totalAmount);
       let status: BillModel['status'] = data.status || 'POSTED';
-      if (status === 'POSTED') {
+      if (requiresApproval) {
+        status = 'SUBMITTED' as any;
+      } else if (status === 'POSTED') {
         if (balanceDue === 0) status = 'PAID';
         else if (amountPaid > 0) status = 'PARTIALLY_PAID';
         else status = 'POSTED';
@@ -552,7 +611,7 @@ export class PurchasesEngine {
       // Credit: Accounts Payable (acc-ap-control / 2000)
       let journalEntryId: string | undefined;
 
-      if (status !== 'DRAFT') {
+      if (status !== 'DRAFT' && status !== ('SUBMITTED' as any)) {
         const glLines: any[] = [];
 
         // Line items or aggregate expense debit
@@ -562,7 +621,7 @@ export class PurchasesEngine {
               accountId: item.accountId || 'acc-expense',
               accountCode: item.accountCode || '5000',
               accountName: item.accountName || 'Operating Expense',
-              debit: item.amount || (item.quantity * item.unitPrice),
+              debit: Math.round((Number(item.amount) || ((Number(item.quantity) || 0) * (Number(item.unitPrice) || 0))) * 100) / 100,
               credit: 0,
               description: item.description || `Bill ${billNum} Line Item`,
             });
@@ -651,28 +710,35 @@ export class PurchasesEngine {
         throw new Error('SIMULATED_FAILURE_AFTER_BILL');
       }
 
-      // Update PO billed amount if linked
-      if (data.purchaseOrderId) {
-        await client.query(
-          `UPDATE purchase_orders SET billed_amount = billed_amount + $1, status = CASE WHEN billed_amount + $1 >= total_amount THEN 'BILLED' ELSE 'PARTIALLY_BILLED' END WHERE organization_id = $2 AND id = $3`,
-          [totalAmount, orgId, data.purchaseOrderId]
-        );
-      }
+      if (status === ('SUBMITTED' as any)) {
+        await ApprovalWorkflowService.submitForApproval(orgId, 'VENDOR_BILL', id, (data as any).createdBy || 'system', totalAmount, client);
+      } else {
+        // Update PO billed amount if linked
+        if (data.purchaseOrderId) {
+          await client.query(
+            `UPDATE purchase_orders
+                SET billed_amount = billed_amount + $1,
+                    status = CASE WHEN billed_amount + $1 >= total_amount - 0.009 THEN 'BILLED' ELSE 'PARTIALLY_BILLED' END
+              WHERE organization_id = $2 AND id = $3`,
+            [totalAmount, orgId, data.purchaseOrderId]
+          );
+        }
 
-      if (_debugFailPoint === 'after_po') {
-        throw new Error('SIMULATED_FAILURE_AFTER_PO');
-      }
+        if (_debugFailPoint === 'after_po') {
+          throw new Error('SIMULATED_FAILURE_AFTER_PO');
+        }
 
-      // Update Vendor Payables Balance
-      if (data.vendorId) {
-        await client.query(
-          `UPDATE vendors SET payables_balance = payables_balance + $1 WHERE organization_id = $2 AND id = $3`,
-          [balanceDue, orgId, data.vendorId]
-        );
-      }
+        // Update Vendor Payables Balance
+        if (data.vendorId) {
+          await client.query(
+            `UPDATE vendors SET payables_balance = payables_balance + $1 WHERE organization_id = $2 AND id = $3`,
+            [balanceDue, orgId, data.vendorId]
+          );
+        }
 
-      if (_debugFailPoint === 'after_vendor') {
-        throw new Error('SIMULATED_FAILURE_AFTER_VENDOR');
+        if (_debugFailPoint === 'after_vendor') {
+          throw new Error('SIMULATED_FAILURE_AFTER_VENDOR');
+        }
       }
 
       // Audit Log
@@ -682,7 +748,7 @@ export class PurchasesEngine {
         [
           newId('aud'),
           orgId,
-          'SYSTEM',
+          (data as any).createdBy || 'SYSTEM',
           'CREATE_BILL',
           'BILL',
           id,
@@ -716,6 +782,157 @@ export class PurchasesEngine {
         lineItems: data.lineItems || [],
         journalEntryId,
         createdAt: now,
+      };
+    };
+
+    if (transactionClient) return await execute(transactionClient);
+    return await db.transaction(execute);
+  }
+
+  public static async postApprovedBill(
+    orgId: string,
+    userId: string,
+    billId: string,
+    transactionClient?: QueryClient
+  ): Promise<BillModel> {
+    const execute = async (client: QueryClient) => {
+      const billRes = await client.query(
+        `SELECT * FROM bills WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, billId]
+      );
+      if (billRes.rows.length === 0) throw new Error('BILL_NOT_FOUND: Vendor bill does not exist');
+      const bill = billRes.rows[0];
+      if (bill.status === 'POSTED' || bill.status === 'PAID' || bill.status === 'PARTIALLY_PAID') {
+        throw new Error('BILL_ALREADY_POSTED: Bill is already posted');
+      }
+      if (bill.status !== 'SUBMITTED') {
+        throw new Error(`BILL_NOT_SUBMITTED: Bill has status '${bill.status}', expected 'SUBMITTED'`);
+      }
+
+      // Atomically verify and consume approval
+      await ApprovalWorkflowService.consumeApproval(orgId, 'VENDOR_BILL', billId, client);
+
+      const billDate = bill.bill_date instanceof Date ? bill.bill_date.toISOString().split('T')[0] : String(bill.bill_date).split('T')[0];
+      await this.checkPeriodLock(orgId, billDate, client);
+
+      const totalAmount = Number(bill.total_amount || 0);
+      const subtotal = Number(bill.subtotal || 0);
+      const taxTotal = Number(bill.tax_total || 0);
+      const discount = Number(bill.discount || 0);
+      const amountPaid = Number(bill.amount_paid || 0);
+      const balanceDue = Number(bill.balance_due || 0);
+      const itemsList = typeof bill.line_items === 'string' ? JSON.parse(bill.line_items) : (bill.line_items || []);
+
+      const glLines: any[] = [];
+      if (itemsList.length > 0) {
+        for (const item of itemsList) {
+          glLines.push({
+            accountId: item.accountId || 'acc-expense',
+            accountCode: item.accountCode || '5000',
+            accountName: item.accountName || 'Operating Expense',
+            debit: Math.round((Number(item.amount) || ((Number(item.quantity) || 0) * (Number(item.unitPrice) || 0))) * 100) / 100,
+            credit: 0,
+            description: item.description || `Bill ${bill.bill_number} Line Item`,
+          });
+        }
+      } else {
+        glLines.push({
+          accountId: 'acc-expense',
+          accountCode: '5000',
+          accountName: 'Operating Expense',
+          debit: subtotal - discount,
+          credit: 0,
+          description: `Bill ${bill.bill_number} Expense`,
+        });
+      }
+
+      if (taxTotal > 0) {
+        glLines.push({
+          accountId: 'acc-gst-input',
+          accountCode: '2110',
+          accountName: 'GST Input Tax Credit',
+          debit: taxTotal,
+          credit: 0,
+          description: `GST Input Tax Credit for ${bill.bill_number}`,
+        });
+      }
+
+      glLines.push({
+        accountId: 'acc-ap-control',
+        accountCode: '2000',
+        accountName: 'Accounts Payable',
+        debit: 0,
+        credit: totalAmount,
+        description: `Vendor Bill ${bill.bill_number} Payable to ${bill.vendor_name}`,
+      });
+
+      const journalEntryId = await this.persistJournalEntry(
+        orgId,
+        `JE-BILL-${bill.bill_number}`,
+        billDate,
+        bill.vendor_invoice_number || bill.bill_number,
+        `Vendor Bill ${bill.bill_number} posted for ${bill.vendor_name}`,
+        glLines,
+        client
+      );
+
+      let newStatus = 'POSTED';
+      if (balanceDue === 0) newStatus = 'PAID';
+      else if (amountPaid > 0) newStatus = 'PARTIALLY_PAID';
+
+      await client.query(
+        `UPDATE bills SET status = $1, journal_entry_id = $2 WHERE organization_id = $3 AND id = $4`,
+        [newStatus, journalEntryId, orgId, billId]
+      );
+
+      if (bill.purchase_order_id) {
+        await client.query(
+          `UPDATE purchase_orders
+              SET billed_amount = billed_amount + $1,
+                  status = CASE WHEN billed_amount + $1 >= total_amount - 0.009 THEN 'BILLED' ELSE 'PARTIALLY_BILLED' END
+            WHERE organization_id = $2 AND id = $3`,
+          [totalAmount, orgId, bill.purchase_order_id]
+        );
+      }
+
+      if (bill.vendor_id) {
+        await client.query(
+          `UPDATE vendors SET payables_balance = payables_balance + $1 WHERE organization_id = $2 AND id = $3`,
+          [balanceDue, orgId, bill.vendor_id]
+        );
+      }
+
+      await client.query(
+        `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, timestamp, after_state)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7)`,
+        [newId('aud'), orgId, userId, 'BILL_POSTED', 'BILL', billId, JSON.stringify({ billNumber: bill.bill_number, status: newStatus, journalEntryId })]
+      );
+
+      return {
+        id: bill.id,
+        organizationId: bill.organization_id,
+        billNumber: bill.bill_number,
+        vendorInvoiceNumber: bill.vendor_invoice_number,
+        purchaseOrderId: bill.purchase_order_id,
+        vendorId: bill.vendor_id,
+        vendorName: bill.vendor_name,
+        vendorEmail: bill.vendor_email,
+        billDate: bill.bill_date,
+        dueDate: bill.due_date,
+        subtotal: Number(bill.subtotal),
+        taxTotal: Number(bill.tax_total),
+        discount: Number(bill.discount),
+        roundOffAmount: Number(bill.round_off_amount || 0),
+        totalAmount: Number(bill.total_amount),
+        amountPaid: Number(bill.amount_paid),
+        amountDebited: Number(bill.amount_debited || 0),
+        amountWrittenOff: Number(bill.amount_written_off || 0),
+        balanceDue: Number(bill.balance_due),
+        status: newStatus as any,
+        notes: bill.notes,
+        lineItems: itemsList,
+        journalEntryId,
+        createdAt: bill.created_at,
       };
     };
 
@@ -770,9 +987,48 @@ export class PurchasesEngine {
       const paymentDate = data.paymentDate || new Date().toISOString().split('T')[0];
       await this.checkPeriodLock(orgId, paymentDate, client);
 
+      if ((data as any)?.approvedDraftId) {
+        throw new Error('APPROVED_DRAFT_ID_FORBIDDEN: approvedDraftId is deprecated and forbidden. Use the dedicated postApprovedVendorPayment endpoint.');
+      }
+
       const amount = Number(data.amount) || 0;
       if (amount <= 0) {
         throw new Error('Payment amount must be greater than zero.');
+      }
+
+      const requiresPaymentApproval = await ApprovalWorkflowService.requiresApproval(orgId, 'PAYMENT', amount);
+      if (requiresPaymentApproval) {
+        const id = newId('pmt');
+        const pmtNum = await DocumentNumberingEngine.getNextNumber(orgId, 'VENDOR_PAYMENT', paymentDate, undefined, client);
+        await client.query(
+          `INSERT INTO payments_made (id, organization_id, payment_number, vendor_id, vendor_name, payment_date, amount, payment_mode, paid_from_account_id, reference, notes, unallocated_amount, status, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'SUBMITTED', NOW())`,
+          [id, orgId, pmtNum, data.vendorId, data.vendorName || 'Vendor', paymentDate, amount, data.paymentMode || 'Bank Wire / NEFT / RTGS', data.paidFromAccountId, data.reference || null, data.notes || null, amount]
+        );
+        for (const alloc of data.allocations || []) {
+          if (alloc.billId && alloc.amount > 0) {
+            await client.query(
+              `INSERT INTO payment_made_allocations (id, organization_id, payment_id, bill_id, amount)
+               VALUES ($1, $2, $3, $4, $5)`,
+              [newId('alloc'), orgId, id, alloc.billId, alloc.amount]
+            );
+          }
+        }
+        await ApprovalWorkflowService.submitForApproval(orgId, 'PAYMENT', id, (data as any).createdBy || 'system', amount, client);
+        return {
+          id,
+          organizationId: orgId,
+          paymentNumber: pmtNum,
+          vendorId: data.vendorId!,
+          vendorName: data.vendorName || 'Vendor',
+          paymentDate,
+          amount,
+          paymentMode: data.paymentMode || 'Bank Wire / NEFT / RTGS',
+          paidFromAccountId: data.paidFromAccountId!,
+          reference: data.reference,
+          status: 'SUBMITTED',
+          allocations: data.allocations || [],
+        };
       }
 
       // 1. Group and aggregate allocation amounts by billId
@@ -957,6 +1213,163 @@ export class PurchasesEngine {
     return await db.transaction(execute);
   }
 
+  public static async postApprovedVendorPayment(
+    orgId: string,
+    userId: string,
+    paymentId: string,
+    transactionClient?: QueryClient
+  ): Promise<VendorPaymentModel> {
+    const execute = async (client: QueryClient) => {
+      const pmtRes = await client.query(
+        `SELECT * FROM payments_made WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, paymentId]
+      );
+      if (pmtRes.rows.length === 0) throw new Error('PAYMENT_NOT_FOUND: Vendor payment does not exist');
+      const pmt = pmtRes.rows[0];
+      if (pmt.status === 'ALLOCATED' || pmt.status === 'PARTIALLY_ALLOCATED' || pmt.status === 'UNALLOCATED') {
+        throw new Error('PAYMENT_ALREADY_POSTED: Payment is already posted');
+      }
+      if (pmt.status !== 'SUBMITTED') {
+        throw new Error(`PAYMENT_NOT_SUBMITTED: Payment has status '${pmt.status}', expected 'SUBMITTED'`);
+      }
+
+      // Atomically consume approval
+      await ApprovalWorkflowService.consumeApproval(orgId, 'PAYMENT', paymentId, client);
+
+      const paymentDate = pmt.payment_date instanceof Date ? pmt.payment_date.toISOString().split('T')[0] : String(pmt.payment_date).split('T')[0];
+      await this.checkPeriodLock(orgId, paymentDate, client);
+
+      const amount = Number(pmt.amount || 0);
+
+      // Query saved allocations
+      const allocRes = await client.query(
+        `SELECT * FROM payment_made_allocations WHERE payment_id = $1`,
+        [paymentId]
+      );
+
+      let totalAllocated = 0;
+      const lockedBills: any[] = [];
+      for (const r of allocRes.rows) {
+        const allocAmount = Number(r.amount || 0);
+        totalAllocated += allocAmount;
+        const billRes = await client.query(
+          `SELECT total_amount, amount_paid, amount_debited, amount_written_off, balance_due, status, vendor_id, bill_number FROM bills WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+          [orgId, r.bill_id]
+        );
+        if (billRes.rows.length > 0) {
+          const bill = billRes.rows[0];
+          const currentBal = Math.max(0, Math.round((Number(bill.total_amount || 0) - Number(bill.amount_paid || 0) - Number(bill.amount_debited || 0) - Number(bill.amount_written_off || 0)) * 100) / 100);
+          const newPaid = Math.round((Number(bill.amount_paid || 0) + allocAmount) * 100) / 100;
+          const newBal = Math.max(0, Math.round((Number(bill.total_amount || 0) - newPaid - Number(bill.amount_debited || 0) - Number(bill.amount_written_off || 0)) * 100) / 100);
+          const newStatus = newBal === 0 ? 'PAID' : 'PARTIALLY_PAID';
+          lockedBills.push({ billId: r.bill_id, bill, allocAmount, newPaid, newBal, newStatus });
+        }
+      }
+
+      const unallocatedAmount = Math.max(0, Math.round((amount - totalAllocated) * 100) / 100);
+
+      const journalEntryId = await this.persistJournalEntry(
+        orgId,
+        `JE-PMT-${pmt.payment_number}`,
+        paymentDate,
+        pmt.reference || pmt.payment_number,
+        `Vendor Payment ${pmt.payment_number} to ${pmt.vendor_name}`,
+        [
+          ...(totalAllocated > 0 ? [{
+            accountId: 'acc-ap-control',
+            accountCode: '2000',
+            accountName: 'Accounts Payable',
+            debit: totalAllocated,
+            credit: 0,
+            description: `AP Settlement for ${pmt.vendor_name}`,
+          }] : []),
+          ...(unallocatedAmount > 0 ? [{
+            accountId: 'acc-vendor-advances',
+            accountCode: '1200',
+            accountName: 'Vendor Advances Asset',
+            debit: unallocatedAmount,
+            credit: 0,
+            description: `Unallocated vendor advance for ${pmt.vendor_name}`,
+          }] : []),
+          {
+            accountId: pmt.paid_from_account_id || 'acc-bank-1',
+            accountCode: '1010',
+            accountName: 'Bank Account',
+            debit: 0,
+            credit: amount,
+            description: `Outflow via ${pmt.payment_mode || 'Bank Transfer'}`,
+          },
+        ],
+        client
+      );
+
+      for (const lb of lockedBills) {
+        await client.query(
+          `UPDATE bills
+              SET amount_paid = $1, balance_due = $2, status = $3
+            WHERE organization_id = $4 AND id = $5`,
+          [lb.newPaid, lb.newBal, lb.newStatus, orgId, lb.billId]
+        );
+        if (pmt.vendor_id) {
+          await client.query(
+            `UPDATE vendors SET payables_balance = CASE WHEN payables_balance - $1 < 0 THEN 0 ELSE payables_balance - $1 END WHERE organization_id = $2 AND id = $3`,
+            [lb.allocAmount, orgId, pmt.vendor_id]
+          );
+        }
+      }
+
+      if (unallocatedAmount > 0) {
+        await client.query(
+          `INSERT INTO vendor_advances
+            (id, organization_id, vendor_id, payment_id, amount, unapplied_amount, paid_date, status, journal_entry_id, created_at)
+           VALUES ($1, $2, $3, $4, $5, $5, $6, 'UNAPPLIED', $7, NOW())`,
+          [newId('vadv'), orgId, pmt.vendor_id, paymentId, unallocatedAmount, pmt.payment_date, journalEntryId]
+        );
+        if (pmt.vendor_id) {
+          await client.query(
+            `UPDATE vendors SET advance_balance = advance_balance + $1 WHERE organization_id = $2 AND id = $3`,
+            [unallocatedAmount, orgId, pmt.vendor_id]
+          );
+        }
+      }
+
+      const finalStatus = unallocatedAmount > 0 ? (totalAllocated > 0 ? 'PARTIALLY_ALLOCATED' : 'UNALLOCATED') : 'ALLOCATED';
+
+      await client.query(
+        `UPDATE payments_made SET status = $1, unallocated_amount = $2, journal_entry_id = $3 WHERE organization_id = $4 AND id = $5`,
+        [finalStatus, unallocatedAmount, journalEntryId, orgId, paymentId]
+      );
+
+      await client.query(
+        `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, timestamp, after_state)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7)`,
+        [newId('aud'), orgId, userId, 'VENDOR_PAYMENT_POSTED', 'PAYMENT', paymentId, JSON.stringify({ paymentNumber: pmt.payment_number, status: finalStatus, journalEntryId })]
+      );
+
+      return {
+        id: pmt.id,
+        organizationId: pmt.organization_id,
+        paymentNumber: pmt.payment_number,
+        vendorId: pmt.vendor_id,
+        vendorName: pmt.vendor_name,
+        paymentDate: pmt.payment_date,
+        amount,
+        paymentMode: pmt.payment_mode,
+        paidFromAccountId: pmt.paid_from_account_id,
+        reference: pmt.reference,
+        notes: pmt.notes,
+        unallocatedAmount,
+        status: finalStatus as any,
+        allocations: allocRes.rows.map((r) => ({ billId: r.bill_id, amount: Number(r.amount) })),
+        journalEntryId,
+        createdAt: pmt.created_at,
+      };
+    };
+
+    if (transactionClient) return await execute(transactionClient);
+    return await db.transaction(execute);
+  }
+
   // -------------------------------------------------------------
   // 6. VENDOR ADVANCES & ADVANCE APPLICATION
   // -------------------------------------------------------------
@@ -974,9 +1387,16 @@ export class PurchasesEngine {
       const advId = newId('vadv');
       const now = new Date().toISOString();
 
-      // GL Posting for Vendor Advance
-      // Debit: Vendor Advances Asset (acc-vendor-advances / 1200)
+      // Debit: Vendor Advances Asset (acc-vendor-advances / 1150)
       // Credit: Bank / Cash Account (paidFromAccountId)
+      const advAccRes = await client.query(
+        `SELECT id, code, name FROM accounts WHERE organization_id = $1 AND (code = '1150' OR name ILIKE '%Vendor Advance%') LIMIT 1`,
+        [orgId]
+      );
+      const advAccountId = advAccRes.rows.length > 0 ? advAccRes.rows[0].id : 'acc-vendor-advances';
+      const advAccountCode = advAccRes.rows.length > 0 ? advAccRes.rows[0].code : '1150';
+      const advAccountName = advAccRes.rows.length > 0 ? advAccRes.rows[0].name : 'Vendor Advances Asset';
+
       const journalEntryId = await this.persistJournalEntry(
         orgId,
         `JE-VADV-${advId}`,
@@ -985,9 +1405,9 @@ export class PurchasesEngine {
         `Vendor Advance paid to ${data.vendorName || data.vendorId}`,
         [
           {
-            accountId: 'acc-vendor-advances',
-            accountCode: '1200',
-            accountName: 'Vendor Advances Asset',
+            accountId: advAccountId,
+            accountCode: advAccountCode,
+            accountName: advAccountName,
             debit: amount,
             credit: 0,
             description: `Prepayment / Advance to vendor`,
@@ -1058,11 +1478,20 @@ export class PurchasesEngine {
 
       // GL Posting for Advance Application
       // Debit: Accounts Payable (acc-ap-control / 2000)
-      // Credit: Vendor Advances Asset (acc-vendor-advances / 1200)
+      // Credit: Vendor Advances Asset (acc-vendor-advances / 1150)
+      const advAccRes = await client.query(
+        `SELECT id, code, name FROM accounts WHERE organization_id = $1 AND (code = '1150' OR name ILIKE '%Vendor Advance%') LIMIT 1`,
+        [orgId]
+      );
+      const advAccountId = advAccRes.rows.length > 0 ? advAccRes.rows[0].id : 'acc-vendor-advances';
+      const advAccountCode = advAccRes.rows.length > 0 ? advAccRes.rows[0].code : '1150';
+      const advAccountName = advAccRes.rows.length > 0 ? advAccRes.rows[0].name : 'Vendor Advances Asset';
+
+      const appliedDate = data.appliedDate || (data as any).applicationDate || new Date().toISOString().split('T')[0];
       const journalEntryId = await this.persistJournalEntry(
         orgId,
         newId('je'),
-        data.appliedDate,
+        appliedDate,
         b.bill_number,
         `Vendor advance applied to Bill ${b.bill_number}`,
         [
@@ -1075,9 +1504,9 @@ export class PurchasesEngine {
             description: `AP Settlement via Vendor Advance`,
           },
           {
-            accountId: 'acc-vendor-advances',
-            accountCode: '1200',
-            accountName: 'Vendor Advances Asset',
+            accountId: advAccountId,
+            accountCode: advAccountCode,
+            accountName: advAccountName,
             debit: 0,
             credit: data.amount,
             description: `Vendor advance drawn down for Bill ${b.bill_number}`,
@@ -1090,7 +1519,7 @@ export class PurchasesEngine {
         `INSERT INTO vendor_advance_applications
           (id, organization_id, advance_id, bill_id, amount_applied, applied_date, journal_entry_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [newId('vadvapp'), orgId, data.advanceId, data.billId, data.amount, data.appliedDate, journalEntryId]
+        [newId('vadvapp'), orgId, data.advanceId, data.billId, data.amount, appliedDate, journalEntryId]
       );
 
       // Update Advance

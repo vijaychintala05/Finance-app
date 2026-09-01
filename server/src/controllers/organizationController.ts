@@ -138,14 +138,44 @@ export class OrganizationController {
         return;
       }
 
+      // Enforce base currency immutability if journals exist
+      const { baseCurrency, currencySymbol } = req.body || {};
+      if (baseCurrency !== undefined || currencySymbol !== undefined) {
+        const currentOrgRes = await db.query('SELECT base_currency, currency_symbol FROM organizations WHERE id = $1', [orgId]);
+        if (currentOrgRes.rows.length > 0) {
+          const currentBase = currentOrgRes.rows[0].base_currency;
+          const newBase = baseCurrency ? normalizeSupportedBaseCurrency(baseCurrency) : currentBase;
+          if (newBase !== currentBase) {
+            const journalCountRes = await db.query('SELECT COUNT(id) as cnt FROM journal_entries WHERE organization_id = $1', [orgId]);
+            if (Number(journalCountRes.rows[0].cnt) > 0) {
+              res.status(400).json({
+                error: 'Base currency is immutable once financial journal entries exist in the organization.',
+              });
+              return;
+            }
+          }
+        }
+      }
+
+      // Fetch before state for audit trail
+      const beforeOrgRes = await db.query(
+        `SELECT o.name, o.industry, p.legal_name, p.trade_name, p.tax_id, p.gstin, p.pan, p.fiscal_year_start, p.default_payment_terms
+           FROM organizations o
+      LEFT JOIN organization_profiles p ON p.organization_id = o.id
+          WHERE o.id = $1`,
+        [orgId]
+      );
+      const beforeState = beforeOrgRes.rows[0] || {};
+
       await db.transaction(async (client) => {
-        if (trimmedName !== undefined || industry !== undefined) {
+        if (trimmedName !== undefined || industry !== undefined || baseCurrency !== undefined) {
           await client.query(
             `UPDATE organizations
              SET name = COALESCE($1, name),
-                 industry = COALESCE($2, industry)
-             WHERE id = $3`,
-            [trimmedName || null, industry || null, orgId]
+                 industry = COALESCE($2, industry),
+                 base_currency = COALESCE($3, base_currency)
+             WHERE id = $4`,
+            [trimmedName || null, industry || null, baseCurrency || null, orgId]
           );
         }
 
@@ -219,12 +249,13 @@ export class OrganizationController {
         );
 
         await client.query(
-          `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state)
-           VALUES ($1, $2, $3, 'ORGANIZATION_PROFILE_UPDATED', 'Organization', $2, $4)`,
+          `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state, after_state)
+           VALUES ($1, $2, $3, 'ORGANIZATION_PROFILE_UPDATED', 'Organization', $2, $4, $5)`,
           [
             newId('aud'),
             orgId,
             userId,
+            JSON.stringify(beforeState),
             JSON.stringify({
               name: trimmedName,
               legalName,

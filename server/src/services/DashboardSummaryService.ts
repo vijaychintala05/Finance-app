@@ -75,8 +75,8 @@ export class DashboardSummaryService {
     const periodEnd = endOfMonth(asOf);
     const has = (permission: string) => permissions.includes(permission);
     const canSeeBanking = has('banking.view');
-    const canSeeAccounting = has('accounting.view');
-    const canSeeControls = has('audit.view') && canSeeAccounting;
+    const canSeeAccounting = has('accounting.view') || has('journals.view') || has('periods.view');
+    const canSeeControls = (has('audit.view') || has('periods.close') || has('periods.lock') || has('settings.close_period')) && canSeeAccounting;
     const availableViews: DashboardViewKey[] = ['overview'];
     if (canSeeBanking || has('invoices.view') || has('purchases.view')) availableViews.push('cash-operations');
     if (canSeeControls) availableViews.push('close-controls');

@@ -60,6 +60,16 @@ interface OrgProfileData {
 
 export type OrganizationSection = 'profile' | 'tax' | 'invoicing' | 'bank';
 
+type OrganizationForm = {
+  name: string; industry: string; legalName: string; tradeName: string; taxId: string; gstin: string; pan: string;
+  addressLine1: string; addressLine2: string; city: string; state: string; postalCode: string; phone: string;
+  email: string; website: string; fiscalYearStart: string; defaultPaymentTerms: string; invoicePrefix: string;
+  estimatePrefix: string; poPrefix: string; billPrefix: string; logoUrl: string; invoiceNotes: string;
+  bankName: string; bankAccountNumber: string; bankIfscSwift: string;
+};
+
+const organizationDrafts = new Map<string, OrganizationForm>();
+
 export const OrganizationSettings: React.FC<{
   section?: OrganizationSection;
   onDirtyChange?: (dirty: boolean) => void;
@@ -75,7 +85,7 @@ export const OrganizationSettings: React.FC<{
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
-  const [form, setForm] = useState({
+  const [form, setForm] = useState<OrganizationForm>({
     name: '',
     industry: '',
     legalName: '',
@@ -177,7 +187,7 @@ export const OrganizationSettings: React.FC<{
           bankAccountNumber: p.bankAccountNumber || '',
           bankIfscSwift: p.bankIfscSwift || '',
         };
-        setForm(loadedForm);
+        setForm(organizationDrafts.get(currentOrg.id) || loadedForm);
         setBaseline(JSON.stringify(loadedForm));
         setLoaded(true);
       } catch (err: any) {
@@ -192,6 +202,10 @@ export const OrganizationSettings: React.FC<{
       mounted = false;
     };
   }, [currentOrg.id]);
+
+  useEffect(() => {
+    if (loaded) organizationDrafts.set(currentOrg.id, form);
+  }, [currentOrg.id, form, loaded]);
 
   const dirty = loaded && JSON.stringify(form) !== baseline;
   useEffect(() => {

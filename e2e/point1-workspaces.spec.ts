@@ -6,7 +6,7 @@ const workspaces = [
   ['payments_made', 'Payables settlement'],
   ['recurring_invoices', 'Recurring Invoices'],
   ['fixed_assets', 'Fixed Assets'],
-  ['period_close', 'Period Close'],
+  ['period_close', 'Month-End Close'],
   ['team_access', 'Team Access'],
   ['recovery_center', 'Recovery Center'],
 ] as const;

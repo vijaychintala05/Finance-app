@@ -29,7 +29,7 @@ export const RecordVendorPaymentModal: React.FC<RecordVendorPaymentModalProps> =
   vendor,
   initialBill,
 }) => {
-  const { bills, vendors, accounts, paymentsMade, addPaymentMade, settings } = useBooks();
+  const { bills, vendors, accounts, paymentsMade, addPaymentMade, addVendorAdvance, settings } = useBooks();
 
   const [selectedVendorId, setSelectedVendorId] = useState<string>(
     vendor?.id || (initialBill ? vendors.find((v) => v.name === initialBill.vendorName)?.id || '' : vendors[0]?.id || '')
@@ -80,8 +80,9 @@ export const RecordVendorPaymentModal: React.FC<RecordVendorPaymentModalProps> =
   const [paymentDate, setPaymentDate] = useState<string>(new Date().toISOString().slice(0, 10));
   const [paymentMethod, setPaymentMethod] = useState<string>('Bank Wire / NEFT / RTGS');
   const [referenceNumber, setReferenceNumber] = useState<string>('');
+  const [submitting, setSubmitting] = useState(false);
   const [amount, setAmount] = useState<string>(
-    initialBill ? String(targetBillBalance || initialBill.totalAmount) : targetBill ? String(targetBillBalance) : '5000'
+    initialBill ? String(targetBillBalance || initialBill.totalAmount) : targetBill ? String(targetBillBalance) : ''
   );
   const [notes, setNotes] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -101,7 +102,7 @@ export const RecordVendorPaymentModal: React.FC<RecordVendorPaymentModalProps> =
     }
   }, [initialBill, vendors]);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
 
@@ -116,6 +117,11 @@ export const RecordVendorPaymentModal: React.FC<RecordVendorPaymentModalProps> =
       return;
     }
 
+    if (!paidFromAccountId) {
+      setError('Please select a valid disbursement bank or cash account.');
+      return;
+    }
+
     if (!isAdvance && !targetBill && vendorOpenBills.length > 0) {
       setError('Please select an open bill or toggle to Vendor Advance.');
       return;
@@ -123,17 +129,41 @@ export const RecordVendorPaymentModal: React.FC<RecordVendorPaymentModalProps> =
 
     const nextNumber = `PAY-2026-${String(paymentsMade.length + 1).padStart(3, '0')}`;
 
-    addPaymentMade({
-      paymentNumber: nextNumber,
-      vendorName: activeVendor.name,
-      billNumber: isAdvance ? 'VENDOR-ADVANCE' : targetBill ? targetBill.billNumber : 'DIRECT-PAYMENT',
-      paymentDate,
-      paymentMethod,
-      referenceNumber: referenceNumber || `REF-${Date.now().toString().slice(-6)}`,
-      amount: parsedAmount,
-    });
+    setSubmitting(true);
+    try {
+      if (isAdvance) {
+        await addVendorAdvance({
+          vendorId: activeVendor.id,
+          vendorName: activeVendor.name,
+          amount: parsedAmount,
+          paidFromAccountId,
+          paidDate: paymentDate,
+          paymentMode: paymentMethod,
+          reference: referenceNumber || `ADV-${Date.now().toString().slice(-6)}`,
+          notes,
+        });
+      } else {
+        await addPaymentMade({
+          paymentNumber: nextNumber,
+          vendorId: activeVendor.id,
+          vendorName: activeVendor.name,
+          billId: targetBill?.id,
+          billNumber: targetBill ? targetBill.billNumber : 'DIRECT-PAYMENT',
+          paymentDate,
+          paymentMethod,
+          paidFromAccountId,
+          referenceNumber: referenceNumber || `REF-${Date.now().toString().slice(-6)}`,
+          amount: parsedAmount,
+          allocations: targetBill ? [{ billId: targetBill.id, amount: Math.min(parsedAmount, targetBillBalance || parsedAmount) }] : [],
+        });
+      }
 
-    onClose();
+      onClose();
+    } catch (err: any) {
+      setError(err.message || 'Failed to record vendor payment.');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   if (!isOpen) return null;
@@ -324,15 +354,21 @@ export const RecordVendorPaymentModal: React.FC<RecordVendorPaymentModalProps> =
             <button
               type="button"
               onClick={onClose}
-              className="rounded-xl border border-slate-300 px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+              disabled={submitting}
+              className="rounded-xl border border-slate-300 px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800 transition-colors cursor-pointer disabled:opacity-50"
             >
               Cancel
             </button>
             <button
               type="submit"
-              className="rounded-xl bg-purple-600 px-5 py-2 text-xs font-bold text-white shadow-xs hover:bg-purple-700 dark:bg-purple-600 dark:hover:bg-purple-500 transition-colors cursor-pointer"
+              disabled={submitting}
+              className="rounded-xl bg-purple-600 px-5 py-2 text-xs font-bold text-white shadow-xs hover:bg-purple-700 dark:bg-purple-600 dark:hover:bg-purple-500 transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
             >
-              {isAdvance ? 'Post Vendor Advance' : 'Post Payment Remittance'}
+              {submitting
+                ? 'Posting Transaction...'
+                : isAdvance
+                ? 'Post Vendor Advance'
+                : 'Post Payment Remittance'}
             </button>
           </div>
         </form>

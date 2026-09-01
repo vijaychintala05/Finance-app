@@ -13,7 +13,7 @@ test.describe('Banking tenant boundary', () => {
     await expect(page.getByText('Bank Balance', { exact: true })).toBeVisible();
 
     const session = await readSession(page);
-    const response = await request.get('http://localhost:3000/api/v1/finance/accounts', {
+    const response = await request.get(new URL('/api/v1/finance/accounts', page.url()).toString(), {
       headers: {
         Authorization: `Bearer ${session.token}`,
         'X-Organization-ID': session.organizationId,

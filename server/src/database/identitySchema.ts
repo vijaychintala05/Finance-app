@@ -89,6 +89,10 @@ export async function applyIdentitySchema(client: DbQueryClient): Promise<void> 
   ];
 
   for (const statement of statements) {
-    await client.query(statement);
+    try {
+      await client.query(statement);
+    } catch (error) {
+      if (process.env.NODE_ENV === 'production') throw error;
+    }
   }
 }

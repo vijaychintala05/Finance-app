@@ -76,4 +76,27 @@ describe('chart of accounts governance', () => {
     const archiveParent = await request(app).patch(`/api/v1/finance/accounts/${parent.body.id}`).set(auth).send({ status: 'Archived' });
     expect(archiveParent.status).toBe(400);
   });
+
+  it('uses audited, type-safe account mappings for accounting defaults', async () => {
+    const bank = await request(app).post('/api/v1/finance/accounts').set(auth).send({
+      code: '1011', name: 'Collections bank', type: 'Asset', subType: 'Bank',
+    });
+    expect(bank.status).toBe(201);
+
+    const mapped = await request(app).patch('/api/v1/finance/accounting-defaults/BANK_OPERATING').set(auth).send({ accountId: bank.body.id });
+    expect(mapped.status).toBe(200);
+    expect(mapped.body.accountId).toBe(bank.body.id);
+
+    const defaults = await request(app).get('/api/v1/finance/accounting-defaults').set(auth);
+    expect(defaults.status).toBe(200);
+    expect(defaults.body.find((row: any) => row.system_role === 'BANK_OPERATING')?.id).toBe(bank.body.id);
+
+    const invalidType = await request(app).patch('/api/v1/finance/accounting-defaults/BANK_OPERATING').set(auth).send({
+      accountId: (await db.query(`SELECT id FROM accounts WHERE organization_id = $1 AND code = '2000'`, [orgId])).rows[0].id,
+    });
+    expect(invalidType.status).toBe(400);
+
+    const audit = await db.query(`SELECT action FROM audit_logs WHERE organization_id = $1 AND action = 'ACCOUNTING_DEFAULT_UPDATED'`, [orgId]);
+    expect(audit.rows).toHaveLength(1);
+  });
 });

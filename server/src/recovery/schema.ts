@@ -1,16 +1,18 @@
 export interface RecoveryTableSchema {
   name: string;
   columns: readonly string[];
+  stagingKeyColumns?: readonly string[];
   selectSql: string;
   deleteSql: string;
   tenantColumn?: 'organization_id';
 }
 
-function tenantTable(name: string, columns: readonly string[]): RecoveryTableSchema {
+function tenantTable(name: string, columns: readonly string[], stagingKeyColumns?: readonly string[]): RecoveryTableSchema {
   const orderCol = columns.includes('id') ? 'id' : columns[0];
   return {
     name,
     columns,
+    stagingKeyColumns: stagingKeyColumns || (columns.includes('id') ? ['id'] : ['organization_id']),
     tenantColumn: 'organization_id',
     selectSql: `SELECT ${columns.join(', ')} FROM ${name} WHERE organization_id = $1 ORDER BY ${orderCol}`,
     deleteSql: `DELETE FROM ${name} WHERE organization_id = $1`,
@@ -33,8 +35,8 @@ function journalChildTable(name: string, columns: readonly string[]): RecoveryTa
 // never used to construct SQL identifiers or accepted as an artifact schema.
 export const POINT1_RECOVERY_SCHEMA: readonly RecoveryTableSchema[] = [
   tenantTable('organization_profiles', ['organization_id', 'legal_name', 'trade_name', 'tax_id', 'gstin', 'pan', 'address_line1', 'address_line2', 'city', 'state', 'postal_code', 'country', 'phone', 'email', 'website', 'fiscal_year_start', 'default_payment_terms', 'invoice_prefix', 'estimate_prefix', 'po_prefix', 'bill_prefix', 'logo_url', 'invoice_notes', 'bank_name', 'bank_account_number', 'bank_ifsc_swift', 'updated_at']),
-  tenantTable('accounts', ['id', 'organization_id', 'code', 'name', 'type', 'sub_type', 'balance', 'is_system_account', 'is_locked', 'status', 'created_at']),
-  tenantTable('accounting_defaults', ['organization_id', 'system_role', 'account_id', 'created_at', 'updated_at']),
+  tenantTable('accounts', ['id', 'organization_id', 'code', 'name', 'type', 'sub_type', 'balance', 'is_system_account', 'is_locked', 'status', 'parent_account_id', 'reporting_group', 'normal_balance', 'normal_balance_is_explicit', 'allow_direct_posting', 'system_role', 'financial_statement', 'cash_flow_classification', 'currency_code', 'archived_at', 'archived_by', 'created_at']),
+  tenantTable('accounting_defaults', ['organization_id', 'system_role', 'account_id', 'created_at', 'updated_at'], ['organization_id', 'system_role']),
   tenantTable('clients', ['id', 'organization_id', 'name', 'company_name', 'email', 'phone', 'billing_address', 'tax_id', 'currency', 'payment_terms', 'notes', 'receivables_balance', 'created_at']),
   tenantTable('customers', ['id', 'organization_id', 'customer_id', 'display_name', 'legal_name', 'customer_type', 'gst_status', 'gstin', 'pan', 'billing_address', 'shipping_addresses', 'place_of_supply', 'primary_contact', 'additional_contacts', 'email', 'phone', 'currency', 'payment_terms', 'credit_limit', 'price_list_id', 'tax_preferences', 'default_sales_account_id', 'salesperson_id', 'notes', 'attachments', 'active', 'opening_balance', 'receivables_balance', 'unused_credits', 'advance_balance', 'created_at']),
   tenantTable('vendors', ['id', 'organization_id', 'name', 'company_name', 'email', 'phone', 'currency', 'billing_address', 'payables_balance', 'created_at']),

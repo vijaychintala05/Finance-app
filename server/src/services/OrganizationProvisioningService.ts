@@ -7,6 +7,14 @@ export type SystemAccountRole =
   | 'OWNER_CAPITAL' | 'RETAINED_EARNINGS' | 'OPENING_BALANCE'
   | 'SALES_REVENUE' | 'ROUNDING_GAIN' | 'DIRECT_COSTS' | 'BAD_DEBT' | 'ROUNDING_LOSS' | 'OPERATING_EXPENSE';
 
+export const SYSTEM_ACCOUNT_ROLE_TYPES: Record<SystemAccountRole, string[]> = {
+  BANK_OPERATING: ['Asset'], AR_CONTROL: ['Asset'], GST_INPUT: ['Asset'], TDS_RECEIVABLE: ['Asset'], VENDOR_ADVANCE: ['Asset'], PAYMENT_CLEARING: ['Asset'],
+  AP_CONTROL: ['Liability'], CUSTOMER_ADVANCE: ['Liability'], GST_OUTPUT: ['Liability'], TDS_PAYABLE: ['Liability'],
+  OWNER_CAPITAL: ['Equity'], RETAINED_EARNINGS: ['Equity'], OPENING_BALANCE: ['Equity'],
+  SALES_REVENUE: ['Income', 'Revenue', 'Other Income'], ROUNDING_GAIN: ['Income', 'Revenue', 'Other Income'],
+  DIRECT_COSTS: ['Expense', 'Cost of Goods Sold'], BAD_DEBT: ['Expense', 'Cost of Goods Sold'], ROUNDING_LOSS: ['Expense', 'Cost of Goods Sold'], OPERATING_EXPENSE: ['Expense', 'Cost of Goods Sold'],
+};
+
 const DEFAULT_ACCOUNTS: Array<{
   code: string; name: string; type: string; subType: string; role: SystemAccountRole;
   financialStatement: 'BALANCE_SHEET' | 'PROFIT_AND_LOSS'; cashFlow?: 'OPERATING' | 'INVESTING' | 'FINANCING';

@@ -12,6 +12,8 @@ router.get('/gst/return-summary', requirePermission(['reports.gst', 'reports.vie
 
 // Accounts & Transactions
 router.get('/accounts', requirePermission(['accounts.view', 'accounting.view']), FinanceController.getAccounts);
+router.get('/accounting-defaults', requirePermission(['accounts.view', 'accounting.view']), FinanceController.getAccountingDefaults);
+router.patch('/accounting-defaults/:systemRole', requirePermission(['accounts.edit', 'settings.manage_accounts']), FinanceController.updateAccountingDefault);
 router.post('/accounts', requirePermission(['accounts.create', 'settings.manage_accounts']), FinanceController.createAccount);
 router.patch('/accounts/:id', requirePermission(['accounts.edit', 'settings.manage_accounts']), FinanceController.updateAccount);
 router.get('/accounts/:id/transactions', requirePermission(['accounts.view', 'accounting.view']), FinanceController.getAccountTransactions);

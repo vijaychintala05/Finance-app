@@ -20,6 +20,7 @@ import { useBooks } from '../../context/BooksContext';
 import { formatCurrency } from '../../utils/formatters';
 import { AccountModal } from './AccountModal';
 import { AccountLedgerModal } from './AccountLedgerModal';
+import { AccountingDefaultsPanel } from './AccountingDefaultsPanel';
 import { QuickAddAccountModal } from '../common/QuickAddAccountModal';
 
 export interface CategoryTreeSection {
@@ -111,7 +112,7 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
   const [search, setSearch] = useState('');
   const [selectedTypeFilter, setSelectedTypeFilter] = useState<string>('All');
   const [selectedSubCategoryFilter, setSelectedSubCategoryFilter] = useState<string>('All');
-  const [viewMode, setViewMode] = useState<'tree' | 'table'>('tree');
+  const [viewMode, setViewMode] = useState<'tree' | 'table'>('table');
 
   // Collapse / Expand state for tree sections
   const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({
@@ -233,45 +234,43 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
   const formatSystemRole = (systemRole: string) => systemRole.toLowerCase().split('_').map((word) => word[0].toUpperCase() + word.slice(1)).join(' ');
 
   return (
-    <div className="p-4 sm:p-6 space-y-6 max-w-7xl mx-auto">
+    <div className="max-w-none space-y-4 p-4 sm:p-6">
       {/* Page Header */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
-          <h2 className="text-xl font-black text-slate-900 dark:text-slate-100 flex items-center space-x-2">
-            <Building2 className="w-6 h-6 text-blue-600" />
-            <span>Chart of Accounts (COA) Hierarchy</span>
+          <h2 className="flex items-center space-x-2 text-lg font-bold text-slate-900 dark:text-slate-100">
+            <Building2 className="h-5 w-5 text-blue-600" />
+            <span>Chart of Accounts</span>
           </h2>
-          <p className="text-xs text-slate-500 mt-1">
-            Five accounting categories, typed accounts, nested sub-accounts, and protected system controls.
-          </p>
+          <p className="mt-1 text-xs text-slate-500">{accounts.length} accounts</p>
         </div>
 
         <div className="flex items-center gap-2">
           {/* View Mode Switcher */}
-          <div className="bg-slate-100 p-1 rounded-xl flex items-center gap-1 border border-slate-200">
+          <div className="flex items-center gap-1 rounded-md border border-slate-200 bg-slate-100 p-1">
             <button
               onClick={() => setViewMode('tree')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+              className={`rounded px-2.5 py-1.5 text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 ${
                 viewMode === 'tree' ? 'bg-white text-blue-700 shadow-xs' : 'text-slate-600 hover:text-slate-900'
               }`}
             >
               <FolderTree className="w-3.5 h-3.5" />
-              <span>Tree Hierarchy</span>
+              <span>Hierarchy</span>
             </button>
             <button
               onClick={() => setViewMode('table')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+              className={`rounded px-2.5 py-1.5 text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 ${
                 viewMode === 'table' ? 'bg-white text-blue-700 shadow-xs' : 'text-slate-600 hover:text-slate-900'
               }`}
             >
               <List className="w-3.5 h-3.5" />
-              <span>Flat Table</span>
+              <span>List</span>
             </button>
           </div>
 
           <button
             onClick={() => setIsQuickAccountModalOpen(true)}
-            className="bg-emerald-600 hover:bg-emerald-500 text-white px-3.5 py-2 rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-sm transition-all cursor-pointer"
+            className="bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-2 rounded-md text-xs font-semibold flex items-center space-x-1.5 shadow-sm transition-all cursor-pointer"
           >
             <Landmark className="w-4 h-4" />
             <span>Add Cash / Bank Account</span>
@@ -279,13 +278,15 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
 
           <button
             onClick={handleOpenNewModal}
-            className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-sm transition-all cursor-pointer"
+            className="bg-blue-600 hover:bg-blue-500 text-white px-3 py-2 rounded-md text-xs font-semibold flex items-center space-x-1.5 shadow-sm transition-all cursor-pointer"
           >
             <Plus className="w-4 h-4" />
             <span>New Account</span>
           </button>
         </div>
       </div>
+
+      <AccountingDefaultsPanel accounts={accounts} />
 
       {/* Sub-Category Quick Filter Pills */}
       {subCategoriesList.length > 0 && (
@@ -644,26 +645,35 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
         </div>
       ) : (
         /* FLAT TABLE VIEW */
-        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs">
-          <div className="p-3 bg-slate-50 border-b border-slate-200 flex justify-between items-center text-xs text-slate-500 font-medium">
+        <div className="grid gap-4 lg:grid-cols-[210px_minmax(0,1fr)]">
+          <aside className="h-fit border border-slate-200 bg-white p-2 dark:border-slate-800 dark:bg-slate-900">
+            <div className="px-2 pb-2 pt-1 text-[10px] font-bold uppercase tracking-wide text-slate-400">Categories</div>
+            <button onClick={() => setSelectedTypeFilter('All')} className={`flex w-full items-center justify-between rounded px-2 py-2 text-left text-xs font-semibold ${selectedTypeFilter === 'All' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50'}`}><span>All accounts</span><span>{accounts.length}</span></button>
+            {CATEGORY_TREE_SPECIFICATION.map((category) => {
+              const count = accounts.filter((account) => getCategoryLabelForAccount(account) === category.label).length;
+              return <button key={category.label} onClick={() => setSelectedTypeFilter(category.label)} className={`mt-0.5 flex w-full items-center justify-between rounded px-2 py-2 text-left text-xs font-semibold ${selectedTypeFilter === category.label ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50'}`}><span>{category.label}</span><span>{count}</span></button>;
+            })}
+          </aside>
+          <div className="overflow-hidden border border-slate-200 bg-white shadow-xs dark:border-slate-800 dark:bg-slate-900">
+          <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-800">
             <span className="flex items-center gap-1.5">
               <BookOpen className="w-4 h-4 text-blue-600" />
-              <span>Click any account row to open its General Ledger and recorded entries.</span>
+              <span>Accounts</span>
             </span>
             <span className="font-bold text-slate-700">
-              {filteredAccounts.length} Accounts Listed
+              {filteredAccounts.length} listed
             </span>
           </div>
 
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
-              <thead className="bg-slate-50 text-slate-500 uppercase text-[10px] font-bold tracking-wider border-b border-slate-200">
+              <thead className="border-b border-slate-200 bg-slate-50 text-[10px] font-bold uppercase tracking-wide text-slate-500 dark:border-slate-800 dark:bg-slate-800">
                 <tr>
                   <th className="p-3 pl-4">Code</th>
                   <th className="p-3">Account Name</th>
                   <th className="p-3">Classification</th>
-                  <th className="p-3">Sub-Type</th>
-                  <th className="p-3">Group</th>
+                  <th className="p-3">Subtype</th>
+                  <th className="p-3">Posting</th>
                   <th className="p-3 text-right">Balance</th>
                   <th className="p-3 text-right pr-4">Actions</th>
                 </tr>
@@ -678,45 +688,17 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
                     <td className="p-3 pl-4 font-mono font-bold text-blue-600 group-hover:underline">
                       {acc.code}
                     </td>
-                    <td className="p-3 font-semibold text-slate-900 flex items-center gap-2">
-                      <span>{acc.name}</span>
-                       {acc.parentAccountId && accountNameById.get(acc.parentAccountId) && <span className="text-[10px] font-medium text-slate-500">under {accountNameById.get(acc.parentAccountId)}</span>}
-                       {acc.isSystemAccount && <span className="text-[10px] font-extrabold bg-violet-50 text-violet-800 border border-violet-200 px-1.5 py-0.2 rounded shrink-0" title={acc.systemRole ? `System role: ${formatSystemRole(acc.systemRole)}` : 'Provisioned system account'}>{acc.systemRole ? formatSystemRole(acc.systemRole) : 'System'}</span>}
-                       {(activeChildCountByParentId.get(acc.id) || 0) > 0 && <span className="text-[10px] font-extrabold bg-slate-100 text-slate-700 border border-slate-200 px-1.5 py-0.2 rounded shrink-0">Group account</span>}
-                       {acc.allowDirectPosting === false && <span className="text-[10px] font-extrabold bg-sky-50 text-sky-800 border border-sky-200 px-1.5 py-0.2 rounded shrink-0">No direct posting</span>}
-                      {acc.status === 'Archived' && <span className="text-[10px] font-extrabold bg-slate-200 text-slate-700 border border-slate-300 px-1.5 py-0.2 rounded shrink-0">Archived</span>}
-                      {acc.isLocked && (
-                        <span className="inline-flex items-center gap-1 text-[10px] font-extrabold bg-rose-100 text-rose-800 border border-rose-300 px-1.5 py-0.2 rounded shrink-0">
-                          <Lock className="w-2.5 h-2.5 text-rose-600" />
-                          <span>Locked</span>
-                        </span>
-                      )}
-                    </td>
-                    <td className="p-3">
-                      {acc.status === 'Archived' && <span className="text-[10px] font-extrabold bg-slate-200 text-slate-700 border border-slate-300 px-1.5 py-0.2 rounded shrink-0">Archived</span>}
-                      {acc.isLocked && (
-                        <span className="inline-flex items-center gap-1 text-[10px] font-extrabold bg-rose-100 text-rose-800 border border-rose-300 px-1.5 py-0.2 rounded shrink-0">
-                          <Lock className="w-2.5 h-2.5 text-rose-600" />
-                          <span>Locked</span>
-                        </span>
-                      )}
+                    <td className="p-3 font-semibold text-slate-900 dark:text-white">
+                      <div className="flex flex-wrap items-center gap-1.5"><span>{acc.name}</span>{acc.isSystemAccount && <span className="rounded border border-violet-200 bg-violet-50 px-1.5 py-0.5 text-[10px] font-bold text-violet-800" title={acc.systemRole ? `System role: ${formatSystemRole(acc.systemRole)}` : 'Provisioned system account'}>System</span>}{acc.status === 'Archived' && <span className="rounded border border-slate-300 bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-700">Archived</span>}</div>
+                      {acc.parentAccountId && accountNameById.get(acc.parentAccountId) && <div className="mt-0.5 text-[10px] font-medium text-slate-500">Under {accountNameById.get(acc.parentAccountId)}</div>}
                     </td>
                     <td className="p-3">
                       <span className="text-[10px] font-bold px-2 py-0.5 rounded border bg-slate-100 text-slate-700 border-slate-200">
                         {acc.type}
                       </span>
                     </td>
-                    <td className="p-3 text-slate-600">{acc.subType}</td>
-                    <td className="p-3">
-                      {acc.subCategory ? (
-                        <span className="inline-flex items-center gap-1 font-bold text-[10px] bg-amber-50 text-amber-800 border border-amber-200 px-2 py-0.5 rounded-md">
-                          <Layers className="w-3 h-3 text-amber-600" />
-                          <span>{acc.subCategory}</span>
-                        </span>
-                      ) : (
-                        <span className="text-slate-300">-</span>
-                      )}
-                    </td>
+                    <td className="p-3 text-slate-600"><div>{acc.subType}</div><div className="mt-0.5 text-[10px] text-slate-400">{acc.normalBalance === 'Credit' ? 'Cr' : 'Dr'} normal</div></td>
+                    <td className="p-3 text-slate-600">{(activeChildCountByParentId.get(acc.id) || 0) > 0 ? 'Group' : acc.allowDirectPosting === false ? 'Restricted' : 'Postable'}</td>
                     <td className="p-3 text-right font-mono font-bold text-slate-900">
                       {formatCurrency(acc.balance, settings.currencySymbol)}
                     </td>
@@ -727,10 +709,11 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
                             e.stopPropagation();
                             handleOpenEditModal(acc);
                           }}
-                          className="text-[11px] font-bold text-slate-700 bg-slate-100 hover:bg-amber-50 hover:text-amber-800 px-2.5 py-1 rounded-lg border border-slate-200 transition-colors inline-flex items-center gap-1 cursor-pointer"
+                          className="rounded p-1.5 text-slate-600 hover:bg-amber-50 hover:text-amber-800 transition-colors cursor-pointer"
+                          title={`Edit ${acc.name}`}
+                          aria-label={`Edit ${acc.name}`}
                         >
                           <Pencil className="w-3 h-3 text-amber-600" />
-                          <span>Edit</span>
                         </button>
 
                         <button
@@ -738,10 +721,11 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
                             e.stopPropagation();
                             setSelectedLedgerAccount(acc);
                           }}
-                          className="text-[11px] font-bold text-slate-700 bg-slate-100 hover:bg-blue-50 px-2.5 py-1 rounded-lg border border-slate-200 transition-colors inline-flex items-center gap-1 cursor-pointer"
+                          className="rounded p-1.5 text-slate-600 hover:bg-blue-50 hover:text-blue-700 transition-colors cursor-pointer"
+                          title={`Open ledger for ${acc.name}`}
+                          aria-label={`Open ledger for ${acc.name}`}
                         >
                           <Eye className="w-3 h-3 text-blue-600" />
-                          <span>Ledger</span>
                         </button>
                       </div>
                     </td>
@@ -749,6 +733,7 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
                 ))}
               </tbody>
             </table>
+          </div>
           </div>
         </div>
       )}

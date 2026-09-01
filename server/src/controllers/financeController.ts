@@ -28,7 +28,7 @@ import { SavedReportService } from '../services/SavedReportService';
 import { AccountantOverviewService } from '../services/AccountantOverviewService';
 import { PeriodLock } from '../../../src/types';
 import { newId } from '../utils/ids';
-import { OrganizationProvisioningService } from '../services/OrganizationProvisioningService';
+import { OrganizationProvisioningService, SYSTEM_ACCOUNT_ROLE_TYPES, type SystemAccountRole } from '../services/OrganizationProvisioningService';
 import { DocumentNumberingEngine } from '../services/DocumentNumberingEngine';
 import { FinancialDestructiveActionsService } from '../accounting/FinancialDestructiveActionsService';
 import { isIsoCalendarDate } from '../utils/date';
@@ -90,6 +90,68 @@ export class FinanceController {
     const orgId = req.auth!.organizationId;
     const result = await db.query('SELECT * FROM accounts WHERE organization_id = $1 ORDER BY code ASC', [orgId]);
     res.json(result.rows);
+  }
+
+  public static async getAccountingDefaults(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const result = await db.query(
+      `SELECT d.system_role, a.*
+         FROM accounting_defaults d
+         JOIN accounts a ON a.organization_id = d.organization_id AND a.id = d.account_id
+        WHERE d.organization_id = $1
+        ORDER BY d.system_role ASC`,
+      [req.auth!.organizationId]
+    );
+    res.json(result.rows);
+  }
+
+  public static async updateAccountingDefault(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const systemRole = String(req.params.systemRole || '') as SystemAccountRole;
+    const accountId = typeof req.body.accountId === 'string' ? req.body.accountId.trim() : '';
+    const expectedTypes = SYSTEM_ACCOUNT_ROLE_TYPES[systemRole];
+    if (!expectedTypes || !accountId) {
+      res.status(400).json({ error: 'A supported system role and accountId are required' });
+      return;
+    }
+
+    try {
+      const mapping = await db.transaction(async (client) => {
+        const accountResult = await client.query(
+          `SELECT id, code, name, type, sub_type, status, allow_direct_posting
+             FROM accounts WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+          [orgId, accountId]
+        );
+        const account = accountResult.rows[0];
+        if (!account) throw new Error('ACCOUNT_NOT_FOUND: Account does not belong to this organization');
+        if (account.status !== 'Active') throw new Error('ACCOUNT_INACTIVE: Only active accounts can be defaults');
+        if (!account.allow_direct_posting) throw new Error('ACCOUNT_GROUP: A group account cannot be a posting default');
+        if (!expectedTypes.includes(account.type)) throw new Error(`ACCOUNT_TYPE: ${systemRole} requires ${expectedTypes.join(' or ')} account type`);
+
+        const previous = await client.query(
+          `SELECT account_id FROM accounting_defaults WHERE organization_id = $1 AND system_role = $2 FOR UPDATE`,
+          [orgId, systemRole]
+        );
+        await client.query(
+          `INSERT INTO accounting_defaults (organization_id, system_role, account_id)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (organization_id, system_role) DO UPDATE SET account_id = EXCLUDED.account_id, updated_at = CURRENT_TIMESTAMP`,
+          [orgId, systemRole, accountId]
+        );
+        await client.query(
+          `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state, after_state)
+           VALUES ($1, $2, $3, 'ACCOUNTING_DEFAULT_UPDATED', 'AccountingDefault', $4, $5, $6)`,
+          [newId('aud'), orgId, req.auth!.userId, systemRole,
+            JSON.stringify({ systemRole, accountId: previous.rows[0]?.account_id || null }),
+            JSON.stringify({ systemRole, accountId, accountCode: account.code, accountName: account.name })]
+        );
+        return { systemRole, accountId: account.id, accountCode: account.code, accountName: account.name, accountType: account.type, accountSubType: account.sub_type };
+      });
+      res.json(mapping);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Accounting default could not be updated';
+      const statusCode = message.startsWith('ACCOUNT_NOT_FOUND') ? 404 : 400;
+      res.status(statusCode).json({ error: message.replace(/^[A-Z_]+: /, '') });
+    }
   }
 
   public static async createAccount(req: AuthenticatedRequest, res: Response): Promise<void> {

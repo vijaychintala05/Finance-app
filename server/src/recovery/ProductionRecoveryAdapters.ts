@@ -13,6 +13,15 @@ import type {
   RecoveryStager,
 } from './types';
 
+export function recoveryStagingRowKey(table: { columns: readonly string[]; stagingKeyColumns?: readonly string[] }, row: Record<string, unknown>): string {
+  const columns = table.stagingKeyColumns || (table.columns.includes('id') ? ['id'] : ['organization_id']);
+  const values = columns.map((column) => row[column]);
+  if (values.some((value) => value === undefined || value === null || value === '')) {
+    throw new RecoveryError('RECOVERY_VALIDATION_FAILED', `Recovery row is missing its staging key for ${columns.join(', ')}`, 422);
+  }
+  return JSON.stringify(values);
+}
+
 export function recoveryKeyringFromEnvironment(): RecoveryKeyring {
   const activeKeyId = process.env.RECOVERY_ACTIVE_KEY_ID || (process.env.NODE_ENV === 'production' ? '' : 'development-v1');
   const encryption = process.env.RECOVERY_ENCRYPTION_KEY_BASE64;
@@ -38,7 +47,7 @@ export class SqlRecoveryStager implements RecoveryStager {
   public async stage({ job, payload, client }: { job: RecoveryJob; payload: RecoveryPayload; client: DbQueryClient }): Promise<void> {
     for (const table of POINT1_RECOVERY_SCHEMA) {
       for (const row of payload.tables[table.name]) {
-        const rowKey = String(row.id || row.organization_id || row.key || newId('row'));
+        const rowKey = recoveryStagingRowKey(table, row);
         await client.query(
           `INSERT INTO recovery_staging_rows
             (id, restore_job_id, organization_id, table_name, row_key, row_data)

@@ -80,4 +80,23 @@ export class RecoveryApi {
       res.status(200).json({ success: true, data: job });
     } catch (error) { sendError(res, error); }
   };
+
+  public rollbackRestore = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const context = auth(req);
+      const password = String(req.body?.password || '');
+      const user = await db.query('SELECT password_hash FROM users WHERE id = $1', [context.userId]);
+      if (!password || user.rows.length !== 1 || !(await SessionSecurity.verifyPassword(password, user.rows[0].password_hash || ''))) {
+        throw new RecoveryError('RECOVERY_RECENT_AUTH_REQUIRED', 'Current owner password is required to rollback a recovery', 401);
+      }
+      const job = await this.service.rollbackRestore({
+        jobId: req.params.jobId,
+        targetOrganizationId: context.organizationId,
+        actorUserId: context.userId,
+        authenticatedAt: new Date().toISOString(),
+        confirmation: String(req.body?.confirmation || ''),
+      });
+      res.status(200).json({ success: true, data: job });
+    } catch (error) { sendError(res, error); }
+  };
 }

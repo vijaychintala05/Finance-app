@@ -169,3 +169,35 @@ export const requirePermission = (permissionCode: string | string[]) => {
     next();
   };
 };
+
+export const requireOwnerOrSuperAdmin = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  if (!req.auth || !req.auth.organizationId || !req.auth.userId) {
+    res.status(401).json({ error: 'Unauthorized: Authentication required' });
+    return;
+  }
+
+  if (['Owner', 'Super Admin'].includes(req.auth.role)) {
+    return next();
+  }
+
+  // Double check database membership for real-time authoritative role state
+  const result = await db.query(
+    `SELECT role FROM organization_members
+      WHERE organization_id = $1 AND user_id = $2
+        AND COALESCE(status, 'Active') = 'Active'`,
+    [req.auth.organizationId, req.auth.userId]
+  );
+
+  if (result.rows.length === 1 && ['Owner', 'Super Admin'].includes(result.rows[0].role)) {
+    req.auth.role = result.rows[0].role;
+    return next();
+  }
+
+  res.status(403).json({
+    error: `Forbidden: Recovery operations require an active Owner or Super Admin membership (current role: ${req.auth.role}).`,
+  });
+};

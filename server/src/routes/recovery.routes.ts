@@ -1,6 +1,6 @@
 import { Router, type RequestHandler } from 'express';
 import { CURRENT_SCHEMA_VERSION } from '../database/migrationRunner';
-import { requirePermission } from '../middleware/organizationIsolation.middleware';
+import { requireOwnerOrSuperAdmin, requirePermission } from '../middleware/organizationIsolation.middleware';
 import { requireTrustedFinanceFeature } from '../middleware/trustedFeature.middleware';
 import { RecoveryApi } from '../recovery/RecoveryApi';
 import { RecoveryArtifactService } from '../recovery/RecoveryArtifactService';
@@ -38,7 +38,7 @@ const configured = (handler: keyof RecoveryApi): RequestHandler => (req, res, ne
   }
   void Promise.resolve(api[handler](req, res)).catch(next);
 };
-const ownerRecovery = [requirePermission('settings.backup'), requireTrustedFinanceFeature('recovery-center')];
+const ownerRecovery = [requireOwnerOrSuperAdmin, requirePermission('settings.backup'), requireTrustedFinanceFeature('recovery-center')];
 
 router.get('/artifacts', ...ownerRecovery, configured('listArtifacts'));
 router.post('/artifacts', ...ownerRecovery, configured('createArtifact'));
@@ -46,5 +46,6 @@ router.get('/artifacts/:artifactId/download', ...ownerRecovery, configured('down
 router.post('/artifacts/:artifactId/stage', ...ownerRecovery, configured('stageRestore'));
 router.get('/jobs', ...ownerRecovery, configured('listJobs'));
 router.post('/jobs/:jobId/promote', ...ownerRecovery, configured('promoteRestore'));
+router.post('/jobs/:jobId/rollback', ...ownerRecovery, configured('rollbackRestore'));
 
 export default protectAsyncRoutes(router);

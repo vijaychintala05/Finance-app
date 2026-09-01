@@ -54,12 +54,15 @@ export interface RecoveryJob {
   artifactId: string;
   targetOrganizationId: string;
   stagingOrganizationId: string;
-  status: 'STAGING' | 'VALIDATED' | 'PROMOTED' | 'FAILED';
+  status: 'STAGING' | 'VALIDATED' | 'PROMOTED' | 'FAILED' | 'ROLLED_BACK';
   reconciliation: ReconciliationResult[];
   createdBy: string;
   createdAt: string;
   promotedBy?: string;
   promotedAt?: string;
+  rollbackArtifactId?: string;
+  rolledBackBy?: string;
+  rolledBackAt?: string;
 }
 
 export interface ReconciliationResult {
@@ -75,7 +78,8 @@ export interface RecoveryRepository {
   getJob(jobId: string): Promise<RecoveryJob | null>;
   setJobValidated(jobId: string, results: ReconciliationResult[], client: DbQueryClient): Promise<void>;
   setJobFailed(jobId: string, reason: string): Promise<void>;
-  setJobPromoted(jobId: string, promotedBy: string, promotedAt: string, client: DbQueryClient): Promise<void>;
+  setJobPromoted(jobId: string, promotedBy: string, promotedAt: string, rollbackArtifactId: string, client: DbQueryClient): Promise<void>;
+  setJobRolledBack(jobId: string, rolledBackBy: string, rolledBackAt: string, client: DbQueryClient): Promise<void>;
   listArtifacts(organizationId: string): Promise<StoredRecoveryArtifact[]>;
   listJobs(organizationId: string): Promise<RecoveryJob[]>;
 }
@@ -107,6 +111,7 @@ export interface RecoveryPromoter {
     payload: RecoveryPayload;
     actorUserId: string;
     client: DbQueryClient;
+    prePromotionArtifactId?: string;
   }): Promise<void>;
 }
 

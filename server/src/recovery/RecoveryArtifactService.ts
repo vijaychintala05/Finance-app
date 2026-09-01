@@ -165,11 +165,99 @@ export class RecoveryArtifactService {
       job.stagingOrganizationId,
     );
     const promotedAt = this.now().toISOString();
+
+    // 1. Capture live production tenant state before replacement as a durable rollback safety snapshot
+    const rollbackArtifact = await this.createArtifact(job.targetOrganizationId, input.actorUserId);
+
     return this.transactions.transaction(async (client) => {
       await this.dependencies.ownerAuthorizer.assertOwner(job.targetOrganizationId, input.actorUserId, client);
-      await this.dependencies.promoter.promote({ job, payload, actorUserId: input.actorUserId, client });
-      await this.dependencies.repository.setJobPromoted(job.id, input.actorUserId, promotedAt, client);
-      return { ...job, status: 'PROMOTED', promotedBy: input.actorUserId, promotedAt };
+      await this.dependencies.promoter.promote({
+        job,
+        payload,
+        actorUserId: input.actorUserId,
+        client,
+        prePromotionArtifactId: rollbackArtifact.id,
+      });
+      await this.dependencies.repository.setJobPromoted(job.id, input.actorUserId, promotedAt, rollbackArtifact.id, client);
+      return { ...job, status: 'PROMOTED', promotedBy: input.actorUserId, promotedAt, rollbackArtifactId: rollbackArtifact.id };
+    });
+  }
+
+  public async rollbackRestore(input: {
+    jobId: string;
+    targetOrganizationId: string;
+    actorUserId: string;
+    authenticatedAt: string;
+    confirmation: string;
+  }): Promise<RecoveryJob> {
+    const job = await this.dependencies.repository.getJob(input.jobId);
+    if (!job) throw new RecoveryError('RECOVERY_JOB_NOT_FOUND', 'Recovery job was not found', 404);
+    if (job.targetOrganizationId !== input.targetOrganizationId) {
+      throw new RecoveryError('RECOVERY_TENANT_MISMATCH', 'Recovery job does not belong to the target organization', 403);
+    }
+    if (job.status !== 'PROMOTED') {
+      throw new RecoveryError('RECOVERY_JOB_NOT_READY', 'Only a promoted recovery job can be rolled back', 409);
+    }
+    if (!job.rollbackArtifactId) {
+      throw new RecoveryError('RECOVERY_ROLLBACK_UNAVAILABLE', 'No pre-promotion safety snapshot exists for this job', 409);
+    }
+
+    const authenticatedAt = new Date(input.authenticatedAt).getTime();
+    const ageMs = this.now().getTime() - authenticatedAt;
+    if (!Number.isFinite(authenticatedAt) || ageMs < 0 || ageMs > 5 * 60 * 1000) {
+      throw new RecoveryError('RECOVERY_RECENT_AUTH_REQUIRED', 'Owner authentication must be less than five minutes old', 401);
+    }
+
+    const expectedConfirmation = `ROLLBACK RECOVERY ${job.id} TO PRE-PROMOTION STATE`;
+    if (input.confirmation !== expectedConfirmation) {
+      throw new RecoveryError('RECOVERY_CONFIRMATION_MISMATCH', `Typed rollback confirmation does not match. Expected: "${expectedConfirmation}"`, 422);
+    }
+
+    const rollbackArtifact = await this.requireArtifact(job.rollbackArtifactId);
+    const rollbackPayload = this.validateAndOpen(rollbackArtifact.envelope, job.targetOrganizationId);
+    const rolledBackAt = this.now().toISOString();
+
+    return this.transactions.transaction(async (client) => {
+      await this.dependencies.ownerAuthorizer.assertOwner(job.targetOrganizationId, input.actorUserId, client);
+
+      // Re-apply pre-promotion production tables in safe reverse/forward order
+      for (const table of [...POINT1_RECOVERY_SCHEMA].reverse()) {
+        await client.query(table.deleteSql, [job.targetOrganizationId]);
+      }
+      for (const table of POINT1_RECOVERY_SCHEMA) {
+        for (const preRow of rollbackPayload.tables[table.name]) {
+          const row = table.tenantColumn
+            ? { ...preRow, [table.tenantColumn]: job.targetOrganizationId }
+            : preRow;
+          const placeholders = table.columns.map((_, index) => `$${index + 1}`).join(', ');
+          await client.query(
+            `INSERT INTO ${table.name} (${table.columns.join(', ')}) VALUES (${placeholders})`,
+            table.columns.map((column) => row[column])
+          );
+        }
+      }
+
+      await client.query(
+        `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state, after_state)
+         VALUES ($1, $2, $3, 'RECOVERY_ROLLED_BACK', 'RecoveryJob', $4, $5::jsonb, $6::jsonb)`,
+        [
+          newId('aud'),
+          job.targetOrganizationId,
+          input.actorUserId,
+          job.id,
+          JSON.stringify({ promotedArtifactId: job.artifactId }),
+          JSON.stringify({ restoredRollbackArtifactId: job.rollbackArtifactId, tableCount: POINT1_RECOVERY_SCHEMA.length }),
+        ]
+      );
+
+      await this.dependencies.repository.setJobRolledBack(job.id, input.actorUserId, rolledBackAt, client);
+
+      return {
+        ...job,
+        status: 'ROLLED_BACK',
+        rolledBackBy: input.actorUserId,
+        rolledBackAt,
+      };
     });
   }
 

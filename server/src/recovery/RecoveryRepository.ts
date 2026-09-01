@@ -20,6 +20,9 @@ export class SqlRecoveryRepository implements RecoveryRepository {
       reconciliation: json(row.reconciliation || []), createdBy: row.created_by,
       createdAt: new Date(row.created_at).toISOString(), promotedBy: row.promoted_by || undefined,
       promotedAt: row.promoted_at ? new Date(row.promoted_at).toISOString() : undefined,
+      rollbackArtifactId: row.rollback_artifact_id || undefined,
+      rolledBackBy: row.rolled_back_by || undefined,
+      rolledBackAt: row.rolled_back_at ? new Date(row.rolled_back_at).toISOString() : undefined,
     };
   }
 
@@ -64,8 +67,18 @@ export class SqlRecoveryRepository implements RecoveryRepository {
     await db.query("UPDATE recovery_jobs SET status = 'FAILED', failure_reason = $1 WHERE id = $2 AND status <> 'PROMOTED'", [reason, jobId]);
   }
 
-  public async setJobPromoted(jobId: string, promotedBy: string, promotedAt: string, client: DbQueryClient): Promise<void> {
-    await client.query("UPDATE recovery_jobs SET status = 'PROMOTED', promoted_by = $1, promoted_at = $2 WHERE id = $3 AND status = 'VALIDATED'", [promotedBy, promotedAt, jobId]);
+  public async setJobPromoted(jobId: string, promotedBy: string, promotedAt: string, rollbackArtifactId: string, client: DbQueryClient): Promise<void> {
+    await client.query(
+      "UPDATE recovery_jobs SET status = 'PROMOTED', promoted_by = $1, promoted_at = $2, rollback_artifact_id = $3 WHERE id = $4 AND status = 'VALIDATED'",
+      [promotedBy, promotedAt, rollbackArtifactId, jobId]
+    );
+  }
+
+  public async setJobRolledBack(jobId: string, rolledBackBy: string, rolledBackAt: string, client: DbQueryClient): Promise<void> {
+    await client.query(
+      "UPDATE recovery_jobs SET status = 'ROLLED_BACK', rolled_back_by = $1, rolled_back_at = $2 WHERE id = $3 AND status = 'PROMOTED'",
+      [rolledBackBy, rolledBackAt, jobId]
+    );
   }
 
   public async listArtifacts(organizationId: string): Promise<StoredRecoveryArtifact[]> {

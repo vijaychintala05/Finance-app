@@ -112,7 +112,19 @@ export class SqlOwnerAuthorizer implements OwnerAuthorizer {
 }
 
 export class SqlRecoveryPromoter implements RecoveryPromoter {
-  public async promote({ job, payload, actorUserId, client }: { job: RecoveryJob; payload: RecoveryPayload; actorUserId: string; client: DbQueryClient }): Promise<void> {
+  public async promote({
+    job,
+    payload,
+    actorUserId,
+    client,
+    prePromotionArtifactId,
+  }: {
+    job: RecoveryJob;
+    payload: RecoveryPayload;
+    actorUserId: string;
+    client: DbQueryClient;
+    prePromotionArtifactId?: string;
+  }): Promise<void> {
     const existingArtifact = await client.query(
       `SELECT id FROM recovery_artifacts WHERE id = $1 AND organization_id = $2 FOR UPDATE`,
       [job.artifactId, job.targetOrganizationId]
@@ -137,8 +149,14 @@ export class SqlRecoveryPromoter implements RecoveryPromoter {
     await client.query(
       `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state, after_state)
        VALUES ($1, $2, $3, 'RECOVERY_PROMOTED', 'RecoveryJob', $4, $5::jsonb, $6::jsonb)`,
-      [newId('aud'), job.targetOrganizationId, actorUserId, job.id,
-        JSON.stringify({ artifactId: job.artifactId }), JSON.stringify({ tableCount: POINT1_RECOVERY_SCHEMA.length })]
+      [
+        newId('aud'),
+        job.targetOrganizationId,
+        actorUserId,
+        job.id,
+        JSON.stringify({ artifactId: job.artifactId, rollbackArtifactId: prePromotionArtifactId }),
+        JSON.stringify({ tableCount: POINT1_RECOVERY_SCHEMA.length, rollbackArtifactId: prePromotionArtifactId }),
+      ]
     );
   }
 }

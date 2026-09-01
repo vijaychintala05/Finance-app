@@ -141,8 +141,14 @@ export async function applyPoint1Schema(client: DbQueryClient): Promise<void> {
       created_by VARCHAR(64) NOT NULL,
       created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
       promoted_by VARCHAR(64),
-      promoted_at TIMESTAMP WITH TIME ZONE
+      promoted_at TIMESTAMP WITH TIME ZONE,
+      rollback_artifact_id VARCHAR(64),
+      rolled_back_by VARCHAR(64),
+      rolled_back_at TIMESTAMP WITH TIME ZONE
     )`,
+    `ALTER TABLE recovery_jobs ADD COLUMN IF NOT EXISTS rollback_artifact_id VARCHAR(64)`,
+    `ALTER TABLE recovery_jobs ADD COLUMN IF NOT EXISTS rolled_back_by VARCHAR(64)`,
+    `ALTER TABLE recovery_jobs ADD COLUMN IF NOT EXISTS rolled_back_at TIMESTAMP WITH TIME ZONE`,
     `CREATE TABLE IF NOT EXISTS recovery_restore_jobs (
       id VARCHAR(64) PRIMARY KEY,
       organization_id VARCHAR(64) NOT NULL,

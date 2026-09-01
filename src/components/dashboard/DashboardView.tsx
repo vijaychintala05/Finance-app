@@ -88,19 +88,17 @@ interface DashboardData {
     periodClose: { status: string; blockingFailuresCount: number; warningsCount: number } | null;
     integrity: { isHealthy: boolean; trialBalanceBalanced: boolean; accountsReceivableBalanced: boolean; accountsPayableBalanced: boolean } | null;
   };
-}
-
-interface LegacyDashboardSummary {
-  receivables: number;
-  payables: number;
-  bankBalance: number;
-  salesThisMonth: number;
-  outstandingInvoicesCount: number;
-  overdueInvoicesCount: number;
-  upcomingBillsCount: number;
-  bankReconciliationAttentionCount: number;
-  quotationsAwaitingResponseCount: number;
-  recentTransactions: DashboardData['overview']['recentTransactions'];
+  commandCenter: {
+    period: { start: string; end: string; label: string };
+    financialPosition: { cashAtBank: number; toCollect: number; toPay: number };
+    performance: { revenue: number; expenses: number; net: number; marginPercent: number | null; cashMovement: Array<{ date: string; income: number; expenses: number }> };
+    scheduledCashOutlook: { windowDays: 30; collections: number; bills: number; net: number };
+    attention: Array<{
+      id: string; severity: 'critical' | 'due-soon' | 'healthy'; label: string; count: number; amount: number | null;
+      destination: 'invoices' | 'bills' | 'bank_reconciliation' | 'journals';
+    }>;
+    insights: { topExpenses: Array<{ name: string; amount: number }>; bankAccounts: Array<{ name: string; balance: number }> };
+  };
 }
 
 interface DashboardViewProps {
@@ -131,48 +129,8 @@ const getPresetDate = (preset: DatePreset): string => {
   }
 };
 
-const fromLegacySummary = (legacy: LegacyDashboardSummary, asOfDate: string): DashboardData => ({
-  view: 'overview',
-  asOfDate,
-  generatedAt: new Date().toISOString(),
-  availableViews: ['overview'],
-  overview: {
-    receivables: legacy.receivables,
-    overdueReceivables: legacy.receivables * 0.2,
-    outstandingInvoicesCount: legacy.outstandingInvoicesCount,
-    overdueInvoicesCount: legacy.overdueInvoicesCount,
-    payables: legacy.payables,
-    dueBillsCount: legacy.upcomingBillsCount,
-    overduePayables: legacy.payables * 0.15,
-    overdueBillsCount: Math.max(0, Math.floor(legacy.upcomingBillsCount * 0.3)),
-    bankBalance: legacy.bankBalance,
-    salesThisMonth: legacy.salesThisMonth,
-    expensesThisMonth: legacy.salesThisMonth * 0.55,
-    activityTrend: [
-      { date: asOfDate, income: legacy.salesThisMonth, expenses: legacy.salesThisMonth * 0.55 },
-    ],
-    bankReconciliationAttentionCount: legacy.bankReconciliationAttentionCount,
-    quotationsAwaitingResponseCount: legacy.quotationsAwaitingResponseCount,
-    pendingJournalsCount: null,
-    collections: [],
-    billsDue: [],
-    recentTransactions: legacy.recentTransactions || [],
-  },
-  cashOperations: {
-    available: false,
-    bankReconciliationAttentionCount: legacy.bankReconciliationAttentionCount,
-    oldestUnmatchedDate: null,
-    collectionsDue7Days: 0,
-    collectionsDue30Days: 0,
-    billsDue7Days: 0,
-    billsDue30Days: 0,
-    forecast: { available: false, reason: 'Cash forecasting is unavailable.' },
-  },
-  closeControls: { available: false, periodClose: null, integrity: null },
-});
-
 export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
-  const { settings, accounts, expenses, journalEntries } = useBooks();
+  const { settings } = useBooks();
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [view, setView] = useState<DashboardViewKey>('overview');
   const [asOfDate, setAsOfDate] = useState(localIsoDate);
@@ -197,16 +155,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         if (response.data?.dashboard) {
           setDashboard(response.data.dashboard);
           return;
-        }
-        const missingDashboardRoute =
-          response.status === 404 || /unexpected token|valid json/i.test(response.error || '');
-        if (missingDashboardRoute && view === 'overview') {
-          const legacy = await apiClient.get<{ summary: LegacyDashboardSummary }>('/dashboard-summary');
-          if (legacy.data?.summary) {
-            setDashboard(fromLegacySummary(legacy.data.summary, asOfDate));
-            return;
-          }
-          throw new Error(legacy.error || 'Dashboard returned no data');
         }
         throw new Error(response.error || 'Dashboard returned no data');
       })
@@ -252,43 +200,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     dashboard?.overview.activityTrend.reduce((acc, p) => acc + p.expenses, 0) || 0;
   const totalTrendNet = totalTrendIncome - totalTrendExpense;
 
-  // 1. Top Expense Categories Breakdown
+  // These lower insights deliberately come from the dashboard DTO, not browser caches.
   const topExpenseCategories = useMemo(() => {
-    const categoryTotals: Record<string, number> = {};
-    expenses.forEach((exp) => {
-      const cat = exp.accountName || 'General Operating Expense';
-      categoryTotals[cat] = (categoryTotals[cat] || 0) + Number(exp.amount || 0);
-    });
-    const total = Object.values(categoryTotals).reduce((sum, v) => sum + v, 0);
-    const sorted = Object.entries(categoryTotals)
-      .map(([name, amount]) => ({
-        name,
-        amount,
-        percent: total > 0 ? Math.round((amount / total) * 100) : 0,
-      }))
-      .sort((a, b) => b.amount - a.amount)
-      .slice(0, 5);
-
-    return { categories: sorted, total };
-  }, [expenses]);
-
-  // 2. Liquid Cash & Bank Accounts
-  const liquidAccounts = useMemo(() => {
-    return accounts.filter((a) => {
-      const subType = String(a.subType || '').toLowerCase();
-      return (
-        a.type === 'Asset' &&
-        a.status !== 'Inactive' &&
-        (a.code.startsWith('10') || ['bank', 'cash', 'cash & bank', 'digital wallet', 'undeposited funds'].includes(subType))
-      );
-    });
-  }, [accounts]);
-
-  // 3. Starred GL Account Watchlist
-  const watchlistAccounts = useMemo(() => {
-    const watchlistCodes = ['1000', '1010', '1100', '2000', '2100', '3000', '3200'];
-    return accounts.filter((a) => watchlistCodes.includes(a.code) || a.isFavorite);
-  }, [accounts]);
+    const categories = dashboard?.commandCenter.insights.topExpenses || [];
+    const total = categories.reduce((sum, category) => sum + category.amount, 0);
+    return { categories: categories.map((category) => ({ ...category, percent: total > 0 ? Math.round((category.amount / total) * 100) : 0 })), total };
+  }, [dashboard]);
+  const liquidAccounts = dashboard?.commandCenter.insights.bankAccounts || [];
 
   const Metric = ({
     title,
@@ -691,16 +609,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
           {liquidAccounts.slice(0, 4).map((acc) => (
             <div
-              key={acc.id}
+              key={acc.name}
               onClick={() => onNavigate('banking')}
               className="group flex flex-col justify-between rounded-xl border border-slate-200/80 bg-slate-50/50 p-3.5 transition-all hover:border-blue-400 hover:bg-blue-50/30 dark:border-slate-800 dark:bg-slate-800/40 dark:hover:border-blue-500/60 cursor-pointer"
             >
               <div className="flex items-center justify-between">
-                <span className="text-[10px] font-bold font-mono text-slate-400 bg-white dark:bg-slate-900 px-1.5 py-0.5 rounded border border-slate-200/60 dark:border-slate-700">
-                  {acc.code}
-                </span>
                 <span className="text-[10px] font-bold text-blue-600 dark:text-blue-400">
-                  {acc.subType || 'Bank'}
+                  Ledger balance
                 </span>
               </div>
               <div className="mt-2.5">
@@ -716,8 +631,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     </section>
   );
 
-  // GL Account Watchlist Widget
-  const AccountWatchlistWidget = () => (
+  const ScheduledOutlookWidget = () => (
     <section className="rounded-xl border border-slate-200/90 bg-white p-5 shadow-xs dark:border-slate-800/90 dark:bg-slate-900">
       <div className="flex items-center justify-between border-b border-slate-100 pb-3.5 dark:border-slate-800">
         <div className="flex items-center gap-2">
@@ -725,38 +639,34 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
             <Star className="h-4 w-4 fill-amber-400 text-amber-500" />
           </div>
           <div>
-            <h2 className="text-sm font-bold tracking-tight text-slate-900 dark:text-white">General Ledger Account Watchlist</h2>
-            <p className="text-[11px] text-slate-400">Key balance sheet and tax reserve control accounts</p>
+            <h2 className="text-sm font-bold tracking-tight text-slate-900 dark:text-white">Scheduled Cash Outlook</h2>
+            <p className="text-[11px] text-slate-400">Open documents due in the next 30 days, not a forecast</p>
           </div>
         </div>
         <button
-          onClick={() => onNavigate('accounting')}
+          onClick={() => onNavigate('reports')}
           className="inline-flex items-center gap-1 text-xs font-bold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
         >
-          <span>Chart of Accounts</span>
+          <span>Reports</span>
           <ArrowRight className="h-3.5 w-3.5" />
         </button>
       </div>
 
       <div className="mt-3 divide-y divide-slate-100 dark:divide-slate-800/80">
-        {watchlistAccounts.slice(0, 5).map((acc) => (
-          <div
-            key={acc.id}
-            onClick={() => onNavigate('accounting')}
-            className="flex items-center justify-between py-2.5 text-xs hover:bg-slate-50/50 dark:hover:bg-slate-800/30 px-2 rounded-lg transition-colors cursor-pointer"
-          >
-            <div className="flex items-center gap-2 min-w-0">
-              <span className="font-mono text-[10px] font-bold text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">
-                {acc.code}
-              </span>
-              <span className="font-semibold text-slate-800 dark:text-slate-200 truncate">{acc.name}</span>
-            </div>
-            <div className="flex items-center gap-3 shrink-0">
-              <span className="text-[10px] font-semibold text-slate-400">{acc.type}</span>
-              <span className="font-financial font-extrabold text-slate-900 dark:text-white">{money(acc.balance || 0)}</span>
-            </div>
-          </div>
-        ))}
+        <div className="flex items-center justify-between py-3 text-xs">
+          <span className="font-semibold text-slate-700 dark:text-slate-300">Scheduled collections</span>
+          <span className="font-financial font-extrabold text-emerald-700 dark:text-emerald-400">{money(dashboard?.commandCenter.scheduledCashOutlook.collections || 0)}</span>
+        </div>
+        <div className="flex items-center justify-between py-3 text-xs">
+          <span className="font-semibold text-slate-700 dark:text-slate-300">Scheduled bills</span>
+          <span className="font-financial font-extrabold text-rose-700 dark:text-rose-400">{money(dashboard?.commandCenter.scheduledCashOutlook.bills || 0)}</span>
+        </div>
+        <div className="flex items-center justify-between py-3 text-xs">
+          <span className="font-semibold text-slate-900 dark:text-white">Net scheduled movement</span>
+          <span className={`font-financial font-extrabold ${(dashboard?.commandCenter.scheduledCashOutlook.net || 0) >= 0 ? 'text-emerald-700 dark:text-emerald-400' : 'text-rose-700 dark:text-rose-400'}`}>
+            {money(dashboard?.commandCenter.scheduledCashOutlook.net || 0)}
+          </span>
+        </div>
       </div>
     </section>
   );
@@ -902,8 +812,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
           <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <Metric
               title="Operating Cash & Bank"
-              value={money(dashboard.overview.bankBalance)}
-              subtitle="Posted bank & cash journals"
+              value={money(dashboard.commandCenter.financialPosition.cashAtBank)}
+              subtitle="Posted bank and cash journals"
               badge={
                 dashboard.overview.bankReconciliationAttentionCount > 0
                   ? `${dashboard.overview.bankReconciliationAttentionCount} Unmatched`
@@ -921,7 +831,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
             <Metric
               title="Accounts Receivable (AR)"
-              value={money(dashboard.overview.receivables)}
+              value={money(dashboard.commandCenter.financialPosition.toCollect)}
               subtitle={`${dashboard.overview.outstandingInvoicesCount} total outstanding invoices`}
               progressLabel="Overdue Collections"
               progressPercent={
@@ -947,7 +857,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
             <Metric
               title="Accounts Payable (AP)"
-              value={money(dashboard.overview.payables)}
+              value={money(dashboard.commandCenter.financialPosition.toPay)}
               subtitle={`${dashboard.overview.dueBillsCount} vendor bills pending`}
               progressLabel="Overdue Payables"
               progressPercent={
@@ -973,8 +883,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
             <Metric
               title="Period Revenue & Net Margin"
-              value={money(dashboard.overview.salesThisMonth)}
-              subtitle={`${money(dashboard.overview.expensesThisMonth)} posted expenses this period`}
+              value={money(dashboard.commandCenter.performance.revenue)}
+              subtitle={`${money(dashboard.commandCenter.performance.expenses)} posted expenses this period`}
               badge={
                 netMarginPercent
                   ? `${Number(netMarginPercent) >= 0 ? '+' : ''}${netMarginPercent}% Margin`
@@ -993,11 +903,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
           {/* Activity Trend & Attention Sidebar */}
           <section className="grid gap-5 xl:grid-cols-3">
-            <div className="xl:col-span-2">
-              <ActivityTrend points={dashboard.overview.activityTrend} />
+            <div className="order-2 xl:order-1 xl:col-span-2">
+              <ActivityTrend points={dashboard.commandCenter.performance.cashMovement} />
             </div>
 
-            <div className="space-y-5">
+            <div className="order-1 space-y-5 xl:order-2">
               {/* Attention Queue */}
               <section className="rounded-xl border border-slate-200/90 bg-white p-5 shadow-xs dark:border-slate-800/90 dark:bg-slate-900">
                 <div className="flex items-center justify-between">
@@ -1006,52 +916,26 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                 </div>
 
                 <div className="mt-3.5 divide-y divide-slate-100 dark:divide-slate-800/80">
-                  <button
-                    onClick={() => onNavigate('bank_reconciliation')}
-                    className="flex w-full items-center justify-between gap-3 py-3 text-left text-xs font-semibold hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer"
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="h-2 w-2 rounded-full bg-amber-500" />
-                      <span>Unreconciled Bank Feeds</span>
-                    </div>
-                    <span
-                      className={`font-financial rounded-full px-2 py-0.5 text-[11px] font-extrabold ${
-                        dashboard.overview.bankReconciliationAttentionCount > 0
-                          ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
-                          : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400'
-                      }`}
-                    >
-                      {dashboard.overview.bankReconciliationAttentionCount}
-                    </span>
-                  </button>
-
-                  <button
-                    onClick={() => onNavigate('invoices')}
-                    className="flex w-full items-center justify-between gap-3 py-3 text-left text-xs font-semibold hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer"
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="h-2 w-2 rounded-full bg-blue-500" />
-                      <span>Quotations Awaiting Client Sign</span>
-                    </div>
-                    <span className="font-financial rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-extrabold text-slate-700 dark:bg-slate-800 dark:text-slate-300">
-                      {dashboard.overview.quotationsAwaitingResponseCount}
-                    </span>
-                  </button>
-
-                  {dashboard.overview.pendingJournalsCount !== null && (
-                    <button
-                      onClick={() => onNavigate('journals')}
-                      className="flex w-full items-center justify-between gap-3 py-3 text-left text-xs font-semibold hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer"
-                    >
-                      <div className="flex items-center gap-2">
-                        <span className="h-2 w-2 rounded-full bg-purple-500" />
-                        <span>Draft / Pending Manual Journals</span>
-                      </div>
-                      <span className="font-financial rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-extrabold text-slate-700 dark:bg-slate-800 dark:text-slate-300">
-                        {dashboard.overview.pendingJournalsCount}
-                      </span>
-                    </button>
-                  )}
+                  {dashboard.commandCenter.attention.map((item) => {
+                    const tone = item.severity === 'critical'
+                      ? 'bg-rose-500'
+                      : item.severity === 'due-soon' ? 'bg-amber-500' : 'bg-emerald-500';
+                    return (
+                      <button
+                        key={item.id}
+                        onClick={() => onNavigate(item.destination)}
+                        className="flex w-full items-center justify-between gap-3 py-3 text-left text-xs font-semibold hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer"
+                      >
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span className={`h-2 w-2 shrink-0 rounded-full ${tone}`} />
+                          <span className="truncate">{item.label}</span>
+                        </div>
+                        <span className="font-financial rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-extrabold text-slate-700 dark:bg-slate-800 dark:text-slate-300">
+                          {item.amount !== null ? money(item.amount) : item.count}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
               </section>
 
@@ -1089,7 +973,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
           {/* NEW ROW: GENERAL LEDGER WATCHLIST & RECENT TRANSACTIONS */}
           <section className="grid gap-5 lg:grid-cols-2">
-            <AccountWatchlistWidget />
+            <ScheduledOutlookWidget />
 
             {/* Recent Transactions Table */}
             <section className="rounded-xl border border-slate-200/90 bg-white shadow-xs dark:border-slate-800/90 dark:bg-slate-900">
@@ -1242,7 +1126,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
               </div>
             </div>
 
-            <AccountWatchlistWidget />
+            <ScheduledOutlookWidget />
           </section>
         </div>
       )}

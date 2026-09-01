@@ -43,6 +43,24 @@ export interface DashboardResponse {
     periodClose: { status: string; blockingFailuresCount: number; warningsCount: number } | null;
     integrity: { isHealthy: boolean; trialBalanceBalanced: boolean; accountsReceivableBalanced: boolean; accountsPayableBalanced: boolean } | null;
   };
+  commandCenter: {
+    period: { start: string; end: string; label: string };
+    financialPosition: { cashAtBank: number; toCollect: number; toPay: number };
+    performance: {
+      revenue: number; expenses: number; net: number; marginPercent: number | null;
+      cashMovement: Array<{ date: string; income: number; expenses: number }>;
+    };
+    scheduledCashOutlook: { windowDays: 30; collections: number; bills: number; net: number };
+    attention: Array<{
+      id: 'overdue-receivables' | 'overdue-payables' | 'bank-reconciliation' | 'pending-journals' | 'quotations';
+      severity: 'critical' | 'due-soon' | 'healthy'; label: string; count: number; amount: number | null;
+      destination: 'invoices' | 'bills' | 'bank_reconciliation' | 'journals';
+    }>;
+    insights: {
+      topExpenses: Array<{ name: string; amount: number }>;
+      bankAccounts: Array<{ name: string; balance: number }>;
+    };
+  };
 }
 
 const isoDate = (date: Date): string => date.toISOString().slice(0, 10);
@@ -82,82 +100,100 @@ export class DashboardSummaryService {
     if (canSeeControls) availableViews.push('close-controls');
     if (!availableViews.includes(view)) throw new Error('DASHBOARD_VIEW_FORBIDDEN: You are not authorized to view this dashboard');
 
-    const [receivablesRes, payablesRes, bankRes, activityRes, activityTrendRes, collectionsRes, billsRes, bankQueueRes, quotationRes, journalRes, recentRes, dueWindowsRes] = await Promise.all([
-      db.query(`SELECT COALESCE(SUM(balance_due), 0) AS total, COUNT(*) FILTER (WHERE balance_due > 0) AS open_count,
-          COALESCE(SUM(balance_due) FILTER (WHERE balance_due > 0 AND due_date < $2), 0) AS overdue_total,
-          COUNT(*) FILTER (WHERE balance_due > 0 AND due_date < $2) AS overdue_count
-        FROM invoices WHERE organization_id = $1 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT')`, [organizationId, asOfDate]),
-      db.query(`SELECT COALESCE(SUM(balance_due), 0) AS total,
-          COALESCE(SUM(balance_due) FILTER (WHERE balance_due > 0 AND due_date < $2), 0) AS overdue_total,
-          COUNT(*) FILTER (WHERE balance_due > 0 AND due_date < $2) AS overdue_count,
-          COUNT(*) FILTER (WHERE balance_due > 0 AND due_date >= $2 AND due_date <= $3) AS due_count
-        FROM bills WHERE organization_id = $1 AND UPPER(status) NOT IN ('PAID', 'VOID', 'VOIDED', 'DRAFT')`, [organizationId, asOfDate, addDays(asOfDate, 7)]),
-      canSeeBanking ? db.query(`SELECT COALESCE(SUM(CASE WHEN UPPER(a.type) = 'ASSET' THEN jl.debit - jl.credit ELSE jl.credit - jl.debit END), 0) AS total
-        FROM accounts a JOIN journal_lines jl ON jl.account_id = a.id
-        JOIN journal_entries je ON je.id = jl.journal_entry_id AND je.organization_id = a.organization_id AND UPPER(je.status) = 'POSTED'
+    const [documentsRes, bankRes, activityTrendRes, collectionsRes, billsRes, bankQueueRes, quotationRes, journalRes, recentRes, topExpensesRes] = await Promise.all([
+      db.query(`WITH documents AS (
+          SELECT 'invoice' AS kind, balance_due, due_date, issue_date AS document_date
+            FROM invoices
+           WHERE organization_id = $1 AND issue_date <= $2
+             AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT')
+          UNION ALL
+          SELECT 'bill' AS kind, balance_due, due_date, bill_date AS document_date
+            FROM bills
+           WHERE organization_id = $1 AND bill_date <= $2
+             AND UPPER(status) NOT IN ('PAID', 'VOID', 'VOIDED', 'DRAFT')
+        )
+        SELECT
+          COALESCE(SUM(CASE WHEN kind = 'invoice' THEN balance_due ELSE 0 END), 0) AS receivables_total,
+          COALESCE(SUM(CASE WHEN kind = 'invoice' AND balance_due > 0 THEN 1 ELSE 0 END), 0) AS invoice_open_count,
+          COALESCE(SUM(CASE WHEN kind = 'invoice' AND balance_due > 0 AND due_date < $2 THEN balance_due ELSE 0 END), 0) AS receivables_overdue_total,
+          COALESCE(SUM(CASE WHEN kind = 'invoice' AND balance_due > 0 AND due_date < $2 THEN 1 ELSE 0 END), 0) AS invoice_overdue_count,
+          COALESCE(SUM(CASE WHEN kind = 'bill' THEN balance_due ELSE 0 END), 0) AS payables_total,
+          COALESCE(SUM(CASE WHEN kind = 'bill' AND balance_due > 0 AND due_date < $2 THEN balance_due ELSE 0 END), 0) AS payables_overdue_total,
+          COALESCE(SUM(CASE WHEN kind = 'bill' AND balance_due > 0 AND due_date < $2 THEN 1 ELSE 0 END), 0) AS bill_overdue_count,
+          COALESCE(SUM(CASE WHEN kind = 'bill' AND balance_due > 0 AND due_date >= $2 AND due_date <= $3 THEN 1 ELSE 0 END), 0) AS bill_due_count,
+          COALESCE(SUM(CASE WHEN kind = 'invoice' AND balance_due > 0 AND due_date >= $2 AND due_date <= $3 THEN balance_due ELSE 0 END), 0) AS collections_7,
+          COALESCE(SUM(CASE WHEN kind = 'bill' AND balance_due > 0 AND due_date >= $2 AND due_date <= $3 THEN balance_due ELSE 0 END), 0) AS bills_7,
+          COALESCE(SUM(CASE WHEN kind = 'invoice' AND balance_due > 0 AND due_date >= $2 AND due_date <= $4 THEN balance_due ELSE 0 END), 0) AS collections_30,
+          COALESCE(SUM(CASE WHEN kind = 'bill' AND balance_due > 0 AND due_date >= $2 AND due_date <= $4 THEN balance_due ELSE 0 END), 0) AS bills_30
+        FROM documents`, [organizationId, asOfDate, addDays(asOfDate, 7), addDays(asOfDate, 30)]),
+      canSeeBanking ? db.query(`SELECT a.name, COALESCE(SUM(jl.debit - jl.credit), 0) AS balance
+        FROM accounts a
+        JOIN journal_lines jl ON jl.account_id = a.id AND jl.organization_id = a.organization_id
+        JOIN journal_entries je ON je.id = jl.journal_entry_id AND je.organization_id = a.organization_id
+          AND UPPER(je.status) = 'POSTED' AND je.date <= $2
         WHERE a.organization_id = $1 AND UPPER(a.type) = 'ASSET'
-          AND (UPPER(a.sub_type) IN ('BANK', 'CASH', 'CASH & BANK') OR UPPER(a.name) LIKE '%BANK%' OR UPPER(a.name) LIKE '%CASH%')`, [organizationId]) : Promise.resolve({ rows: [{ total: 0 }] }),
-      db.query(`SELECT COALESCE(SUM(CASE WHEN UPPER(a.type) IN ('INCOME', 'REVENUE', 'OTHER INCOME') THEN jl.credit - jl.debit ELSE 0 END), 0) AS income,
+          AND (UPPER(a.sub_type) IN ('BANK', 'CASH', 'CASH & BANK') OR UPPER(a.name) LIKE '%BANK%' OR UPPER(a.name) LIKE '%CASH%')
+        GROUP BY a.id, a.name
+        ORDER BY balance DESC, a.name ASC`, [organizationId, asOfDate]) : Promise.resolve({ rows: [] }),
+      db.query(`SELECT je.date AS activity_date,
+          COALESCE(SUM(CASE WHEN UPPER(a.type) IN ('INCOME', 'REVENUE', 'OTHER INCOME') THEN jl.credit - jl.debit ELSE 0 END), 0) AS income,
           COALESCE(SUM(CASE WHEN UPPER(a.type) IN ('EXPENSE', 'COST OF GOODS SOLD', 'OTHER EXPENSE') THEN jl.debit - jl.credit ELSE 0 END), 0) AS expenses
-        FROM accounts a JOIN journal_lines jl ON jl.account_id = a.id
-        JOIN journal_entries je ON je.id = jl.journal_entry_id AND je.organization_id = a.organization_id AND UPPER(je.status) = 'POSTED'
-        WHERE a.organization_id = $1 AND je.date >= $2 AND je.date <= $3`, [organizationId, periodStart, asOfDate]),
-      db.query(`SELECT je.date AS activity_date, a.type AS account_type, jl.debit, jl.credit
-        FROM accounts a JOIN journal_lines jl ON jl.account_id = a.id
-        JOIN journal_entries je ON je.id = jl.journal_entry_id AND je.organization_id = a.organization_id AND UPPER(je.status) = 'POSTED'
+        FROM accounts a
+        JOIN journal_lines jl ON jl.account_id = a.id AND jl.organization_id = a.organization_id
+        JOIN journal_entries je ON je.id = jl.journal_entry_id AND je.organization_id = a.organization_id
+          AND UPPER(je.status) = 'POSTED'
         WHERE a.organization_id = $1 AND je.date >= $2 AND je.date <= $3
           AND UPPER(a.type) IN ('INCOME', 'REVENUE', 'OTHER INCOME', 'EXPENSE', 'COST OF GOODS SOLD', 'OTHER EXPENSE')
+        GROUP BY je.date
         ORDER BY je.date ASC`, [organizationId, periodStart, asOfDate]),
       has('invoices.view') ? db.query(`SELECT COALESCE(client_name, 'Unassigned customer') AS party_name, balance_due, due_date
-        FROM invoices WHERE organization_id = $1 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT') AND balance_due > 0
+        FROM invoices WHERE organization_id = $1 AND issue_date <= $2
+          AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT') AND balance_due > 0
         ORDER BY CASE WHEN due_date < $2 THEN 0 ELSE 1 END, balance_due DESC, due_date ASC NULLS LAST LIMIT 5`, [organizationId, asOfDate]) : Promise.resolve({ rows: [] }),
       has('purchases.view') ? db.query(`SELECT COALESCE(vendor_name, 'Unassigned vendor') AS party_name, balance_due, due_date
-        FROM bills WHERE organization_id = $1 AND UPPER(status) NOT IN ('PAID', 'VOID', 'VOIDED', 'DRAFT') AND balance_due > 0
+        FROM bills WHERE organization_id = $1 AND bill_date <= $2
+          AND UPPER(status) NOT IN ('PAID', 'VOID', 'VOIDED', 'DRAFT') AND balance_due > 0
         ORDER BY CASE WHEN due_date < $2 THEN 0 ELSE 1 END, due_date ASC NULLS LAST, balance_due DESC LIMIT 5`, [organizationId, asOfDate]) : Promise.resolve({ rows: [] }),
       canSeeBanking ? db.query(`SELECT COUNT(*) AS count, MIN(transaction_date) AS oldest_date
         FROM bank_statement_transactions WHERE organization_id = $1 AND reconciliation_status = 'UNMATCHED'`, [organizationId]) : Promise.resolve({ rows: [{ count: 0, oldest_date: null }] }),
       has('invoices.view') ? db.query(`SELECT COUNT(*) AS count FROM estimates WHERE organization_id = $1 AND status IN ('SENT', 'VIEWED', 'DRAFT')`, [organizationId]) : Promise.resolve({ rows: [{ count: 0 }] }),
       canSeeAccounting ? db.query(`SELECT COUNT(*) AS count FROM journal_entries WHERE organization_id = $1 AND UPPER(status) IN ('DRAFT', 'SUBMITTED', 'PENDING')`, [organizationId]) : Promise.resolve({ rows: [{ count: 0 }] }),
       db.query(`SELECT 'Invoice' AS type, invoice_number AS doc_num, client_name AS party_name, total_amount AS amount, status, issue_date AS doc_date
-          FROM invoices WHERE organization_id = $1
+          FROM invoices WHERE organization_id = $1 AND issue_date <= $2 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT')
         UNION ALL
         SELECT 'Bill' AS type, bill_number AS doc_num, vendor_name AS party_name, total_amount AS amount, status, bill_date AS doc_date
-          FROM bills WHERE organization_id = $1
-        ORDER BY doc_date DESC NULLS LAST LIMIT 5`, [organizationId]),
-      db.query(`SELECT
-          COALESCE(SUM(balance_due) FILTER (WHERE kind = 'invoice' AND due_date >= $2 AND due_date <= $3), 0) AS collections_7,
-          COALESCE(SUM(balance_due) FILTER (WHERE kind = 'invoice' AND due_date >= $2 AND due_date <= $4), 0) AS collections_30,
-          COALESCE(SUM(balance_due) FILTER (WHERE kind = 'bill' AND due_date >= $2 AND due_date <= $3), 0) AS bills_7,
-          COALESCE(SUM(balance_due) FILTER (WHERE kind = 'bill' AND due_date >= $2 AND due_date <= $4), 0) AS bills_30
-        FROM (
-          SELECT 'invoice' AS kind, balance_due, due_date FROM invoices WHERE organization_id = $1 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT') AND balance_due > 0
-          UNION ALL
-          SELECT 'bill' AS kind, balance_due, due_date FROM bills WHERE organization_id = $1 AND UPPER(status) NOT IN ('PAID', 'VOID', 'VOIDED', 'DRAFT') AND balance_due > 0
-        ) documents`, [organizationId, asOfDate, addDays(asOfDate, 7), addDays(asOfDate, 30)]),
+          FROM bills WHERE organization_id = $1 AND bill_date <= $2 AND UPPER(status) NOT IN ('PAID', 'VOID', 'VOIDED', 'DRAFT')
+        ORDER BY doc_date DESC NULLS LAST LIMIT 5`, [organizationId, asOfDate]),
+      db.query(`SELECT a.name, COALESCE(SUM(jl.debit - jl.credit), 0) AS amount
+        FROM accounts a
+        JOIN journal_lines jl ON jl.account_id = a.id AND jl.organization_id = a.organization_id
+        JOIN journal_entries je ON je.id = jl.journal_entry_id AND je.organization_id = a.organization_id
+          AND UPPER(je.status) = 'POSTED'
+        WHERE a.organization_id = $1 AND je.date >= $2 AND je.date <= $3
+          AND UPPER(a.type) IN ('EXPENSE', 'COST OF GOODS SOLD', 'OTHER EXPENSE')
+        GROUP BY a.id, a.name
+        ORDER BY amount DESC, a.name ASC
+        LIMIT 5`, [organizationId, periodStart, asOfDate]),
     ]);
 
-    const receivables = databaseMoney(receivablesRes.rows[0]?.total, 'Dashboard receivables');
-    const payables = databaseMoney(payablesRes.rows[0]?.total, 'Dashboard payables');
-    const bankBalance = databaseMoney(bankRes.rows[0]?.total, 'Dashboard bank balance');
-    const activityTrendByDate = new Map<string, { date: string; income: number; expenses: number }>();
-    for (const row of activityTrendRes.rows) {
-      const date = String(row.activity_date).slice(0, 10);
-      const point = activityTrendByDate.get(date) || { date, income: 0, expenses: 0 };
-      const type = String(row.account_type || '').toUpperCase();
-      if (['INCOME', 'REVENUE', 'OTHER INCOME'].includes(type)) {
-        point.income += databaseMoney(Number(row.credit || 0) - Number(row.debit || 0), `Dashboard activity income for ${date}`);
-      } else {
-        point.expenses += databaseMoney(Number(row.debit || 0) - Number(row.credit || 0), `Dashboard activity expense for ${date}`);
-      }
-      activityTrendByDate.set(date, point);
-    }
-    const activityTrend = Array.from(activityTrendByDate.values());
+    const documents = documentsRes.rows[0] || {};
+    const receivables = databaseMoney(documents.receivables_total, 'Dashboard receivables');
+    const payables = databaseMoney(documents.payables_total, 'Dashboard payables');
+    const bankAccounts = bankRes.rows.map((row: any) => ({ name: String(row.name), balance: databaseMoney(row.balance, `Dashboard bank balance for ${row.name}`) }));
+    const bankBalance = bankAccounts.reduce((total, account) => total + account.balance, 0);
+    const activityTrend = activityTrendRes.rows.map((row: any) => ({
+      date: String(row.activity_date).slice(0, 10),
+      income: databaseMoney(row.income, `Dashboard activity income for ${row.activity_date}`),
+      expenses: databaseMoney(row.expenses, `Dashboard activity expense for ${row.activity_date}`),
+    }));
+    const salesThisMonth = activityTrend.reduce((total, point) => total + point.income, 0);
+    const expensesThisMonth = activityTrend.reduce((total, point) => total + point.expenses, 0);
     const overview = {
-      receivables, overdueReceivables: databaseMoney(receivablesRes.rows[0]?.overdue_total, 'Dashboard overdue receivables'),
-      outstandingInvoicesCount: Number(receivablesRes.rows[0]?.open_count || 0), overdueInvoicesCount: Number(receivablesRes.rows[0]?.overdue_count || 0),
-      payables, dueBillsCount: Number(payablesRes.rows[0]?.due_count || 0),
-      overduePayables: databaseMoney(payablesRes.rows[0]?.overdue_total, 'Dashboard overdue payables'), overdueBillsCount: Number(payablesRes.rows[0]?.overdue_count || 0),
-      bankBalance, salesThisMonth: databaseMoney(activityRes.rows[0]?.income, 'Dashboard monthly income'), expensesThisMonth: databaseMoney(activityRes.rows[0]?.expenses, 'Dashboard monthly expenses'), activityTrend,
+      receivables, overdueReceivables: databaseMoney(documents.receivables_overdue_total, 'Dashboard overdue receivables'),
+      outstandingInvoicesCount: Number(documents.invoice_open_count || 0), overdueInvoicesCount: Number(documents.invoice_overdue_count || 0),
+      payables, dueBillsCount: Number(documents.bill_due_count || 0),
+      overduePayables: databaseMoney(documents.payables_overdue_total, 'Dashboard overdue payables'), overdueBillsCount: Number(documents.bill_overdue_count || 0),
+      bankBalance, salesThisMonth, expensesThisMonth, activityTrend,
       bankReconciliationAttentionCount: Number(bankQueueRes.rows[0]?.count || 0), quotationsAwaitingResponseCount: Number(quotationRes.rows[0]?.count || 0), pendingJournalsCount: canSeeAccounting ? Number(journalRes.rows[0]?.count || 0) : null,
       collections: collectionsRes.rows.map((row: any) => ({ partyName: row.party_name, amount: databaseMoney(row.balance_due, 'Dashboard collection amount'), overdue: Boolean(row.due_date && String(row.due_date).slice(0, 10) < asOfDate), dueDate: row.due_date ? String(row.due_date).slice(0, 10) : null })),
       billsDue: billsRes.rows.map((row: any) => ({ partyName: row.party_name, amount: databaseMoney(row.balance_due, 'Dashboard bill amount'), overdue: Boolean(row.due_date && String(row.due_date).slice(0, 10) < asOfDate), dueDate: row.due_date ? String(row.due_date).slice(0, 10) : null })),
@@ -170,8 +206,26 @@ export class DashboardSummaryService {
       closeControls = { available: true, periodClose: { status: closeStatus.status, blockingFailuresCount: closeStatus.blockingFailuresCount, warningsCount: closeStatus.warningsCount }, integrity: { isHealthy: integrity.isHealthy, trialBalanceBalanced: integrity.checks.trialBalance.isBalanced, accountsReceivableBalanced: integrity.checks.accountsReceivable.isBalanced, accountsPayableBalanced: integrity.checks.accountsPayable.isBalanced } };
     }
 
+    const collectionsDue30Days = databaseMoney(documents.collections_30, 'Dashboard collections due in thirty days');
+    const billsDue30Days = databaseMoney(documents.bills_30, 'Dashboard bills due in thirty days');
+    const attention: DashboardResponse['commandCenter']['attention'] = [
+      { id: 'overdue-receivables', severity: overview.overdueInvoicesCount > 0 ? 'critical' : 'healthy', label: 'Overdue customer invoices', count: overview.overdueInvoicesCount, amount: overview.overdueReceivables || null, destination: 'invoices' },
+      { id: 'overdue-payables', severity: overview.overdueBillsCount > 0 ? 'critical' : 'healthy', label: 'Overdue vendor bills', count: overview.overdueBillsCount, amount: overview.overduePayables || null, destination: 'bills' },
+      ...(canSeeBanking ? [{ id: 'bank-reconciliation' as const, severity: overview.bankReconciliationAttentionCount > 0 ? 'due-soon' as const : 'healthy' as const, label: 'Unreconciled bank transactions', count: overview.bankReconciliationAttentionCount, amount: null, destination: 'bank_reconciliation' as const }] : []),
+      ...(overview.pendingJournalsCount !== null ? [{ id: 'pending-journals' as const, severity: overview.pendingJournalsCount > 0 ? 'due-soon' as const : 'healthy' as const, label: 'Draft or pending journals', count: overview.pendingJournalsCount, amount: null, destination: 'journals' as const }] : []),
+      ...(has('invoices.view') ? [{ id: 'quotations' as const, severity: overview.quotationsAwaitingResponseCount > 0 ? 'due-soon' as const : 'healthy' as const, label: 'Quotations awaiting response', count: overview.quotationsAwaitingResponseCount, amount: null, destination: 'invoices' as const }] : []),
+    ];
+    const commandCenter: DashboardResponse['commandCenter'] = {
+      period: { start: periodStart, end: asOfDate, label: `${periodStart} to ${asOfDate}` },
+      financialPosition: { cashAtBank: bankBalance, toCollect: receivables, toPay: payables },
+      performance: { revenue: salesThisMonth, expenses: expensesThisMonth, net: salesThisMonth - expensesThisMonth, marginPercent: salesThisMonth > 0 ? Number((((salesThisMonth - expensesThisMonth) / salesThisMonth) * 100).toFixed(1)) : null, cashMovement: activityTrend },
+      scheduledCashOutlook: { windowDays: 30, collections: collectionsDue30Days, bills: billsDue30Days, net: collectionsDue30Days - billsDue30Days },
+      attention,
+      insights: { topExpenses: topExpensesRes.rows.map((row: any) => ({ name: String(row.name), amount: databaseMoney(row.amount, `Dashboard top expense for ${row.name}`) })), bankAccounts: bankAccounts.slice(0, 5) },
+    };
+
     return { view, asOfDate, generatedAt: new Date().toISOString(), availableViews, overview,
-      cashOperations: { available: availableViews.includes('cash-operations'), bankReconciliationAttentionCount: canSeeBanking ? overview.bankReconciliationAttentionCount : null, oldestUnmatchedDate: canSeeBanking && bankQueueRes.rows[0]?.oldest_date ? String(bankQueueRes.rows[0].oldest_date).slice(0, 10) : null, collectionsDue7Days: databaseMoney(dueWindowsRes.rows[0]?.collections_7, 'Dashboard collections due in seven days'), collectionsDue30Days: databaseMoney(dueWindowsRes.rows[0]?.collections_30, 'Dashboard collections due in thirty days'), billsDue7Days: databaseMoney(dueWindowsRes.rows[0]?.bills_7, 'Dashboard bills due in seven days'), billsDue30Days: databaseMoney(dueWindowsRes.rows[0]?.bills_30, 'Dashboard bills due in thirty days'), forecast: { available: false, reason: 'Cash forecasting is unavailable until its trusted finance capability is certified and enabled.' } }, closeControls };
+      cashOperations: { available: availableViews.includes('cash-operations'), bankReconciliationAttentionCount: canSeeBanking ? overview.bankReconciliationAttentionCount : null, oldestUnmatchedDate: canSeeBanking && bankQueueRes.rows[0]?.oldest_date ? String(bankQueueRes.rows[0].oldest_date).slice(0, 10) : null, collectionsDue7Days: databaseMoney(documents.collections_7, 'Dashboard collections due in seven days'), collectionsDue30Days, billsDue7Days: databaseMoney(documents.bills_7, 'Dashboard bills due in seven days'), billsDue30Days, forecast: { available: false, reason: 'Cash forecasting is unavailable until its trusted finance capability is certified and enabled.' } }, closeControls, commandCenter };
   }
 
   /** Compatibility response for existing callers while the dashboard migrates. */

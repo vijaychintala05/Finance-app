@@ -370,12 +370,14 @@ describe('Phase 7B — Reporting Services & Cross-Ledger Reconciliation Verifica
     expect(ep7.body.isReconciled).toBe(true);
 
     const ep8 = await request.get(`/api/v1/finance/reports/customer-statement/${customerIdA}?fromDate=2026-08-01&toDate=2026-08-31`).set(authA);
-    expect(ep8.status).toBe(503);
-    expect(ep8.body.feature).toBe('customer-statements');
+    expect(ep8.status).toBe(200);
+    expect(ep8.body.customerId).toBe(customerIdA);
+    expect(Array.isArray(ep8.body.transactions)).toBe(true);
 
     const ep9 = await request.get(`/api/v1/finance/reports/vendor-statement/${vendorIdA}?fromDate=2026-08-01&toDate=2026-08-31`).set(authA);
-    expect(ep9.status).toBe(503);
-    expect(ep9.body.feature).toBe('vendor-statements');
+    expect(ep9.status).toBe(200);
+    expect(ep9.body.vendorId).toBe(vendorIdA);
+    expect(Array.isArray(ep9.body.transactions)).toBe(true);
   });
 
   it('5. Multi-Tenant Isolation Enforced Across All Financial Reports', async () => {

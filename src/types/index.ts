@@ -882,6 +882,7 @@ export interface PaymentMade {
   paymentMethod: string;
   referenceNumber: string;
   amount: number;
+  status?: string;
 }
 
 export interface RecurringExpense {

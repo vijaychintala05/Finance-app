@@ -4,6 +4,7 @@ import { AccountingService } from '../../../src/services/accountingService';
 import { PeriodLock } from '../../../src/types';
 import { newId } from '../utils/ids';
 import { DocumentNumberingEngine } from '../services/DocumentNumberingEngine';
+import { OrganizationProvisioningService } from '../services/OrganizationProvisioningService';
 import { ApprovalWorkflowService } from '../approvals/ApprovalWorkflowService';
 
 export interface VendorMaster {
@@ -1389,13 +1390,7 @@ export class PurchasesEngine {
 
       // Debit: Vendor Advances Asset (acc-vendor-advances / 1150)
       // Credit: Bank / Cash Account (paidFromAccountId)
-      const advAccRes = await client.query(
-        `SELECT id, code, name FROM accounts WHERE organization_id = $1 AND (code = '1150' OR name ILIKE '%Vendor Advance%') LIMIT 1`,
-        [orgId]
-      );
-      const advAccountId = advAccRes.rows.length > 0 ? advAccRes.rows[0].id : 'acc-vendor-advances';
-      const advAccountCode = advAccRes.rows.length > 0 ? advAccRes.rows[0].code : '1150';
-      const advAccountName = advAccRes.rows.length > 0 ? advAccRes.rows[0].name : 'Vendor Advances Asset';
+      const advAccountId = await OrganizationProvisioningService.resolveSystemAccountId(client, orgId, 'VENDOR_ADVANCE', ['Asset']);
 
       const journalEntryId = await this.persistJournalEntry(
         orgId,
@@ -1406,8 +1401,8 @@ export class PurchasesEngine {
         [
           {
             accountId: advAccountId,
-            accountCode: advAccountCode,
-            accountName: advAccountName,
+            accountCode: '1150',
+            accountName: 'Vendor Advances',
             debit: amount,
             credit: 0,
             description: `Prepayment / Advance to vendor`,
@@ -1479,13 +1474,7 @@ export class PurchasesEngine {
       // GL Posting for Advance Application
       // Debit: Accounts Payable (acc-ap-control / 2000)
       // Credit: Vendor Advances Asset (acc-vendor-advances / 1150)
-      const advAccRes = await client.query(
-        `SELECT id, code, name FROM accounts WHERE organization_id = $1 AND (code = '1150' OR name ILIKE '%Vendor Advance%') LIMIT 1`,
-        [orgId]
-      );
-      const advAccountId = advAccRes.rows.length > 0 ? advAccRes.rows[0].id : 'acc-vendor-advances';
-      const advAccountCode = advAccRes.rows.length > 0 ? advAccRes.rows[0].code : '1150';
-      const advAccountName = advAccRes.rows.length > 0 ? advAccRes.rows[0].name : 'Vendor Advances Asset';
+      const advAccountId = await OrganizationProvisioningService.resolveSystemAccountId(client, orgId, 'VENDOR_ADVANCE', ['Asset']);
 
       const appliedDate = data.appliedDate || (data as any).applicationDate || new Date().toISOString().split('T')[0];
       const journalEntryId = await this.persistJournalEntry(
@@ -1505,8 +1494,8 @@ export class PurchasesEngine {
           },
           {
             accountId: advAccountId,
-            accountCode: advAccountCode,
-            accountName: advAccountName,
+            accountCode: '1150',
+            accountName: 'Vendor Advances',
             debit: 0,
             credit: data.amount,
             description: `Vendor advance drawn down for Bill ${b.bill_number}`,

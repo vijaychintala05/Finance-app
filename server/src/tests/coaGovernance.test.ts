@@ -23,13 +23,15 @@ describe('chart of accounts governance', () => {
 
   it('persists a tenant-scoped hierarchy and audited account maintenance changes', async () => {
     const parent = await request(app).post('/api/v1/finance/accounts').set(auth).send({
-      code: '6101', name: 'Operations', type: 'Expense', subType: 'Office & Administrative', reportingGroup: 'Operations', allowDirectPosting: false,
+      code: '6101', name: 'Operations', type: 'Expense', subType: 'Office & Administrative', reportingGroup: 'Operations',
     });
     expect(parent.status).toBe(201);
     const child = await request(app).post('/api/v1/finance/accounts').set(auth).send({
       code: '6102', name: 'Office supplies', type: 'Expense', subType: 'Office & Administrative', parentAccountId: parent.body.id,
     });
     expect(child.status).toBe(201);
+    const parentAfterChild = await db.query(`SELECT allow_direct_posting FROM accounts WHERE id = $1`, [parent.body.id]);
+    expect(parentAfterChild.rows[0].allow_direct_posting).toBe(false);
 
     const updated = await request(app).patch(`/api/v1/finance/accounts/${child.body.id}`).set(auth).send({
       name: 'Office supplies and consumables', reportingGroup: 'Operations', allowDirectPosting: false,

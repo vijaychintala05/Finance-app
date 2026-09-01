@@ -156,23 +156,6 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
 
       {/* Mobile Expenses Cards Feed (lg:hidden) */}
       <div className="block lg:hidden space-y-3">
-        {/* Quick Camera/Scan Receipt Action */}
-        <div
-          onClick={handleOpenNew}
-          className="bg-gradient-to-r from-blue-600 to-indigo-600 rounded-2xl p-3.5 text-white shadow-xs cursor-pointer active:scale-98 transition-transform flex items-center justify-between"
-        >
-          <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 rounded-xl bg-white/20 backdrop-blur-md flex items-center justify-center font-black">
-              📸
-            </div>
-            <div>
-              <h4 className="text-xs font-bold">Quick Scan & Upload Receipt</h4>
-              <p className="text-[10px] text-blue-100">Attach photo or PDF bill to log expense instantly</p>
-            </div>
-          </div>
-          <Plus className="w-5 h-5 text-white" />
-        </div>
-
         {filteredExpenses.length === 0 ? (
           <div className="bg-white p-6 rounded-2xl border border-slate-200 text-center text-slate-400 space-y-2">
             <Receipt className="w-8 h-8 mx-auto text-slate-300" />

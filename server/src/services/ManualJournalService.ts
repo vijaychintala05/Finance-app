@@ -85,7 +85,7 @@ export class ManualJournalService {
       const uniqueAccIds = [...new Set(accIds)];
       const placeholders = uniqueAccIds.map((_, index) => `$${index + 2}`).join(', ');
       const accRes = await db.query(
-        `SELECT id, code, name, type, sub_type, status, allow_direct_posting FROM accounts WHERE organization_id = $1 AND id IN (${placeholders})`,
+        `SELECT id, code, name, type, sub_type, system_role, status, allow_direct_posting FROM accounts WHERE organization_id = $1 AND id IN (${placeholders})`,
         [orgId, ...uniqueAccIds]
       );
       const accMap = new Map<string, any>();
@@ -100,6 +100,7 @@ export class ManualJournalService {
           l.accountName = l.accountName || acc.name;
 
           const isControl = this.RESTRICTED_CONTROL_SUBTYPES.includes(acc.sub_type) ||
+            ['AR_CONTROL', 'AP_CONTROL', 'CUSTOMER_ADVANCE', 'VENDOR_ADVANCE', 'GST_INPUT', 'GST_OUTPUT', 'TDS_RECEIVABLE', 'TDS_PAYABLE'].includes(acc.system_role) ||
             ['1100', '1200', '1400', '2000', '2100', '2200'].includes(acc.code);
           if (isControl) {
             throw new Error(`JOURNAL_CONTROL_ACCOUNT_RESTRICTED: Control account ${acc.code} (${acc.name}) can only be posted by its certified source-document workflow.`);
@@ -129,9 +130,9 @@ export class ManualJournalService {
         for (const line of input.lines) {
           await tx.query(
             `INSERT INTO journal_lines
-              (id, journal_entry_id, account_id, account_code, account_name, debit, credit, description)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-            [newId('jln'), draftId, line.accountId, line.accountCode || null, line.accountName || null, line.debit, line.credit, line.description || '']
+            (id, journal_entry_id, account_id, account_code, account_name, debit, credit, description, project_id, customer_id, vendor_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+            [newId('jln'), draftId, line.accountId, line.accountCode || null, line.accountName || null, line.debit, line.credit, line.description || '', line.projectId || null, line.customerId || null, line.vendorId || null]
           );
         }
 
@@ -161,9 +162,8 @@ export class ManualJournalService {
 
         // Post lines to accounts
         for (const line of input.lines) {
-          const accRes = await tx.query(`SELECT type FROM accounts WHERE id = $1 AND organization_id = $2`, [line.accountId, orgId]);
-          const accType = accRes.rows[0]?.type || 'Asset';
-          const normalDebit = ['Asset', 'Expense', 'Cost of Goods Sold', 'Other Expense'].includes(accType);
+          const accRes = await tx.query(`SELECT normal_balance FROM accounts WHERE id = $1 AND organization_id = $2`, [line.accountId, orgId]);
+          const normalDebit = (accRes.rows[0]?.normal_balance || 'Debit') === 'Debit';
           const balanceDelta = normalDebit ? line.debit - line.credit : line.credit - line.debit;
           await tx.query('UPDATE accounts SET balance = balance + $1 WHERE id = $2 AND organization_id = $3', [balanceDelta, line.accountId, orgId]);
         }
@@ -230,9 +230,8 @@ export class ManualJournalService {
       await ApprovalWorkflowService.consumeApproval(orgId, 'MANUAL_JOURNAL', draftId, tx);
 
       for (const line of lines) {
-        const accRes = await tx.query(`SELECT type FROM accounts WHERE id = $1 AND organization_id = $2`, [line.accountId, orgId]);
-        const accType = accRes.rows[0]?.type || 'Asset';
-        const normalDebit = ['Asset', 'Expense', 'Cost of Goods Sold', 'Other Expense'].includes(accType);
+        const accRes = await tx.query(`SELECT normal_balance FROM accounts WHERE id = $1 AND organization_id = $2`, [line.accountId, orgId]);
+        const normalDebit = (accRes.rows[0]?.normal_balance || 'Debit') === 'Debit';
         const balanceDelta = normalDebit ? line.debit - line.credit : line.credit - line.debit;
         await tx.query('UPDATE accounts SET balance = balance + $1 WHERE id = $2 AND organization_id = $3', [balanceDelta, line.accountId, orgId]);
       }

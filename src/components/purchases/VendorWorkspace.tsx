@@ -1,5 +1,6 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
+  AlertCircle,
   ArrowLeft,
   BadgeDollarSign,
   Building2,
@@ -17,6 +18,7 @@ import {
   FolderKanban,
   History,
   Layers,
+  Loader2,
   Mail,
   MapPin,
   MoreVertical,
@@ -24,6 +26,7 @@ import {
   Plus,
   Printer,
   Receipt,
+  RefreshCw,
   RotateCcw,
   ShieldAlert,
   ShieldCheck,
@@ -40,12 +43,33 @@ import { Vendor, Bill, PurchaseOrder, PaymentMade, VendorCredit } from '../../ty
 import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate, getStatusBadgeStyle } from '../../utils/formatters';
 import { RecordVendorPaymentModal } from './RecordVendorPaymentModal';
+import { apiClient } from '../../api/client';
 
 interface VendorWorkspaceProps {
   vendor: Vendor;
   onBack: () => void;
   onEdit: (vendor: Vendor) => void;
   onNavigateToBill?: (billId: string) => void;
+}
+
+interface VendorStatementData {
+  vendorId: string;
+  vendorName: string;
+  fromDate: string;
+  toDate: string;
+  openingBalance: number;
+  totalBills: number;
+  totalPayments: number;
+  totalDebits: number;
+  closingBalance: number;
+  transactions: Array<{
+    date: string;
+    type: string;
+    reference: string;
+    debit: number;
+    credit: number;
+    runningBalance: number;
+  }>;
 }
 
 type WorkspaceTab = 'details' | 'activity' | 'purchase_orders' | 'bills' | 'payments' | 'credits' | 'statement';
@@ -68,6 +92,10 @@ export const VendorWorkspace: React.FC<VendorWorkspaceProps> = ({
 
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('details');
   const [statementPeriod, setStatementPeriod] = useState<StatementPeriod>('ytd');
+  const [serverStatement, setServerStatement] = useState<VendorStatementData | null>(null);
+  const [isLoadingStatement, setIsLoadingStatement] = useState(false);
+  const [statementError, setStatementError] = useState<string | null>(null);
+  const [statementFetchKey, setStatementFetchKey] = useState<number>(0);
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
   const [selectedBillForPayment, setSelectedBillForPayment] = useState<Bill | null>(null);
 
@@ -231,31 +259,104 @@ export const VendorWorkspace: React.FC<VendorWorkspaceProps> = ({
     return events.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [vendorPOs, vendorBills, vendorPayments, vendorCreditNotes]);
 
-  // Statement Ledger Calculation
+  // Statement Date Range Calculation
+  const statementDateRange = useMemo(() => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth();
+    const todayStr = now.toISOString().slice(0, 10);
+
+    if (statementPeriod === 'mtd') {
+      const fromDate = new Date(Date.UTC(year, month, 1)).toISOString().slice(0, 10);
+      return { fromDate, toDate: todayStr, label: 'Month to Date' };
+    }
+    if (statementPeriod === 'last_month') {
+      const fromDate = new Date(Date.UTC(year, month - 1, 1)).toISOString().slice(0, 10);
+      const toDate = new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10);
+      return { fromDate, toDate, label: 'Last Month' };
+    }
+    if (statementPeriod === 'qtd') {
+      const quarterStartMonth = Math.floor(month / 3) * 3;
+      const fromDate = new Date(Date.UTC(year, quarterStartMonth, 1)).toISOString().slice(0, 10);
+      return { fromDate, toDate: todayStr, label: 'Quarter to Date' };
+    }
+    if (statementPeriod === 'ytd') {
+      const fiscalYear = month >= 3 ? year : year - 1;
+      const fromDate = new Date(Date.UTC(fiscalYear, 3, 1)).toISOString().slice(0, 10);
+      return { fromDate, toDate: todayStr, label: 'Year to Date' };
+    }
+    return { fromDate: '1970-01-01', toDate: todayStr, label: 'All Time' };
+  }, [statementPeriod]);
+
+  // Fetch Authoritative Server Statement
+  useEffect(() => {
+    if (activeTab !== 'statement') return;
+    let active = true;
+    setServerStatement(null);
+    setIsLoadingStatement(true);
+    setStatementError(null);
+
+    const { fromDate, toDate } = statementDateRange;
+    apiClient
+      .get<VendorStatementData>(`/finance/reports/vendor-statement/${vendor.id}?fromDate=${fromDate}&toDate=${toDate}`)
+      .then((res) => {
+        if (!active) return;
+        if (res.data) {
+          setServerStatement(res.data);
+        } else if (res.error) {
+          setStatementError(res.error);
+        }
+      })
+      .catch((err) => {
+        if (!active) return;
+        setStatementError(err.message || 'Failed to load vendor statement from server');
+      })
+      .finally(() => {
+        if (active) setIsLoadingStatement(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [activeTab, vendor.id, statementDateRange, statementFetchKey]);
+
+  // Statement Ledger Calculation - Strictly Authoritative Server Data (No client fallback)
   const statementLedger = useMemo(() => {
-    const sorted = [...activityEvents].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-    let runningBalance = 0;
+    const { fromDate, toDate } = statementDateRange;
+    const isMatching =
+      serverStatement &&
+      serverStatement.vendorId === vendor.id &&
+      serverStatement.fromDate === fromDate &&
+      serverStatement.toDate === toDate;
 
-    return sorted.map((item) => {
-      let debit = 0; // Increases amount we owe
-      let credit = 0; // Decreases amount we owe
-
-      if (item.type === 'BILL') {
-        debit = item.amount;
-        runningBalance += debit;
-      } else if (item.type === 'PAYMENT' || item.type === 'CREDIT') {
-        credit = item.amount;
-        runningBalance -= credit;
-      }
-
+    if (isMatching) {
       return {
-        ...item,
-        debit,
-        credit,
-        runningBalance,
+        openingBalance: serverStatement.openingBalance,
+        rows: serverStatement.transactions.map((t, idx) => ({
+          id: `srv-${idx}-${t.reference}`,
+          date: t.date,
+          title: `${t.type} #${t.reference}`,
+          reference: t.reference,
+          debit: t.debit,
+          credit: t.credit,
+          runningBalance: t.runningBalance,
+        })),
+        totalPeriodBills: serverStatement.totalBills,
+        totalPeriodPayments: serverStatement.totalPayments,
+        closingBalance: serverStatement.closingBalance,
+        isAuthoritative: true,
       };
-    });
-  }, [activityEvents]);
+    }
+
+    return {
+      openingBalance: 0,
+      rows: [],
+      totalPeriodBills: 0,
+      totalPeriodPayments: 0,
+      closingBalance: 0,
+      isAuthoritative: false,
+    };
+  }, [serverStatement, vendor.id, statementDateRange]);
 
   const handlePrintStatement = () => {
     window.print();
@@ -867,56 +968,158 @@ export const VendorWorkspace: React.FC<VendorWorkspaceProps> = ({
                 <FileSpreadsheet className="h-5 w-5 text-purple-600" />
                 <span>Vendor Statement of Account</span>
               </h3>
-              <p className="text-xs text-slate-500">Official general ledger running statement for {vendor.name}</p>
+              <p className="text-xs text-slate-500">
+                Official general ledger running statement for {vendor.name} ({statementDateRange.label}: {statementDateRange.fromDate === '1970-01-01' ? 'All Time' : `${formatDate(statementDateRange.fromDate)} – ${formatDate(statementDateRange.toDate)}`})
+              </p>
             </div>
 
-            <button
-              onClick={handlePrintStatement}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-700 shadow-2xs hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 cursor-pointer"
-            >
-              <Printer className="h-4 w-4" />
-              <span>Print Statement</span>
-            </button>
+            <div className="flex flex-wrap items-center gap-2 print:hidden">
+              <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 text-xs font-bold dark:border-slate-700 dark:bg-slate-800">
+                {(['mtd', 'last_month', 'qtd', 'ytd', 'all'] as StatementPeriod[]).map((p) => (
+                  <button
+                    key={p}
+                    onClick={() => setStatementPeriod(p)}
+                    className={`rounded-md px-2.5 py-1 uppercase tracking-wider transition-all cursor-pointer ${
+                      statementPeriod === p
+                        ? 'bg-white text-purple-700 shadow-xs dark:bg-slate-900 dark:text-purple-400'
+                        : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
+                    }`}
+                  >
+                    {p.replace('_', ' ')}
+                  </button>
+                ))}
+              </div>
+
+              <button
+                onClick={handlePrintStatement}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-700 shadow-2xs hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 cursor-pointer"
+              >
+                <Printer className="h-4 w-4" />
+                <span>Print Statement</span>
+              </button>
+            </div>
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-slate-50 text-slate-500 dark:bg-slate-800/80 dark:text-slate-400 font-bold border-b border-slate-200 dark:border-slate-800 uppercase text-[10px] tracking-wider">
-                <tr>
-                  <th className="p-3 pl-4">Date</th>
-                  <th className="p-3">Description</th>
-                  <th className="p-3 text-right">Debit (+)</th>
-                  <th className="p-3 text-right">Credit (-)</th>
-                  <th className="p-3 text-right pr-4">Balance Owed</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
-                {statementLedger.length === 0 ? (
-                  <tr>
-                    <td colSpan={5} className="p-8 text-center text-slate-400">
-                      No ledger transactions found for this statement period.
-                    </td>
-                  </tr>
-                ) : (
-                  statementLedger.map((row) => (
-                    <tr key={row.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
-                      <td className="p-3 pl-4 text-slate-600 dark:text-slate-400">{formatDate(row.date)}</td>
-                      <td className="p-3 font-semibold text-slate-800 dark:text-slate-200">{row.title}</td>
-                      <td className="p-3 text-right font-financial font-bold text-slate-900 dark:text-white">
-                        {row.debit > 0 ? money(row.debit) : '—'}
-                      </td>
-                      <td className="p-3 text-right font-financial font-bold text-emerald-600 dark:text-emerald-400">
-                        {row.credit > 0 ? money(row.credit) : '—'}
-                      </td>
-                      <td className="p-3 text-right pr-4 font-financial font-black text-rose-600 dark:text-rose-400">
-                        {money(row.runningBalance)}
+          {/* Loading State */}
+          {isLoadingStatement && (
+            <div className="flex flex-col items-center justify-center py-16 text-slate-500" data-testid="statement-loading">
+              <Loader2 className="h-8 w-8 animate-spin text-purple-600 dark:text-purple-400" />
+              <p className="mt-3 text-xs font-semibold text-slate-700 dark:text-slate-300">
+                Fetching authoritative statement from server...
+              </p>
+            </div>
+          )}
+
+          {/* Error State */}
+          {!isLoadingStatement && statementError && (
+            <div className="rounded-xl border border-rose-200 bg-rose-50/70 p-6 text-center dark:border-rose-900/50 dark:bg-rose-950/20" data-testid="statement-error">
+              <AlertCircle className="mx-auto h-8 w-8 text-rose-500" />
+              <p className="mt-2 text-sm font-bold text-rose-800 dark:text-rose-300">Unable to load statement</p>
+              <p className="mt-1 text-xs text-rose-600 dark:text-rose-400">{statementError}</p>
+              <button
+                onClick={() => setStatementFetchKey((k) => k + 1)}
+                className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-3.5 py-1.5 text-xs font-bold text-white hover:bg-rose-700 transition-colors cursor-pointer"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                <span>Retry</span>
+              </button>
+            </div>
+          )}
+
+          {/* Authoritative Server Statement Presentation */}
+          {!isLoadingStatement && !statementError && statementLedger.isAuthoritative && (
+            <>
+              {/* Statement Period Metric Cards */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="rounded-xl border border-slate-200/80 bg-slate-50/50 p-3 dark:border-slate-800 dark:bg-slate-800/40">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Opening Balance</p>
+                  <p className={`mt-0.5 text-sm font-black font-financial ${statementLedger.openingBalance > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-900 dark:text-white'}`}>
+                    {money(statementLedger.openingBalance)}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-slate-200/80 bg-slate-50/50 p-3 dark:border-slate-800 dark:bg-slate-800/40">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Billed (Debits)</p>
+                  <p className="mt-0.5 text-sm font-black font-financial text-slate-900 dark:text-white">
+                    {money(statementLedger.totalPeriodBills)}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-slate-200/80 bg-slate-50/50 p-3 dark:border-slate-800 dark:bg-slate-800/40">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Paid / Credited</p>
+                  <p className="mt-0.5 text-sm font-black font-financial text-emerald-600 dark:text-emerald-400">
+                    {money(statementLedger.totalPeriodPayments)}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-purple-200/80 bg-purple-50/30 p-3 dark:border-purple-900/50 dark:bg-purple-950/20">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-purple-600 dark:text-purple-400">Balance Owed</p>
+                  <p className={`mt-0.5 text-sm font-black font-financial ${statementLedger.closingBalance > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-900 dark:text-white'}`}>
+                    {money(statementLedger.closingBalance)}
+                  </p>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-50 text-slate-500 dark:bg-slate-800/80 dark:text-slate-400 font-bold border-b border-slate-200 dark:border-slate-800 uppercase text-[10px] tracking-wider">
+                    <tr>
+                      <th className="p-3 pl-4">Date</th>
+                      <th className="p-3">Description</th>
+                      <th className="p-3 text-right">Debit (+)</th>
+                      <th className="p-3 text-right">Credit (-)</th>
+                      <th className="p-3 text-right pr-4">Balance Owed</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
+                    {/* Opening Balance Row */}
+                    {statementDateRange.fromDate !== '1970-01-01' && (
+                      <tr className="bg-slate-50/50 dark:bg-slate-800/30 font-semibold">
+                        <td className="p-3 pl-4 text-slate-500">{formatDate(statementDateRange.fromDate)}</td>
+                        <td className="p-3 text-slate-700 dark:text-slate-300 italic">Opening Balance Forward</td>
+                        <td className="p-3 text-right font-financial text-slate-400">—</td>
+                        <td className="p-3 text-right font-financial text-slate-400">—</td>
+                        <td className={`p-3 text-right pr-4 font-financial font-extrabold ${statementLedger.openingBalance > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-900 dark:text-white'}`}>
+                          {money(statementLedger.openingBalance)}
+                        </td>
+                      </tr>
+                    )}
+
+                    {statementLedger.rows.length === 0 && statementLedger.openingBalance === 0 ? (
+                      <tr>
+                        <td colSpan={5} className="p-8 text-center text-slate-400">
+                          No ledger transactions found for this statement period.
+                        </td>
+                      </tr>
+                    ) : (
+                      statementLedger.rows.map((row) => (
+                        <tr key={row.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
+                          <td className="p-3 pl-4 text-slate-600 dark:text-slate-400">{formatDate(row.date)}</td>
+                          <td className="p-3 font-semibold text-slate-800 dark:text-slate-200">{row.title}</td>
+                          <td className="p-3 text-right font-financial font-bold text-slate-900 dark:text-white">
+                            {row.debit > 0 ? money(row.debit) : '—'}
+                          </td>
+                          <td className="p-3 text-right font-financial font-bold text-emerald-600 dark:text-emerald-400">
+                            {row.credit > 0 ? money(row.credit) : '—'}
+                          </td>
+                          <td className="p-3 text-right pr-4 font-financial font-black text-rose-600 dark:text-rose-400">
+                            {money(row.runningBalance)}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                  <tfoot>
+                    <tr className="border-t-2 border-slate-300 dark:border-slate-700 font-bold">
+                      <td colSpan={2} className="p-3 pl-4 text-xs uppercase tracking-wider text-slate-500">Period Movement & Closing Balance</td>
+                      <td className="p-3 text-right font-financial font-bold">{money(statementLedger.totalPeriodBills)}</td>
+                      <td className="p-3 text-right font-financial font-bold text-emerald-600">{money(statementLedger.totalPeriodPayments)}</td>
+                      <td className="p-3 text-right pr-4 font-financial font-black text-rose-600 dark:text-rose-400 text-sm">
+                        {money(statementLedger.closingBalance)}
                       </td>
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
+                  </tfoot>
+                </table>
+              </div>
+            </>
+          )}
         </div>
       )}
 

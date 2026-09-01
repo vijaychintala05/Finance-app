@@ -6,14 +6,14 @@ export class ProfitAndLossReportService {
     orgId: string,
     filter: { fromDate?: string; toDate?: string; projectId?: string; businessLine?: string } = {}
   ) {
-    if (filter.projectId || filter.businessLine) throw new Error('Dimensional profit and loss filters are not implemented');
+    if (filter.businessLine) throw new Error('Business-line profit and loss filters are not implemented');
     if (filter.fromDate && !/^\d{4}-\d{2}-\d{2}$/.test(filter.fromDate)) throw new Error('Invalid profit and loss start date');
     if (filter.toDate && !/^\d{4}-\d{2}-\d{2}$/.test(filter.toDate)) throw new Error('Invalid profit and loss end date');
     if (filter.fromDate && filter.toDate && filter.fromDate > filter.toDate) throw new Error('Profit and loss start date cannot be after end date');
 
     let sql = `
       SELECT 
-        a.id, a.code, a.name, a.type, a.sub_type,
+        a.id, a.code, a.name, a.type, a.sub_type, a.system_role,
         COALESCE(SUM(jl.debit), 0) as total_debit,
         COALESCE(SUM(jl.credit), 0) as total_credit
       FROM accounts a
@@ -31,16 +31,22 @@ export class ProfitAndLossReportService {
       params.push(filter.toDate);
       sql += ` AND je.date <= $${params.length}`;
     }
+    if (filter.projectId) {
+      params.push(filter.projectId);
+      sql += ` AND jl.project_id = $${params.length}`;
+    }
 
-    sql += ` GROUP BY a.id, a.code, a.name, a.type, a.sub_type ORDER BY a.code ASC`;
+    sql += ` GROUP BY a.id, a.code, a.name, a.type, a.sub_type, a.system_role ORDER BY a.code ASC`;
 
     const res = await db.query(sql, params);
 
     let totalIncomeCents = 0n;
     let totalExpenseCents = 0n;
+    let totalDirectCostCents = 0n;
 
     const incomeAccounts: any[] = [];
     const expenseAccounts: any[] = [];
+    const directCostAccounts: any[] = [];
 
     for (const r of res.rows) {
       const deb = databaseMoneyToCents(r.total_debit, `Profit and loss debit for ${r.code}`);
@@ -59,17 +65,24 @@ export class ProfitAndLossReportService {
       } else if (type === 'EXPENSE' || type === 'COST OF GOODS SOLD' || type === 'OTHER EXPENSE') {
         const amount = deb - cred;
         totalExpenseCents += amount;
-        expenseAccounts.push({
+        const account = {
           accountId: r.id,
           accountCode: r.code,
           accountName: r.name,
           amount: centsToSafeNumber(amount, `Profit and loss expense for ${r.code}`),
-        });
+        };
+        expenseAccounts.push(account);
+        if (type === 'COST OF GOODS SOLD' || r.system_role === 'DIRECT_COSTS' || r.sub_type === 'Direct Expense / Cost of Goods') {
+          totalDirectCostCents += amount;
+          directCostAccounts.push(account);
+        }
       }
     }
 
     const totalIncome = centsToSafeNumber(totalIncomeCents, 'Profit and loss total income');
     const totalExpense = centsToSafeNumber(totalExpenseCents, 'Profit and loss total expense');
+    const totalDirectCost = centsToSafeNumber(totalDirectCostCents, 'Profit and loss total direct cost');
+    const grossProfit = centsToSafeNumber(totalIncomeCents - totalDirectCostCents, 'Profit and loss gross profit');
     const netProfit = centsToSafeNumber(totalIncomeCents - totalExpenseCents, 'Profit and loss net profit');
 
     return {
@@ -78,10 +91,13 @@ export class ProfitAndLossReportService {
       toDate: filter.toDate || null,
       incomeAccounts,
       expenseAccounts,
+      directCostAccounts,
       totalIncome,
       totalRevenue: totalIncome,
       totalExpense,
       totalExpenses: totalExpense,
+      totalDirectCost,
+      grossProfit,
       netProfit,
     };
   }

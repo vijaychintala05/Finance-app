@@ -89,7 +89,20 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [receiptFiles, setReceiptFiles] = useState<File[]>([]);
+  const [filePreviews, setFilePreviews] = useState<Array<{ file: File; url: string }>>([]);
   const receiptInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const previews = receiptFiles.map((file) => ({
+      file,
+      url: URL.createObjectURL(file),
+    }));
+    setFilePreviews(previews);
+
+    return () => {
+      previews.forEach((p) => URL.revokeObjectURL(p.url));
+    };
+  }, [receiptFiles]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -338,14 +351,36 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                     }}
                   />
                 </div>
-                {receiptFiles.length > 0 && (
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                    {receiptFiles.map((file, index) => (
-                      <div key={`${file.name}-${file.lastModified}-${index}`} className="flex min-w-0 items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs dark:border-slate-700 dark:bg-slate-800">
-                        <span className="truncate text-slate-700 dark:text-slate-200">{file.name}</span>
-                        <button type="button" title={`Remove ${file.name}`} onClick={() => setReceiptFiles((files) => files.filter((_, currentIndex) => currentIndex !== index))} className="text-slate-400 hover:text-rose-600">
-                          <Trash2 className="h-4 w-4" />
-                        </button>
+                {filePreviews.length > 0 && (
+                  <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+                    {filePreviews.map((item, index) => (
+                      <div
+                        key={`${item.file.name}-${item.file.lastModified}-${index}`}
+                        className="group relative flex flex-col overflow-hidden rounded-xl border border-slate-200 bg-slate-50 p-2 text-xs dark:border-slate-700 dark:bg-slate-800"
+                      >
+                        <div className="relative aspect-video w-full overflow-hidden rounded-lg bg-slate-200 dark:bg-slate-700">
+                          <img
+                            src={item.url}
+                            alt={item.file.name}
+                            className="h-full w-full object-cover"
+                          />
+                          <button
+                            type="button"
+                            title={`Remove ${item.file.name}`}
+                            onClick={() => setReceiptFiles((files) => files.filter((_, currentIndex) => currentIndex !== index))}
+                            className="absolute right-1 top-1 rounded-md bg-rose-600/90 p-1 text-white opacity-90 shadow-sm transition hover:bg-rose-700 hover:opacity-100 cursor-pointer"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                        <div className="mt-1.5 flex items-center justify-between gap-1 px-0.5">
+                          <span className="truncate font-medium text-slate-700 dark:text-slate-200" title={item.file.name}>
+                            {item.file.name}
+                          </span>
+                          <span className="shrink-0 text-[10px] text-slate-400">
+                            {(item.file.size / 1024).toFixed(0)} KB
+                          </span>
+                        </div>
                       </div>
                     ))}
                   </div>

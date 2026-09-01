@@ -47,15 +47,15 @@ export class CustomerStatementService {
 
     // 1. Opening balance before fromDate
     const invOpen = await db.query(
-      `SELECT COALESCE(SUM(total_amount), 0) as total FROM invoices WHERE organization_id = $1 AND (customer_id = $2 OR client_id = $2) AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT') AND issue_date < $3`,
+      `SELECT COALESCE(SUM(total_amount), 0) as total FROM invoices WHERE organization_id = $1 AND (customer_id = $2 OR client_id = $2) AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED') AND issue_date < $3`,
       [orgId, customerId, fromDate]
     );
     const payOpen = await db.query(
-      `SELECT COALESCE(SUM(amount), 0) as total FROM payments_received WHERE organization_id = $1 AND client_id = $2 AND UPPER(status) <> 'REVERSED' AND payment_date < $3`,
+      `SELECT COALESCE(SUM(amount), 0) as total FROM payments_received WHERE organization_id = $1 AND client_id = $2 AND UPPER(status) NOT IN ('DRAFT', 'SUBMITTED', 'REVERSED', 'VOID', 'VOIDED') AND payment_date < $3`,
       [orgId, customerId, fromDate]
     );
     const cnOpen = await db.query(
-      `SELECT COALESCE(SUM(total_amount), 0) as total FROM credit_notes WHERE organization_id = $1 AND client_id = $2 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT') AND date < $3`,
+      `SELECT COALESCE(SUM(total_amount), 0) as total FROM credit_notes WHERE organization_id = $1 AND client_id = $2 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED', 'REVERSED') AND date < $3`,
       [orgId, customerId, fromDate]
     );
 
@@ -66,17 +66,17 @@ export class CustomerStatementService {
 
     // 2. In-range transactions
     const invoices = await db.query(
-      `SELECT id, invoice_number as number, issue_date as date, total_amount as amount, notes FROM invoices WHERE organization_id = $1 AND (customer_id = $2 OR client_id = $2) AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT') AND issue_date >= $3 AND issue_date <= $4`,
+      `SELECT id, invoice_number as number, issue_date as date, total_amount as amount, notes FROM invoices WHERE organization_id = $1 AND (customer_id = $2 OR client_id = $2) AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED') AND issue_date >= $3 AND issue_date <= $4`,
       [orgId, customerId, fromDate, toDate]
     );
 
     const payments = await db.query(
-      `SELECT id, payment_number as number, payment_date as date, amount, reference FROM payments_received WHERE organization_id = $1 AND client_id = $2 AND UPPER(status) <> 'REVERSED' AND payment_date >= $3 AND payment_date <= $4`,
+      `SELECT id, payment_number as number, payment_date as date, amount, reference FROM payments_received WHERE organization_id = $1 AND client_id = $2 AND UPPER(status) NOT IN ('DRAFT', 'SUBMITTED', 'REVERSED', 'VOID', 'VOIDED') AND payment_date >= $3 AND payment_date <= $4`,
       [orgId, customerId, fromDate, toDate]
     );
 
     const creditNotes = await db.query(
-      `SELECT id, credit_note_number as number, date, total_amount as amount, reason FROM credit_notes WHERE organization_id = $1 AND client_id = $2 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT') AND date >= $3 AND date <= $4`,
+      `SELECT id, credit_note_number as number, date, total_amount as amount, reason FROM credit_notes WHERE organization_id = $1 AND client_id = $2 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED', 'REVERSED') AND date >= $3 AND date <= $4`,
       [orgId, customerId, fromDate, toDate]
     );
 
@@ -86,11 +86,18 @@ export class CustomerStatementService {
     let totalPayments = 0;
     let totalCredits = 0;
 
+    const toIsoDate = (d: any): string => {
+      if (!d) return '';
+      if (typeof d === 'string') return d.split('T')[0];
+      if (d instanceof Date) return d.toISOString().split('T')[0];
+      return new Date(d).toISOString().split('T')[0];
+    };
+
     for (const inv of invoices.rows) {
       const amt = Math.round(Number(inv.amount || 0) * 100) / 100;
       totalInvoices += amt;
       rawTxns.push({
-        date: inv.date,
+        date: toIsoDate(inv.date),
         type: 'Invoice',
         reference: inv.number || 'INV',
         debit: amt,
@@ -102,7 +109,7 @@ export class CustomerStatementService {
       const amt = Math.round(Number(pmt.amount || 0) * 100) / 100;
       totalPayments += amt;
       rawTxns.push({
-        date: pmt.date,
+        date: toIsoDate(pmt.date),
         type: 'Payment Received',
         reference: pmt.number || 'PAY',
         debit: 0,
@@ -114,7 +121,7 @@ export class CustomerStatementService {
       const amt = Math.round(Number(cn.amount || 0) * 100) / 100;
       totalCredits += amt;
       rawTxns.push({
-        date: cn.date,
+        date: toIsoDate(cn.date),
         type: 'Credit Note',
         reference: cn.number || 'CN',
         debit: 0,
@@ -122,7 +129,7 @@ export class CustomerStatementService {
       });
     }
 
-    rawTxns.sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
+    rawTxns.sort((a, b) => a.date.localeCompare(b.date));
 
     let running = openingBalance;
     const transactions: StatementLine[] = [];

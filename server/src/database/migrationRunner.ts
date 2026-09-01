@@ -129,11 +129,25 @@ export class MigrationRunner {
         parent_account_id VARCHAR(64),
         reporting_group VARCHAR(100),
         normal_balance VARCHAR(6) NOT NULL DEFAULT 'Debit',
+        normal_balance_is_explicit BOOLEAN NOT NULL DEFAULT FALSE,
         allow_direct_posting BOOLEAN NOT NULL DEFAULT TRUE,
+        system_role VARCHAR(64),
+        financial_statement VARCHAR(32),
+        cash_flow_classification VARCHAR(32),
+        currency_code VARCHAR(3),
         archived_at TIMESTAMP WITH TIME ZONE,
         archived_by VARCHAR(64),
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         CONSTRAINT uk_org_account_code UNIQUE (organization_id, code)
+      )`,
+
+      `CREATE TABLE IF NOT EXISTS accounting_defaults (
+        organization_id VARCHAR(64) NOT NULL,
+        system_role VARCHAR(64) NOT NULL,
+        account_id VARCHAR(64) NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (organization_id, system_role)
       )`,
 
       `CREATE TABLE IF NOT EXISTS bank_accounts (
@@ -1326,7 +1340,15 @@ export class MigrationRunner {
       `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS parent_account_id VARCHAR(64)`,
       `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS reporting_group VARCHAR(100)`,
       `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS normal_balance VARCHAR(6) NOT NULL DEFAULT 'Debit'`,
+      `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS normal_balance_is_explicit BOOLEAN NOT NULL DEFAULT FALSE`,
       `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS allow_direct_posting BOOLEAN NOT NULL DEFAULT TRUE`,
+      `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS system_role VARCHAR(64)`,
+      `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS financial_statement VARCHAR(32)`,
+      `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS cash_flow_classification VARCHAR(32)`,
+      `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS currency_code VARCHAR(3)`,
+      `ALTER TABLE journal_lines ADD COLUMN IF NOT EXISTS project_id VARCHAR(64)`,
+      `ALTER TABLE journal_lines ADD COLUMN IF NOT EXISTS customer_id VARCHAR(64)`,
+      `ALTER TABLE journal_lines ADD COLUMN IF NOT EXISTS vendor_id VARCHAR(64)`,
       `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP WITH TIME ZONE`,
       `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS archived_by VARCHAR(64)`,
       `DO $$ BEGIN

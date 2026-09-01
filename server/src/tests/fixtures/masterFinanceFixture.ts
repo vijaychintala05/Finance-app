@@ -169,20 +169,52 @@ export class MasterFinanceFixture {
 
   private static async seedChartOfAccounts(): Promise<void> {
     const orgs = [MASTER_FIXTURE_CONSTANTS.ORG_A.id, MASTER_FIXTURE_CONSTANTS.ORG_B.id];
+    const roleMap: Record<string, string> = {
+      '1000': 'BANK_OPERATING',
+      '1010': 'BANK_OPERATING',
+      '1020': 'BANK_OPERATING',
+      '1100': 'AR_CONTROL',
+      '1150': 'VENDOR_ADVANCE',
+      '1200': 'GST_INPUT',
+      '2000': 'AP_CONTROL',
+      '2100': 'CUSTOMER_ADVANCE',
+      '2110': 'GST_OUTPUT',
+      '2200': 'GST_OUTPUT',
+      '3000': 'OWNER_CAPITAL',
+      '4000': 'SALES_REVENUE',
+      '4010': 'SALES_REVENUE',
+      '5000': 'DIRECT_COSTS',
+      '5010': 'DIRECT_COSTS',
+      '6000': 'OPERATING_EXPENSE',
+      '6010': 'OPERATING_EXPENSE',
+      '6020': 'OPERATING_EXPENSE',
+      '6030': 'OPERATING_EXPENSE',
+    };
+
     for (const orgId of orgs) {
       for (const acc of MASTER_FIXTURE_CONSTANTS.COA) {
         const fullId = `acc-${orgId}-${acc.idSuffix}`;
+        const sysRole = roleMap[acc.code] || null;
         await db.query(
-          `INSERT INTO accounts (id, organization_id, code, name, type, sub_type, balance, is_system_account, status, normal_balance, allow_direct_posting)
-           VALUES ($1, $2, $3, $4, $5, $6, 0.00, TRUE, 'Active', $7, TRUE)
+          `INSERT INTO accounts (id, organization_id, code, name, type, sub_type, balance, is_system_account, status, normal_balance, normal_balance_is_explicit, allow_direct_posting, system_role)
+           VALUES ($1, $2, $3, $4, $5, $6, 0.00, TRUE, 'Active', $7, TRUE, TRUE, $8)
            ON CONFLICT (id) DO UPDATE SET
              code = EXCLUDED.code,
              name = EXCLUDED.name,
              type = EXCLUDED.type,
              sub_type = EXCLUDED.sub_type,
+             system_role = EXCLUDED.system_role,
              balance = 0.00`,
-          [fullId, orgId, acc.code, acc.name, acc.type, acc.subType, acc.normalBalance]
+          [fullId, orgId, acc.code, acc.name, acc.type, acc.subType, acc.normalBalance, sysRole]
         );
+        if (sysRole) {
+          await db.query(
+            `INSERT INTO accounting_defaults (organization_id, system_role, account_id)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (organization_id, system_role) DO UPDATE SET account_id = EXCLUDED.account_id`,
+            [orgId, sysRole, fullId]
+          );
+        }
       }
     }
   }

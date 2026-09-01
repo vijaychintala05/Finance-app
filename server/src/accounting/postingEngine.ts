@@ -10,6 +10,9 @@ export interface JournalLineItem {
   debit: number;
   credit: number;
   description?: string;
+  projectId?: string;
+  customerId?: string;
+  vendorId?: string;
 }
 
 export interface PostJournalPayload {
@@ -35,6 +38,17 @@ function formatCents(value: bigint): string {
   const sign = value < 0n ? '-' : '';
   const absolute = value < 0n ? -value : value;
   return `${sign}${absolute / 100n}.${String(absolute % 100n).padStart(2, '0')}`;
+}
+
+export function resolveAccountNormalBalance(account: {
+  normal_balance?: string;
+  normal_balance_is_explicit?: boolean;
+  type?: string;
+}): 'Debit' | 'Credit' {
+  if (account.normal_balance_is_explicit && (account.normal_balance === 'Debit' || account.normal_balance === 'Credit')) {
+    return account.normal_balance;
+  }
+  return ['Liability', 'Equity', 'Income', 'Revenue', 'Other Income'].includes(account.type || '') ? 'Credit' : 'Debit';
 }
 
 export class ServerPostingEngine {
@@ -76,18 +90,42 @@ export class ServerPostingEngine {
 
       for (const line of normalizedLines) {
         const account = await client.query(
-          `SELECT id, code, name, type, is_locked, status
+          `SELECT id, code, name, type, normal_balance, normal_balance_is_explicit, is_locked, status, allow_direct_posting
              FROM accounts
             WHERE id = $1 AND organization_id = $2`,
           [line.accountId, payload.organizationId]
         );
         if (account.rows.length === 0) throw new Error(`Account ${line.accountId} does not belong to this organization`);
-        if (account.rows[0].is_locked || account.rows[0].status !== 'Active') {
+        if (account.rows[0].is_locked || account.rows[0].status !== 'Active' || account.rows[0].allow_direct_posting === false) {
           throw new Error(`Account ${line.accountId} is locked or inactive`);
+        }
+        if (line.projectId) {
+          const project = await client.query(
+            `SELECT id FROM projects WHERE id = $1 AND organization_id = $2`,
+            [line.projectId, payload.organizationId]
+          );
+          if (project.rows.length !== 1) throw new Error(`Project ${line.projectId} does not belong to this organization`);
+        }
+        if (line.customerId) {
+          const customer = await client.query(
+            `SELECT id FROM clients WHERE id = $1 AND organization_id = $2
+             UNION ALL
+             SELECT id FROM customers WHERE id = $1 AND organization_id = $2
+             LIMIT 1`,
+            [line.customerId, payload.organizationId]
+          );
+          if (customer.rows.length !== 1) throw new Error(`Customer ${line.customerId} does not belong to this organization`);
+        }
+        if (line.vendorId) {
+          const vendor = await client.query(
+            `SELECT id FROM vendors WHERE id = $1 AND organization_id = $2`,
+            [line.vendorId, payload.organizationId]
+          );
+          if (vendor.rows.length !== 1) throw new Error(`Vendor ${line.vendorId} does not belong to this organization`);
         }
         line.accountCode = account.rows[0].code;
         line.accountName = account.rows[0].name;
-        (line as JournalLineItem & { accountType: string }).accountType = account.rows[0].type;
+        (line as JournalLineItem & { normalBalance: string }).normalBalance = resolveAccountNormalBalance(account.rows[0]);
       }
 
       const duplicate = await client.query(
@@ -107,12 +145,11 @@ export class ServerPostingEngine {
       for (const line of normalizedLines) {
         await client.query(
           `INSERT INTO journal_lines
-            (id, journal_entry_id, account_id, account_code, account_name, debit, credit, description)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-          [newId('jln'), entryId, line.accountId, line.accountCode, line.accountName, line.debit, line.credit, line.description || '']
+            (id, journal_entry_id, account_id, account_code, account_name, debit, credit, description, project_id, customer_id, vendor_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+          [newId('jln'), entryId, line.accountId, line.accountCode, line.accountName, line.debit, line.credit, line.description || '', line.projectId || null, line.customerId || null, line.vendorId || null]
         );
-        const accountType = (line as JournalLineItem & { accountType: string }).accountType;
-        const normalDebit = ['Asset', 'Expense', 'Cost of Goods Sold', 'Other Expense'].includes(accountType);
+        const normalDebit = (line as JournalLineItem & { normalBalance: string }).normalBalance === 'Debit';
         const balanceDelta = normalDebit ? line.debit - line.credit : line.credit - line.debit;
         await client.query(
           'UPDATE accounts SET balance = balance + $1 WHERE id = $2 AND organization_id = $3',

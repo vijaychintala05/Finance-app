@@ -853,11 +853,7 @@ export class SalesEngine {
         const remaining = roundMoney(Number(sourceSalesOrder.total_amount || 0) - Number(sourceSalesOrder.invoiced_amount || 0));
         if (remaining <= 0 || finalTotal - remaining > 0.009) throw new Error('Invoice amount exceeds the uninvoiced sales order balance');
       }
-      const defaultRevenue = await client.query(
-        `SELECT id FROM accounts WHERE organization_id = $1 AND code = '4000' AND type IN ('Income', 'Revenue') AND status = 'Active'`,
-        [orgId]
-      );
-      if (defaultRevenue.rows.length !== 1) throw new Error('Required sales revenue account 4000 is missing');
+      const defaultRevenueId = await OrganizationProvisioningService.resolveSystemAccountId(client, orgId, 'SALES_REVENUE', ['Income', 'Revenue']);
 
       // Validate and resolve every line before the first journal/document write.
       const validatedLines: Array<{
@@ -887,15 +883,15 @@ export class SalesEngine {
           verifiedItemId = master.rows[0]?.id || null;
           if (item.itemId && !verifiedItemId) throw new Error(`Invoice item ${item.itemId} does not belong to this organization or is inactive`);
         }
-        let lineAccountId = defaultRevenue.rows[0].id;
+        let lineAccountId = defaultRevenueId;
         if (item.accountId) {
           const lineAccount = await client.query(
             `SELECT id, code, type FROM accounts WHERE organization_id = $1 AND id = $2 AND status = 'Active'`,
             [orgId, item.accountId]
           );
           if (lineAccount.rows.length !== 1) throw new Error(`Invoice line account ${item.accountId} does not belong to this organization or is inactive`);
-          if (lineAccount.rows[0].id !== defaultRevenue.rows[0].id || !['Income', 'Revenue'].includes(lineAccount.rows[0].type)) {
-            throw new Error('Certified invoice posting currently requires the tenant default sales revenue account 4000 on every line');
+          if (lineAccount.rows[0].id !== defaultRevenueId || !['Income', 'Revenue'].includes(lineAccount.rows[0].type)) {
+            throw new Error('Certified invoice posting currently requires the configured sales revenue account on every line');
           }
           lineAccountId = lineAccount.rows[0].id;
         }
@@ -915,7 +911,7 @@ export class SalesEngine {
       if (currentStatus === 'POSTED') {
         // Create GL Posting: Dr Accounts Receivable, Cr Sales Revenue, Cr Output Tax, Dr/Cr Round-Off
         const arAccountId = await OrganizationProvisioningService.resolveAccountId(client, orgId, '1100', ['Asset']);
-        const salesAccountId = defaultRevenue.rows[0].id;
+        const salesAccountId = defaultRevenueId;
         const taxAccountId = taxTotal > 0
           ? await OrganizationProvisioningService.resolveAccountId(client, orgId, '2200', ['Liability'])
           : '';
@@ -1144,14 +1140,8 @@ export class SalesEngine {
       const customerId = inv.customer_id || inv.client_id;
       const resolvedCustomerName = inv.client_name || 'Customer';
 
-      const defaultRevenue = await client.query(
-        `SELECT id FROM accounts WHERE organization_id = $1 AND code = '4000' AND type IN ('Income', 'Revenue') AND status = 'Active'`,
-        [orgId]
-      );
-      if (defaultRevenue.rows.length !== 1) throw new Error('Required sales revenue account 4000 is missing');
-
-      const arAccountId = await OrganizationProvisioningService.resolveAccountId(client, orgId, '1100', ['Asset']);
-      const salesAccountId = defaultRevenue.rows[0].id;
+      const arAccountId = await OrganizationProvisioningService.resolveSystemAccountId(client, orgId, 'AR_CONTROL', ['Asset']);
+      const salesAccountId = await OrganizationProvisioningService.resolveSystemAccountId(client, orgId, 'SALES_REVENUE', ['Income', 'Revenue']);
       const taxAccountId = taxTotal > 0
         ? await OrganizationProvisioningService.resolveAccountId(client, orgId, '2200', ['Liability'])
         : '';

@@ -106,13 +106,13 @@ export class FinanceController {
     const normalizedType = type.trim();
     const normalizedSubType = typeof subType === 'string' ? subType.trim() : '';
     const allowedSubTypes: Record<string, Set<string>> = {
-      Asset: new Set(['Bank', 'Cash', 'Digital Wallet', 'Undeposited Funds', 'Accounts Receivable', 'Inventory', 'Fixed Assets', 'Other Current Assets', 'Other Assets', 'Cash & Bank', 'Current Asset', 'Fixed Asset']),
-      Liability: new Set(['Accounts Payable', 'Credit Cards', 'Taxes Payable', 'Payroll Liabilities', 'Loans', 'Loan/Credit', 'Other Liabilities', 'Current Liability', 'Long Term Liability']),
-      Equity: new Set(['Capital', 'Retained Earnings', 'Drawings', 'Other Equity', 'Equity']),
-      Income: new Set(['Sales', 'Services', 'Other Operating Income', 'Operating Revenue', 'Other Revenue', 'Interest Income', 'Asset Gains', 'Other Income']),
+      Asset: new Set(['Bank', 'Cash', 'Digital Wallet', 'Undeposited Funds', 'Payment Clearing', 'Accounts Receivable', 'Inventory', 'Fixed Assets', 'Accumulated Depreciation', 'Other Current Asset', 'Other Current Assets', 'Other Asset', 'Other Assets', 'Deferred Tax Asset', 'Cash & Bank', 'Current Asset', 'Fixed Asset']),
+      Liability: new Set(['Accounts Payable', 'Credit Cards', 'Taxes Payable', 'Payroll Liabilities', 'Loans', 'Loan/Credit', 'Other Liability', 'Other Liabilities', 'Other Current Liability', 'Current Liability', 'Long Term Liability', 'Deferred Tax Liability']),
+      Equity: new Set(['Capital', 'Retained Earnings', 'Drawings', 'Opening Balance Equity', 'Other Equity', 'Equity']),
+      Income: new Set(['Sales', 'Services', 'Other Operating Income', 'Operating Revenue', 'Other Revenue', 'Interest Income', 'Asset Gains', 'Sales Returns', 'Other Income']),
       'Other Income': new Set(['Interest Income', 'Asset Gains', 'Other Income']),
-      'Cost of Goods Sold': new Set(['Materials', 'Direct Labor', 'Subcontractors', 'Other Direct Costs', 'Direct Expense / Cost of Goods']),
-      Expense: new Set(['Payroll', 'Office & Administrative', 'Sales & Marketing', 'Travel & Vehicle', 'Utilities & Communication', 'Professional Services', 'Software & Subscriptions', 'Repairs & Maintenance', 'Financial Expenses', 'Depreciation & Amortization', 'Miscellaneous Expenses', 'Operating Expense', 'Tax Expense', 'Interest Expense', 'Asset Losses', 'Other Expenses']),
+      'Cost of Goods Sold': new Set(['Materials', 'Direct Labor', 'Subcontractors', 'Freight', 'Site Expenses', 'Other Direct Costs', 'Direct Expense / Cost of Goods']),
+      Expense: new Set(['Payroll', 'Office & Administrative', 'Sales & Marketing', 'Travel & Vehicle', 'Utilities & Communication', 'Professional Services', 'Software & Subscriptions', 'Repairs & Maintenance', 'Financial Expenses', 'Depreciation & Amortization', 'Miscellaneous Expenses', 'Operating Expense', 'Direct Expense / Cost of Goods', 'Tax Expense', 'Interest Expense', 'Asset Losses', 'Other Expenses']),
       'Other Expense': new Set(['Interest Expense', 'Asset Losses', 'Other Expenses']),
     };
     if (!allowedSubTypes[normalizedType]) {
@@ -124,7 +124,7 @@ export class FinanceController {
       return;
     }
     const normalizedCode = code.trim();
-    const reservedCodes = new Set(['1000', '1100', '1200', '2000', '2100', '2200', '3000', '4000', '4900', '5800', '5900', '6000']);
+    const reservedCodes = new Set(['1000', '1100', '1150', '1200', '1400', '1600', '2000', '2100', '2200', '2250', '3000', '3400', '3500', '4000', '4900', '5000', '5800', '5900', '6000']);
     if (reservedCodes.has(normalizedCode)) {
       res.status(409).json({ error: 'This account code is reserved for a provisioned system control account' });
       return;
@@ -148,31 +148,41 @@ export class FinanceController {
       res.status(400).json({ error: 'allowDirectPosting must be true or false' });
       return;
     }
-    const normalBalance = ['Asset', 'Expense', 'Cost of Goods Sold', 'Other Expense'].includes(normalizedType) ? 'Debit' : 'Credit';
+    const defaultNormalBalance = ['Asset', 'Expense', 'Cost of Goods Sold', 'Other Expense'].includes(normalizedType) ? 'Debit' : 'Credit';
+    const normalBalance = req.body.normalBalance === undefined ? defaultNormalBalance : req.body.normalBalance;
+    if (normalBalance !== 'Debit' && normalBalance !== 'Credit') {
+      res.status(400).json({ error: 'normalBalance must be Debit or Credit' });
+      return;
+    }
+    const allowDirectPosting = req.body.allowDirectPosting ?? true;
     const accId = newId('acc');
     try {
       await db.transaction(async (client) => {
-      if (parentAccountId) {
+        if (parentAccountId) {
         const parent = await client.query(
           `SELECT id, type, status FROM accounts WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
           [orgId, parentAccountId]
         );
         if (parent.rows.length !== 1) throw new Error('ACCOUNT_PARENT_INVALID: Parent account does not belong to this organization');
         if (parent.rows[0].status !== 'Active') throw new Error('ACCOUNT_PARENT_INACTIVE: An archived account cannot be a parent');
-        if (parent.rows[0].type !== normalizedType) throw new Error('ACCOUNT_PARENT_TYPE_MISMATCH: Parent and child must share an account type');
-      }
+          if (parent.rows[0].type !== normalizedType) throw new Error('ACCOUNT_PARENT_TYPE_MISMATCH: Parent and child must share an account type');
+          await client.query(
+            `UPDATE accounts SET allow_direct_posting = FALSE WHERE organization_id = $1 AND id = $2`,
+            [orgId, parentAccountId]
+          );
+        }
       await client.query(
-        `INSERT INTO accounts (id, organization_id, code, name, type, sub_type, balance, is_system_account, status, parent_account_id, reporting_group, normal_balance, allow_direct_posting)
-         VALUES ($1, $2, $3, $4, $5, $6, 0, FALSE, 'Active', $7, $8, $9, $10)`,
-        [accId, orgId, normalizedCode, name.trim(), normalizedType, normalizedSubType, parentAccountId, reportingGroup, normalBalance, req.body.allowDirectPosting ?? true]
+        `INSERT INTO accounts (id, organization_id, code, name, type, sub_type, balance, is_system_account, status, parent_account_id, reporting_group, normal_balance, normal_balance_is_explicit, allow_direct_posting)
+         VALUES ($1, $2, $3, $4, $5, $6, 0, FALSE, 'Active', $7, $8, $9, TRUE, $10)`,
+         [accId, orgId, normalizedCode, name.trim(), normalizedType, normalizedSubType, parentAccountId, reportingGroup, normalBalance, allowDirectPosting]
       );
       await client.query(
         `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state)
          VALUES ($1, $2, $3, 'ACCOUNT_CREATED', 'Account', $4, $5)`,
-        [newId('aud'), orgId, req.auth!.userId, accId, JSON.stringify({ code: normalizedCode, name: name.trim(), type: normalizedType, subType: normalizedSubType, parentAccountId, reportingGroup, normalBalance, allowDirectPosting: req.body.allowDirectPosting ?? true })]
+         [newId('aud'), orgId, req.auth!.userId, accId, JSON.stringify({ code: normalizedCode, name: name.trim(), type: normalizedType, subType: normalizedSubType, parentAccountId, reportingGroup, normalBalance, allowDirectPosting })]
       );
       });
-      res.status(201).json({ id: accId, code: normalizedCode, name: name.trim(), type: normalizedType, subType: normalizedSubType, balance: 0, status: 'Active', parentAccountId, reportingGroup, normalBalance, allowDirectPosting: req.body.allowDirectPosting ?? true });
+      res.status(201).json({ id: accId, code: normalizedCode, name: name.trim(), type: normalizedType, subType: normalizedSubType, balance: 0, status: 'Active', parentAccountId, reportingGroup, normalBalance, allowDirectPosting });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Account could not be created';
       const statusCode = message.startsWith('ACCOUNT_PARENT_') ? 400 : 409;
@@ -242,6 +252,14 @@ export class FinanceController {
           if (Number(existing.balance || 0) !== 0) throw new Error('ACCOUNT_ARCHIVE_BALANCE: A non-zero balance account cannot be archived');
           const children = await client.query(`SELECT id FROM accounts WHERE organization_id = $1 AND parent_account_id = $2 AND status = 'Active' LIMIT 1 FOR UPDATE`, [orgId, accountId]);
           if (children.rows.length > 0) throw new Error('ACCOUNT_ARCHIVE_CHILDREN: Reassign or archive active child accounts first');
+        }
+
+        const activeChildren = await client.query(
+          `SELECT id FROM accounts WHERE organization_id = $1 AND parent_account_id = $2 AND status = 'Active' LIMIT 1`,
+          [orgId, accountId]
+        );
+        if (allowDirectPosting === true && activeChildren.rows.length > 0) {
+          throw new Error('ACCOUNT_PARENT_POSTING: Accounts with active children cannot accept direct postings');
         }
 
         const after = {

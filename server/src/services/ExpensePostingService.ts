@@ -87,8 +87,8 @@ export class ExpensePostingService {
         reference: expenseNumber,
         description: `Expense paid to ${input.vendorName || 'Vendor'}`,
         lines: [
-          { accountId: input.expenseAccountId, debit: amount, credit: 0 },
-          { accountId: input.paidFromAccountId, debit: 0, credit: amount },
+          { accountId: input.expenseAccountId, debit: amount, credit: 0, projectId: input.projectId, customerId: input.clientId },
+          { accountId: input.paidFromAccountId, debit: 0, credit: amount, projectId: input.projectId, customerId: input.clientId },
         ],
       }, client);
       await client.query(

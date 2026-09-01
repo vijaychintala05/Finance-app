@@ -130,9 +130,9 @@ export class ManualJournalService {
         for (const line of input.lines) {
           await tx.query(
             `INSERT INTO journal_lines
-            (id, journal_entry_id, account_id, account_code, account_name, debit, credit, description, project_id, customer_id, vendor_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-            [newId('jln'), draftId, line.accountId, line.accountCode || null, line.accountName || null, line.debit, line.credit, line.description || '', line.projectId || null, line.customerId || null, line.vendorId || null]
+            (id, journal_entry_id, organization_id, account_id, account_code, account_name, debit, credit, description, project_id, customer_id, vendor_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+            [newId('jln'), draftId, orgId, line.accountId, line.accountCode || null, line.accountName || null, line.debit, line.credit, line.description || '', line.projectId || null, line.customerId || null, line.vendorId || null]
           );
         }
 

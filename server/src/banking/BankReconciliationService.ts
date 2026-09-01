@@ -589,26 +589,26 @@ export class BankReconciliationService {
       if (isDebit) {
         // Dr Expense, Cr Bank
         await client.query(
-          `INSERT INTO journal_lines (id, journal_entry_id, account_id, debit, credit, description)
-           VALUES ($1, $2, $3, $4, $5, $6)`,
-          [`jln-${journalId}-1`, journalId, targetAccountId, statementTx.amount, 0, desc]
+          `INSERT INTO journal_lines (id, journal_entry_id, organization_id, account_id, debit, credit, description)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [`jln-${journalId}-1`, journalId, orgId, targetAccountId, statementTx.amount, 0, desc]
         );
         await client.query(
-          `INSERT INTO journal_lines (id, journal_entry_id, account_id, debit, credit, description)
-           VALUES ($1, $2, $3, $4, $5, $6)`,
-          [`jln-${journalId}-2`, journalId, bankLedgerAccId, 0, statementTx.amount, desc]
+          `INSERT INTO journal_lines (id, journal_entry_id, organization_id, account_id, debit, credit, description)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [`jln-${journalId}-2`, journalId, orgId, bankLedgerAccId, 0, statementTx.amount, desc]
         );
       } else {
         // Dr Bank, Cr Revenue
         await client.query(
-          `INSERT INTO journal_lines (id, journal_entry_id, account_id, debit, credit, description)
-           VALUES ($1, $2, $3, $4, $5, $6)`,
-          [`jln-${journalId}-1`, journalId, bankLedgerAccId, statementTx.amount, 0, desc]
+          `INSERT INTO journal_lines (id, journal_entry_id, organization_id, account_id, debit, credit, description)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [`jln-${journalId}-1`, journalId, orgId, bankLedgerAccId, statementTx.amount, 0, desc]
         );
         await client.query(
-          `INSERT INTO journal_lines (id, journal_entry_id, account_id, debit, credit, description)
-           VALUES ($1, $2, $3, $4, $5, $6)`,
-          [`jln-${journalId}-2`, journalId, targetAccountId, 0, statementTx.amount, desc]
+          `INSERT INTO journal_lines (id, journal_entry_id, organization_id, account_id, debit, credit, description)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [`jln-${journalId}-2`, journalId, orgId, targetAccountId, 0, statementTx.amount, desc]
         );
       }
 
@@ -700,15 +700,15 @@ export class BankReconciliationService {
 
       // Dr To-Bank Account (ICICI), Cr From-Bank Account (HDFC)
       await client.query(
-        `INSERT INTO journal_lines (id, journal_entry_id, account_id, debit, credit, description)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [`jln-${journalId}-1`, journalId, toLedgerId, amount, 0, desc]
+        `INSERT INTO journal_lines (id, journal_entry_id, organization_id, account_id, debit, credit, description)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [`jln-${journalId}-1`, journalId, orgId, toLedgerId, amount, 0, desc]
       );
 
       await client.query(
-        `INSERT INTO journal_lines (id, journal_entry_id, account_id, debit, credit, description)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [`jln-${journalId}-2`, journalId, fromLedgerId, 0, amount, desc]
+        `INSERT INTO journal_lines (id, journal_entry_id, organization_id, account_id, debit, credit, description)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [`jln-${journalId}-2`, journalId, orgId, fromLedgerId, 0, amount, desc]
       );
 
       await client.query(

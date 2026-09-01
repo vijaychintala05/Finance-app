@@ -147,7 +147,9 @@ export class SqlRecoveryPromoter implements RecoveryPromoter {
       for (const stagedRow of payload.tables[table.name]) {
         const row = table.tenantColumn
           ? { ...stagedRow, [table.tenantColumn]: job.targetOrganizationId }
-          : stagedRow;
+          : table.name === 'journal_lines'
+            ? { ...stagedRow, organization_id: job.targetOrganizationId }
+            : stagedRow;
         const placeholders = table.columns.map((_, index) => `$${index + 1}`).join(', ');
         await client.query(
           `INSERT INTO ${table.name} (${table.columns.join(', ')}) VALUES (${placeholders})`,

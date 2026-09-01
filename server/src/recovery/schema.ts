@@ -52,7 +52,7 @@ export const POINT1_RECOVERY_SCHEMA: readonly RecoveryTableSchema[] = [
   tenantTable('expenses', ['id', 'organization_id', 'expense_number', 'expense_account_id', 'paid_from_account_id', 'vendor_name', 'date', 'amount', 'tax_rate', 'description', 'created_at']),
   tenantTable('expense_receipt_attachments', ['id', 'organization_id', 'expense_id', 'file_name', 'mime_type', 'byte_size', 'content_base64', 'created_at']),
   tenantTable('journal_entries', ['id', 'organization_id', 'entry_number', 'date', 'reference', 'description', 'status', 'created_at', 'reversal_of_journal_id', 'reversed_by_journal_id', 'reversed_at', 'reversed_by', 'reversal_reason']),
-  journalChildTable('journal_lines', ['id', 'journal_entry_id', 'account_id', 'account_code', 'account_name', 'debit', 'credit', 'description']),
+  journalChildTable('journal_lines', ['id', 'journal_entry_id', 'organization_id', 'account_id', 'account_code', 'account_name', 'debit', 'credit', 'description']),
   tenantTable('customer_advances', ['id', 'organization_id', 'customer_id', 'payment_id', 'amount', 'unapplied_amount', 'received_date', 'status', 'journal_entry_id', 'created_at']),
   tenantTable('customer_advance_applications', ['id', 'organization_id', 'advance_id', 'invoice_id', 'amount_applied', 'applied_date', 'journal_entry_id', 'status', 'created_at', 'reversal_journal_id', 'reversed_at', 'reversed_by', 'reversal_reason']),
   tenantTable('customer_refunds', ['id', 'organization_id', 'refund_number', 'customer_id', 'credit_note_id', 'payment_id', 'refund_date', 'amount', 'refund_account_id', 'reference', 'notes', 'journal_entry_id', 'created_at', 'status', 'reversal_journal_id', 'reversed_at', 'reversed_by', 'reversal_reason']),

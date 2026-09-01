@@ -499,6 +499,7 @@ export class MigrationRunner {
       `CREATE TABLE IF NOT EXISTS journal_lines (
         id VARCHAR(64) PRIMARY KEY,
         journal_entry_id VARCHAR(64) NOT NULL,
+        organization_id VARCHAR(64),
         account_id VARCHAR(64) NOT NULL,
         account_code VARCHAR(32),
         account_name VARCHAR(255),
@@ -785,6 +786,13 @@ export class MigrationRunner {
       `ALTER TABLE period_locks ADD COLUMN IF NOT EXISTS month INT`,
       `ALTER TABLE period_locks ADD COLUMN IF NOT EXISTS period_name VARCHAR(50)`,
       `ALTER TABLE period_locks ADD COLUMN IF NOT EXISTS is_locked BOOLEAN DEFAULT FALSE`,
+      `ALTER TABLE journal_lines ADD COLUMN IF NOT EXISTS organization_id VARCHAR(64)`,
+      `UPDATE journal_lines AS line
+         SET organization_id = entry.organization_id
+        FROM journal_entries AS entry
+       WHERE line.journal_entry_id = entry.id
+         AND line.organization_id IS NULL`,
+      `CREATE INDEX IF NOT EXISTS idx_journal_lines_org_entry ON journal_lines (organization_id, journal_entry_id)`,
       `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS revision_number INT DEFAULT 0`,
       `ALTER TABLE payments_received ADD COLUMN IF NOT EXISTS unallocated_amount NUMERIC(15, 2) DEFAULT 0.00`,
       `ALTER TABLE payments_received ADD COLUMN IF NOT EXISTS status VARCHAR(30) DEFAULT 'ALLOCATED'`,

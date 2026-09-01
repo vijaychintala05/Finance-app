@@ -147,9 +147,9 @@ export class ServerPostingEngine {
       for (const line of normalizedLines) {
         await client.query(
           `INSERT INTO journal_lines
-            (id, journal_entry_id, account_id, account_code, account_name, debit, credit, description, project_id, customer_id, vendor_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-          [newId('jln'), entryId, line.accountId, line.accountCode, line.accountName, line.debit, line.credit, line.description || '', line.projectId || null, line.customerId || null, line.vendorId || null]
+            (id, journal_entry_id, organization_id, account_id, account_code, account_name, debit, credit, description, project_id, customer_id, vendor_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+          [newId('jln'), entryId, payload.organizationId, line.accountId, line.accountCode, line.accountName, line.debit, line.credit, line.description || '', line.projectId || null, line.customerId || null, line.vendorId || null]
         );
         const normalDebit = (line as JournalLineItem & { normalBalance: string }).normalBalance === 'Debit';
         const balanceDelta = normalDebit ? line.debit - line.credit : line.credit - line.debit;

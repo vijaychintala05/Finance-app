@@ -4,6 +4,7 @@ import { newId } from '../utils/ids';
 import { openRecoveryPayload, sealRecoveryPayload, sha256 } from './crypto';
 import { RecoveryError } from './errors';
 import { POINT1_RECOVERY_SCHEMA, type RecoveryTableSchema } from './schema';
+import { TenantRecoveryLockService, type TenantRecoveryLockInfo } from './TenantRecoveryLockService';
 import {
   RECOVERY_FORMAT,
   RECOVERY_FORMAT_VERSION,
@@ -166,21 +167,72 @@ export class RecoveryArtifactService {
     );
     const promotedAt = this.now().toISOString();
 
-    // 1. Capture live production tenant state before replacement as a durable rollback safety snapshot
-    const rollbackArtifact = await this.createArtifact(job.targetOrganizationId, input.actorUserId);
+    // 1. Commit Tenant Recovery Lock BEFORE promotion transaction begins so other connections/requests see it immediately
+    await TenantRecoveryLockService.acquireLock(job.targetOrganizationId, job.id, 'Disaster Recovery Promotion', input.actorUserId);
 
-    return this.transactions.transaction(async (client) => {
-      await this.dependencies.ownerAuthorizer.assertOwner(job.targetOrganizationId, input.actorUserId, client);
-      await this.dependencies.promoter.promote({
-        job,
-        payload,
-        actorUserId: input.actorUserId,
-        client,
-        prePromotionArtifactId: rollbackArtifact.id,
+    try {
+      return await this.transactions.transaction(async (client) => {
+        // Assert owner authorization
+        await this.dependencies.ownerAuthorizer.assertOwner(job.targetOrganizationId, input.actorUserId, client);
+
+        // Atomically capture live production tenant state before replacement as a durable rollback safety snapshot
+        const prePromotionTables: Record<string, RecoveryRow[]> = {};
+        for (const table of POINT1_RECOVERY_SCHEMA) {
+          const result = await client.query<RecoveryRow>(table.selectSql, [job.targetOrganizationId]);
+          prePromotionTables[table.name] = result.rows.map((row) => this.normalizeRow(table, row));
+        }
+        const rollbackArtifactId = newId('rcv-art-pre');
+        const rollbackCreatedAt = this.now().toISOString();
+        const rollbackPayload: RecoveryPayload = {
+          organizationId: job.targetOrganizationId,
+          schemaVersion: this.dependencies.schemaVersion,
+          tables: prePromotionTables,
+        };
+        const rollbackManifest: RecoveryManifest = {
+          format: RECOVERY_FORMAT,
+          formatVersion: RECOVERY_FORMAT_VERSION,
+          artifactId: rollbackArtifactId,
+          organizationId: job.targetOrganizationId,
+          schemaVersion: this.dependencies.schemaVersion,
+          createdBy: input.actorUserId,
+          createdAt: rollbackCreatedAt,
+          keyId: this.dependencies.keyring.activeKeyId,
+          cipher: 'aes-256-gcm',
+          tables: POINT1_RECOVERY_SCHEMA.map((table) => ({
+            name: table.name,
+            columns: [...table.columns],
+            rowCount: prePromotionTables[table.name].length,
+            sha256: sha256(prePromotionTables[table.name]),
+          })),
+        };
+        const rollbackArtifact: StoredRecoveryArtifact = {
+          id: rollbackArtifactId,
+          organizationId: job.targetOrganizationId,
+          status: 'READY',
+          envelope: sealRecoveryPayload(rollbackManifest, rollbackPayload, this.dependencies.keyring),
+          createdBy: input.actorUserId,
+          createdAt: rollbackCreatedAt,
+        };
+        await this.dependencies.repository.saveArtifact(rollbackArtifact, client);
+
+        // Promote restore into live database
+        await this.dependencies.promoter.promote({
+          job,
+          payload,
+          actorUserId: input.actorUserId,
+          client,
+          prePromotionArtifactId: rollbackArtifactId,
+        });
+
+        // Update recovery job status
+        await this.dependencies.repository.setJobPromoted(job.id, input.actorUserId, promotedAt, rollbackArtifactId, client);
+
+        return { ...job, status: 'PROMOTED', promotedBy: input.actorUserId, promotedAt, rollbackArtifactId: rollbackArtifactId };
       });
-      await this.dependencies.repository.setJobPromoted(job.id, input.actorUserId, promotedAt, rollbackArtifact.id, client);
-      return { ...job, status: 'PROMOTED', promotedBy: input.actorUserId, promotedAt, rollbackArtifactId: rollbackArtifact.id };
-    });
+    } finally {
+      // 2. Always release the committed recovery lock in the finally path
+      await TenantRecoveryLockService.releaseLock(job.targetOrganizationId);
+    }
   }
 
   public async rollbackRestore(input: {
@@ -217,48 +269,71 @@ export class RecoveryArtifactService {
     const rollbackPayload = this.validateAndOpen(rollbackArtifact.envelope, job.targetOrganizationId);
     const rolledBackAt = this.now().toISOString();
 
-    return this.transactions.transaction(async (client) => {
-      await this.dependencies.ownerAuthorizer.assertOwner(job.targetOrganizationId, input.actorUserId, client);
+    // 1. Commit Tenant Recovery Lock BEFORE rollback transaction begins
+    await TenantRecoveryLockService.acquireLock(job.targetOrganizationId, job.id, 'Disaster Recovery Rollback', input.actorUserId);
 
-      // Re-apply pre-promotion production tables in safe reverse/forward order
-      for (const table of [...POINT1_RECOVERY_SCHEMA].reverse()) {
-        await client.query(table.deleteSql, [job.targetOrganizationId]);
-      }
-      for (const table of POINT1_RECOVERY_SCHEMA) {
-        for (const preRow of rollbackPayload.tables[table.name]) {
-          const row = table.tenantColumn
-            ? { ...preRow, [table.tenantColumn]: job.targetOrganizationId }
-            : preRow;
-          const placeholders = table.columns.map((_, index) => `$${index + 1}`).join(', ');
-          await client.query(
-            `INSERT INTO ${table.name} (${table.columns.join(', ')}) VALUES (${placeholders})`,
-            table.columns.map((column) => row[column])
-          );
+    try {
+      return await this.transactions.transaction(async (client) => {
+        // Assert owner authorization
+        await this.dependencies.ownerAuthorizer.assertOwner(job.targetOrganizationId, input.actorUserId, client);
+
+        // Re-apply pre-promotion production tables in safe reverse/forward order
+        for (const table of [...POINT1_RECOVERY_SCHEMA].reverse()) {
+          await client.query(table.deleteSql, [job.targetOrganizationId]);
         }
-      }
+        for (const table of POINT1_RECOVERY_SCHEMA) {
+          for (const preRow of rollbackPayload.tables[table.name]) {
+            const row = table.tenantColumn
+              ? { ...preRow, [table.tenantColumn]: job.targetOrganizationId }
+              : preRow;
+            const placeholders = table.columns.map((_, index) => `$${index + 1}`).join(', ');
+            await client.query(
+              `INSERT INTO ${table.name} (${table.columns.join(', ')}) VALUES (${placeholders})`,
+              table.columns.map((column) => row[column])
+            );
+          }
+        }
 
-      await client.query(
-        `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state, after_state)
-         VALUES ($1, $2, $3, 'RECOVERY_ROLLED_BACK', 'RecoveryJob', $4, $5::jsonb, $6::jsonb)`,
-        [
-          newId('aud'),
-          job.targetOrganizationId,
-          input.actorUserId,
-          job.id,
-          JSON.stringify({ promotedArtifactId: job.artifactId }),
-          JSON.stringify({ restoredRollbackArtifactId: job.rollbackArtifactId, tableCount: POINT1_RECOVERY_SCHEMA.length }),
-        ]
-      );
+        await client.query(
+          `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state, after_state)
+           VALUES ($1, $2, $3, 'RECOVERY_ROLLED_BACK', 'RecoveryJob', $4, $5::jsonb, $6::jsonb)`,
+          [
+            newId('aud'),
+            job.targetOrganizationId,
+            input.actorUserId,
+            job.id,
+            JSON.stringify({ promotedArtifactId: job.artifactId }),
+            JSON.stringify({ restoredRollbackArtifactId: job.rollbackArtifactId, tableCount: POINT1_RECOVERY_SCHEMA.length }),
+          ]
+        );
 
-      await this.dependencies.repository.setJobRolledBack(job.id, input.actorUserId, rolledBackAt, client);
+        await this.dependencies.repository.setJobRolledBack(job.id, input.actorUserId, rolledBackAt, client);
 
-      return {
-        ...job,
-        status: 'ROLLED_BACK',
-        rolledBackBy: input.actorUserId,
-        rolledBackAt,
-      };
-    });
+        return {
+          ...job,
+          status: 'ROLLED_BACK',
+          rolledBackBy: input.actorUserId,
+          rolledBackAt,
+        };
+      });
+    } finally {
+      // 2. Always release the committed recovery lock in the finally path
+      await TenantRecoveryLockService.releaseLock(job.targetOrganizationId);
+    }
+  }
+
+  public async lockMaintenance(organizationId: string, actorUserId: string, reason: string): Promise<TenantRecoveryLockInfo> {
+    await TenantRecoveryLockService.acquireLock(organizationId, null, reason, actorUserId);
+    return TenantRecoveryLockService.getLockInfo(organizationId);
+  }
+
+  public async unlockMaintenance(organizationId: string): Promise<TenantRecoveryLockInfo> {
+    await TenantRecoveryLockService.releaseLock(organizationId);
+    return TenantRecoveryLockService.getLockInfo(organizationId);
+  }
+
+  public async getMaintenanceStatus(organizationId: string): Promise<TenantRecoveryLockInfo> {
+    return TenantRecoveryLockService.getLockInfo(organizationId);
   }
 
   private async requireArtifact(artifactId: string): Promise<StoredRecoveryArtifact> {

@@ -175,6 +175,14 @@ export async function applyPoint1Schema(client: DbQueryClient): Promise<void> {
       created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
       CONSTRAINT uk_recovery_staging_row UNIQUE (restore_job_id, table_name, row_key)
     )`,
+    `CREATE TABLE IF NOT EXISTS tenant_recovery_locks (
+      organization_id VARCHAR(64) PRIMARY KEY,
+      job_id VARCHAR(64),
+      state VARCHAR(50) NOT NULL DEFAULT 'RECOVERY_IN_PROGRESS',
+      reason VARCHAR(255) NOT NULL,
+      locked_by VARCHAR(64) NOT NULL,
+      locked_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    )`,
     `CREATE TABLE IF NOT EXISTS fixed_asset_lifecycle_events (
       id VARCHAR(64) PRIMARY KEY,
       organization_id VARCHAR(64) NOT NULL,

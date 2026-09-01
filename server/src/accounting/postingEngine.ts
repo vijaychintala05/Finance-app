@@ -2,6 +2,7 @@ import { db, DbQueryResult } from '../database/db';
 import { newId } from '../utils/ids';
 import { centsToSafeNumber, moneyInputToCents } from '../utils/money';
 import { isIsoCalendarDate } from '../utils/date';
+import { TenantRecoveryLockService } from '../recovery/TenantRecoveryLockService';
 
 export interface JournalLineItem {
   accountId: string;
@@ -54,6 +55,7 @@ export function resolveAccountNormalBalance(account: {
 export class ServerPostingEngine {
   public static async postEntry(payload: PostJournalPayload, transactionClient?: QueryClient): Promise<{ entryId: string }> {
     const execute = async (client: QueryClient): Promise<{ entryId: string }> => {
+      await TenantRecoveryLockService.assertNotLocked(payload.organizationId, client);
       if (!isIsoCalendarDate(payload.date)) {
         throw new Error('Journal date must use YYYY-MM-DD format');
       }

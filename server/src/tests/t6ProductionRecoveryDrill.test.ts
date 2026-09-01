@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import crypto from 'crypto';
+import request from 'supertest';
+import app from '../index';
 import { db } from '../database/db';
 import { MigrationRunner, CURRENT_SCHEMA_VERSION } from '../database/migrationRunner';
 import { BackupRestoreService, BackupPayload } from '../database/BackupRestoreService';
@@ -15,11 +17,14 @@ import {
 import { newId } from '../utils/ids';
 import { AuditTrailService } from '../security/AuditTrailService';
 import { AccountingPeriodService } from '../accounting/AccountingPeriodService';
+import { ServerPostingEngine } from '../accounting/postingEngine';
+import { JwtAuth } from '../auth/jwt';
 
 describe('T6: PostgreSQL Production Recovery Drill, Restore Correctness & Fail-Safety', () => {
   const ORG_A = 'org-drill-alpha';
   const ORG_B = 'org-drill-beta';
   const USER_OWNER = 'usr-owner-alpha';
+  const USER_ACCOUNTANT = 'usr-acct-alpha';
 
   const recoveryKeyring = {
     activeKeyId: 'drill-key-v1',
@@ -62,15 +67,18 @@ describe('T6: PostgreSQL Production Recovery Drill, Restore Correctness & Fail-S
     await db.query('DELETE FROM backups WHERE organization_id IN ($1, $2)', [ORG_A, ORG_B]);
     await db.query('DELETE FROM recovery_artifacts WHERE organization_id IN ($1, $2)', [ORG_A, ORG_B]);
     await db.query('DELETE FROM recovery_staging_rows WHERE organization_id IN ($1, $2)', [ORG_A, ORG_B]);
+    await db.query('DELETE FROM recovery_jobs WHERE target_organization_id IN ($1, $2)', [ORG_A, ORG_B]);
+    await db.query('DELETE FROM audit_logs WHERE organization_id IN ($1, $2)', [ORG_A, ORG_B]);
     await db.query('DELETE FROM organization_members WHERE organization_id IN ($1, $2)', [ORG_A, ORG_B]);
     await db.query('DELETE FROM organizations WHERE id IN ($1, $2)', [ORG_A, ORG_B]);
-    await db.query('DELETE FROM users WHERE id = $1', [USER_OWNER]);
+    await db.query('DELETE FROM users WHERE id IN ($1, $2)', [USER_OWNER, USER_ACCOUNTANT]);
 
-    // Create user
+    // Create users
     await db.query(
-      `INSERT INTO users (id, email, password_hash, full_name, status)
-       VALUES ($1, 'owner@drill.com', 'hash123', 'Alpha Owner', 'Active')`,
-      [USER_OWNER]
+      `INSERT INTO users (id, email, password_hash, full_name, status) VALUES
+       ($1, 'owner@drill.com', 'hash123', 'Alpha Owner', 'Active'),
+       ($2, 'acct@drill.com', 'hash123', 'Alpha Accountant', 'Active')`,
+      [USER_OWNER, USER_ACCOUNTANT]
     );
 
     // Create organizations
@@ -87,9 +95,10 @@ describe('T6: PostgreSQL Production Recovery Drill, Restore Correctness & Fail-S
     );
 
     await db.query(
-      `INSERT INTO organization_members (id, organization_id, user_id, role)
-       VALUES ($1, $2, $3, 'Owner')`,
-      [newId('mem'), ORG_A, USER_OWNER]
+      `INSERT INTO organization_members (id, organization_id, user_id, role) VALUES
+       ($1, $2, $3, 'Owner'),
+       ($4, $2, $5, 'Accountant')`,
+      [newId('mem'), ORG_A, USER_OWNER, newId('mem'), USER_ACCOUNTANT]
     );
     await db.query(
       `INSERT INTO organization_members (id, organization_id, user_id, role)
@@ -228,18 +237,14 @@ describe('T6: PostgreSQL Production Recovery Drill, Restore Correctness & Fail-S
       afterState: { name: 'Alpha Tech Ltd' },
     });
 
-    // -------------------------------------------------------------------------
     // Tier 1: Backup Creation & Checksum Verification
-    // -------------------------------------------------------------------------
     const tier1Backup = await BackupRestoreService.createBackup(ORG_A, USER_OWNER);
     expect(tier1Backup).toBeDefined();
     expect(tier1Backup.metadata.organizationId).toBe(ORG_A);
     expect(tier1Backup.metadata.recordCount).toBeGreaterThan(10);
     expect(BackupRestoreService.verifyBackup(tier1Backup).isValid).toBe(true);
 
-    // -------------------------------------------------------------------------
     // Tier 2: Point-1 Sealed Recovery Artifact Creation & Verification
-    // -------------------------------------------------------------------------
     const point1Artifact = await point1Service.createArtifact(ORG_A, USER_OWNER);
     expect(point1Artifact).toBeDefined();
     expect(point1Artifact.organizationId).toBe(ORG_A);
@@ -317,13 +322,12 @@ describe('T6: PostgreSQL Production Recovery Drill, Restore Correctness & Fail-S
     expect(restoreResult.restoredRecords).toBe(preLossRecordCount);
 
     // 4. VERIFY RESTORED RELATIONAL & FINANCIAL INTEGRITY (Δ = 0.00)
-    // a. Accounts restored
     const restoredAccounts = await db.query('SELECT * FROM accounts WHERE organization_id = $1 ORDER BY code', [ORG_A]);
     expect(restoredAccounts.rows.length).toBe(2);
     expect(restoredAccounts.rows[0].code).toBe('1000');
     expect(Number(restoredAccounts.rows[0].balance)).toBe(100000);
 
-    // b. General Ledger Trial Balance exact match
+    // General Ledger Trial Balance exact match
     const glTotals = await db.query(
       `SELECT SUM(jl.debit) as total_debit, SUM(jl.credit) as total_credit
          FROM journal_lines jl
@@ -337,7 +341,7 @@ describe('T6: PostgreSQL Production Recovery Drill, Restore Correctness & Fail-S
     expect(totalCredit).toBe(100000);
     expect(Math.abs(totalDebit - totalCredit)).toBe(0); // GL Balanced Δ = 0.00
 
-    // c. Expense receipts and attachments restored intact
+    // Expense receipts and attachments restored intact
     const restoredReceipts = await db.query(
       'SELECT * FROM expense_receipt_attachments WHERE organization_id = $1',
       [ORG_A]
@@ -346,7 +350,7 @@ describe('T6: PostgreSQL Production Recovery Drill, Restore Correctness & Fail-S
     expect(restoredReceipts.rows[0].file_name).toBe('hardware_bill.jpg');
     expect(restoredReceipts.rows[0].content_base64).toBe('BASE64IMGDATA999');
 
-    // d. Period lock restored and enforced
+    // Period lock restored and enforced
     const isLocked = await AccountingPeriodService.isPeriodLocked(ORG_A, '2026-03-15');
     expect(isLocked).toBe(true);
   });
@@ -405,6 +409,7 @@ describe('T6: PostgreSQL Production Recovery Drill, Restore Correctness & Fail-S
     });
     expect(promoteResult.status).toBe('PROMOTED');
     expect(promoteResult.promotedBy).toBe(USER_OWNER);
+    expect(promoteResult.rollbackArtifactId).toBeDefined();
 
     // Verify promoted data in active organization tables
     const promotedAccounts = await db.query('SELECT * FROM accounts WHERE organization_id = $1 ORDER BY code', [ORG_A]);
@@ -412,8 +417,197 @@ describe('T6: PostgreSQL Production Recovery Drill, Restore Correctness & Fail-S
     expect(promotedAccounts.rows[0].code).toBe('1000');
   });
 
-  it('4. Negative Safety Gates: Tampered Checksums, Corrupted Payloads & Cross-Tenant Rejection', async () => {
-    // Create valid backup
+  it('4. P0: Committed-but-Incorrect Promotion Rollback Drill (Durable Pre-Promotion Safety Snapshot)', async () => {
+    // 1. Seed genuine current production state
+    const currentCashAcc = newId('acc');
+    const currentRevAcc = newId('acc');
+    await db.query(
+      `INSERT INTO accounts (id, organization_id, code, name, type, sub_type, balance, status) VALUES
+       ($1, $2, '1000', 'Main Operating Cash', 'ASSET', 'Cash', 75000, 'Active'),
+       ($3, $2, '4000', 'Consulting Revenue', 'INCOME', 'Sales', 75000, 'Active')`,
+      [currentCashAcc, ORG_A, currentRevAcc]
+    );
+
+    const initialJournal = newId('je');
+    await db.query(
+      `INSERT INTO journal_entries (id, organization_id, entry_number, date, reference, description, status)
+       VALUES ($1, $2, 'JRN-PROD-LIVE', '2026-04-15', 'LIVE-STATE', 'Current Production Revenue', 'POSTED')`,
+      [initialJournal, ORG_A]
+    );
+    await db.query(
+      `INSERT INTO journal_lines (id, journal_entry_id, account_id, account_code, account_name, debit, credit, description) VALUES
+       ($1, $2, $3, '1000', 'Main Operating Cash', 75000, 0, 'Debit Cash'),
+       ($4, $2, $5, '4000', 'Consulting Revenue', 0, 75000, 'Credit Revenue')`,
+      [newId('jl'), initialJournal, currentCashAcc, newId('jl'), currentRevAcc]
+    );
+
+    // 2. Prepare an outdated / incorrect snapshot to simulate accidental restore of wrong point-in-time
+    // Create an artifact in another tenant or staging representation with different numbers
+    const outdatedCashAcc = newId('acc');
+    const outdatedRevAcc = newId('acc');
+    await db.query(
+      `INSERT INTO accounts (id, organization_id, code, name, type, sub_type, balance, status) VALUES
+       ($1, $2, '1000', 'Old Cash Account', 'ASSET', 'Cash', 12000, 'Active'),
+       ($3, $2, '4000', 'Old Sales Account', 'INCOME', 'Sales', 12000, 'Active')`,
+      [outdatedCashAcc, ORG_B, outdatedRevAcc]
+    );
+    const outdatedArtifact = await point1Service.createArtifact(ORG_B, USER_OWNER);
+    // Allow this artifact to be opened for ORG_A by generating artifact for ORG_A
+    await db.query('DELETE FROM accounts WHERE organization_id = $1', [ORG_B]);
+
+    // Create a valid artifact representing an old backup for ORG_A
+    // First, wipe ORG_A accounts temporarily to create outdated snapshot
+    await db.query('DELETE FROM journal_lines WHERE journal_entry_id = $1', [initialJournal]);
+    await db.query('DELETE FROM journal_entries WHERE id = $1', [initialJournal]);
+    await db.query('DELETE FROM accounts WHERE organization_id = $1', [ORG_A]);
+
+    await db.query(
+      `INSERT INTO accounts (id, organization_id, code, name, type, sub_type, balance, status) VALUES
+       ($1, $2, '1000', 'Outdated Cash Balance', 'ASSET', 'Cash', 10000, 'Active'),
+       ($3, $2, '4000', 'Outdated Sales Balance', 'INCOME', 'Sales', 10000, 'Active')`,
+      [outdatedCashAcc, ORG_A, outdatedRevAcc]
+    );
+    const oldBackupArtifact = await point1Service.createArtifact(ORG_A, USER_OWNER);
+
+    // Now restore the genuine live state in ORG_A (75,000 balance)
+    await db.query('DELETE FROM accounts WHERE organization_id = $1', [ORG_A]);
+    await db.query(
+      `INSERT INTO accounts (id, organization_id, code, name, type, sub_type, balance, status) VALUES
+       ($1, $2, '1000', 'Main Operating Cash', 'ASSET', 'Cash', 75000, 'Active'),
+       ($3, $2, '4000', 'Consulting Revenue', 'INCOME', 'Sales', 75000, 'Active')`,
+      [currentCashAcc, ORG_A, currentRevAcc]
+    );
+    await db.query(
+      `INSERT INTO journal_entries (id, organization_id, entry_number, date, reference, description, status)
+       VALUES ($1, $2, 'JRN-PROD-LIVE', '2026-04-15', 'LIVE-STATE', 'Current Production Revenue', 'POSTED')`,
+      [initialJournal, ORG_A]
+    );
+    await db.query(
+      `INSERT INTO journal_lines (id, journal_entry_id, account_id, account_code, account_name, debit, credit, description) VALUES
+       ($1, $2, $3, '1000', 'Main Operating Cash', 75000, 0, 'Debit Cash'),
+       ($4, $2, $5, '4000', 'Consulting Revenue', 0, 75000, 'Credit Revenue')`,
+      [newId('jl'), initialJournal, currentCashAcc, newId('jl'), currentRevAcc]
+    );
+
+    // 3. Stage and Promote the OLD backup (simulating operator mistake)
+    const stageJob = await point1Service.stageRestore({
+      artifactId: oldBackupArtifact.id,
+      targetOrganizationId: ORG_A,
+      requestedBy: USER_OWNER,
+    });
+    expect(stageJob.status).toBe('VALIDATED');
+
+    const promoteResult = await point1Service.promoteRestore({
+      jobId: stageJob.id,
+      targetOrganizationId: ORG_A,
+      actorUserId: USER_OWNER,
+      authenticatedAt: new Date().toISOString(),
+      confirmation: `PROMOTE RECOVERY ${stageJob.id} TO ${ORG_A}`,
+    });
+
+    expect(promoteResult.status).toBe('PROMOTED');
+    expect(promoteResult.rollbackArtifactId).toBeDefined();
+
+    // Verify live data is now mistakenly overwritten with old 10,000 balance
+    const liveAccountsMistake = await db.query('SELECT * FROM accounts WHERE organization_id = $1 ORDER BY code', [ORG_A]);
+    expect(liveAccountsMistake.rows.length).toBe(2);
+    expect(Number(liveAccountsMistake.rows[0].balance)).toBe(10000);
+
+    // 4. Operator detects mistake and triggers ROLLBACK
+    const rollbackResult = await point1Service.rollbackRestore({
+      jobId: stageJob.id,
+      targetOrganizationId: ORG_A,
+      actorUserId: USER_OWNER,
+      authenticatedAt: new Date().toISOString(),
+      confirmation: `ROLLBACK RECOVERY ${stageJob.id} TO PRE-PROMOTION STATE`,
+    });
+
+    expect(rollbackResult.status).toBe('ROLLED_BACK');
+    expect(rollbackResult.rolledBackBy).toBe(USER_OWNER);
+    expect(rollbackResult.rolledBackAt).toBeDefined();
+
+    // 5. Verify live production state is restored back to exact pre-promotion numbers (75,000 balance)
+    const liveAccountsRestored = await db.query('SELECT * FROM accounts WHERE organization_id = $1 ORDER BY code', [ORG_A]);
+    expect(liveAccountsRestored.rows.length).toBe(2);
+    expect(liveAccountsRestored.rows[0].name).toBe('Main Operating Cash');
+    expect(Number(liveAccountsRestored.rows[0].balance)).toBe(75000);
+
+    // General Ledger exact parity after rollback (Δ = 0.00)
+    const glTotals = await db.query(
+      `SELECT SUM(jl.debit) as total_debit, SUM(jl.credit) as total_credit
+         FROM journal_lines jl
+         JOIN journal_entries je ON jl.journal_entry_id = je.id
+        WHERE je.organization_id = $1`,
+      [ORG_A]
+    );
+    expect(Number(glTotals.rows[0].total_debit)).toBe(75000);
+    expect(Number(glTotals.rows[0].total_credit)).toBe(75000);
+
+    // Audit logs recorded both promotion and rollback
+    const auditLogs = await db.query(
+      "SELECT action FROM audit_logs WHERE organization_id = $1 AND action IN ('RECOVERY_PROMOTED', 'RECOVERY_ROLLED_BACK') ORDER BY timestamp ASC",
+      [ORG_A]
+    );
+    expect(auditLogs.rows.map((r) => r.action)).toEqual(['RECOVERY_PROMOTED', 'RECOVERY_ROLLED_BACK']);
+  });
+
+  it('5. P1: Owner-Only Authorization Gate on Recovery Routes (Blocks Non-Owners)', async () => {
+    // Generate auth tokens for Owner and Accountant
+    const ownerToken = JwtAuth.generateToken({ userId: USER_OWNER, email: 'owner@drill.com' });
+    const accountantToken = JwtAuth.generateToken({ userId: USER_ACCOUNTANT, email: 'acct@drill.com' });
+
+    // Enable trusted finance feature in environment for test
+    process.env.TRUSTED_FINANCE_FEATURES = 'recovery-center';
+
+    // 1. Non-Owner (Accountant) is strictly blocked (HTTP 403) from listing artifacts
+    const acctList = await request(app)
+      .get('/api/v1/recovery/artifacts')
+      .set('Authorization', `Bearer ${accountantToken}`)
+      .set('x-organization-id', ORG_A);
+    expect(acctList.status).toBe(403);
+    expect(acctList.body.error).toMatch(/Owner or Super Admin/i);
+
+    // 2. Non-Owner (Accountant) is strictly blocked from creating artifacts
+    const acctCreate = await request(app)
+      .post('/api/v1/recovery/artifacts')
+      .set('Authorization', `Bearer ${accountantToken}`)
+      .set('x-organization-id', ORG_A)
+      .send({});
+    expect(acctCreate.status).toBe(403);
+
+    // 3. Non-Owner (Accountant) is strictly blocked from staging
+    const acctStage = await request(app)
+      .post('/api/v1/recovery/artifacts/art-fake/stage')
+      .set('Authorization', `Bearer ${accountantToken}`)
+      .set('x-organization-id', ORG_A)
+      .send({});
+    expect(acctStage.status).toBe(403);
+
+    // 4. Non-Owner (Accountant) is strictly blocked from promotion and rollback
+    const acctPromote = await request(app)
+      .post('/api/v1/recovery/jobs/job-fake/promote')
+      .set('Authorization', `Bearer ${accountantToken}`)
+      .set('x-organization-id', ORG_A)
+      .send({ password: 'any', confirmation: 'any' });
+    expect(acctPromote.status).toBe(403);
+
+    const acctRollback = await request(app)
+      .post('/api/v1/recovery/jobs/job-fake/rollback')
+      .set('Authorization', `Bearer ${accountantToken}`)
+      .set('x-organization-id', ORG_A)
+      .send({ password: 'any', confirmation: 'any' });
+    expect(acctRollback.status).toBe(403);
+
+    // 5. Active Owner is authorized and passes ownerRecovery guard
+    const ownerList = await request(app)
+      .get('/api/v1/recovery/artifacts')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .set('x-organization-id', ORG_A);
+    expect(ownerList.status).toBe(200);
+    expect(ownerList.body.success).toBe(true);
+  });
+
+  it('6. Negative Safety Gates: Tampered Checksums, Corrupted Payloads & Cross-Tenant Rejection', async () => {
     const backupA = await BackupRestoreService.createBackup(ORG_A, USER_OWNER);
 
     // a. Cross-tenant restore blocked
@@ -457,5 +651,282 @@ describe('T6: PostgreSQL Production Recovery Drill, Restore Correctness & Fail-S
         requestedBy: USER_OWNER,
       })
     ).rejects.toThrow();
+  });
+
+  it('7. Tenant Recovery State & Concurrent-Write Financial Mutation Guard Drill', async () => {
+    const ownerToken = JwtAuth.generateToken({ userId: USER_OWNER, email: 'owner@drill.com' });
+    process.env.TRUSTED_FINANCE_FEATURES = 'recovery-center';
+
+    // 1. Acquire recovery maintenance lock on ORG_A
+    const lockRes = await request(app)
+      .post('/api/v1/recovery/maintenance/lock')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .set('x-organization-id', ORG_A)
+      .send({ reason: 'Simulated disaster recovery restore drill' });
+
+    expect(lockRes.status).toBe(200);
+    expect(lockRes.body.data.isLocked).toBe(true);
+
+    // Verify maintenance status endpoint confirms locked state
+    const statusRes = await request(app)
+      .get('/api/v1/recovery/maintenance/status')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .set('x-organization-id', ORG_A);
+
+    expect(statusRes.status).toBe(200);
+    expect(statusRes.body.data.isLocked).toBe(true);
+    expect(statusRes.body.data.reason).toBe('Simulated disaster recovery restore drill');
+
+    // 2. CONCURRENT FINANCIAL MUTATION ATTEMPTS: All must fail with HTTP 503 TENANT_RECOVERY_LOCKED
+    const invoiceAttempt = await request(app)
+      .post('/api/v1/finance/invoices')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .set('x-organization-id', ORG_A)
+      .send({
+        customerId: 'cust-123',
+        clientName: 'Concurrent Client',
+        issueDate: '2026-04-10',
+        dueDate: '2026-05-10',
+        items: [{ description: 'Cloud Services', accountId: 'acc-123', quantity: 1, unitPrice: 1000 }],
+      });
+
+    expect(invoiceAttempt.status).toBe(503);
+    expect(invoiceAttempt.body.error.code).toBe('TENANT_RECOVERY_LOCKED');
+
+    const paymentAttempt = await request(app)
+      .post('/api/v1/finance/payments-received')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .set('x-organization-id', ORG_A)
+      .send({
+        customerId: 'cust-123',
+        paymentNumber: 'PMT-RACE-001',
+        paymentDate: '2026-04-10',
+        amount: 5000,
+        depositToAccountId: 'acc-123',
+      });
+
+    expect(paymentAttempt.status).toBe(503);
+    expect(paymentAttempt.body.error.code).toBe('TENANT_RECOVERY_LOCKED');
+
+    const accountAttempt = await request(app)
+      .post('/api/v1/finance/accounts')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .set('x-organization-id', ORG_A)
+      .send({
+        code: '1050',
+        name: 'Race Condition Test Account',
+        type: 'Asset',
+        subType: 'Cash',
+      });
+
+    expect(accountAttempt.status).toBe(503);
+    expect(accountAttempt.body.error.code).toBe('TENANT_RECOVERY_LOCKED');
+
+    const expenseAttempt = await request(app)
+      .post('/api/v1/finance/expenses')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .set('x-organization-id', ORG_A)
+      .send({
+        expenseNumber: 'EXP-RACE-001',
+        expenseAccountId: 'acc-123',
+        paidFromAccountId: 'acc-456',
+        amount: 2500,
+        date: '2026-04-10',
+      });
+
+    expect(expenseAttempt.status).toBe(503);
+    expect(expenseAttempt.body.error.code).toBe('TENANT_RECOVERY_LOCKED');
+
+    // 3. Verify read-only operations on ORG_A are unaffected
+    const accountsGet = await request(app)
+      .get('/api/v1/finance/accounts')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .set('x-organization-id', ORG_A);
+
+    expect(accountsGet.status).toBe(200);
+
+    // 4. Verify un-locked tenant (ORG_B) is completely unaffected
+    const orgBAccountAttempt = await request(app)
+      .post('/api/v1/finance/accounts')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .set('x-organization-id', ORG_B)
+      .send({
+        code: '1050',
+        name: 'Org B Cash Account',
+        type: 'Asset',
+        subType: 'Cash',
+      });
+
+    expect(orgBAccountAttempt.status).toBe(201);
+
+    // 5. Release recovery maintenance lock on ORG_A
+    const unlockRes = await request(app)
+      .post('/api/v1/recovery/maintenance/unlock')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .set('x-organization-id', ORG_A);
+
+    expect(unlockRes.status).toBe(200);
+    expect(unlockRes.body.data.isLocked).toBe(false);
+
+    // 6. Verify financial mutations on ORG_A succeed normally now
+    const postUnlockAccount = await request(app)
+      .post('/api/v1/finance/accounts')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .set('x-organization-id', ORG_A)
+      .send({
+        code: '1060',
+        name: 'Post-Unlock Operating Cash',
+        type: 'Asset',
+        subType: 'Cash',
+      });
+
+    expect(postUnlockAccount.status).toBe(201);
+  });
+
+  it('8. Automatic Promotion Lock Visibility & Concurrent HTTP Write Rejection during Active Restore Drill', async () => {
+    const ownerToken = JwtAuth.generateToken({ userId: USER_OWNER, email: 'owner@drill.com' });
+    process.env.TRUSTED_FINANCE_FEATURES = 'recovery-center';
+
+    // 1. Seed chart of accounts and snapshot
+    const cashAcc = newId('acc');
+    const salesAcc = newId('acc');
+    await db.query(
+      `INSERT INTO accounts (id, organization_id, code, name, type, sub_type, balance, status) VALUES
+       ($1, $2, '1000', 'Cash', 'ASSET', 'Cash', 10000, 'Active'),
+       ($3, $2, '4000', 'Sales Revenue', 'REVENUE', 'Operating Revenue', 10000, 'Active')`,
+      [cashAcc, ORG_A, salesAcc]
+    );
+
+    const artifact = await point1Service.createArtifact(ORG_A, USER_OWNER);
+
+    // 2. Build custom pausing promoter
+    class PausingPromoter extends SqlRecoveryPromoter {
+      public onPromoteStarted?: () => void;
+      public unpausePromise?: Promise<void>;
+
+      override async promote(input: any): Promise<void> {
+        if (this.onPromoteStarted) {
+          this.onPromoteStarted();
+        }
+        if (this.unpausePromise) {
+          await this.unpausePromise;
+        }
+        return super.promote(input);
+      }
+    }
+
+    const pausingPromoter = new PausingPromoter();
+    const pausingService = new RecoveryArtifactService({
+      repository: new SqlRecoveryRepository(),
+      keyring: recoveryKeyring,
+      stager: new SqlRecoveryStager(),
+      reconcilers: [new RecoveryRowCountReconciler(), new RecoveryAccountingReconciler()],
+      ownerAuthorizer: new SqlOwnerAuthorizer(),
+      promoter: pausingPromoter,
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+    });
+
+    const stagedJob = await pausingService.stageRestore({
+      artifactId: artifact.id,
+      targetOrganizationId: ORG_A,
+      requestedBy: USER_OWNER,
+    });
+
+    let resolvePromotionStarted!: () => void;
+    let rejectPromotionStarted!: (err: any) => void;
+    const promotionStartedPromise = new Promise<void>((resolve, reject) => {
+      resolvePromotionStarted = resolve;
+      rejectPromotionStarted = reject;
+    });
+
+    let resolveUnpause!: () => void;
+    const unpausePromise = new Promise<void>((resolve) => {
+      resolveUnpause = resolve;
+    });
+
+    pausingPromoter.onPromoteStarted = () => resolvePromotionStarted();
+    pausingPromoter.unpausePromise = unpausePromise;
+
+    // 3. Initiate promotion in background
+    const promotionTask = pausingService.promoteRestore({
+      jobId: stagedJob.id,
+      targetOrganizationId: ORG_A,
+      actorUserId: USER_OWNER,
+      authenticatedAt: new Date().toISOString(),
+      confirmation: `PROMOTE RECOVERY ${stagedJob.id} TO ${ORG_A}`,
+    }).catch((err) => {
+      rejectPromotionStarted(err);
+      throw err;
+    });
+
+    // 4. Wait for promotion to enter the paused active promotion state (verifying lock was committed first)
+    await promotionStartedPromise;
+
+    // 5. CONCURRENT HTTP MUTATIONS MUST BE REJECTED WITH 503 TENANT_RECOVERY_LOCKED
+    const concurrentInvoice = await request(app)
+      .post('/api/v1/finance/invoices')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .set('x-organization-id', ORG_A)
+      .send({
+        customerId: 'cust-123',
+        clientName: 'Race Condition Customer',
+        issueDate: '2026-04-10',
+        dueDate: '2026-05-10',
+        items: [{ description: 'Intercept Item', accountId: cashAcc, quantity: 1, unitPrice: 500 }],
+      });
+
+    expect(concurrentInvoice.status).toBe(503);
+    expect(concurrentInvoice.body.error.code).toBe('TENANT_RECOVERY_LOCKED');
+
+    const concurrentAccount = await request(app)
+      .post('/api/v1/finance/accounts')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .set('x-organization-id', ORG_A)
+      .send({
+        code: '1999',
+        name: 'Concurrent Intercept Account',
+        type: 'Asset',
+        subType: 'Cash',
+      });
+
+    expect(concurrentAccount.status).toBe(503);
+    expect(concurrentAccount.body.error.code).toBe('TENANT_RECOVERY_LOCKED');
+
+    // 6. Direct financial engine transaction check also rejects
+    await expect(
+      ServerPostingEngine.postEntry(
+        {
+          organizationId: ORG_A,
+          entryNumber: 'JE-RACE-001',
+          date: '2026-04-10',
+          description: 'Concurrent race journal entry',
+          lines: [
+            { accountId: cashAcc, debit: 100, credit: 0 },
+            { accountId: salesAcc, debit: 0, credit: 100 },
+          ],
+        },
+        db
+      )
+    ).rejects.toThrow(/Organization is locked for (maintenance \/ )?disaster recovery/i);
+
+    // 7. Resume and complete promotion
+    resolveUnpause();
+    const promotedResult = await promotionTask;
+    expect(promotedResult.status).toBe('PROMOTED');
+    expect(promotedResult.rollbackArtifactId).toBeDefined();
+
+    // 8. Post-promotion HTTP write succeeds normally
+    const postPromotionAccount = await request(app)
+      .post('/api/v1/finance/accounts')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .set('x-organization-id', ORG_A)
+      .send({
+        code: '1999',
+        name: 'Post-Promotion Operating Cash',
+        type: 'Asset',
+        subType: 'Cash',
+      });
+
+    expect(postPromotionAccount.status).toBe(201);
   });
 });

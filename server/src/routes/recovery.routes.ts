@@ -47,5 +47,8 @@ router.post('/artifacts/:artifactId/stage', ...ownerRecovery, configured('stageR
 router.get('/jobs', ...ownerRecovery, configured('listJobs'));
 router.post('/jobs/:jobId/promote', ...ownerRecovery, configured('promoteRestore'));
 router.post('/jobs/:jobId/rollback', ...ownerRecovery, configured('rollbackRestore'));
+router.get('/maintenance/status', ...ownerRecovery, configured('getMaintenanceStatus'));
+router.post('/maintenance/lock', ...ownerRecovery, configured('lockMaintenance'));
+router.post('/maintenance/unlock', ...ownerRecovery, configured('unlockMaintenance'));
 
 export default protectAsyncRoutes(router);

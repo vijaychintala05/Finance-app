@@ -12,7 +12,8 @@ export type RecoveryErrorCode =
   | 'RECOVERY_CONFIRMATION_MISMATCH'
   | 'RECOVERY_JOB_NOT_READY'
   | 'RECOVERY_ROLLBACK_UNAVAILABLE'
-  | 'RECOVERY_CONFIGURATION_INVALID';
+  | 'RECOVERY_CONFIGURATION_INVALID'
+  | 'TENANT_RECOVERY_LOCKED';
 
 export class RecoveryError extends Error {
   constructor(

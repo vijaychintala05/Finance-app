@@ -19,6 +19,7 @@ import point1Routes from './routes/point1.routes';
 import { domainErrorMiddleware } from './middleware/domainError.middleware';
 import { createInvitationAcceptanceRouter, createMembershipManagementRouter } from './access/MembershipRouter';
 import { requireTrustedFinanceFeature } from './middleware/trustedFeature.middleware';
+import { tenantRecoveryLockMiddleware } from './middleware/tenantRecoveryLock.middleware';
 import recurringRoutes from './routes/recurring.routes';
 import recoveryRoutes from './routes/recovery.routes';
 import { identityRouter } from './routes/identity.routes';
@@ -78,18 +79,19 @@ app.use('/api/v1/access', requireTrustedFinanceFeature('team-access'), createInv
 app.get('/api/v1/public/quotation/:token', persistentRateLimit('quotation-view', 60, 60), Phase8Controller.getPublicQuotation);
 app.post('/api/v1/public/quotation/:token/respond', persistentRateLimit('quotation-response', 10, 60), Phase8Controller.respondPublicQuotation);
 
-// Apply global security & tenant isolation middleware to all other /api/v1 routes
-app.use('/api/v1/organizations', authMiddleware, organizationIsolationMiddleware, idempotencyMiddleware, organizationRoutes);
-app.use('/api/v1/finance', authMiddleware, organizationIsolationMiddleware, idempotencyMiddleware, financeRoutes);
-app.use('/api/v1/banking', authMiddleware, organizationIsolationMiddleware, idempotencyMiddleware, bankingRoutes);
-app.use('/api/v1/security', authMiddleware, organizationIsolationMiddleware, idempotencyMiddleware, securityRoutes);
-app.use('/api/v1/point1', authMiddleware, organizationIsolationMiddleware, idempotencyMiddleware, point1Routes);
-app.use('/api/v1/recurring', authMiddleware, organizationIsolationMiddleware, idempotencyMiddleware, recurringRoutes);
+// Apply global security, tenant isolation & recovery mutation lock middleware to all business routes
+app.use('/api/v1/organizations', authMiddleware, organizationIsolationMiddleware, tenantRecoveryLockMiddleware, idempotencyMiddleware, organizationRoutes);
+app.use('/api/v1/finance', authMiddleware, organizationIsolationMiddleware, tenantRecoveryLockMiddleware, idempotencyMiddleware, financeRoutes);
+app.use('/api/v1/banking', authMiddleware, organizationIsolationMiddleware, tenantRecoveryLockMiddleware, idempotencyMiddleware, bankingRoutes);
+app.use('/api/v1/security', authMiddleware, organizationIsolationMiddleware, tenantRecoveryLockMiddleware, idempotencyMiddleware, securityRoutes);
+app.use('/api/v1/point1', authMiddleware, organizationIsolationMiddleware, tenantRecoveryLockMiddleware, idempotencyMiddleware, point1Routes);
+app.use('/api/v1/recurring', authMiddleware, organizationIsolationMiddleware, tenantRecoveryLockMiddleware, idempotencyMiddleware, recurringRoutes);
 app.use('/api/v1/recovery', authMiddleware, organizationIsolationMiddleware, idempotencyMiddleware, recoveryRoutes);
 app.use(
   '/api/v1/access',
   authMiddleware,
   organizationIsolationMiddleware,
+  tenantRecoveryLockMiddleware,
   idempotencyMiddleware,
   requireTrustedFinanceFeature('team-access'),
   createMembershipManagementRouter()
@@ -101,6 +103,7 @@ app.use(
   '/api/v1',
   authMiddleware,
   organizationIsolationMiddleware,
+  tenantRecoveryLockMiddleware,
   idempotencyMiddleware,
   phase8Routes,
   financeRoutes

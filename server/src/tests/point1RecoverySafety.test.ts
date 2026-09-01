@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
-import type { DbQueryClient } from '../database/db';
+import { describe, expect, it, beforeEach } from 'vitest';
+import { db, type DbQueryClient } from '../database/db';
+import { MigrationRunner } from '../database/migrationRunner';
 import { RecoveryArtifactService } from '../recovery/RecoveryArtifactService';
 import { sealRecoveryPayload, sha256 } from '../recovery/crypto';
 import { RecoveryError } from '../recovery/errors';
@@ -19,7 +20,8 @@ class MemoryRepository implements RecoveryRepository {
   async getJob(id: string) { return this.jobs.get(id) || null; }
   async setJobValidated(id: string, reconciliation: any[]) { const job = this.jobs.get(id)!; this.jobs.set(id, { ...job, status: 'VALIDATED', reconciliation }); }
   async setJobFailed(id: string) { const job = this.jobs.get(id); if (job) this.jobs.set(id, { ...job, status: 'FAILED' }); }
-  async setJobPromoted(id: string, promotedBy: string, promotedAt: string) { const job = this.jobs.get(id)!; this.jobs.set(id, { ...job, status: 'PROMOTED', promotedBy, promotedAt }); }
+  async setJobPromoted(id: string, promotedBy: string, promotedAt: string, rollbackArtifactId: string) { const job = this.jobs.get(id)!; this.jobs.set(id, { ...job, status: 'PROMOTED', promotedBy, promotedAt, rollbackArtifactId }); }
+  async setJobRolledBack(id: string, rolledBackBy: string, rolledBackAt: string) { const job = this.jobs.get(id)!; this.jobs.set(id, { ...job, status: 'ROLLED_BACK', rolledBackBy, rolledBackAt }); }
   async listArtifacts(organizationId: string) { return [...this.artifacts.values()].filter((artifact) => artifact.organizationId === organizationId); }
   async listJobs(organizationId: string) { return [...this.jobs.values()].filter((job) => job.targetOrganizationId === organizationId); }
 }
@@ -61,6 +63,10 @@ function harness(reconciliationPasses = true) {
 }
 
 describe('Point-1 recovery safety', () => {
+  beforeEach(async () => {
+    await MigrationRunner.runMigrations(db);
+  });
+
   it('rejects a tampered artifact before staging', async () => {
     const { service, repository } = harness();
     const artifact = repository.artifacts.get('artifact-1')!;

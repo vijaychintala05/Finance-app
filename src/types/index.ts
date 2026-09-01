@@ -66,11 +66,16 @@ export type AccountSubType =
   | 'Cash'
   | 'Digital Wallet'
   | 'Undeposited Funds'
+  | 'Payment Clearing'
   | 'Accounts Receivable'
   | 'Inventory'
   | 'Fixed Assets'
+  | 'Accumulated Depreciation'
+  | 'Other Current Asset'
   | 'Other Current Assets'
+  | 'Other Asset'
   | 'Other Assets'
+  | 'Deferred Tax Asset'
   | 'Cash & Bank'
   | 'Current Asset'
   | 'Fixed Asset'
@@ -81,13 +86,17 @@ export type AccountSubType =
   | 'Payroll Liabilities'
   | 'Loans'
   | 'Loan/Credit'
+  | 'Other Liability'
   | 'Other Liabilities'
+  | 'Other Current Liability'
   | 'Current Liability'
   | 'Long Term Liability'
+  | 'Deferred Tax Liability'
   // Equity
   | 'Capital'
   | 'Retained Earnings'
   | 'Drawings'
+  | 'Opening Balance Equity'
   | 'Other Equity'
   | 'Equity'
   // Income / Revenue
@@ -100,6 +109,8 @@ export type AccountSubType =
   | 'Materials'
   | 'Direct Labor'
   | 'Subcontractors'
+  | 'Freight'
+  | 'Site Expenses'
   | 'Other Direct Costs'
   | 'Direct Expense / Cost of Goods'
   // Expenses
@@ -147,6 +158,9 @@ export interface Account {
   lockedRegion?: string;
   reportingGroup?: string;
   normalBalance?: 'Debit' | 'Credit';
+  systemRole?: string;
+  financialStatement?: 'BALANCE_SHEET' | 'PROFIT_AND_LOSS';
+  cashFlowClassification?: 'OPERATING' | 'INVESTING' | 'FINANCING';
   allowDirectPosting?: boolean;
   archivedAt?: string;
   archivedBy?: string;

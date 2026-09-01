@@ -15,7 +15,7 @@ import {
   SlidersHorizontal,
   Landmark,
 } from 'lucide-react';
-import { Account, AccountSubType, AccountType } from '../../types';
+import { Account } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 import { formatCurrency } from '../../utils/formatters';
 import { AccountModal } from './AccountModal';
@@ -23,7 +23,6 @@ import { AccountLedgerModal } from './AccountLedgerModal';
 import { QuickAddAccountModal } from '../common/QuickAddAccountModal';
 
 export interface CategoryTreeSection {
-  type: AccountType;
   label: string;
   badgeColor: string;
   subTypes: string[];
@@ -31,21 +30,26 @@ export interface CategoryTreeSection {
 
 export const CATEGORY_TREE_SPECIFICATION: CategoryTreeSection[] = [
   {
-    type: 'Asset',
     label: 'Assets',
     badgeColor: 'bg-emerald-100 text-emerald-800 border-emerald-200',
     subTypes: [
       'Bank',
       'Cash',
+      'Digital Wallet',
+      'Undeposited Funds',
+      'Payment Clearing',
       'Accounts Receivable',
       'Inventory',
       'Fixed Assets',
+      'Accumulated Depreciation',
+      'Other Current Asset',
       'Other Current Assets',
+      'Other Asset',
       'Other Assets',
+      'Deferred Tax Asset',
     ],
   },
   {
-    type: 'Liability',
     label: 'Liabilities',
     badgeColor: 'bg-amber-100 text-amber-800 border-amber-200',
     subTypes: [
@@ -54,29 +58,24 @@ export const CATEGORY_TREE_SPECIFICATION: CategoryTreeSection[] = [
       'Taxes Payable',
       'Payroll Liabilities',
       'Loans',
+      'Other Current Liability',
+      'Other Liability',
       'Other Liabilities',
+      'Long Term Liability',
+      'Deferred Tax Liability',
     ],
   },
   {
-    type: 'Equity',
     label: 'Equity',
     badgeColor: 'bg-purple-100 text-purple-800 border-purple-200',
-    subTypes: ['Capital', 'Retained Earnings', 'Drawings', 'Other Equity'],
+    subTypes: ['Capital', 'Retained Earnings', 'Drawings', 'Opening Balance Equity', 'Other Equity'],
   },
   {
-    type: 'Income',
     label: 'Income',
     badgeColor: 'bg-blue-100 text-blue-800 border-blue-200',
-    subTypes: ['Sales', 'Services', 'Other Operating Income'],
+    subTypes: ['Sales', 'Services', 'Operating Revenue', 'Other Operating Income', 'Other Revenue', 'Interest Income', 'Asset Gains', 'Other Income'],
   },
   {
-    type: 'Cost of Goods Sold',
-    label: 'Cost of Goods Sold',
-    badgeColor: 'bg-orange-100 text-orange-800 border-orange-200',
-    subTypes: ['Materials', 'Direct Labor', 'Subcontractors', 'Other Direct Costs'],
-  },
-  {
-    type: 'Expense',
     label: 'Expenses',
     badgeColor: 'bg-rose-100 text-rose-800 border-rose-200',
     subTypes: [
@@ -91,19 +90,10 @@ export const CATEGORY_TREE_SPECIFICATION: CategoryTreeSection[] = [
       'Financial Expenses',
       'Depreciation & Amortization',
       'Miscellaneous Expenses',
+      'Interest Expense',
+      'Asset Losses',
+      'Other Expenses',
     ],
-  },
-  {
-    type: 'Other Income',
-    label: 'Other Income',
-    badgeColor: 'bg-teal-100 text-teal-800 border-teal-200',
-    subTypes: ['Interest Income', 'Asset Gains', 'Other Income'],
-  },
-  {
-    type: 'Other Expense',
-    label: 'Other Expenses',
-    badgeColor: 'bg-indigo-100 text-indigo-800 border-indigo-200',
-    subTypes: ['Interest Expense', 'Asset Losses', 'Other Expenses'],
   },
 ];
 
@@ -129,10 +119,7 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
     Liabilities: true,
     Equity: true,
     Income: true,
-    'Cost of Goods Sold': true,
     Expenses: true,
-    'Other Income': true,
-    'Other Expenses': true,
   });
 
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -199,8 +186,8 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
     if (acc.type === 'Asset') return 'Assets';
     if (acc.type === 'Liability') return 'Liabilities';
     if (acc.type === 'Equity') return 'Equity';
-    if (acc.type === 'Income' || acc.type === 'Revenue') return 'Income';
-    if (acc.type === 'Cost of Goods Sold') return 'Cost of Goods Sold';
+    if (acc.type === 'Income' || acc.type === 'Revenue' || acc.type === 'Other Income') return 'Income';
+    if (acc.type === 'Cost of Goods Sold') return 'Expenses';
     if (acc.type === 'Expense') {
       if (
         acc.subType === 'Materials' ||
@@ -209,12 +196,11 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
         acc.subType === 'Other Direct Costs' ||
         acc.subType.includes('Direct Expense')
       ) {
-        return 'Cost of Goods Sold';
+        return 'Expenses';
       }
       return 'Expenses';
     }
-    if (acc.type === 'Other Income') return 'Other Income';
-    if (acc.type === 'Other Expense') return 'Other Expenses';
+    if (acc.type === 'Other Expense') return 'Expenses';
     return 'Expenses';
   };
 
@@ -238,6 +224,13 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
     return matchesSearch && matchesType && matchesSubCat;
   });
   const accountNameById = new Map(accounts.map((account) => [account.id, account.name]));
+  const activeChildCountByParentId = accounts.reduce((counts, account) => {
+    if (account.parentAccountId && account.status === 'Active') {
+      counts.set(account.parentAccountId, (counts.get(account.parentAccountId) || 0) + 1);
+    }
+    return counts;
+  }, new Map<string, number>());
+  const formatSystemRole = (systemRole: string) => systemRole.toLowerCase().split('_').map((word) => word[0].toUpperCase() + word.slice(1)).join(' ');
 
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-7xl mx-auto">
@@ -249,7 +242,7 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
             <span>Chart of Accounts (COA) Hierarchy</span>
           </h2>
           <p className="text-xs text-slate-500 mt-1">
-            Complete structured ledger with Assets, Liabilities, Equity, Income, COGS, Expenses, Other Income & Expenses
+            Five accounting categories, typed accounts, nested sub-accounts, and protected system controls.
           </p>
         </div>
 
@@ -353,7 +346,7 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
                 : 'text-slate-600 hover:bg-slate-100'
             }`}
           >
-            All (8 Categories)
+            All (5 Categories)
           </button>
           {CATEGORY_TREE_SPECIFICATION.map((spec) => (
             <button
@@ -396,8 +389,7 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
           {CATEGORY_TREE_SPECIFICATION.filter(
             (catSpec) =>
               selectedTypeFilter === 'All' ||
-              selectedTypeFilter === catSpec.label ||
-              selectedTypeFilter === catSpec.type
+              selectedTypeFilter === catSpec.label
           ).map((catSpec) => {
             const isExpanded = expandedCategories[catSpec.label] ?? true;
 
@@ -546,9 +538,27 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
                                             </span>
                                           )}
 
-                                          {parentName && (
-                                            <span className="text-[10px] font-semibold text-slate-500">under {parentName}</span>
-                                          )}
+                                           {parentName && (
+                                             <span className="text-[10px] font-semibold text-slate-500">under {parentName}</span>
+                                           )}
+
+                                           {acc.isSystemAccount && (
+                                             <span className="text-[10px] font-extrabold bg-violet-50 text-violet-800 border border-violet-200 px-1.5 py-0.2 rounded" title={acc.systemRole ? `System role: ${formatSystemRole(acc.systemRole)}` : 'Provisioned system account'}>
+                                               {acc.systemRole ? formatSystemRole(acc.systemRole) : 'System'}
+                                             </span>
+                                           )}
+
+                                           {(activeChildCountByParentId.get(acc.id) || 0) > 0 && (
+                                             <span className="text-[10px] font-extrabold bg-slate-100 text-slate-700 border border-slate-200 px-1.5 py-0.2 rounded">Group account</span>
+                                           )}
+
+                                           {acc.allowDirectPosting === false && (
+                                             <span className="text-[10px] font-extrabold bg-sky-50 text-sky-800 border border-sky-200 px-1.5 py-0.2 rounded">No direct posting</span>
+                                           )}
+
+                                           {acc.normalBalance && (
+                                             <span className="text-[10px] font-extrabold bg-slate-50 text-slate-600 border border-slate-200 px-1.5 py-0.2 rounded">{acc.normalBalance === 'Debit' ? 'Dr' : 'Cr'}</span>
+                                           )}
 
                                           {acc.status === 'Archived' && (
                                             <span className="text-[10px] font-extrabold bg-slate-200 text-slate-700 border border-slate-300 px-1.5 py-0.2 rounded">Archived</span>
@@ -670,7 +680,19 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
                     </td>
                     <td className="p-3 font-semibold text-slate-900 flex items-center gap-2">
                       <span>{acc.name}</span>
-                      {acc.parentAccountId && accountNameById.get(acc.parentAccountId) && <span className="text-[10px] font-medium text-slate-500">under {accountNameById.get(acc.parentAccountId)}</span>}
+                       {acc.parentAccountId && accountNameById.get(acc.parentAccountId) && <span className="text-[10px] font-medium text-slate-500">under {accountNameById.get(acc.parentAccountId)}</span>}
+                       {acc.isSystemAccount && <span className="text-[10px] font-extrabold bg-violet-50 text-violet-800 border border-violet-200 px-1.5 py-0.2 rounded shrink-0" title={acc.systemRole ? `System role: ${formatSystemRole(acc.systemRole)}` : 'Provisioned system account'}>{acc.systemRole ? formatSystemRole(acc.systemRole) : 'System'}</span>}
+                       {(activeChildCountByParentId.get(acc.id) || 0) > 0 && <span className="text-[10px] font-extrabold bg-slate-100 text-slate-700 border border-slate-200 px-1.5 py-0.2 rounded shrink-0">Group account</span>}
+                       {acc.allowDirectPosting === false && <span className="text-[10px] font-extrabold bg-sky-50 text-sky-800 border border-sky-200 px-1.5 py-0.2 rounded shrink-0">No direct posting</span>}
+                      {acc.status === 'Archived' && <span className="text-[10px] font-extrabold bg-slate-200 text-slate-700 border border-slate-300 px-1.5 py-0.2 rounded shrink-0">Archived</span>}
+                      {acc.isLocked && (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-extrabold bg-rose-100 text-rose-800 border border-rose-300 px-1.5 py-0.2 rounded shrink-0">
+                          <Lock className="w-2.5 h-2.5 text-rose-600" />
+                          <span>Locked</span>
+                        </span>
+                      )}
+                    </td>
+                    <td className="p-3">
                       {acc.status === 'Archived' && <span className="text-[10px] font-extrabold bg-slate-200 text-slate-700 border border-slate-300 px-1.5 py-0.2 rounded shrink-0">Archived</span>}
                       {acc.isLocked && (
                         <span className="inline-flex items-center gap-1 text-[10px] font-extrabold bg-rose-100 text-rose-800 border border-rose-300 px-1.5 py-0.2 rounded shrink-0">

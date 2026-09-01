@@ -99,4 +99,29 @@ export class RecoveryApi {
       res.status(200).json({ success: true, data: job });
     } catch (error) { sendError(res, error); }
   };
+
+  public lockMaintenance = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const context = auth(req);
+      const reason = String(req.body?.reason || 'Disaster recovery maintenance');
+      const info = await this.service.lockMaintenance(context.organizationId, context.userId, reason);
+      res.status(200).json({ success: true, data: info });
+    } catch (error) { sendError(res, error); }
+  };
+
+  public unlockMaintenance = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const context = auth(req);
+      const info = await this.service.unlockMaintenance(context.organizationId);
+      res.status(200).json({ success: true, data: info });
+    } catch (error) { sendError(res, error); }
+  };
+
+  public getMaintenanceStatus = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const context = auth(req);
+      const info = await this.service.getMaintenanceStatus(context.organizationId);
+      res.status(200).json({ success: true, data: info });
+    } catch (error) { sendError(res, error); }
+  };
 }

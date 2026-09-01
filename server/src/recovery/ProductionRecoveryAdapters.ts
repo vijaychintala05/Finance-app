@@ -38,11 +38,12 @@ export class SqlRecoveryStager implements RecoveryStager {
   public async stage({ job, payload, client }: { job: RecoveryJob; payload: RecoveryPayload; client: DbQueryClient }): Promise<void> {
     for (const table of POINT1_RECOVERY_SCHEMA) {
       for (const row of payload.tables[table.name]) {
+        const rowKey = String(row.id || row.organization_id || row.key || newId('row'));
         await client.query(
           `INSERT INTO recovery_staging_rows
             (id, restore_job_id, organization_id, table_name, row_key, row_data)
            VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
-          [newId('rcv-row'), job.id, job.stagingOrganizationId, table.name, String(row.id), JSON.stringify(row)]
+          [newId('rcv-row'), job.id, job.stagingOrganizationId, table.name, rowKey, JSON.stringify(row)]
         );
       }
     }

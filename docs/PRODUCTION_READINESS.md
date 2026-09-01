@@ -19,7 +19,7 @@
 - Independent invoice-output and bill-input tax control reconciliation
 - Exact reconciliation of every cached account balance to the posted general ledger
 - Linked, audited, duplicate-safe reversals for invoices, payments received, expenses, bills, and manual journals
-- Versioned schema baseline (`2026.08.12-v1`) enforced by readiness checks
+- Versioned schema baseline (`2026.08.31-v7-expense-receipts`) enforced by migration checks
 - V1 currency allowlist restricted to two-decimal AED, AUD, CAD, EUR, GBP, INR, SGD, and USD ledgers
 - Fail-closed gates for workflows that have not completed financial certification
 - Two-key optional-feature promotion: source-controlled certification plus deployment configuration
@@ -55,7 +55,7 @@ Keep a workflow gated until all items pass:
 - subledger-to-GL reconciliation and report tests
 - monitoring signals and operator runbook
 
-Currently gated workflows include bank account mutation/import/reconciliation, credit notes/refunds/write-offs, customer-advance applications, delivery challans, fixed assets, recurring generation, period close/reopen, backup/restore/export, cash-flow classification and forecasting, customer/vendor statements, budget reporting, and the legacy accountant overview. The unsafe legacy free-form journal reversal remains disabled; the certified manual-journal reversal is enabled. The source-controlled optional-feature allowlist is empty, so environment flags cannot enable prototype workflows.
+For the authoritative status of all domain workflows and feature flags, see the [Capability Matrix](file:///c:/Users/HI/Desktop/APP/finance%20app/docs/CAPABILITY_MATRIX.md). Active feature flags require explicit environment configuration in production (`ENABLE_VENDOR_SETTLEMENTS`, `ENABLE_EXPENSE_RECEIPTS`, `ENABLE_APPROVALS`, `ENABLE_QUOTATIONS`, `ENABLE_CREDIT_NOTES`, `ENABLE_BANKING`). Prototype and untested paths remain strictly disabled.
 
 ## Certified application scope
 

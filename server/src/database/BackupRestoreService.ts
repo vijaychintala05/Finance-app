@@ -21,10 +21,13 @@ export interface BackupPayload {
 export class BackupRestoreService {
   private static TENANT_TABLES = [
     'organization_settings',
+    'organization_profiles',
     'roles',
     'role_permissions',
     'organization_members',
+    'tax_rates',
     'accounts',
+    'accounting_defaults',
     'bank_accounts',
     'bank_statement_imports',
     'bank_statement_transactions',
@@ -66,6 +69,8 @@ export class BackupRestoreService {
     'journal_lines',
     'period_locks',
     'period_close_checklists',
+    'accounting_period_closes',
+    'accounting_period_close_events',
     'items',
     'quotation_revisions',
     'quotation_templates',
@@ -75,6 +80,8 @@ export class BackupRestoreService {
     'recurring_transaction_profiles',
     'recurring_transaction_occurrences',
     'fixed_assets',
+    'fixed_asset_events',
+    'fixed_asset_depreciation_entries',
     'financial_reversals',
     'audit_logs',
   ];

@@ -620,6 +620,16 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   }, [refreshAuthoritativeData]);
 
+  const refreshAccountsAfterCommittedWrite = useCallback(async (): Promise<void> => {
+    if (!currentOrgId || !localStorage.getItem('firmbooks_authenticated')) return;
+    const requestedOrgId = currentOrgId;
+    localStorage.setItem('active_organization_id', requestedOrgId);
+    const response = await apiClient.get<any[]>('/finance/accounts');
+    if (response.error) throw new Error(response.error);
+    if (activeOrgIdRef.current !== requestedOrgId) return;
+    setAccounts(camelizeRecord(response.data || []));
+  }, [currentOrgId]);
+
   // PostgreSQL is the sole authority for accounting data. Browser storage is
   // intentionally limited to non-financial preferences and never used as a ledger fallback.
   useEffect(() => {
@@ -797,14 +807,24 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const response = await apiClient.post<Account>('/finance/accounts', accountData);
     if (!response.data) throw new Error(response.error || 'Account could not be created');
     const newAcc: Account = { ...accountData, ...response.data };
-    await refreshAfterCommittedWrite();
+    try {
+      await refreshAccountsAfterCommittedWrite();
+    } catch (error) {
+      console.error('A committed account could not be reloaded for verification:', error);
+      window.alert('The account was created, but its list could not be refreshed. Do not submit it again; reload the page before continuing.');
+    }
     return newAcc;
   };
 
   const updateAccount = async (id: string, updated: Partial<Account>): Promise<Account> => {
     const response = await apiClient.patch<Account>(`/finance/accounts/${id}`, updated);
     if (!response.data) throw new Error(response.error || 'Account could not be updated');
-    await refreshAfterCommittedWrite();
+    try {
+      await refreshAccountsAfterCommittedWrite();
+    } catch (error) {
+      console.error('A committed account change could not be reloaded for verification:', error);
+      window.alert('The account change was saved, but its list could not be refreshed. Do not submit it again; reload the page before continuing.');
+    }
     return camelizeRecord(response.data) as Account;
   };
 

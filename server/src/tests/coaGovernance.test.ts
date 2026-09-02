@@ -101,4 +101,45 @@ describe('chart of accounts governance', () => {
     const audit = await db.query(`SELECT action FROM audit_logs WHERE organization_id = $1 AND action = 'ACCOUNTING_DEFAULT_UPDATED'`, [orgId]);
     expect(audit.rows).toHaveLength(1);
   });
+
+  it('deletes only unused custom accounts and preserves all referenced or system accounts', async () => {
+    const disposable = await request(app).post('/api/v1/finance/accounts').set(auth).send({
+      code: '8990', name: 'Temporary supplies', type: 'Expense', subType: 'Office & Administrative',
+    });
+    expect(disposable.status).toBe(201);
+
+    const deleted = await request(app).delete(`/api/v1/finance/accounts/${disposable.body.id}`).set(auth);
+    expect(deleted.status).toBe(200);
+    expect(deleted.body.deleted).toBe(true);
+    const removedAccount = await db.query(`SELECT id FROM accounts WHERE organization_id = $1 AND id = $2`, [orgId, disposable.body.id]);
+    expect(removedAccount.rows).toHaveLength(0);
+    const deletionAudit = await db.query(
+      `SELECT action FROM audit_logs WHERE organization_id = $1 AND entity_id = $2 AND action = 'ACCOUNT_DELETED'`,
+      [orgId, disposable.body.id]
+    );
+    expect(deletionAudit.rows).toHaveLength(1);
+
+    const posted = await request(app).post('/api/v1/finance/accounts').set(auth).send({
+      code: '8991', name: 'Posted supplies', type: 'Expense', subType: 'Office & Administrative',
+    });
+    expect(posted.status).toBe(201);
+    await db.query(
+      `INSERT INTO journal_entries (id, organization_id, entry_number, date, status)
+       VALUES ($1, $2, 'JE-COA-DELETE', '2026-08-24', 'Posted')`,
+      ['je-coa-delete', orgId]
+    );
+    await db.query(
+      `INSERT INTO journal_lines (id, journal_entry_id, organization_id, account_id, debit, credit)
+       VALUES ($1, $2, $3, $4, 10, 0)`,
+      ['jl-coa-delete', 'je-coa-delete', orgId, posted.body.id]
+    );
+    const referenced = await request(app).delete(`/api/v1/finance/accounts/${posted.body.id}`).set(auth);
+    expect(referenced.status).toBe(409);
+    expect(referenced.body.error).toMatch(/journal entry/i);
+
+    const systemAccount = (await db.query(`SELECT id FROM accounts WHERE organization_id = $1 AND code = '1000'`, [orgId])).rows[0];
+    const protectedDeletion = await request(app).delete(`/api/v1/finance/accounts/${systemAccount.id}`).set(auth);
+    expect(protectedDeletion.status).toBe(400);
+    expect(protectedDeletion.body.error).toMatch(/cannot be deleted/i);
+  });
 });

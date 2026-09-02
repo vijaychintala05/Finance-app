@@ -7,6 +7,10 @@ function getOrgId(req: Request): string {
   return orgId;
 }
 
+function sanitizeError(e: any): string {
+  return process.env.NODE_ENV === 'production' ? 'Internal server error' : (e?.message || 'Internal server error');
+}
+
 export class BankingController {
   // GET /api/banking/accounts
   public static async getAccounts(req: Request, res: Response) {
@@ -15,7 +19,7 @@ export class BankingController {
       const accounts = await BankReconciliationService.getBankAccounts(orgId);
       res.json({ success: true, data: accounts });
     } catch (e: any) {
-      res.status(500).json({ success: false, error: e.message });
+      res.status(500).json({ success: false, error: sanitizeError(e) });
     }
   }
 
@@ -58,7 +62,7 @@ export class BankingController {
 
       res.status(201).json({ success: true, data: result, ...result });
     } catch (e: any) {
-      res.status(500).json({ success: false, error: e.message });
+      res.status(500).json({ success: false, error: sanitizeError(e) });
     }
   }
 
@@ -70,7 +74,7 @@ export class BankingController {
       const imports = await BankReconciliationService.getStatementImports(orgId, bankAccountId);
       res.json({ success: true, data: imports });
     } catch (e: any) {
-      res.status(500).json({ success: false, error: e.message });
+      res.status(500).json({ success: false, error: sanitizeError(e) });
     }
   }
 
@@ -93,7 +97,7 @@ export class BankingController {
 
       res.json({ success: true, data: txs, transactions: txs });
     } catch (e: any) {
-      res.status(500).json({ success: false, error: e.message });
+      res.status(500).json({ success: false, error: sanitizeError(e) });
     }
   }
 
@@ -110,7 +114,7 @@ export class BankingController {
       const suggestions = await BankReconciliationService.getMatchingSuggestions(orgId, transactionId, candidates || []);
       res.json({ success: true, data: suggestions });
     } catch (e: any) {
-      res.status(500).json({ success: false, error: e.message });
+      res.status(500).json({ success: false, error: sanitizeError(e) });
     }
   }
 
@@ -151,7 +155,7 @@ export class BankingController {
 
       res.status(200).json({ success: true, data: match, ...match });
     } catch (e: any) {
-      res.status(500).json({ success: false, error: e.message });
+      res.status(500).json({ success: false, error: sanitizeError(e) });
     }
   }
 
@@ -164,7 +168,7 @@ export class BankingController {
       const ok = await BankReconciliationService.unmatchTransaction(orgId, matchId, (req as any).auth.userId);
       res.json({ success: ok });
     } catch (e: any) {
-      res.status(500).json({ success: false, error: e.message });
+      res.status(500).json({ success: false, error: sanitizeError(e) });
     }
   }
 
@@ -175,7 +179,7 @@ export class BankingController {
       const rules = await BankReconciliationService.getRules(orgId);
       res.json({ success: true, data: rules });
     } catch (e: any) {
-      res.status(500).json({ success: false, error: e.message });
+      res.status(500).json({ success: false, error: sanitizeError(e) });
     }
   }
 
@@ -199,7 +203,7 @@ export class BankingController {
       const ok = await BankReconciliationService.deleteRule(orgId, ruleId);
       res.json({ success: ok });
     } catch (e: any) {
-      res.status(500).json({ success: false, error: e.message });
+      res.status(500).json({ success: false, error: sanitizeError(e) });
     }
   }
 
@@ -225,7 +229,7 @@ export class BankingController {
 
       res.json({ success: true, data: summary });
     } catch (e: any) {
-      res.status(500).json({ success: false, error: e.message });
+      res.status(500).json({ success: false, error: sanitizeError(e) });
     }
   }
 

@@ -192,66 +192,80 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
 
           {isNewMenuOpen && (
-            <div className="absolute right-0 mt-2 w-56 bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 py-2 z-50 animate-fade-in text-xs space-y-1">
-              <div className="px-3 py-1 font-bold text-[10px] text-slate-400 uppercase tracking-wider">
-                Certified workflows
+            <div className="absolute right-0 mt-2 w-60 bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 p-1.5 z-50 animate-fade-in text-xs space-y-0.5">
+              <div className="px-3 py-1.5 font-bold text-[10px] text-slate-400 dark:text-slate-500 uppercase tracking-wider">
+                Sales & Revenue
               </div>
               <button
                 onClick={() => handleQuickNew('clients', true)}
-                className="w-full text-left px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center space-x-2 text-slate-700 dark:text-slate-200 cursor-pointer"
+                className="w-full text-left px-3 py-2 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800/80 flex items-center space-x-2.5 text-slate-700 dark:text-slate-200 cursor-pointer transition-colors active:scale-98"
               >
-                <User className="w-3.5 h-3.5 text-blue-500" />
-                <span>New Customer</span>
+                <div className="p-1 rounded-lg bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-400">
+                  <User className="w-3.5 h-3.5" />
+                </div>
+                <span className="font-medium">New Customer</span>
               </button>
               <button
                 onClick={() => handleQuickNew('invoices', true)}
-                className="w-full text-left px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center space-x-2 text-slate-700 dark:text-slate-200 cursor-pointer"
+                className="w-full text-left px-3 py-2 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800/80 flex items-center space-x-2.5 text-slate-700 dark:text-slate-200 cursor-pointer transition-colors active:scale-98"
               >
-                <FileSpreadsheet className="w-3.5 h-3.5 text-blue-500" />
-                <span>New Invoice</span>
+                <div className="p-1 rounded-lg bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-400">
+                  <FileSpreadsheet className="w-3.5 h-3.5" />
+                </div>
+                <span className="font-medium">New Invoice</span>
               </button>
               <button
                 onClick={() => handleQuickNew('payments_received', true)}
-                className="w-full text-left px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center space-x-2 text-slate-700 dark:text-slate-200 cursor-pointer"
+                className="w-full text-left px-3 py-2 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800/80 flex items-center space-x-2.5 text-slate-700 dark:text-slate-200 cursor-pointer transition-colors active:scale-98"
               >
-                <CreditCard className="w-3.5 h-3.5 text-emerald-500" />
-                <span>Payment Received</span>
+                <div className="p-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400">
+                  <CreditCard className="w-3.5 h-3.5" />
+                </div>
+                <span className="font-medium">Payment Received</span>
               </button>
 
-              <div className="px-3 py-1 pt-2 font-bold text-[10px] text-slate-400 uppercase tracking-wider border-t border-slate-100 dark:border-slate-800">
+              <div className="px-3 py-1.5 pt-2 font-bold text-[10px] text-slate-400 dark:text-slate-500 uppercase tracking-wider border-t border-slate-100 dark:border-slate-800">
                 Purchases & AP
               </div>
               <button
                 onClick={() => handleQuickNew('vendors', true)}
-                className="w-full text-left px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center space-x-2 text-slate-700 dark:text-slate-200 cursor-pointer"
+                className="w-full text-left px-3 py-2 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800/80 flex items-center space-x-2.5 text-slate-700 dark:text-slate-200 cursor-pointer transition-colors active:scale-98"
               >
-                <User className="w-3.5 h-3.5 text-amber-500" />
-                <span>New Vendor</span>
+                <div className="p-1 rounded-lg bg-amber-50 dark:bg-amber-950/50 text-amber-600 dark:text-amber-400">
+                  <User className="w-3.5 h-3.5" />
+                </div>
+                <span className="font-medium">New Vendor</span>
               </button>
               <button
                 onClick={() => handleQuickNew('expenses', true)}
-                className="w-full text-left px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center space-x-2 text-slate-700 dark:text-slate-200 cursor-pointer"
+                className="w-full text-left px-3 py-2 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800/80 flex items-center space-x-2.5 text-slate-700 dark:text-slate-200 cursor-pointer transition-colors active:scale-98"
               >
-                <ShoppingBag className="w-3.5 h-3.5 text-amber-500" />
-                <span>New Expense</span>
+                <div className="p-1 rounded-lg bg-amber-50 dark:bg-amber-950/50 text-amber-600 dark:text-amber-400">
+                  <ShoppingBag className="w-3.5 h-3.5" />
+                </div>
+                <span className="font-medium">New Expense</span>
               </button>
               <button
                 onClick={() => handleQuickNew('bills', true)}
-                className="w-full text-left px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center space-x-2 text-slate-700 dark:text-slate-200 cursor-pointer"
+                className="w-full text-left px-3 py-2 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800/80 flex items-center space-x-2.5 text-slate-700 dark:text-slate-200 cursor-pointer transition-colors active:scale-98"
               >
-                <FileSpreadsheet className="w-3.5 h-3.5 text-rose-500" />
-                <span>New Vendor Bill</span>
+                <div className="p-1 rounded-lg bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400">
+                  <FileSpreadsheet className="w-3.5 h-3.5" />
+                </div>
+                <span className="font-medium">New Vendor Bill</span>
               </button>
 
-              <div className="px-3 py-1 pt-2 font-bold text-[10px] text-slate-400 uppercase tracking-wider border-t border-slate-100 dark:border-slate-800">
+              <div className="px-3 py-1.5 pt-2 font-bold text-[10px] text-slate-400 dark:text-slate-500 uppercase tracking-wider border-t border-slate-100 dark:border-slate-800">
                 General Ledger
               </div>
               <button
                 onClick={() => handleQuickNew('journals', true)}
-                className="w-full text-left px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center space-x-2 text-slate-700 dark:text-slate-200 cursor-pointer"
+                className="w-full text-left px-3 py-2 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800/80 flex items-center space-x-2.5 text-slate-700 dark:text-slate-200 cursor-pointer transition-colors active:scale-98"
               >
-                <Calculator className="w-3.5 h-3.5 text-indigo-500" />
-                <span>Manual Journal Entry</span>
+                <div className="p-1 rounded-lg bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400">
+                  <Calculator className="w-3.5 h-3.5" />
+                </div>
+                <span className="font-medium">Manual Journal Entry</span>
               </button>
             </div>
           )}

@@ -16,6 +16,7 @@ router.get('/accounting-defaults', requirePermission(['accounts.view', 'accounti
 router.patch('/accounting-defaults/:systemRole', requirePermission(['accounts.edit', 'settings.manage_accounts']), FinanceController.updateAccountingDefault);
 router.post('/accounts', requirePermission(['accounts.create', 'settings.manage_accounts']), FinanceController.createAccount);
 router.patch('/accounts/:id', requirePermission(['accounts.edit', 'settings.manage_accounts']), FinanceController.updateAccount);
+router.delete('/accounts/:id', requirePermission(['accounts.delete', 'settings.manage_accounts']), FinanceController.deleteAccount);
 router.get('/accounts/:id/transactions', requirePermission(['accounts.view', 'accounting.view']), FinanceController.getAccountTransactions);
 
 // Clients, Customers & Vendors

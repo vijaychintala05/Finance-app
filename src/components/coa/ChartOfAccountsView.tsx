@@ -234,6 +234,14 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
   }, new Map<string, number>());
   const formatSystemRole = (systemRole: string) => systemRole.toLowerCase().split('_').map((word) => word[0].toUpperCase() + word.slice(1)).join(' ');
 
+  const activeCount = accounts.filter((a) => (a.status || 'Active') === 'Active').length;
+  const archivedCount = accounts.filter((a) => a.status === 'Archived').length;
+  const archivedMatchesCount = accounts.filter(
+    (a) =>
+      a.status === 'Archived' &&
+      (search ? a.name.toLowerCase().includes(search.toLowerCase()) || a.code.includes(search) : false)
+  ).length;
+
   return (
     <div className="max-w-none space-y-0 bg-white dark:bg-slate-900">
       <div className="flex min-h-16 flex-col justify-between gap-3 border-b border-slate-200 px-4 py-3 sm:flex-row sm:items-center sm:px-6 dark:border-slate-800">
@@ -244,11 +252,11 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
             id="account-status-filter"
             value={selectedStatusFilter}
             onChange={(event) => setSelectedStatusFilter(event.target.value as 'Active' | 'Archived' | 'All')}
-            className="min-w-0 border-0 bg-transparent py-1 text-sm font-semibold text-slate-700 outline-none focus:ring-2 focus:ring-blue-500 dark:text-slate-200"
+            className="min-w-0 border-0 bg-transparent py-1 text-sm font-semibold text-slate-700 outline-none focus:ring-2 focus:ring-blue-500 dark:text-slate-200 cursor-pointer"
           >
-            <option value="Active">Active accounts</option>
-            <option value="Archived">Archived accounts</option>
-            <option value="All">All accounts</option>
+            <option value="Active">Active accounts ({activeCount})</option>
+            <option value="Archived">Archived accounts ({archivedCount})</option>
+            <option value="All">All accounts ({accounts.length})</option>
           </select>
           <span className="hidden text-xs font-medium text-slate-400 sm:inline">{filteredAccounts.length} shown</span>
         </div>
@@ -344,6 +352,21 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
           />
         </div>
       </div>
+
+      {archivedMatchesCount > 0 && selectedStatusFilter === 'Active' && (
+        <div className="flex items-center justify-between border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200 sm:px-6">
+          <span>
+            Found <strong>{archivedMatchesCount}</strong> archived account(s) matching &ldquo;{search}&rdquo; (hidden under Active view).
+          </span>
+          <button
+            type="button"
+            onClick={() => setSelectedStatusFilter('Archived')}
+            className="font-bold underline hover:text-amber-800 dark:hover:text-amber-100 cursor-pointer ml-3 shrink-0"
+          >
+            View archived accounts
+          </button>
+        </div>
+      )}
 
       {showPostingDefaults && <div className="border-b border-slate-200 px-4 py-3 sm:px-6 dark:border-slate-800"><AccountingDefaultsPanel accounts={accounts} /></div>}
 

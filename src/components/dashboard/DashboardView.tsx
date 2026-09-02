@@ -237,7 +237,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       type="button"
       onClick={onClick}
       disabled={!onClick}
-      className={`group flex flex-col justify-between rounded-xl border border-slate-200/90 bg-white p-5 text-left shadow-xs transition-all dark:border-slate-800/90 dark:bg-slate-900 ${
+      className={`group flex flex-col justify-between rounded-lg border border-slate-200/90 bg-white p-4 text-left shadow-xs transition-all dark:border-slate-800/90 dark:bg-slate-900 ${
         onClick
           ? 'cursor-pointer hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-md dark:hover:border-slate-700'
           : 'cursor-default'
@@ -245,7 +245,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     >
       <div className="flex w-full items-start justify-between gap-2">
         <div className="flex items-center gap-2.5">
-          <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${iconBg} transition-transform group-hover:scale-105`}>
+          <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md ${iconBg} transition-transform group-hover:scale-105`}>
             <Icon className="h-5 w-5" />
           </div>
           <div>
@@ -259,8 +259,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         )}
       </div>
 
-      <div className="mt-4 space-y-2">
-        <div className={`font-financial text-2xl sm:text-3xl font-black tracking-tight ${tone}`}>{value}</div>
+      <div className="mt-3.5 space-y-2">
+        <div className={`font-financial min-w-0 text-xl font-black tracking-tight sm:text-[1.7rem] ${tone}`}>{value}</div>
         {progressPercent !== undefined && progressLabel && (
           <div className="space-y-1 pt-1">
             <div className="flex justify-between text-[11px] font-semibold text-slate-500 dark:text-slate-400">
@@ -474,16 +474,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
   };
 
   const QuickActions = () => (
-    <section className="rounded-xl border border-slate-200/90 bg-white p-5 shadow-xs dark:border-slate-800/90 dark:bg-slate-900">
+    <section className="rounded-lg border border-slate-200/90 bg-white p-4 shadow-xs dark:border-slate-800/90 dark:bg-slate-900">
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-bold tracking-tight text-slate-900 dark:text-white">Quick Action Dock</h2>
         <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Commands</span>
       </div>
-      <div className="mt-3.5 grid grid-cols-2 gap-2.5 sm:grid-cols-4 xl:grid-cols-2">
+      <div className="mt-3.5 grid grid-cols-3 gap-2 sm:grid-cols-4 xl:grid-cols-2">
         <button
           title="New sales invoice"
           onClick={() => setIsInvoiceEditorOpen(true)}
-          className="group flex flex-col items-center justify-center gap-1.5 rounded-lg border border-slate-200/90 bg-slate-50/50 p-3 text-xs font-bold text-slate-700 transition-all hover:-translate-y-0.5 hover:border-blue-400 hover:bg-blue-50/50 hover:text-blue-700 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-200 dark:hover:border-blue-500/80 dark:hover:bg-blue-950/40 dark:hover:text-blue-300 cursor-pointer"
+          className="group flex min-h-20 flex-col items-center justify-center gap-1.5 rounded-md border border-slate-200/90 bg-slate-50/50 p-3 text-xs font-bold text-slate-700 transition-all hover:-translate-y-0.5 hover:border-blue-400 hover:bg-blue-50/50 hover:text-blue-700 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-200 dark:hover:border-blue-500/80 dark:hover:bg-blue-950/40 dark:hover:text-blue-300 cursor-pointer"
         >
           <div className="flex h-7 w-7 items-center justify-center rounded-md bg-blue-100 text-blue-600 transition-transform group-hover:scale-110 dark:bg-blue-950 dark:text-blue-400">
             <FilePlus2 className="h-4 w-4" />
@@ -494,7 +494,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         <button
           title="Log operational expense"
           onClick={() => setIsExpenseModalOpen(true)}
-          className="group flex flex-col items-center justify-center gap-1.5 rounded-lg border border-slate-200/90 bg-slate-50/50 p-3 text-xs font-bold text-slate-700 transition-all hover:-translate-y-0.5 hover:border-emerald-400 hover:bg-emerald-50/50 hover:text-emerald-700 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-200 dark:hover:border-emerald-500/80 dark:hover:bg-emerald-950/40 dark:hover:text-emerald-300 cursor-pointer"
+          className="group flex min-h-20 flex-col items-center justify-center gap-1.5 rounded-md border border-slate-200/90 bg-slate-50/50 p-3 text-xs font-bold text-slate-700 transition-all hover:-translate-y-0.5 hover:border-emerald-400 hover:bg-emerald-50/50 hover:text-emerald-700 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-200 dark:hover:border-emerald-500/80 dark:hover:bg-emerald-950/40 dark:hover:text-emerald-300 cursor-pointer"
         >
           <div className="flex h-7 w-7 items-center justify-center rounded-md bg-emerald-100 text-emerald-600 transition-transform group-hover:scale-110 dark:bg-emerald-950 dark:text-emerald-400">
             <ReceiptText className="h-4 w-4" />
@@ -505,7 +505,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         <button
           title="Add client or customer"
           onClick={() => setIsClientModalOpen(true)}
-          className="group flex flex-col items-center justify-center gap-1.5 rounded-lg border border-slate-200/90 bg-slate-50/50 p-3 text-xs font-bold text-slate-700 transition-all hover:-translate-y-0.5 hover:border-violet-400 hover:bg-violet-50/50 hover:text-violet-700 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-200 dark:hover:border-violet-500/80 dark:hover:bg-violet-950/40 dark:hover:text-violet-300 cursor-pointer"
+          className="group hidden min-h-20 flex-col items-center justify-center gap-1.5 rounded-md border border-slate-200/90 bg-slate-50/50 p-3 text-xs font-bold text-slate-700 transition-all hover:-translate-y-0.5 hover:border-violet-400 hover:bg-violet-50/50 hover:text-violet-700 sm:flex dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-200 dark:hover:border-violet-500/80 dark:hover:bg-violet-950/40 dark:hover:text-violet-300 cursor-pointer"
         >
           <div className="flex h-7 w-7 items-center justify-center rounded-md bg-violet-100 text-violet-600 transition-transform group-hover:scale-110 dark:bg-violet-950 dark:text-violet-400">
             <BadgeDollarSign className="h-4 w-4" />
@@ -516,7 +516,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         <button
           title="Record incoming vendor bill"
           onClick={() => onNavigate('bills', { autoCreate: true })}
-          className="group flex flex-col items-center justify-center gap-1.5 rounded-lg border border-slate-200/90 bg-slate-50/50 p-3 text-xs font-bold text-slate-700 transition-all hover:-translate-y-0.5 hover:border-amber-400 hover:bg-amber-50/50 hover:text-amber-700 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-200 dark:hover:border-amber-500/80 dark:hover:bg-amber-950/40 dark:hover:text-amber-300 cursor-pointer"
+          className="group flex min-h-20 flex-col items-center justify-center gap-1.5 rounded-md border border-slate-200/90 bg-slate-50/50 p-3 text-xs font-bold text-slate-700 transition-all hover:-translate-y-0.5 hover:border-amber-400 hover:bg-amber-50/50 hover:text-amber-700 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-200 dark:hover:border-amber-500/80 dark:hover:bg-amber-950/40 dark:hover:text-amber-300 cursor-pointer"
         >
           <div className="flex h-7 w-7 items-center justify-center rounded-md bg-amber-100 text-amber-600 transition-transform group-hover:scale-110 dark:bg-amber-950 dark:text-amber-400">
             <FileText className="h-4 w-4" />
@@ -529,7 +529,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
   // Top Expenses Breakdown Widget
   const TopExpensesWidget = () => (
-    <section className="rounded-xl border border-slate-200/90 bg-white p-5 shadow-xs dark:border-slate-800/90 dark:bg-slate-900">
+    <section className="rounded-lg border border-slate-200/90 bg-white p-4 shadow-xs dark:border-slate-800/90 dark:bg-slate-900">
       <div className="flex items-center justify-between border-b border-slate-100 pb-3.5 dark:border-slate-800">
         <div className="flex items-center gap-2">
           <div className="flex h-7 w-7 items-center justify-center rounded-md bg-rose-50 text-rose-600 dark:bg-rose-950 dark:text-rose-400">
@@ -554,7 +554,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
           No operational expenses logged for this period.
         </div>
       ) : (
-        <div className="mt-4 space-y-3.5">
+        <div className="mt-4 space-y-3">
           {topExpenseCategories.categories.map((cat, idx) => {
             const colors = ['bg-blue-600', 'bg-purple-600', 'bg-amber-500', 'bg-emerald-500', 'bg-rose-500'];
             const barColor = colors[idx % colors.length];
@@ -632,7 +632,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
   );
 
   const ScheduledOutlookWidget = () => (
-    <section className="rounded-xl border border-slate-200/90 bg-white p-5 shadow-xs dark:border-slate-800/90 dark:bg-slate-900">
+    <section className="rounded-lg border border-slate-200/90 bg-white p-4 shadow-xs dark:border-slate-800/90 dark:bg-slate-900">
       <div className="flex items-center justify-between border-b border-slate-100 pb-3.5 dark:border-slate-800">
         <div className="flex items-center gap-2">
           <div className="flex h-7 w-7 items-center justify-center rounded-md bg-amber-50 text-amber-600 dark:bg-amber-950 dark:text-amber-400">
@@ -672,12 +672,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
   );
 
   return (
-    <div className="mx-auto min-h-full max-w-[1440px] space-y-6 bg-slate-50/60 p-4 text-slate-900 sm:p-6 lg:p-8 dark:bg-slate-950 dark:text-slate-100">
+    <div className="mx-auto min-h-full max-w-[1500px] space-y-4 bg-slate-50/60 p-4 text-slate-900 sm:p-6 lg:p-7 dark:bg-slate-950 dark:text-slate-100">
       {/* Header Banner */}
-      <header className="flex flex-col gap-4 rounded-2xl border border-slate-200/90 bg-white p-5 shadow-xs dark:border-slate-800/90 dark:bg-slate-900 lg:flex-row lg:items-center lg:justify-between">
+      <header className="flex flex-col gap-4 border-b border-slate-200/90 bg-white px-1 py-4 dark:border-slate-800/90 dark:bg-slate-950 lg:flex-row lg:items-center lg:justify-between">
         <div className="space-y-1">
           <div className="flex items-center gap-2">
-            <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2.5 py-0.5 text-xs font-bold text-blue-700 dark:bg-blue-950/80 dark:text-blue-400">
+            <span className="inline-flex items-center gap-1 rounded-md bg-blue-50 px-2 py-1 text-[11px] font-bold text-blue-700 dark:bg-blue-950/80 dark:text-blue-400">
               <ShieldCheck className="h-3.5 w-3.5" />
               FirmBooks Authority
             </span>
@@ -686,7 +686,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
               Live Double-Entry Ledger
             </span>
           </div>
-          <h1 className="text-2xl font-extrabold tracking-tight text-slate-900 sm:text-3xl dark:text-white">
+          <h1 className="text-2xl font-extrabold tracking-tight text-slate-900 sm:text-[1.8rem] dark:text-white">
             Financial Command Center
           </h1>
           <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -697,12 +697,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         {/* Date Range & Action Bar */}
         <div className="flex flex-wrap items-center gap-2.5">
           {/* Preset Buttons */}
-          <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 text-xs font-bold dark:border-slate-700 dark:bg-slate-800">
+          <div className="hidden rounded-lg border border-slate-200 bg-slate-50 p-1 text-xs font-bold dark:border-slate-700 dark:bg-slate-800 sm:inline-flex">
             {(['today', 'mtd', 'qtd', 'ytd', 'custom'] as DatePreset[]).map((preset) => (
               <button
                 key={preset}
                 onClick={() => handlePresetSelect(preset)}
-                className={`rounded-md px-2.5 py-1 uppercase tracking-wider transition-all cursor-pointer ${
+                className={`min-w-12 rounded-md px-2.5 py-1.5 uppercase tracking-wider transition-all cursor-pointer ${
                   selectedPreset === preset
                     ? 'bg-white text-blue-700 shadow-xs dark:bg-slate-900 dark:text-blue-400'
                     : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
@@ -754,7 +754,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       {dashboard && (
         <nav
           aria-label="Dashboard sub-views"
-          className="flex w-full overflow-x-auto gap-2 border-b border-slate-200/90 pb-2 dark:border-slate-800"
+          className="hidden w-full gap-1 overflow-x-auto rounded-lg border border-slate-200/90 bg-white p-1 shadow-xs dark:border-slate-800 dark:bg-slate-900 sm:flex"
         >
           {dashboard.availableViews.map((item) => {
             const isSelected = view === item;
@@ -762,10 +762,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
               <button
                 key={item}
                 onClick={() => openView(item)}
-                className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-bold transition-all cursor-pointer ${
+                className={`inline-flex shrink-0 items-center gap-2 rounded-md px-4 py-2 text-xs font-bold transition-all cursor-pointer ${
                   isSelected
                     ? 'bg-blue-600 text-white shadow-xs dark:bg-blue-600'
-                    : 'bg-white border border-slate-200/80 text-slate-600 hover:bg-slate-50 hover:text-slate-900 dark:bg-slate-900 dark:border-slate-800 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white'
+                    : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white'
                 }`}
               >
                 {item === 'overview' && <Sparkles className="h-3.5 w-3.5" />}
@@ -807,9 +807,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
       {/* VIEW 1: EXECUTIVE OVERVIEW */}
       {!loading && dashboard && view === 'overview' && (
-        <div className="space-y-6">
+        <div className="space-y-5">
+          <div className="lg:hidden">
+            <QuickActions />
+          </div>
           {/* Top 4 KPI Metric Cards */}
-          <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <section className="grid grid-cols-2 gap-3 xl:grid-cols-4">
             <Metric
               title="Operating Cash & Bank"
               value={money(dashboard.commandCenter.financialPosition.cashAtBank)}
@@ -902,20 +905,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
           </section>
 
           {/* Activity Trend & Attention Sidebar */}
-          <section className="grid gap-5 xl:grid-cols-3">
+          <section className="grid gap-4 xl:grid-cols-3">
             <div className="order-2 xl:order-1 xl:col-span-2">
               <ActivityTrend points={dashboard.commandCenter.performance.cashMovement} />
             </div>
 
-            <div className="order-1 space-y-5 xl:order-2">
+            <div className="order-1 space-y-4 xl:order-2">
               {/* Attention Queue */}
-              <section className="rounded-xl border border-slate-200/90 bg-white p-5 shadow-xs dark:border-slate-800/90 dark:bg-slate-900">
+              <section className="rounded-lg border border-slate-200/90 bg-white p-4 shadow-xs dark:border-slate-800/90 dark:bg-slate-900">
                 <div className="flex items-center justify-between">
                   <h2 className="text-sm font-bold tracking-tight text-slate-900 dark:text-white">Audit & Attention Queue</h2>
                   <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Action Required</span>
                 </div>
 
-                <div className="mt-3.5 divide-y divide-slate-100 dark:divide-slate-800/80">
+                <div className="mt-3 divide-y divide-slate-100 dark:divide-slate-800/80">
                   {dashboard.commandCenter.attention.map((item) => {
                     const tone = item.severity === 'critical'
                       ? 'bg-rose-500'
@@ -924,13 +927,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                       <button
                         key={item.id}
                         onClick={() => onNavigate(item.destination)}
-                        className="flex w-full items-center justify-between gap-3 py-3 text-left text-xs font-semibold hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer"
+                        className="flex w-full items-center justify-between gap-3 py-2.5 text-left text-xs font-semibold hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer"
                       >
                         <div className="flex min-w-0 items-center gap-2">
                           <span className={`h-2 w-2 shrink-0 rounded-full ${tone}`} />
                           <span className="truncate">{item.label}</span>
                         </div>
-                        <span className="font-financial rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-extrabold text-slate-700 dark:bg-slate-800 dark:text-slate-300">
+                        <span className="font-financial rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-extrabold text-slate-700 dark:bg-slate-800 dark:text-slate-300">
                           {item.amount !== null ? money(item.amount) : item.count}
                         </span>
                       </button>
@@ -940,7 +943,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
               </section>
 
               {/* Quick Action Dock */}
-              <QuickActions />
+              <div className="hidden lg:block">
+                <QuickActions />
+              </div>
             </div>
           </section>
 

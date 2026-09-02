@@ -1,6 +1,7 @@
 import pg from 'pg';
 import { newDb, IMemoryDb } from 'pg-mem';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import os from 'node:os';
 
 const { Pool } = pg;
 
@@ -111,7 +112,7 @@ class DatabaseService {
       try {
         this.pool = new Pool({
           connectionString,
-          max: Number(process.env.DB_POOL_MAX || 10),
+          max: Number(process.env.DB_POOL_MAX || Math.max(20, (os.cpus()?.length || 2) * 4)),
           idleTimeoutMillis: 30000,
           connectionTimeoutMillis: 5000,
           query_timeout: Number(process.env.DB_QUERY_TIMEOUT_MS || 15000),

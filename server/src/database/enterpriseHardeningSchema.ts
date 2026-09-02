@@ -84,6 +84,14 @@ export async function applyEnterpriseHardeningSchema(client: DbQueryClient): Pro
     `ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS current_hash VARCHAR(64)`,
     `CREATE INDEX IF NOT EXISTS idx_audit_logs_org_prev_hash ON audit_logs (organization_id, previous_hash)`,
 
+    // High-Performance Query & Subledger Composite Indexes
+    `CREATE INDEX IF NOT EXISTS idx_journal_lines_org_account ON journal_lines (organization_id, account_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_expenses_org_date ON expenses (organization_id, date DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_expenses_org_account ON expenses (organization_id, expense_account_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_payments_received_org_date ON payments_received (organization_id, payment_date DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_payments_made_org_date ON payments_made (organization_id, payment_date DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_accounts_org_status_type ON accounts (organization_id, status, type)`,
+
     // 2. In-Engine Accounting Integrity Diagnostic Views
     `CREATE OR REPLACE VIEW vw_ledger_trial_balance_summary AS
      SELECT organization_id,

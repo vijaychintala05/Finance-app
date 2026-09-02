@@ -17,6 +17,10 @@ import { AuthController } from '../controllers/authController';
 
 export const identityRouter = Router();
 
+function sanitizeError(err: any): string {
+  return process.env.NODE_ENV === 'production' ? 'Internal server error' : (err?.message || 'Internal server error');
+}
+
 // -------------------------------------------------------------
 // 1. SESSIONS API (User Device Management)
 // -------------------------------------------------------------
@@ -27,7 +31,7 @@ identityRouter.get('/sessions', authMiddleware, async (req: AuthenticatedRequest
     const sessions = await SessionService.listUserSessions(userId);
     res.json({ currentSessionId, sessions });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeError(err) });
   }
 });
 
@@ -38,7 +42,7 @@ identityRouter.post('/sessions/:sessionId/revoke', authMiddleware, async (req: A
     const revoked = await SessionService.revokeSession(sessionId, userId);
     res.json({ success: revoked });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeError(err) });
   }
 });
 
@@ -49,7 +53,7 @@ identityRouter.post('/sessions/revoke-others', authMiddleware, async (req: Authe
     const count = await SessionService.revokeAllOtherSessions(userId, currentSessionId);
     res.json({ success: true, revokedCount: count });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeError(err) });
   }
 });
 
@@ -207,7 +211,7 @@ identityRouter.get('/mfa/status', authMiddleware, async (req: AuthenticatedReque
     const status = await MfaService.getMfaStatus(userId);
     res.json(status);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeError(err) });
   }
 });
 
@@ -221,7 +225,7 @@ identityRouter.post('/recovery/request', async (req: AuthenticatedRequest, res: 
     const result = await PasswordRecoveryService.requestPasswordReset(email, reqIp);
     res.json(result);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeError(err) });
   }
 });
 
@@ -324,7 +328,7 @@ identityRouter.get(
       const emails = await EmailOutboxService.listOutbox(organizationId, 50);
       res.json(emails);
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: sanitizeError(err) });
     }
   }
 );
@@ -362,7 +366,7 @@ identityRouter.get(
 
       res.json(resLogs.rows);
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: sanitizeError(err) });
     }
   }
 );

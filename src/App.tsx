@@ -3,6 +3,7 @@ import { BooksProvider } from './context/BooksContext';
 import { Header } from './components/layout/Header';
 import { Sidebar } from './components/layout/Sidebar';
 import { MobileNav } from './components/layout/MobileNav';
+import { MobileBottomNav } from './components/layout/MobileBottomNav';
 import { CreateOrganizationWizardModal } from './components/organization/CreateOrganizationWizardModal';
 import { OrganizationSwitcherModal } from './components/organization/OrganizationSwitcherModal';
 import { CapabilityUnavailable } from './components/common/CapabilityUnavailable';
@@ -367,6 +368,12 @@ function MainAppLayout() {
           </Suspense>
         </main>
       </div>
+
+      <MobileBottomNav
+        activeTab={activeTab}
+        onNavigate={(tab) => handleNavigate(tab)}
+        onOpenMore={() => setMobileNavOpen(true)}
+      />
 
       {/* Organization Switcher Modal */}
       <OrganizationSwitcherModal

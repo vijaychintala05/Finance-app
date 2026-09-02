@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Archive, Info, X } from 'lucide-react';
+import { AlertTriangle, Archive, CheckCircle2, Info, RefreshCw, Trash2, X } from 'lucide-react';
 import { Account, AccountSubType, AccountType } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 
@@ -70,7 +70,14 @@ export const ACCOUNT_TYPE_CATALOG: Array<{
   { category: 'Other Expense', subType: 'Other Expenses', description: 'Other non-operating expense', normalBalance: 'Debit' },
 ];
 
-const RESERVED_CODES = new Set(['1000', '1100', '1150', '1200', '1400', '1600', '2000', '2100', '2200', '2250', '3000', '3400', '3500', '4000', '4900', '5000', '5800', '5900', '6000']);
+export const RESERVED_CODES = new Set([
+  '1000', '1100', '1150', '1200', '1400', '1600',
+  '2000', '2100', '2200', '2250',
+  '3000', '3400', '3500',
+  '4000', '4900',
+  '5000', '5800', '5900',
+  '6000',
+]);
 
 const ACCOUNT_CATEGORIES: AccountType[] = [
   'Asset',
@@ -83,6 +90,25 @@ const ACCOUNT_CATEGORIES: AccountType[] = [
   'Other Expense',
 ];
 
+export const getNextAvailableAccountCode = (category: AccountType, existingAccounts: Account[]): string => {
+  const existingCodes = new Set(existingAccounts.map((a) => (a.code || '').trim()));
+  let base = 6000;
+  if (category === 'Asset') base = 1000;
+  else if (category === 'Liability') base = 2000;
+  else if (category === 'Equity') base = 3000;
+  else if (category === 'Income' || category === 'Other Income') base = 4000;
+  else if (category === 'Cost of Goods Sold') base = 5000;
+  else if (category === 'Expense' || category === 'Other Expense') base = 6000;
+
+  for (let c = base + 10; c < base + 990; c += 10) {
+    const codeStr = String(c);
+    if (!existingCodes.has(codeStr) && !RESERVED_CODES.has(codeStr)) {
+      return codeStr;
+    }
+  }
+  return String(base + 1);
+};
+
 export const AccountModal: React.FC<AccountModalProps> = ({
   isOpen,
   onClose,
@@ -90,7 +116,7 @@ export const AccountModal: React.FC<AccountModalProps> = ({
   initialSubCategory,
   accountToEdit,
 }) => {
-  const { accounts, addAccount, updateAccount } = useBooks();
+  const { accounts = [], addAccount, updateAccount, deleteAccount } = useBooks();
   const [catalogIndex, setCatalogIndex] = useState(0);
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
@@ -109,19 +135,54 @@ export const AccountModal: React.FC<AccountModalProps> = ({
     const existingIndex = accountToEdit
       ? ACCOUNT_TYPE_CATALOG.findIndex((entry) => entry.category === accountToEdit.type && entry.subType === accountToEdit.subType)
       : 0;
-    setCatalogIndex(existingIndex >= 0 ? existingIndex : 0);
+    const activeIndex = existingIndex >= 0 ? existingIndex : 0;
+    setCatalogIndex(activeIndex);
     setName(accountToEdit?.name || '');
-    setCode(accountToEdit?.code || '');
     setDescription(accountToEdit?.description || '');
     setParentAccountId(accountToEdit?.parentAccountId || accountToEdit?.parentId || initialParentId || '');
     setReportingGroup(accountToEdit?.reportingGroup || initialSubCategory || '');
     setAllowDirectPosting(accountToEdit?.allowDirectPosting ?? true);
-    setNormalBalance(accountToEdit?.normalBalance || ACCOUNT_TYPE_CATALOG[existingIndex >= 0 ? existingIndex : 0]?.normalBalance || 'Debit');
+    setNormalBalance(accountToEdit?.normalBalance || ACCOUNT_TYPE_CATALOG[activeIndex]?.normalBalance || 'Debit');
     setError('');
     setIsSubmitting(false);
+
+    if (accountToEdit) {
+      setCode(accountToEdit.code || '');
+    } else {
+      setCode(getNextAvailableAccountCode(ACCOUNT_TYPE_CATALOG[activeIndex].category, accounts));
+    }
   }, [isOpen, accountToEdit]);
 
+  // Check code conflict dynamically
+  const codeConflict = useMemo(() => {
+    const trimmed = code.trim();
+    if (!trimmed || Boolean(accountToEdit)) return null;
+    if (RESERVED_CODES.has(trimmed)) {
+      return { isReserved: true, message: `Code ${trimmed} is reserved for a core system account.` };
+    }
+    const match = accounts.find((a) => a.code.toLowerCase() === trimmed.toLowerCase());
+    if (match) {
+      return {
+        account: match,
+        isArchived: match.status === 'Archived',
+        message:
+          match.status === 'Archived'
+            ? `Code ${trimmed} belongs to archived account "${match.name}". Restore it from Archived view or choose another code.`
+            : `Code ${trimmed} is already in use by "${match.name}" (${match.type}).`,
+      };
+    }
+    return null;
+  }, [code, accounts, accountToEdit]);
+
   if (!isOpen) return null;
+
+  const handleTypeChange = (newIndex: number) => {
+    setCatalogIndex(newIndex);
+    setNormalBalance(ACCOUNT_TYPE_CATALOG[newIndex].normalBalance);
+    if (!accountToEdit) {
+      setCode(getNextAvailableAccountCode(ACCOUNT_TYPE_CATALOG[newIndex].category, accounts));
+    }
+  };
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -138,6 +199,25 @@ export const AccountModal: React.FC<AccountModalProps> = ({
     if (name.trim().length < 2 || name.trim().length > 160) {
       setError('Account name must contain 2-160 characters.');
       return;
+    }
+
+    // Pre-flight check for duplicate code
+    if (!accountToEdit) {
+      const existingMatch = accounts.find(
+        (a) => a.code.toLowerCase() === normalizedCode.toLowerCase()
+      );
+      if (existingMatch) {
+        if (existingMatch.status === 'Archived') {
+          setError(
+            `Account code "${normalizedCode}" already belongs to an archived account ("${existingMatch.name}"). Switch the filter in Chart of Accounts to "Archived" to restore it, or pick a different code.`
+          );
+        } else {
+          setError(
+            `Account code "${normalizedCode}" is already in use by "${existingMatch.name}" (${existingMatch.type}). Please choose a different code.`
+          );
+        }
+        return;
+      }
     }
 
     setIsSubmitting(true);
@@ -186,27 +266,70 @@ export const AccountModal: React.FC<AccountModalProps> = ({
     }
   };
 
+  const handleRestore = async () => {
+    if (!accountToEdit || !window.confirm(`Restore ${accountToEdit.name} to Active status?`)) return;
+    setError('');
+    setIsSubmitting(true);
+    try {
+      await updateAccount(accountToEdit.id, { status: 'Active' });
+      onClose();
+    } catch (submissionError) {
+      setError(submissionError instanceof Error ? submissionError.message : 'Account could not be restored.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!accountToEdit) return;
+    const confirmed = window.confirm(
+      `Delete ${accountToEdit.name}? This is permanent and only succeeds when the account has no entries or references.`
+    );
+    if (!confirmed) return;
+    setError('');
+    setIsSubmitting(true);
+    try {
+      await deleteAccount(accountToEdit.id);
+      onClose();
+    } catch (submissionError) {
+      setError(submissionError instanceof Error ? submissionError.message : 'Account could not be deleted.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const availableParents = accounts.filter((account) =>
     account.id !== accountToEdit?.id && account.status === 'Active' && account.type === selected.category
   );
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-3 sm:p-6" onClick={onClose}>
-      <div className="max-h-[calc(100vh-1.5rem)] w-full max-w-4xl overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900 sm:max-h-[calc(100vh-3rem)]" onClick={(event) => event.stopPropagation()}>
+      <div className="max-h-[calc(100vh-1.5rem)] w-full max-w-4xl overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900 sm:max-h-[calc(100vh-3rem)]" onClick={(event) => event.stopPropagation()}>
         <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-800 sm:px-6">
-          <h3 className="text-base font-semibold text-slate-900 dark:text-white">{accountToEdit ? 'Account details' : 'Create account'}</h3>
-          <button type="button" onClick={onClose} disabled={isSubmitting} aria-label="Close account form" className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-100 hover:text-rose-500 disabled:opacity-50 dark:hover:bg-slate-800"><X className="h-4 w-4" /></button>
+          <h3 className="text-base font-semibold text-slate-900 dark:text-white">
+            {accountToEdit ? `Account details: ${accountToEdit.name}` : 'Create account'}
+          </h3>
+          <button type="button" onClick={onClose} disabled={isSubmitting} aria-label="Close account form" className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-100 hover:text-rose-500 disabled:opacity-50 dark:hover:bg-slate-800 cursor-pointer"><X className="h-4 w-4" /></button>
         </div>
         <form onSubmit={handleSubmit}>
           <div className="px-5 py-5 sm:px-6 sm:py-6">
-            {accountToEdit && <div className="mb-5 flex gap-2 border-l-2 border-amber-400 bg-amber-50 px-3 py-2.5 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-200"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /><p>Account code and classification are retained to protect historical reporting.</p></div>}
+            {accountToEdit && (
+              <div className={`mb-5 flex gap-2 border-l-2 px-3 py-2.5 text-xs ${accountToEdit.status === 'Archived' ? 'border-amber-500 bg-amber-50 text-amber-900 dark:bg-amber-950/30 dark:text-amber-200' : 'border-blue-400 bg-blue-50 text-blue-900 dark:bg-blue-950/30 dark:text-blue-200'}`}>
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <p>
+                  {accountToEdit.status === 'Archived'
+                    ? 'This account is currently Archived. It cannot receive direct postings until restored.'
+                    : 'Account code and classification are retained to protect historical reporting.'}
+                </p>
+              </div>
+            )}
             {error && <div role="alert" className="mb-5 border-l-2 border-rose-500 bg-rose-50 px-3 py-2.5 text-xs font-medium text-rose-800 dark:bg-rose-950/30 dark:text-rose-200">{error}</div>}
 
             <div className="grid gap-7 lg:grid-cols-[minmax(0,1fr)_18rem]">
               <div className="space-y-5">
                 <label className="block text-sm font-medium text-slate-800 dark:text-slate-200">
                   Account type <span className="text-rose-600">*</span>
-                  <select disabled={Boolean(accountToEdit)} value={catalogIndex} onChange={(event) => { const nextIndex = Number(event.target.value); setCatalogIndex(nextIndex); setNormalBalance(ACCOUNT_TYPE_CATALOG[nextIndex].normalBalance); }} className="mt-1.5 block h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-800 outline-none transition focus:border-blue-600 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:focus:ring-blue-950">
+                  <select disabled={Boolean(accountToEdit)} value={catalogIndex} onChange={(event) => handleTypeChange(Number(event.target.value))} className="mt-1.5 block h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-800 outline-none transition focus:border-blue-600 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:focus:ring-blue-950 cursor-pointer">
                     {ACCOUNT_CATEGORIES.map((category) => (
                       <optgroup key={category} label={category}>
                         {ACCOUNT_TYPE_CATALOG.filter((entry) => entry.category === category).map((entry) => {
@@ -223,10 +346,45 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                   <input required maxLength={160} value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Plywood" className="mt-1.5 block h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:focus:ring-blue-950" />
                 </label>
 
-                <label className="block max-w-xs text-sm font-medium text-slate-800 dark:text-slate-200">
-                  Account code <span className="text-rose-600">*</span>
-                  <input required disabled={Boolean(accountToEdit)} maxLength={32} value={code} onChange={(event) => setCode(event.target.value)} placeholder="e.g. 5110" className="mt-1.5 block h-10 w-full rounded-md border border-slate-300 bg-white px-3 font-mono text-sm font-medium text-slate-900 outline-none transition placeholder:font-sans placeholder:text-slate-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:focus:ring-blue-950" />
-                </label>
+                <div>
+                  <div className="flex items-center justify-between">
+                    <label htmlFor="account-code-input" className="block text-sm font-medium text-slate-800 dark:text-slate-200">
+                      Account code <span className="text-rose-600">*</span>
+                    </label>
+                    {!accountToEdit && (
+                      <button
+                        type="button"
+                        onClick={() => setCode(getNextAvailableAccountCode(selected.category, accounts))}
+                        className="text-[11px] font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
+                      >
+                        Auto-suggest next code
+                      </button>
+                    )}
+                  </div>
+                  <input
+                    id="account-code-input"
+                    required
+                    disabled={Boolean(accountToEdit)}
+                    maxLength={32}
+                    value={code}
+                    onChange={(event) => setCode(event.target.value)}
+                    placeholder="e.g. 5110"
+                    className={`mt-1.5 block h-10 w-full rounded-md border px-3 font-mono text-sm font-medium outline-none transition focus:ring-2 disabled:cursor-not-allowed disabled:bg-slate-100 dark:bg-slate-800 dark:text-white ${
+                      codeConflict
+                        ? 'border-rose-400 text-rose-900 focus:border-rose-600 focus:ring-rose-100 dark:border-rose-800 dark:text-rose-200'
+                        : 'border-slate-300 text-slate-900 focus:border-blue-600 focus:ring-blue-100 dark:border-slate-700'
+                    }`}
+                  />
+                  {codeConflict ? (
+                    <p className="mt-1 text-xs text-rose-600 dark:text-rose-400 font-medium">
+                      ⚠ {codeConflict.message}
+                    </p>
+                  ) : code.trim() && !accountToEdit ? (
+                    <p className="mt-1 text-xs text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                      <CheckCircle2 className="h-3 w-3" /> Code available
+                    </p>
+                  ) : null}
+                </div>
 
                 <label className="block text-sm font-medium text-slate-800 dark:text-slate-200">
                   Description <span className="font-normal text-slate-400">(optional)</span>
@@ -245,7 +403,7 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                 </details>
               </div>
 
-              <aside className="h-fit border-l-2 border-slate-800 bg-slate-800 px-4 py-3.5 text-sm text-white dark:border-slate-600 dark:bg-slate-800">
+              <aside className="h-fit border-l-2 border-slate-800 bg-slate-800 px-4 py-3.5 text-sm text-white dark:border-slate-600 dark:bg-slate-800 rounded-r-lg">
                 <div className="flex items-center gap-2 font-semibold"><Info className="h-4 w-4" />{selected.category}</div>
                 <p className="mt-2 text-sm leading-5 text-slate-100">{selected.description}</p>
                 <dl className="mt-4 space-y-2 border-t border-slate-600 pt-3 text-xs text-slate-200"><div className="flex justify-between gap-3"><dt>Normal balance</dt><dd className="font-medium text-white">{normalBalance}</dd></div><div className="flex justify-between gap-3"><dt>Opening balance</dt><dd className="font-medium text-white">Journal entry only</dd></div></dl>
@@ -254,8 +412,29 @@ export const AccountModal: React.FC<AccountModalProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-5 py-4 dark:border-slate-800 sm:px-6">
-            <div>{accountToEdit && accountToEdit.status === 'Active' && <button type="button" onClick={handleArchive} disabled={isSubmitting} className="inline-flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-rose-700 transition hover:bg-rose-50 disabled:opacity-50 dark:text-rose-300 dark:hover:bg-rose-950/30"><Archive className="h-4 w-4" />Archive</button>}</div>
-            <div className="flex items-center gap-2"><button type="button" onClick={onClose} disabled={isSubmitting} className="h-9 rounded-md border border-slate-300 px-4 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">Cancel</button><button type="submit" disabled={isSubmitting} className="h-9 rounded-md bg-blue-600 px-4 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50">{isSubmitting ? 'Saving...' : accountToEdit ? 'Save changes' : 'Save account'}</button></div>
+            <div className="flex items-center gap-2">
+              {accountToEdit && !accountToEdit.isSystemAccount && !accountToEdit.isLocked && (
+                <button type="button" onClick={handleDelete} disabled={isSubmitting} className="inline-flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-rose-700 transition hover:bg-rose-50 disabled:opacity-50 dark:text-rose-300 dark:hover:bg-rose-950/30 cursor-pointer">
+                  <Trash2 className="h-4 w-4" />Delete
+                </button>
+              )}
+              {accountToEdit && accountToEdit.status === 'Active' && (
+                <button type="button" onClick={handleArchive} disabled={isSubmitting} className="inline-flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-rose-700 transition hover:bg-rose-50 disabled:opacity-50 dark:text-rose-300 dark:hover:bg-rose-950/30 cursor-pointer">
+                  <Archive className="h-4 w-4" />Archive
+                </button>
+              )}
+              {accountToEdit && accountToEdit.status === 'Archived' && (
+                <button type="button" onClick={handleRestore} disabled={isSubmitting} className="inline-flex h-9 items-center gap-1.5 rounded-md bg-emerald-50 px-3 text-sm font-medium text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-50 dark:bg-emerald-950/40 dark:text-emerald-300 dark:hover:bg-emerald-900/40 cursor-pointer">
+                  <RefreshCw className="h-4 w-4" />Restore to Active
+                </button>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={onClose} disabled={isSubmitting} className="h-9 rounded-md border border-slate-300 px-4 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800 cursor-pointer">Cancel</button>
+              <button type="submit" disabled={isSubmitting || Boolean(codeConflict)} className="h-9 rounded-md bg-blue-600 px-4 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer">
+                {isSubmitting ? 'Saving...' : accountToEdit ? 'Save changes' : 'Save account'}
+              </button>
+            </div>
           </div>
         </form>
       </div>

@@ -7,7 +7,9 @@ import {
   DollarSign,
   FileText,
   Landmark,
+  Plus,
   Receipt,
+  RefreshCw,
   Tag,
   Wallet,
   X,
@@ -15,6 +17,7 @@ import {
 import { Bill, Vendor } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate } from '../../utils/formatters';
+import { QuickAddAccountModal } from '../common/QuickAddAccountModal';
 
 interface RecordVendorPaymentModalProps {
   isOpen: boolean;
@@ -29,7 +32,7 @@ export const RecordVendorPaymentModal: React.FC<RecordVendorPaymentModalProps> =
   vendor,
   initialBill,
 }) => {
-  const { bills, vendors, accounts, paymentsMade, addPaymentMade, addVendorAdvance, settings } = useBooks();
+  const { bills, vendors, accounts, refreshAccounts, paymentsMade, addPaymentMade, addVendorAdvance, settings } = useBooks();
 
   const [selectedVendorId, setSelectedVendorId] = useState<string>(
     vendor?.id || (initialBill ? vendors.find((v) => v.name === initialBill.vendorName)?.id || '' : vendors[0]?.id || '')
@@ -64,19 +67,52 @@ export const RecordVendorPaymentModal: React.FC<RecordVendorPaymentModalProps> =
       : Math.max(0, targetBill.totalAmount - (targetBill.amountPaid || 0))
     : 0;
 
-  // Liquid disbursement accounts (Bank & Cash)
+  // Liquid disbursement accounts (Bank, Cash, Wallets & Credit Cards)
   const disbursementAccounts = useMemo(() => {
     return accounts.filter((a) => {
       const subType = String(a.subType || '').toLowerCase();
       return (
-        a.type === 'Asset' &&
-        a.status !== 'Inactive' &&
-        (a.code.startsWith('10') || ['bank', 'cash', 'cash & bank', 'digital wallet'].includes(subType))
+        (a.status || 'Active') === 'Active' &&
+        a.allowDirectPosting !== false &&
+        ((a.type === 'Asset' &&
+          (a.code.startsWith('10') ||
+            ['bank', 'cash', 'cash & bank', 'digital wallet', 'undeposited funds', 'payment clearing'].includes(
+              subType
+            ))) ||
+          (a.type === 'Liability' && ['credit cards', 'credit card', 'loan/credit'].includes(subType)))
       );
     });
   }, [accounts]);
 
   const [paidFromAccountId, setPaidFromAccountId] = useState<string>(disbursementAccounts[0]?.id || '');
+  const [isRefreshingAccounts, setIsRefreshingAccounts] = useState(false);
+  const [isAddPaymentModalOpen, setIsAddPaymentModalOpen] = useState(false);
+
+  const handleRefreshAccounts = async () => {
+    if (!refreshAccounts) return;
+    setIsRefreshingAccounts(true);
+    try {
+      await refreshAccounts();
+    } catch (err) {
+      console.error('Failed to refresh disbursement accounts:', err);
+    } finally {
+      setIsRefreshingAccounts(false);
+    }
+  };
+
+  React.useEffect(() => {
+    if (isOpen && refreshAccounts) {
+      refreshAccounts().catch((err) => console.error('Error fetching accounts for vendor payment:', err));
+    }
+  }, [isOpen, refreshAccounts]);
+
+  React.useEffect(() => {
+    if (!paidFromAccountId && disbursementAccounts[0]) {
+      setPaidFromAccountId(disbursementAccounts[0].id);
+    } else if (paidFromAccountId && !disbursementAccounts.some((a) => a.id === paidFromAccountId)) {
+      setPaidFromAccountId(disbursementAccounts[0]?.id || '');
+    }
+  }, [paidFromAccountId, disbursementAccounts]);
   const [paymentDate, setPaymentDate] = useState<string>(new Date().toISOString().slice(0, 10));
   const [paymentMethod, setPaymentMethod] = useState<string>('Bank Wire / NEFT / RTGS');
   const [referenceNumber, setReferenceNumber] = useState<string>('');
@@ -169,7 +205,8 @@ export const RecordVendorPaymentModal: React.FC<RecordVendorPaymentModalProps> =
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
+    <>
+      <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
       <div className="bg-white dark:bg-slate-900 rounded-2xl max-w-lg w-full p-6 space-y-5 shadow-2xl border border-slate-200 dark:border-slate-800">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-slate-800">
@@ -271,11 +308,33 @@ export const RecordVendorPaymentModal: React.FC<RecordVendorPaymentModalProps> =
             </div>
           )}
 
-          {/* Disbursement Bank / Cash Account */}
+          {/* Disbursement Bank / Cash / Card Account */}
           <div className="space-y-1">
-            <label className="text-xs font-bold text-slate-700 dark:text-slate-300">
-              Paid From (Bank / Cash Account)
-            </label>
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                Paid From (Bank / Cash / Card Account)
+              </label>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleRefreshAccounts}
+                  disabled={isRefreshingAccounts}
+                  title="Fetch latest accounts"
+                  className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-500 hover:text-blue-600 dark:text-slate-400 dark:hover:text-blue-400 cursor-pointer"
+                >
+                  <RefreshCw className={`h-2.5 w-2.5 ${isRefreshingAccounts ? 'animate-spin text-blue-600' : ''}`} />
+                  <span>{isRefreshingAccounts ? 'Refreshing...' : 'Refresh'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsAddPaymentModalOpen(true)}
+                  className="inline-flex items-center gap-0.5 text-[11px] font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
+                >
+                  <Plus className="h-2.5 w-2.5" />
+                  <span>New bank/card</span>
+                </button>
+              </div>
+            </div>
             <select
               value={paidFromAccountId}
               onChange={(e) => setPaidFromAccountId(e.target.value)}
@@ -283,7 +342,7 @@ export const RecordVendorPaymentModal: React.FC<RecordVendorPaymentModalProps> =
             >
               {disbursementAccounts.map((acc) => (
                 <option key={acc.id} value={acc.id}>
-                  {acc.code} — {acc.name} ({formatCurrency(acc.balance || 0, settings.currencySymbol)})
+                  {acc.code} — {acc.name} ({acc.subType}) ({formatCurrency(acc.balance || 0, settings.currencySymbol)})
                 </option>
               ))}
             </select>
@@ -374,5 +433,14 @@ export const RecordVendorPaymentModal: React.FC<RecordVendorPaymentModalProps> =
         </form>
       </div>
     </div>
+
+    {isAddPaymentModalOpen && (
+      <QuickAddAccountModal
+        isOpen={isAddPaymentModalOpen}
+        onClose={() => setIsAddPaymentModalOpen(false)}
+        defaultCategory="Bank"
+      />
+    )}
+  </>
   );
 };

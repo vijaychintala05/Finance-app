@@ -4,6 +4,7 @@ import {
   FileText,
   Plus,
   Receipt,
+  RefreshCw,
   Search,
 } from 'lucide-react';
 import { useBooks } from '../../context/BooksContext';
@@ -11,6 +12,7 @@ import { formatCurrency, formatDate } from '../../utils/formatters';
 import { Bill } from '../../types';
 import { BillDetailsModal } from './BillDetailsModal';
 import { RecordVendorPaymentModal } from './RecordVendorPaymentModal';
+import { AccountModal } from '../coa/AccountModal';
 
 interface BillsViewProps {
   autoOpenCreateModal?: boolean;
@@ -25,13 +27,30 @@ export const BillsView: React.FC<BillsViewProps> = ({
   selectedEntityId,
   onSelectedEntityClosed,
 }) => {
-  const { bills, addBill, vendors, accounts, settings } = useBooks();
+  const { bills, addBill, vendors, accounts, refreshAccounts, settings } = useBooks();
   const expenseAccounts = React.useMemo(
-    () => accounts.filter((account) => account.type === 'Expense' && account.status !== 'Inactive'),
+    () =>
+      accounts.filter(
+        (account) =>
+          ['Expense', 'Cost of Goods Sold', 'Other Expense'].includes(account.type) &&
+          (account.status || 'Active') === 'Active' &&
+          account.allowDirectPosting !== false
+      ),
     [accounts]
   );
 
   const [search, setSearch] = useState('');
+  const deferredSearch = React.useDeferredValue(search);
+  const filtered = React.useMemo(() => {
+    const q = deferredSearch.toLowerCase().trim();
+    if (!q) return bills;
+    return bills.filter(
+      (b) =>
+        (b.billNumber && b.billNumber.toLowerCase().includes(q)) ||
+        (b.vendorName && b.vendorName.toLowerCase().includes(q)) ||
+        (b.notes && b.notes.toLowerCase().includes(q))
+    );
+  }, [bills, deferredSearch]);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [viewingBill, setViewingBill] = useState<Bill | null>(null);
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
@@ -62,13 +81,37 @@ export const BillsView: React.FC<BillsViewProps> = ({
   const [expenseAccountId, setExpenseAccountId] = useState('');
   const [formError, setFormError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isRefreshingAccounts, setIsRefreshingAccounts] = useState(false);
+  const [isAddAccountModalOpen, setIsAddAccountModalOpen] = useState(false);
+
+  const handleRefreshAccounts = async () => {
+    if (!refreshAccounts) return;
+    setIsRefreshingAccounts(true);
+    try {
+      await refreshAccounts();
+    } catch (err) {
+      console.error('Failed to refresh accounts in BillsView:', err);
+    } finally {
+      setIsRefreshingAccounts(false);
+    }
+  };
+
+  React.useEffect(() => {
+    if (isModalOpen && refreshAccounts) {
+      refreshAccounts().catch((err) => console.error('Realtime accounts fetch error in BillsView:', err));
+    }
+  }, [isModalOpen, refreshAccounts]);
 
   React.useEffect(() => {
     if (!vendorId && vendors[0]) setVendorId(vendors[0].id);
   }, [vendorId, vendors]);
 
   React.useEffect(() => {
-    if (!expenseAccountId && expenseAccounts[0]) setExpenseAccountId(expenseAccounts[0].id);
+    if (!expenseAccountId && expenseAccounts[0]) {
+      setExpenseAccountId(expenseAccounts[0].id);
+    } else if (expenseAccountId && !expenseAccounts.some((a) => a.id === expenseAccountId)) {
+      setExpenseAccountId(expenseAccounts[0]?.id || '');
+    }
   }, [expenseAccountId, expenseAccounts]);
 
   const openCreateModal = () => {
@@ -83,13 +126,6 @@ export const BillsView: React.FC<BillsViewProps> = ({
     setIsSubmitting(false);
     setIsModalOpen(true);
   };
-
-  const filtered = bills.filter(
-    (b) =>
-      b.billNumber.toLowerCase().includes(search.toLowerCase()) ||
-      b.vendorName.toLowerCase().includes(search.toLowerCase()) ||
-      b.notes.toLowerCase().includes(search.toLowerCase())
-  );
 
   const handleCreateBill = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -314,16 +350,41 @@ export const BillsView: React.FC<BillsViewProps> = ({
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Expense Account</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                    Expense Account <span className="text-rose-600">*</span>
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleRefreshAccounts}
+                      disabled={isRefreshingAccounts}
+                      title="Fetch latest accounts"
+                      className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-500 hover:text-blue-600 dark:text-slate-400 dark:hover:text-blue-400 cursor-pointer"
+                    >
+                      <RefreshCw className={`h-2.5 w-2.5 ${isRefreshingAccounts ? 'animate-spin text-blue-600' : ''}`} />
+                      <span>{isRefreshingAccounts ? 'Refreshing...' : 'Refresh'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsAddAccountModalOpen(true)}
+                      className="inline-flex items-center gap-0.5 text-[11px] font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
+                    >
+                      <Plus className="h-2.5 w-2.5" />
+                      <span>New account</span>
+                    </button>
+                  </div>
+                </div>
                 <select
                   value={expenseAccountId}
                   onChange={(e) => setExpenseAccountId(e.target.value)}
                   className="w-full border border-slate-300 dark:border-slate-700 rounded-lg p-2 text-xs font-medium dark:bg-slate-800 dark:text-white"
                   required
                 >
+                  <option value="">Select expense account ({expenseAccounts.length} available)</option>
                   {expenseAccounts.map((account) => (
                     <option key={account.id} value={account.id}>
-                      {account.code} - {account.name}
+                      {account.code} - {account.name} ({account.type})
                     </option>
                   ))}
                 </select>
@@ -398,6 +459,13 @@ export const BillsView: React.FC<BillsViewProps> = ({
             </form>
           </div>
         </div>
+      )}
+
+      {isAddAccountModalOpen && (
+        <AccountModal
+          isOpen={isAddAccountModalOpen}
+          onClose={() => setIsAddAccountModalOpen(false)}
+        />
       )}
     </div>
   );

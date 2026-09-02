@@ -249,7 +249,34 @@ export class FinanceController {
       );
       });
       res.status(201).json({ id: accId, code: normalizedCode, name: name.trim(), description: description?.trim() || null, type: normalizedType, subType: normalizedSubType, balance: 0, status: 'Active', parentAccountId, reportingGroup, normalBalance, allowDirectPosting });
-    } catch (error) {
+    } catch (error: any) {
+      if (error?.code === '23505' || String(error?.message || '').includes('uk_org_account_code')) {
+        try {
+          const conflictRes = await db.query(
+            `SELECT name, type, status FROM accounts WHERE organization_id = $1 AND code = $2`,
+            [orgId, normalizedCode]
+          );
+          const conflict = conflictRes.rows[0];
+          if (conflict && conflict.status === 'Archived') {
+            res.status(409).json({
+              error: `Account code "${normalizedCode}" already belongs to an Archived account ("${conflict.name}"). Switch to Archived accounts in Chart of Accounts to restore it, or choose a different code.`,
+            });
+            return;
+          }
+          if (conflict) {
+            res.status(409).json({
+              error: `Account code "${normalizedCode}" is already in use by "${conflict.name}" (${conflict.type}). Please choose a different code.`,
+            });
+            return;
+          }
+        } catch {
+          // fallback to generic message
+        }
+        res.status(409).json({
+          error: `An account with code "${normalizedCode}" already exists in your organization. Please choose a different code.`,
+        });
+        return;
+      }
       const message = error instanceof Error ? error.message : 'Account could not be created';
       const statusCode = message.startsWith('ACCOUNT_PARENT_') ? 400 : 409;
       res.status(statusCode).json({ error: message.replace(/^[A-Z_]+: /, '') });
@@ -359,6 +386,88 @@ export class FinanceController {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Account could not be updated';
       const statusCode = message.startsWith('ACCOUNT_NOT_FOUND') ? 404 : 400;
+      res.status(statusCode).json({ error: message.replace(/^[A-Z_]+: /, '') });
+    }
+  }
+
+  public static async deleteAccount(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const accountId = String(req.params.id || '').trim();
+    if (!accountId) {
+      res.status(400).json({ error: 'An account id is required' });
+      return;
+    }
+
+    try {
+      const deleted = await db.transaction(async (client) => {
+        const accountResult = await client.query(
+          `SELECT * FROM accounts WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+          [orgId, accountId]
+        );
+        const account = accountResult.rows[0];
+        if (!account) throw new Error('ACCOUNT_NOT_FOUND: Account does not exist');
+        if (account.is_system_account || account.is_locked) {
+          throw new Error('ACCOUNT_DELETE_PROTECTED: System and locked accounts cannot be deleted');
+        }
+        if (Number(account.balance || 0) !== 0) {
+          throw new Error('ACCOUNT_DELETE_BALANCE: An account with a non-zero balance cannot be deleted');
+        }
+
+        // A deleted account must not leave a financial or setup reference behind. Journal
+        // lines are the hard accounting boundary; the other checks keep defaults and drafts valid.
+        const usageChecks: Array<{ label: string; sql: string }> = [
+          { label: 'child account', sql: `SELECT 1 FROM accounts WHERE organization_id = $1 AND parent_account_id = $2 LIMIT 1` },
+          { label: 'accounting default', sql: `SELECT 1 FROM accounting_defaults WHERE organization_id = $1 AND account_id = $2 LIMIT 1` },
+          { label: 'bank account', sql: `SELECT 1 FROM bank_accounts WHERE organization_id = $1 AND ledger_account_id = $2 LIMIT 1` },
+          { label: 'bank rule', sql: `SELECT 1 FROM bank_reconciliation_rules WHERE organization_id = $1 AND suggested_account_id = $2 LIMIT 1` },
+          { label: 'invoice line', sql: `SELECT 1 FROM invoice_items WHERE organization_id = $1 AND account_id = $2 LIMIT 1` },
+          { label: 'customer payment', sql: `SELECT 1 FROM payments_received WHERE organization_id = $1 AND deposit_to_account_id = $2 LIMIT 1` },
+          { label: 'vendor payment', sql: `SELECT 1 FROM payments_made WHERE organization_id = $1 AND paid_from_account_id = $2 LIMIT 1` },
+          { label: 'expense', sql: `SELECT 1 FROM expenses WHERE organization_id = $1 AND (expense_account_id = $2 OR paid_from_account_id = $2) LIMIT 1` },
+          { label: 'journal entry', sql: `SELECT 1 FROM journal_lines jl LEFT JOIN journal_entries je ON je.id = jl.journal_entry_id WHERE jl.account_id = $2 AND COALESCE(jl.organization_id, je.organization_id) = $1 LIMIT 1` },
+          { label: 'customer default', sql: `SELECT 1 FROM customers WHERE organization_id = $1 AND default_sales_account_id = $2 LIMIT 1` },
+          { label: 'vendor default', sql: `SELECT 1 FROM vendors WHERE organization_id = $1 AND default_expense_account_id = $2 LIMIT 1` },
+          { label: 'customer refund', sql: `SELECT 1 FROM customer_refunds WHERE organization_id = $1 AND refund_account_id = $2 LIMIT 1` },
+          { label: 'receivable write-off', sql: `SELECT 1 FROM ar_write_offs WHERE organization_id = $1 AND write_off_account_id = $2 LIMIT 1` },
+          { label: 'payable write-off', sql: `SELECT 1 FROM ap_write_offs WHERE organization_id = $1 AND write_off_account_id = $2 LIMIT 1` },
+          { label: 'budget line', sql: `SELECT 1 FROM budget_lines WHERE organization_id = $1 AND account_id = $2 LIMIT 1` },
+          { label: 'fixed asset', sql: `SELECT 1 FROM fixed_assets WHERE organization_id = $1 AND ($2 IN (asset_account_id, accumulated_depreciation_account_id, depreciation_expense_account_id)) LIMIT 1` },
+          { label: 'item default', sql: `SELECT 1 FROM items WHERE organization_id = $1 AND ($2 IN (sales_account_id, purchase_account_id)) LIMIT 1` },
+        ];
+        for (const check of usageChecks) {
+          const reference = await client.query(check.sql, [orgId, accountId]);
+          if (reference.rows.length > 0) {
+            throw new Error(`ACCOUNT_DELETE_IN_USE: This account is used by a ${check.label}. Remove that reference or archive the account instead.`);
+          }
+        }
+
+        const result = await client.query(
+          `DELETE FROM accounts WHERE organization_id = $1 AND id = $2 RETURNING id, code, name, type, sub_type`,
+          [orgId, accountId]
+        );
+        if (result.rows.length !== 1) throw new Error('ACCOUNT_NOT_FOUND: Account does not exist');
+        const removed = result.rows[0];
+        await client.query(
+          `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state)
+           VALUES ($1, $2, $3, 'ACCOUNT_DELETED', 'Account', $4, $5)`,
+          [newId('aud'), orgId, req.auth!.userId, accountId, JSON.stringify({
+            id: removed.id,
+            code: removed.code,
+            name: removed.name,
+            type: removed.type,
+            subType: removed.sub_type,
+          })]
+        );
+        return removed;
+      }, { organizationId: orgId });
+      res.json({ deleted: true, id: deleted.id, code: deleted.code, name: deleted.name });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Account could not be deleted';
+      const statusCode = message.startsWith('ACCOUNT_NOT_FOUND')
+        ? 404
+        : message.startsWith('ACCOUNT_DELETE_IN_USE') || message.startsWith('ACCOUNT_DELETE_BALANCE')
+          ? 409
+          : 400;
       res.status(statusCode).json({ error: message.replace(/^[A-Z_]+: /, '') });
     }
   }
@@ -762,33 +871,61 @@ export class FinanceController {
   // --- INVOICES ---
   public static async getInvoices(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
-    const result = await db.query('SELECT * FROM invoices WHERE organization_id = $1 ORDER BY created_at DESC', [orgId]);
-    const invoices = await Promise.all(result.rows.map(async (invoice) => {
-      const itemResult = await db.query(
-        `SELECT id, description, account_id, quantity, unit_price, tax_rate, amount
-           FROM invoice_items WHERE invoice_id = $1 AND organization_id = $2 ORDER BY id`,
-        [invoice.id, orgId]
-      );
-      return {
-        id: invoice.id,
-        organizationId: invoice.organization_id,
-        invoiceNumber: invoice.invoice_number,
-        clientId: invoice.client_id || invoice.customer_id || '',
-        clientName: invoice.client_name,
-        clientEmail: invoice.client_email || '',
-        projectId: invoice.project_id || undefined,
-        issueDate: invoice.issue_date,
-        dueDate: invoice.due_date,
-        items: itemResult.rows.map((item) => ({
-          id: item.id, description: item.description, accountId: item.account_id,
-          quantity: Number(item.quantity), unitPrice: Number(item.unit_price),
-          taxRate: Number(item.tax_rate), amount: Number(item.amount),
-        })),
-        subtotal: Number(invoice.subtotal), taxTotal: Number(invoice.tax_total),
-        discount: Number(invoice.discount), totalAmount: Number(invoice.total_amount),
-        paidAmount: Number(invoice.paid_amount), balanceDue: Number(invoice.balance_due),
-        status: invoice.status, notes: invoice.notes || '', createdAt: invoice.created_at,
-      };
+    const limit = req.query.limit ? Number(req.query.limit) : null;
+    const offset = req.query.offset ? Number(req.query.offset) : 0;
+    let queryText = 'SELECT * FROM invoices WHERE organization_id = $1 ORDER BY created_at DESC';
+    const params: any[] = [orgId];
+    if (limit && Number.isFinite(limit) && limit > 0) {
+      queryText += ` LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+      params.push(limit, offset);
+    }
+    const result = await db.query(queryText, params);
+    if (result.rows.length === 0) {
+      res.json([]);
+      return;
+    }
+
+    const invoiceIds = result.rows.map((r) => r.id);
+    const itemResult = await db.query(
+      `SELECT id, invoice_id, description, account_id, quantity, unit_price, tax_rate, amount
+         FROM invoice_items WHERE organization_id = $1 AND invoice_id = ANY($2::text[]) ORDER BY id`,
+      [orgId, invoiceIds]
+    );
+    const itemsByInvoiceId = new Map<string, any[]>();
+    for (const item of itemResult.rows) {
+      const list = itemsByInvoiceId.get(item.invoice_id) || [];
+      list.push({
+        id: item.id,
+        description: item.description,
+        accountId: item.account_id,
+        quantity: Number(item.quantity),
+        unitPrice: Number(item.unit_price),
+        taxRate: Number(item.tax_rate),
+        amount: Number(item.amount),
+      });
+      itemsByInvoiceId.set(item.invoice_id, list);
+    }
+
+    const invoices = result.rows.map((invoice) => ({
+      id: invoice.id,
+      organizationId: invoice.organization_id,
+      invoiceNumber: invoice.invoice_number,
+      clientId: invoice.client_id || invoice.customer_id || '',
+      clientName: invoice.client_name,
+      clientEmail: invoice.client_email || '',
+      projectId: invoice.project_id || undefined,
+      issueDate: invoice.issue_date,
+      dueDate: invoice.due_date,
+      items: itemsByInvoiceId.get(invoice.id) || [],
+      subtotal: Number(invoice.subtotal),
+      taxTotal: Number(invoice.tax_total),
+      discount: Number(invoice.discount),
+      totalAmount: Number(invoice.total_amount),
+      paidAmount: Number(invoice.paid_amount),
+      balanceDue: Number(invoice.balance_due),
+      status: invoice.status,
+      notes: invoice.notes || '',
+      createdAt: invoice.created_at,
     }));
     res.json(invoices);
   }
@@ -964,7 +1101,15 @@ export class FinanceController {
   // --- EXPENSES ---
   public static async getExpenses(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
-    const result = await db.query('SELECT * FROM expenses WHERE organization_id = $1 ORDER BY date DESC', [orgId]);
+    const limit = req.query.limit ? Number(req.query.limit) : null;
+    const offset = req.query.offset ? Number(req.query.offset) : 0;
+    let queryText = 'SELECT * FROM expenses WHERE organization_id = $1 ORDER BY date DESC';
+    const params: any[] = [orgId];
+    if (limit && Number.isFinite(limit) && limit > 0) {
+      queryText += ` LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+      params.push(limit, offset);
+    }
+    const result = await db.query(queryText, params);
     const attachmentsByExpense = await ExpenseReceiptService.listForExpenses(db, orgId);
     res.json(result.rows.map((expense) => ({
       id: expense.id, organizationId: expense.organization_id, referenceNumber: expense.expense_number,
@@ -1021,7 +1166,15 @@ export class FinanceController {
   // --- BILLS ---
   public static async getBills(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
-    const result = await db.query('SELECT * FROM bills WHERE organization_id = $1 ORDER BY bill_date DESC', [orgId]);
+    const limit = req.query.limit ? Number(req.query.limit) : null;
+    const offset = req.query.offset ? Number(req.query.offset) : 0;
+    let queryText = 'SELECT * FROM bills WHERE organization_id = $1 ORDER BY bill_date DESC';
+    const params: any[] = [orgId];
+    if (limit && Number.isFinite(limit) && limit > 0) {
+      queryText += ` LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+      params.push(limit, offset);
+    }
+    const result = await db.query(queryText, params);
     res.json(result.rows.map((bill) => ({
       id: bill.id, billNumber: bill.bill_number, vendorName: bill.vendor_name,
       billDate: bill.bill_date, dueDate: bill.due_date, totalAmount: Number(bill.total_amount),
@@ -1083,7 +1236,7 @@ export class FinanceController {
         const vendor = await client.query(`SELECT id, name, company_name FROM vendors WHERE organization_id = $1 AND id = $2`, [orgId, vendorId]);
         if (vendor.rows.length !== 1) throw new Error('Bill vendor does not belong to this organization');
         const resolvedVendorName = vendor.rows[0].name || vendor.rows[0].company_name || vendorName || 'Vendor';
-        const finalExpenseAccountId = expenseAccountId || await OrganizationProvisioningService.resolveAccountId(client, orgId, '6000', ['Expense']);
+        const finalExpenseAccountId = expenseAccountId || await OrganizationProvisioningService.resolveAccountId(client, orgId, '6000', ['Expense', 'Cost of Goods Sold']);
         const finalPayableAccountId = payableAccountId || await OrganizationProvisioningService.resolveAccountId(client, orgId, '2000', ['Liability']);
         const inputTaxAccountId = parsedTax > 0 ? await OrganizationProvisioningService.resolveAccountId(client, orgId, '1200', ['Asset']) : '';
         const postingAccounts = await client.query(
@@ -1092,13 +1245,14 @@ export class FinanceController {
         );
         const debitAccount = postingAccounts.rows.find((account) => account.id === finalExpenseAccountId);
         const payableAccount = postingAccounts.rows.find((account) => account.id === finalPayableAccountId);
+        const isExpenseDebit = Boolean(debitAccount && ['Expense', 'Cost of Goods Sold', 'Other Expense'].includes(debitAccount.type));
         if (
-          !debitAccount || debitAccount.type !== 'Expense' ||
+          !isExpenseDebit ||
           !payableAccount || payableAccount.type !== 'Liability' ||
           !['accounts payable', 'payable'].includes(String(payableAccount.sub_type || '').toLowerCase()) ||
           normalizedLines.some((line) => line.accountId && line.accountId !== finalExpenseAccountId)
         ) {
-          throw new Error('Bill debit lines must use one expense account and the credit account must be accounts payable');
+          throw new Error('Bill debit lines must use an expense or cost of goods sold account and the credit account must be accounts payable');
         }
         await client.query(
           `INSERT INTO bills (id, organization_id, bill_number, vendor_id, vendor_name, bill_date, due_date, subtotal, tax_total, total_amount, amount_paid, balance_due, status, notes, line_items)
@@ -1160,16 +1314,38 @@ export class FinanceController {
   // --- JOURNALS ---
   public static async getJournals(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
-    const result = await db.query('SELECT * FROM journal_entries WHERE organization_id = $1 ORDER BY date DESC', [orgId]);
-    const journals = await Promise.all(result.rows.map(async (entry) => {
-      const lines = await db.query(
-        `SELECT jl.* FROM journal_lines jl
-          JOIN journal_entries je ON je.id = jl.journal_entry_id
-         WHERE jl.journal_entry_id = $1 AND je.organization_id = $2
-         ORDER BY jl.id`,
-        [entry.id, orgId]
-      );
-      return { ...entry, lines: lines.rows };
+    const limit = req.query.limit ? Number(req.query.limit) : null;
+    const offset = req.query.offset ? Number(req.query.offset) : 0;
+    let queryText = 'SELECT * FROM journal_entries WHERE organization_id = $1 ORDER BY date DESC';
+    const params: any[] = [orgId];
+    if (limit && Number.isFinite(limit) && limit > 0) {
+      queryText += ` LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+      params.push(limit, offset);
+    }
+    const result = await db.query(queryText, params);
+    if (result.rows.length === 0) {
+      res.json([]);
+      return;
+    }
+
+    const entryIds = result.rows.map((r) => r.id);
+    const linesResult = await db.query(
+      `SELECT jl.* FROM journal_lines jl
+        WHERE jl.organization_id = $1 AND jl.journal_entry_id = ANY($2::text[])
+        ORDER BY jl.id`,
+      [orgId, entryIds]
+    );
+
+    const linesByEntryId = new Map<string, any[]>();
+    for (const line of linesResult.rows) {
+      const list = linesByEntryId.get(line.journal_entry_id) || [];
+      list.push(line);
+      linesByEntryId.set(line.journal_entry_id, list);
+    }
+
+    const journals = result.rows.map((entry) => ({
+      ...entry,
+      lines: linesByEntryId.get(entry.id) || [],
     }));
     res.json(journals);
   }

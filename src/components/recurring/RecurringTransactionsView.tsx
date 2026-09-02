@@ -24,7 +24,7 @@ const labels: Record<Kind, { title: string; party: string; singular: string }> =
 };
 
 export const RecurringTransactionsView: React.FC<{ kind: Kind }> = ({ kind }) => {
-  const { clients, vendors, accounts, settings } = useBooks();
+  const { clients, vendors, accounts, refreshAccounts, settings } = useBooks();
   const [rows, setRows] = useState<RecurringRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -41,12 +41,27 @@ export const RecurringTransactionsView: React.FC<{ kind: Kind }> = ({ kind }) =>
 
   const parties = kind === 'INVOICE' ? clients : vendors;
   const expenseAccounts = useMemo(
-    () => accounts.filter((account) => account.type === 'Expense' && account.status !== 'Inactive'),
+    () =>
+      accounts.filter(
+        (account) =>
+          ['Expense', 'Cost of Goods Sold', 'Other Expense'].includes(account.type) &&
+          (account.status || 'Active') === 'Active' &&
+          account.allowDirectPosting !== false
+      ),
     [accounts]
   );
   const paymentAccounts = useMemo(
-    () => accounts.filter((account) => account.type === 'Asset' && account.status !== 'Inactive' &&
-      ['Bank', 'Cash', 'Cash & Bank', 'Digital Wallet'].includes(account.subType)),
+    () =>
+      accounts.filter(
+        (account) =>
+          (account.status || 'Active') === 'Active' &&
+          account.allowDirectPosting !== false &&
+          ((account.type === 'Asset' &&
+            ['Bank', 'Cash', 'Cash & Bank', 'Digital Wallet', 'Undeposited Funds', 'Payment Clearing'].includes(
+              account.subType
+            )) ||
+            (account.type === 'Liability' && ['Credit Cards', 'Credit Card', 'Loan/Credit'].includes(account.subType)))
+      ),
     [accounts]
   );
 
@@ -61,7 +76,12 @@ export const RecurringTransactionsView: React.FC<{ kind: Kind }> = ({ kind }) =>
     setLoading(false);
   };
 
-  useEffect(() => { void load(); }, [kind]);
+  useEffect(() => {
+    if (refreshAccounts) {
+      refreshAccounts().catch((err) => console.error('Error fetching accounts in recurring view:', err));
+    }
+    void load();
+  }, [kind, refreshAccounts]);
   useEffect(() => {
     setPartyId(parties[0]?.id || '');
     setExpenseAccountId(expenseAccounts[0]?.id || '');

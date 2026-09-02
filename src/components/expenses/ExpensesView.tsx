@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useDeferredValue } from 'react';
 import {
   ArrowLeft,
   Building2,
@@ -30,6 +30,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
   const { expenses, settings } = useBooks();
 
   const [search, setSearch] = useState('');
+  const deferredSearch = useDeferredValue(search);
   const [isModalOpen, setIsModalOpen] = useState(autoOpenCreateModal);
   const [viewingExpense, setViewingExpense] = useState<Expense | null>(null);
 
@@ -53,12 +54,12 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
 
   const filteredExpenses = expenses.filter(
     (e) =>
-      e.referenceNumber.toLowerCase().includes(search.toLowerCase()) ||
-      e.accountName.toLowerCase().includes(search.toLowerCase()) ||
-      (e.vendorName && e.vendorName.toLowerCase().includes(search.toLowerCase())) ||
-      (e.projectName && e.projectName.toLowerCase().includes(search.toLowerCase())) ||
-      (e.clientName && e.clientName.toLowerCase().includes(search.toLowerCase())) ||
-      (e.invoiceNumber && e.invoiceNumber.toLowerCase().includes(search.toLowerCase()))
+      e.referenceNumber.toLowerCase().includes(deferredSearch.toLowerCase()) ||
+      e.accountName.toLowerCase().includes(deferredSearch.toLowerCase()) ||
+      (e.vendorName && e.vendorName.toLowerCase().includes(deferredSearch.toLowerCase())) ||
+      (e.projectName && e.projectName.toLowerCase().includes(deferredSearch.toLowerCase())) ||
+      (e.clientName && e.clientName.toLowerCase().includes(deferredSearch.toLowerCase())) ||
+      (e.invoiceNumber && e.invoiceNumber.toLowerCase().includes(deferredSearch.toLowerCase()))
   );
 
   const totalExpenseSum = filteredExpenses.reduce(

@@ -19,7 +19,7 @@ export const RecordCustomerPaymentModal: React.FC<RecordCustomerPaymentModalProp
   clientId,
   onPaymentSuccess,
 }) => {
-  const { invoices, accounts, settings, addPaymentReceived } = useBooks();
+  const { invoices, accounts, refreshAccounts, settings, addPaymentReceived } = useBooks();
 
   const clientInvoices = useMemo(() => {
     return invoices.filter(
@@ -34,14 +34,21 @@ export const RecordCustomerPaymentModal: React.FC<RecordCustomerPaymentModalProp
     return accounts.filter(
       (a) =>
         a.type === 'Asset' &&
-        a.status !== 'Inactive' &&
+        (a.status || 'Active') === 'Active' &&
+        a.allowDirectPosting !== false &&
         !a.isLocked &&
         (a.code === '1000' ||
-          ['bank', 'cash', 'cash & bank', 'digital wallet', 'undeposited funds'].includes(
+          ['bank', 'cash', 'cash & bank', 'digital wallet', 'undeposited funds', 'payment clearing'].includes(
             String(a.subType || '').toLowerCase()
           ))
     );
   }, [accounts]);
+
+  useEffect(() => {
+    if (isOpen && refreshAccounts) {
+      refreshAccounts().catch((err) => console.error('Error fetching accounts for customer payment:', err));
+    }
+  }, [isOpen, refreshAccounts]);
 
   const [selectedInvoiceId, setSelectedInvoiceId] = useState('');
   const [depositAccountId, setDepositAccountId] = useState('');

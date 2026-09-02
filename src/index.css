@@ -64,6 +64,20 @@
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
 }
 
+.touch-target {
+  min-height: 40px;
+  min-width: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.table-cell-amount {
+  text-align: right;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+
 @media print {
   /* Hide non-printable app layout elements */
   header, nav, aside, .print\:hidden {

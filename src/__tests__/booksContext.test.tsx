@@ -291,7 +291,29 @@ describe('BooksContext State Management & Financial Mutations', () => {
     });
   });
 
-  it('11. useBooks throws if called outside BooksProvider', () => {
+  it('11. removes a chart account from local state only after the server confirms deletion', async () => {
+    const account = {
+      id: 'acc-delete', code: '6110', name: 'Temporary supplies', type: 'Expense', subType: 'Office & Administrative', balance: 0, status: 'Active',
+    };
+    localStorage.setItem('firmbooks_authenticated', 'true');
+    localStorage.setItem('active_organization_id', 'org-1');
+    vi.spyOn(apiClient, 'get').mockImplementation(async (endpoint: string) => {
+      if (endpoint === '/organizations') return { data: [{ id: 'org-1', name: 'Sense Studios', publicOrgId: 'PUB-1', currency: 'INR', timezone: 'Asia/Kolkata', status: 'Active' }], error: null, status: 200 } as any;
+      if (endpoint === '/auth/me') return { data: { user: { id: 'user-1', email: 'owner@example.com', fullName: 'Owner' } }, error: null, status: 200 } as any;
+      if (endpoint === '/finance/accounts') return { data: [account], error: null, status: 200 } as any;
+      return { data: [], error: null, status: 200 } as any;
+    });
+    const deleteSpy = vi.spyOn(apiClient, 'delete').mockResolvedValue({ data: { deleted: true, id: account.id }, error: null, status: 200 });
+    const { result } = renderHook(() => useBooks(), { wrapper });
+
+    await waitFor(() => expect(result.current.accounts).toEqual([account]));
+    await act(async () => { await result.current.deleteAccount(account.id); });
+
+    expect(deleteSpy).toHaveBeenCalledWith('/finance/accounts/acc-delete');
+    expect(result.current.accounts).toEqual([]);
+  });
+
+  it('12. useBooks throws if called outside BooksProvider', () => {
     expect(() => renderHook(() => useBooks())).toThrow('useBooks must be used within a BooksProvider');
   });
 });

@@ -53,9 +53,14 @@ export class ExpensePostingService {
       }
       const expenseAccount = accountCheck.rows.find((account) => account.id === input.expenseAccountId);
       const paymentAccount = accountCheck.rows.find((account) => account.id === input.paidFromAccountId);
-      if (expenseAccount?.type !== 'Expense' || paymentAccount?.type !== 'Asset' ||
-          !['bank', 'cash', 'cash & bank', 'digital wallet'].includes(String(paymentAccount.sub_type || '').toLowerCase())) {
-        throw new Error('EXPENSE_ACCOUNT_TYPE_INVALID: Debit an expense account and credit a bank, cash, or wallet account');
+      const isExpenseType = Boolean(expenseAccount && ['Expense', 'Cost of Goods Sold', 'Other Expense'].includes(expenseAccount.type));
+      const isAssetPayment = Boolean(paymentAccount?.type === 'Asset' &&
+        ['bank', 'cash', 'cash & bank', 'digital wallet', 'undeposited funds', 'payment clearing'].includes(String(paymentAccount.sub_type || '').toLowerCase()));
+      const isLiabilityPayment = Boolean(paymentAccount?.type === 'Liability' &&
+        ['credit card', 'credit cards', 'loan/credit'].includes(String(paymentAccount.sub_type || '').toLowerCase()));
+
+      if (!isExpenseType || (!isAssetPayment && !isLiabilityPayment)) {
+        throw new Error('EXPENSE_ACCOUNT_TYPE_INVALID: Debit an expense or cost of goods sold account and credit a bank, cash, wallet, or credit card account');
       }
       if (input.projectId) {
         const project = await client.query(

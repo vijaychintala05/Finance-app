@@ -623,14 +623,46 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }));
   }, [currentOrg.name, currentOrg.publicOrgId, currentOrgId]);
 
-  const refreshAfterCommittedWrite = useCallback(async (): Promise<void> => {
+  const refreshDomainData = useCallback(async (endpoints: readonly string[]): Promise<void> => {
+    if (!currentOrgId || !localStorage.getItem('firmbooks_authenticated')) return;
+    const requestedOrgId = currentOrgId;
+    const responses = await Promise.all(endpoints.map((ep) => apiClient.get<any[]>(`/finance/${ep}`)));
+    if (activeOrgIdRef.current !== requestedOrgId) return;
+
+    endpoints.forEach((ep, idx) => {
+      const res = responses[idx];
+      if (res.error || !Array.isArray(res.data)) return;
+      const data = camelizeRecord(res.data);
+      switch (ep) {
+        case 'accounts': setAccounts(data as Account[]); break;
+        case 'expenses': setExpenses(data as Expense[]); break;
+        case 'bills': setBills((data || []).map(normalizeBillForUi)); break;
+        case 'invoices': setInvoices((data || []).map(normalizeInvoiceForUi)); break;
+        case 'journals': setJournalEntries(data as JournalEntry[]); break;
+        case 'payments-received': setPaymentsReceived(data as PaymentReceipt[]); break;
+        case 'vendor-payments': setPaymentsMade(data as PaymentMade[]); break;
+        case 'clients': setClients(data as Client[]); break;
+        case 'vendors': setVendors(data as Vendor[]); break;
+        case 'projects': setProjects(data as Project[]); break;
+        case 'time-entries': setTimeEntries(data as TimeEntry[]); break;
+        case 'project-summaries': setProjectSummaries(data as ProjectFinancialSummary[]); break;
+        case 'period-locks': setPeriodLocks(data as PeriodLock[]); break;
+      }
+    });
+  }, [currentOrgId]);
+
+  const refreshAfterCommittedWrite = useCallback(async (domains?: readonly string[]): Promise<void> => {
     try {
-      await refreshAuthoritativeData();
+      if (domains && domains.length > 0) {
+        await refreshDomainData(domains);
+      } else {
+        await refreshAuthoritativeData();
+      }
     } catch (error) {
       console.error('A committed transaction could not be reloaded for verification:', error);
       window.alert('The server committed this transaction, but the verification refresh failed. Do not submit it again; reload the page before continuing.');
     }
-  }, [refreshAuthoritativeData]);
+  }, [refreshDomainData, refreshAuthoritativeData]);
 
   const refreshAccountsAfterCommittedWrite = useCallback(async (expectedAccountId?: string): Promise<void> => {
     if (!currentOrgId || !localStorage.getItem('firmbooks_authenticated')) return;
@@ -646,6 +678,10 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
     setAccounts(refreshedAccounts);
   }, [currentOrgId]);
+
+  const refreshAccounts = useCallback(async (): Promise<void> => {
+    await refreshAccountsAfterCommittedWrite();
+  }, [refreshAccountsAfterCommittedWrite]);
 
   // PostgreSQL is the sole authority for accounting data. Browser storage is
   // intentionally limited to non-financial preferences and never used as a ledger fallback.
@@ -844,6 +880,12 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       window.alert('The account change was saved, but its list could not be refreshed. Do not submit it again; reload the page before continuing.');
     }
     return updatedAccount;
+  };
+
+  const deleteAccount = async (id: string): Promise<void> => {
+    const response = await apiClient.delete<{ deleted: boolean; id: string }>(`/finance/accounts/${id}`);
+    if (!response.data?.deleted) throw new Error(response.error || 'Account could not be deleted');
+    setAccounts((current) => current.filter((account) => account.id !== id));
   };
 
   const addClient = async (clientData: Omit<Client, 'id' | 'createdAt'>): Promise<Client> => {
@@ -1137,7 +1179,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       id: response.data.id,
       paymentNumber: response.data.paymentNumber || paymentData.paymentNumber,
     };
-    await refreshAfterCommittedWrite();
+    await refreshAfterCommittedWrite(['payments-received', 'invoices', 'accounts', 'clients']);
     return newPayment;
   };
   const deletePaymentReceived = async (id: string): Promise<void> => {
@@ -1145,7 +1187,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (!reason) return;
     const response = await apiClient.post('/security/reverse-payment', { paymentId: id, reason });
     if (!response.data) throw new Error(response.error || 'Payment could not be reversed');
-    await refreshAfterCommittedWrite();
+    await refreshAfterCommittedWrite(['payments-received', 'invoices', 'accounts', 'clients']);
   };
 
   const addRecurringInvoice = (profileData: Omit<RecurringInvoiceProfile, 'id'>): RecurringInvoiceProfile | null => {
@@ -1179,7 +1221,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       billNumber: response.data.billNumber || billData.billNumber,
       totalAmount: Number(response.data.totalAmount),
     };
-    await refreshAfterCommittedWrite();
+    await refreshAfterCommittedWrite(['bills', 'accounts', 'vendor-payments', 'vendors']);
     return newBill;
   };
   const updateBill = (id: string, updated: Partial<Bill>) => {
@@ -1190,7 +1232,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (!reason) return;
     const response = await apiClient.post(`/finance/bills/${id}/void`, { reason });
     if (!response.data) throw new Error(response.error || 'Bill could not be voided');
-    await refreshAfterCommittedWrite();
+    await refreshAfterCommittedWrite(['bills', 'accounts', 'vendor-payments', 'vendors']);
   };
 
   const addRecurringBill = (billData: Omit<RecurringBill, 'id'>): RecurringBill | null => {
@@ -1257,7 +1299,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       amount: Number(response.data.amount || paymentData.amount),
     };
 
-    await refreshAfterCommittedWrite();
+    await refreshAfterCommittedWrite(['vendor-payments', 'bills', 'accounts', 'vendors']);
     return newPayment;
   };
 
@@ -1287,7 +1329,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (response.error || !response.data) {
       throw new Error(response.error || 'Vendor advance could not be recorded.');
     }
-    await refreshAfterCommittedWrite();
+    await refreshAfterCommittedWrite(['vendor-payments', 'bills', 'accounts', 'vendors']);
     return response.data;
   };
 
@@ -1302,7 +1344,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (response.error || !response.data) {
       throw new Error(response.error || 'Vendor advance could not be applied to bill.');
     }
-    await refreshAfterCommittedWrite();
+    await refreshAfterCommittedWrite(['vendor-payments', 'bills', 'accounts', 'vendors']);
     return response.data;
   };
 
@@ -1313,7 +1355,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (response.error || !response.data) {
       throw new Error(response.error || 'Vendor payment could not be reversed.');
     }
-    await refreshAfterCommittedWrite();
+    await refreshAfterCommittedWrite(['vendor-payments', 'bills', 'accounts', 'vendors']);
   };
 
   const addRecurringExpense = (expenseData: Omit<RecurringExpense, 'id'>): RecurringExpense | null => {
@@ -1361,8 +1403,10 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       settings,
       updateSettings,
       accounts,
+      refreshAccounts,
       addAccount,
       updateAccount,
+      deleteAccount,
       clients,
       addClient,
       updateClient,

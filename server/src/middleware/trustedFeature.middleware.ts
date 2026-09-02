@@ -24,6 +24,8 @@ export const CERTIFIED_OPTIONAL_FEATURES = new Set<string>([
   'recovery-center',
   'customer-statements',
   'vendor-statements',
+  'accountant-overview',
+  'delivery-challans',
 ]);
 
 function enabledFeatures(): Set<string> {

@@ -43,6 +43,34 @@ describe('role-based chart of accounts and dimensional ledger', () => {
       .resolves.toBe(salesId);
   });
 
+  it('provisions the India starter chart alongside protected control accounts', async () => {
+    const starterAccounts = await db.query(
+      `SELECT code, name, type, sub_type, normal_balance, is_system_account
+         FROM accounts
+        WHERE organization_id = $1 AND is_system_account = FALSE
+        ORDER BY code ASC`,
+      [ORG_ID]
+    );
+
+    expect(starterAccounts.rows).toHaveLength(78);
+    expect(starterAccounts.rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: '1030', name: 'Petty Cash', type: 'Asset', sub_type: 'Cash', normal_balance: 'Debit', is_system_account: false }),
+      expect.objectContaining({ code: '1210', name: 'Input CGST', type: 'Asset', sub_type: 'Other Current Asset', normal_balance: 'Debit', is_system_account: false }),
+      expect.objectContaining({ code: '2210', name: 'Output CGST', type: 'Liability', sub_type: 'Taxes Payable', normal_balance: 'Credit', is_system_account: false }),
+      expect.objectContaining({ code: '5100', name: 'Materials', type: 'Cost of Goods Sold', sub_type: 'Materials', normal_balance: 'Debit', is_system_account: false }),
+      expect.objectContaining({ code: '6100', name: 'Salaries and Employee Wages', type: 'Expense', sub_type: 'Payroll', normal_balance: 'Debit', is_system_account: false }),
+      expect.objectContaining({ code: '7000', name: 'Interest Expense', type: 'Other Expense', sub_type: 'Interest Expense', normal_balance: 'Debit', is_system_account: false }),
+    ]));
+    expect(starterAccounts.rows.find((account) => account.code === '1710')).toMatchObject({
+      name: 'Accumulated Depreciation - Furniture and Equipment',
+      normal_balance: 'Credit',
+    });
+    expect(starterAccounts.rows.find((account) => account.code === '3100')).toMatchObject({
+      name: 'Drawings',
+      normal_balance: 'Debit',
+    });
+  });
+
   it('uses configured normal balances and retains tenant-safe dimensions on journal lines', async () => {
     const bankId = await OrganizationProvisioningService.resolveSystemAccountId(db, ORG_ID, 'BANK_OPERATING', ['Asset']);
     const directCostId = await OrganizationProvisioningService.resolveSystemAccountId(db, ORG_ID, 'DIRECT_COSTS', ['Expense']);

@@ -29,7 +29,7 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
   initialClientId,
   initialEstimate,
 }) => {
-  const { clients, projects, accounts, settings, salespersons, addInvoice, updateInvoice } = useBooks();
+  const { clients, projects, accounts, refreshAccounts, settings, salespersons, addInvoice, updateInvoice } = useBooks();
 
   const [isQuickClientOpen, setIsQuickClientOpen] = useState(false);
   const [isQuickProjectOpen, setIsQuickProjectOpen] = useState(false);
@@ -48,7 +48,22 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
   const [formError, setFormError] = useState('');
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
 
-  const revenueAccounts = useMemo(() => accounts.filter((a) => a.type === 'Revenue'), [accounts]);
+  const revenueAccounts = useMemo(
+    () =>
+      accounts.filter(
+        (a) =>
+          ['Revenue', 'Other Income'].includes(a.type) &&
+          (a.status || 'Active') === 'Active' &&
+          a.allowDirectPosting !== false
+      ),
+    [accounts]
+  );
+
+  useEffect(() => {
+    if (isOpen && refreshAccounts) {
+      refreshAccounts().catch((err) => console.error('Error fetching accounts for invoice:', err));
+    }
+  }, [isOpen, refreshAccounts]);
 
   const [items, setItems] = useState<InvoiceItem[]>([
     {
@@ -539,7 +554,7 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
                         >
                           {revenueAccounts.map((a) => (
                             <option key={a.id} value={a.id}>
-                              {a.name}
+                              {a.code ? `${a.code} — ${a.name}` : a.name}
                             </option>
                           ))}
                         </select>

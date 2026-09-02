@@ -855,6 +855,7 @@ export interface PurchaseOrder {
 export interface Bill {
   id: string;
   billNumber: string;
+  vendorId?: string;
   vendorName: string;
   billDate: string;
   dueDate: string;
@@ -862,7 +863,7 @@ export interface Bill {
   amountPaid: number;
   balanceDue?: number;
   status: 'Unpaid' | 'Partially Paid' | 'Paid' | 'Overdue' | 'VOIDED';
-  notes: string;
+  notes?: string;
 }
 
 export interface RecurringBill {

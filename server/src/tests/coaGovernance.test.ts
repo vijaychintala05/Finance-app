@@ -23,9 +23,10 @@ describe('chart of accounts governance', () => {
 
   it('persists a tenant-scoped hierarchy and audited account maintenance changes', async () => {
     const parent = await request(app).post('/api/v1/finance/accounts').set(auth).send({
-      code: '6101', name: 'Operations', type: 'Expense', subType: 'Office & Administrative', reportingGroup: 'Operations',
+      code: '6101', name: 'Operations', description: 'Company-wide operating costs', type: 'Expense', subType: 'Office & Administrative', reportingGroup: 'Operations',
     });
     expect(parent.status).toBe(201);
+    expect(parent.body.description).toBe('Company-wide operating costs');
     const child = await request(app).post('/api/v1/finance/accounts').set(auth).send({
       code: '6102', name: 'Office supplies', type: 'Expense', subType: 'Office & Administrative', parentAccountId: parent.body.id,
     });
@@ -34,11 +35,12 @@ describe('chart of accounts governance', () => {
     expect(parentAfterChild.rows[0].allow_direct_posting).toBe(false);
 
     const updated = await request(app).patch(`/api/v1/finance/accounts/${child.body.id}`).set(auth).send({
-      name: 'Office supplies and consumables', reportingGroup: 'Operations', allowDirectPosting: false,
+      name: 'Office supplies and consumables', description: 'Consumables used by the office team', reportingGroup: 'Operations', allowDirectPosting: false,
     });
     expect(updated.status).toBe(200);
     expect(updated.body.parent_account_id).toBe(parent.body.id);
     expect(updated.body.allow_direct_posting).toBe(false);
+    expect(updated.body.description).toBe('Consumables used by the office team');
 
     const audit = await db.query(
       `SELECT action FROM audit_logs WHERE organization_id = $1 AND entity_id = $2 AND action = 'ACCOUNT_UPDATED'`, [orgId, child.body.id]

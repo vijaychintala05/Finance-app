@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Archive, ShieldCheck, X } from 'lucide-react';
+import { AlertTriangle, Archive, Info, X } from 'lucide-react';
 import { Account, AccountSubType, AccountType } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 
@@ -72,6 +72,17 @@ export const ACCOUNT_TYPE_CATALOG: Array<{
 
 const RESERVED_CODES = new Set(['1000', '1100', '1150', '1200', '1400', '1600', '2000', '2100', '2200', '2250', '3000', '3400', '3500', '4000', '4900', '5000', '5800', '5900', '6000']);
 
+const ACCOUNT_CATEGORIES: AccountType[] = [
+  'Asset',
+  'Liability',
+  'Equity',
+  'Income',
+  'Other Income',
+  'Cost of Goods Sold',
+  'Expense',
+  'Other Expense',
+];
+
 export const AccountModal: React.FC<AccountModalProps> = ({
   isOpen,
   onClose,
@@ -134,6 +145,7 @@ export const AccountModal: React.FC<AccountModalProps> = ({
       if (accountToEdit) {
         await updateAccount(accountToEdit.id, {
           name: name.trim(),
+          description: description.trim(),
           parentAccountId: parentAccountId || null,
           reportingGroup: reportingGroup.trim() || undefined,
           allowDirectPosting,
@@ -179,29 +191,72 @@ export const AccountModal: React.FC<AccountModalProps> = ({
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4" onClick={onClose}>
-      <div className="w-full max-w-xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-slate-800 dark:bg-slate-900" onClick={(event) => event.stopPropagation()}>
-        <div className="flex items-start justify-between border-b border-slate-200 p-5 dark:border-slate-800">
-          <div><h3 className="text-base font-bold text-slate-900 dark:text-white">{accountToEdit ? 'Account details' : 'Create chart account'}</h3><p className="mt-1 text-xs text-slate-500">New accounts always start at zero; opening balances require a balanced journal.</p></div>
-          <button type="button" onClick={onClose} disabled={isSubmitting} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100"><X className="h-5 w-5" /></button>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-3 sm:p-6" onClick={onClose}>
+      <div className="max-h-[calc(100vh-1.5rem)] w-full max-w-4xl overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900 sm:max-h-[calc(100vh-3rem)]" onClick={(event) => event.stopPropagation()}>
+        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-800 sm:px-6">
+          <h3 className="text-base font-semibold text-slate-900 dark:text-white">{accountToEdit ? 'Account details' : 'Create account'}</h3>
+          <button type="button" onClick={onClose} disabled={isSubmitting} aria-label="Close account form" className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-100 hover:text-rose-500 disabled:opacity-50 dark:hover:bg-slate-800"><X className="h-4 w-4" /></button>
         </div>
-        <form onSubmit={handleSubmit} className="space-y-4 p-5">
-          <div className="flex gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-200"><ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" /><p>The server validates role/subtype compatibility, reserved codes, uniqueness, zero opening balance, tenant ownership, and writes an audit record atomically.</p></div>
-          {accountToEdit && <div className="flex gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /><p>Codes and classifications are preserved for historical reporting. This workflow records every permitted governance change in the audit trail.</p></div>}
-          {error && <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs font-semibold text-rose-800">{error}</div>}
+        <form onSubmit={handleSubmit}>
+          <div className="px-5 py-5 sm:px-6 sm:py-6">
+            {accountToEdit && <div className="mb-5 flex gap-2 border-l-2 border-amber-400 bg-amber-50 px-3 py-2.5 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-200"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /><p>Account code and classification are retained to protect historical reporting.</p></div>}
+            {error && <div role="alert" className="mb-5 border-l-2 border-rose-500 bg-rose-50 px-3 py-2.5 text-xs font-medium text-rose-800 dark:bg-rose-950/30 dark:text-rose-200">{error}</div>}
 
-          <div className="grid gap-4 sm:grid-cols-2">
-            <label className="space-y-1 text-xs font-bold text-slate-700 dark:text-slate-300"><span>Account code</span><input required disabled={Boolean(accountToEdit)} maxLength={32} value={code} onChange={(event) => setCode(event.target.value)} placeholder="e.g. 6150" className="w-full rounded-xl border border-slate-300 bg-white p-2.5 font-mono font-semibold disabled:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white" /></label>
-            <label className="space-y-1 text-xs font-bold text-slate-700 dark:text-slate-300"><span>Account name</span><input required maxLength={160} value={name} onChange={(event) => setName(event.target.value)} className="w-full rounded-xl border border-slate-300 bg-white p-2.5 font-semibold dark:border-slate-700 dark:bg-slate-800 dark:text-white" /></label>
-            <label className="space-y-1 text-xs font-bold text-slate-700 dark:text-slate-300 sm:col-span-2"><span>Account classification</span><select disabled={Boolean(accountToEdit)} value={catalogIndex} onChange={(event) => { const nextIndex = Number(event.target.value); setCatalogIndex(nextIndex); setNormalBalance(ACCOUNT_TYPE_CATALOG[nextIndex].normalBalance); }} className="w-full rounded-xl border border-slate-300 bg-white p-2.5 font-medium disabled:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white">{ACCOUNT_TYPE_CATALOG.map((entry, index) => <option key={`${entry.category}-${entry.subType}`} value={index}>{entry.category} — {entry.subType}</option>)}</select><span className="block font-normal text-slate-500">{selected.description}</span></label>
-            <label className="space-y-1 text-xs font-bold text-slate-700 dark:text-slate-300"><span>Normal balance</span><select disabled={Boolean(accountToEdit)} value={normalBalance} onChange={(event) => setNormalBalance(event.target.value as 'Debit' | 'Credit')} className="w-full rounded-xl border border-slate-300 bg-white p-2.5 font-medium disabled:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"><option value="Debit">Debit (Dr)</option><option value="Credit">Credit (Cr)</option></select></label>
-            <label className="space-y-1 text-xs font-bold text-slate-700 dark:text-slate-300 sm:col-span-2"><span>Parent account</span><select value={parentAccountId} onChange={(event) => setParentAccountId(event.target.value)} className="w-full rounded-xl border border-slate-300 bg-white p-2.5 font-medium dark:border-slate-700 dark:bg-slate-800 dark:text-white"><option value="">No parent account</option>{availableParents.map((account) => <option key={account.id} value={account.id}>{account.code} — {account.name}</option>)}</select></label>
-            <label className="space-y-1 text-xs font-bold text-slate-700 dark:text-slate-300"><span>Reporting group</span><input maxLength={100} value={reportingGroup} onChange={(event) => setReportingGroup(event.target.value)} placeholder="e.g. Operations" className="w-full rounded-xl border border-slate-300 bg-white p-2.5 font-semibold dark:border-slate-700 dark:bg-slate-800 dark:text-white" /></label>
-            <label className="flex items-center gap-3 rounded-xl border border-slate-200 p-3 text-xs font-bold text-slate-700 dark:border-slate-700 dark:text-slate-300"><input type="checkbox" checked={allowDirectPosting} onChange={(event) => setAllowDirectPosting(event.target.checked)} className="h-4 w-4 accent-blue-600" /><span>Allow direct journal posting</span></label>
-            {!accountToEdit && <label className="space-y-1 text-xs font-bold text-slate-700 dark:text-slate-300 sm:col-span-2"><span>Description (optional)</span><textarea maxLength={500} rows={3} value={description} onChange={(event) => setDescription(event.target.value)} className="w-full resize-none rounded-xl border border-slate-300 bg-white p-3 font-medium dark:border-slate-700 dark:bg-slate-800 dark:text-white" /></label>}
+            <div className="grid gap-7 lg:grid-cols-[minmax(0,1fr)_18rem]">
+              <div className="space-y-5">
+                <label className="block text-sm font-medium text-slate-800 dark:text-slate-200">
+                  Account type <span className="text-rose-600">*</span>
+                  <select disabled={Boolean(accountToEdit)} value={catalogIndex} onChange={(event) => { const nextIndex = Number(event.target.value); setCatalogIndex(nextIndex); setNormalBalance(ACCOUNT_TYPE_CATALOG[nextIndex].normalBalance); }} className="mt-1.5 block h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-800 outline-none transition focus:border-blue-600 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:focus:ring-blue-950">
+                    {ACCOUNT_CATEGORIES.map((category) => (
+                      <optgroup key={category} label={category}>
+                        {ACCOUNT_TYPE_CATALOG.filter((entry) => entry.category === category).map((entry) => {
+                          const index = ACCOUNT_TYPE_CATALOG.indexOf(entry);
+                          return <option key={entry.subType} value={index}>{entry.subType}</option>;
+                        })}
+                      </optgroup>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="block text-sm font-medium text-slate-800 dark:text-slate-200">
+                  Account name <span className="text-rose-600">*</span>
+                  <input required maxLength={160} value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Plywood" className="mt-1.5 block h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:focus:ring-blue-950" />
+                </label>
+
+                <label className="block max-w-xs text-sm font-medium text-slate-800 dark:text-slate-200">
+                  Account code <span className="text-rose-600">*</span>
+                  <input required disabled={Boolean(accountToEdit)} maxLength={32} value={code} onChange={(event) => setCode(event.target.value)} placeholder="e.g. 5110" className="mt-1.5 block h-10 w-full rounded-md border border-slate-300 bg-white px-3 font-mono text-sm font-medium text-slate-900 outline-none transition placeholder:font-sans placeholder:text-slate-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:focus:ring-blue-950" />
+                </label>
+
+                <label className="block text-sm font-medium text-slate-800 dark:text-slate-200">
+                  Description <span className="font-normal text-slate-400">(optional)</span>
+                  <textarea maxLength={500} rows={3} value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Add a short note for your team" className="mt-1.5 block w-full resize-none rounded-md border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:focus:ring-blue-950" />
+                  <span className="mt-1 block text-right text-xs font-normal text-slate-400">{description.length}/500</span>
+                </label>
+
+                <details className="border-t border-slate-200 pt-4 dark:border-slate-800">
+                  <summary className="cursor-pointer text-sm font-medium text-slate-600 marker:text-slate-400 dark:text-slate-300">Additional account settings</summary>
+                  <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                    <label className="block text-sm font-medium text-slate-800 dark:text-slate-200 sm:col-span-2">Parent account<select value={parentAccountId} onChange={(event) => setParentAccountId(event.target.value)} className="mt-1.5 block h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-800 outline-none transition focus:border-blue-600 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:focus:ring-blue-950"><option value="">No parent account</option>{availableParents.map((account) => <option key={account.id} value={account.id}>{account.code} - {account.name}</option>)}</select></label>
+                    <label className="block text-sm font-medium text-slate-800 dark:text-slate-200">Reporting group<input maxLength={100} value={reportingGroup} onChange={(event) => setReportingGroup(event.target.value)} placeholder="e.g. Operations" className="mt-1.5 block h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:focus:ring-blue-950" /></label>
+                    <label className="block text-sm font-medium text-slate-800 dark:text-slate-200">Normal balance<select disabled={Boolean(accountToEdit)} value={normalBalance} onChange={(event) => setNormalBalance(event.target.value as 'Debit' | 'Credit')} className="mt-1.5 block h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-800 outline-none transition focus:border-blue-600 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:focus:ring-blue-950"><option value="Debit">Debit</option><option value="Credit">Credit</option></select></label>
+                    <label className="flex items-center gap-2.5 text-sm font-medium text-slate-700 dark:text-slate-300 sm:col-span-2"><input type="checkbox" checked={allowDirectPosting} onChange={(event) => setAllowDirectPosting(event.target.checked)} className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500" />Allow direct journal posting</label>
+                  </div>
+                </details>
+              </div>
+
+              <aside className="h-fit border-l-2 border-slate-800 bg-slate-800 px-4 py-3.5 text-sm text-white dark:border-slate-600 dark:bg-slate-800">
+                <div className="flex items-center gap-2 font-semibold"><Info className="h-4 w-4" />{selected.category}</div>
+                <p className="mt-2 text-sm leading-5 text-slate-100">{selected.description}</p>
+                <dl className="mt-4 space-y-2 border-t border-slate-600 pt-3 text-xs text-slate-200"><div className="flex justify-between gap-3"><dt>Normal balance</dt><dd className="font-medium text-white">{normalBalance}</dd></div><div className="flex justify-between gap-3"><dt>Opening balance</dt><dd className="font-medium text-white">Journal entry only</dd></div></dl>
+              </aside>
+            </div>
           </div>
 
-          <div className="flex justify-between gap-2 border-t border-slate-100 pt-4 dark:border-slate-800"><div>{accountToEdit && accountToEdit.status === 'Active' && <button type="button" onClick={handleArchive} disabled={isSubmitting} className="inline-flex items-center gap-1 rounded-xl px-3 py-2 text-xs font-bold text-rose-700 hover:bg-rose-50 disabled:opacity-50"><Archive className="h-3.5 w-3.5" />Archive</button>}</div><div className="flex gap-2"><button type="button" onClick={onClose} disabled={isSubmitting} className="rounded-xl px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 disabled:opacity-50">Close</button><button type="submit" disabled={isSubmitting} className="rounded-xl bg-blue-600 px-5 py-2 text-xs font-bold text-white hover:bg-blue-700 disabled:opacity-50">{isSubmitting ? 'Saving…' : accountToEdit ? 'Save changes' : 'Create account'}</button></div></div>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-5 py-4 dark:border-slate-800 sm:px-6">
+            <div>{accountToEdit && accountToEdit.status === 'Active' && <button type="button" onClick={handleArchive} disabled={isSubmitting} className="inline-flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-rose-700 transition hover:bg-rose-50 disabled:opacity-50 dark:text-rose-300 dark:hover:bg-rose-950/30"><Archive className="h-4 w-4" />Archive</button>}</div>
+            <div className="flex items-center gap-2"><button type="button" onClick={onClose} disabled={isSubmitting} className="h-9 rounded-md border border-slate-300 px-4 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">Cancel</button><button type="submit" disabled={isSubmitting} className="h-9 rounded-md bg-blue-600 px-4 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50">{isSubmitting ? 'Saving...' : accountToEdit ? 'Save changes' : 'Save account'}</button></div>
+          </div>
         </form>
       </div>
     </div>

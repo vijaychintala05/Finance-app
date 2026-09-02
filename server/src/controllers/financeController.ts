@@ -156,7 +156,7 @@ export class FinanceController {
 
   public static async createAccount(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
-    const { code, name, type, subType } = req.body;
+    const { code, name, type, subType, description } = req.body;
     if (typeof code !== 'string' || typeof name !== 'string' || typeof type !== 'string' || !code.trim() || !name.trim() || !type.trim()) {
       res.status(400).json({ error: 'code, name, and type are required' });
       return;
@@ -193,6 +193,10 @@ export class FinanceController {
     }
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/.test(normalizedCode) || name.trim().length > 160 || normalizedSubType.length > 80) {
       res.status(400).json({ error: 'Account code or name is invalid or exceeds the allowed length' });
+      return;
+    }
+    if (description !== undefined && (typeof description !== 'string' || description.length > 500)) {
+      res.status(400).json({ error: 'Account description cannot exceed 500 characters' });
       return;
     }
 
@@ -234,17 +238,17 @@ export class FinanceController {
           );
         }
       await client.query(
-        `INSERT INTO accounts (id, organization_id, code, name, type, sub_type, balance, is_system_account, status, parent_account_id, reporting_group, normal_balance, normal_balance_is_explicit, allow_direct_posting)
-         VALUES ($1, $2, $3, $4, $5, $6, 0, FALSE, 'Active', $7, $8, $9, TRUE, $10)`,
-         [accId, orgId, normalizedCode, name.trim(), normalizedType, normalizedSubType, parentAccountId, reportingGroup, normalBalance, allowDirectPosting]
+        `INSERT INTO accounts (id, organization_id, code, name, description, type, sub_type, balance, is_system_account, status, parent_account_id, reporting_group, normal_balance, normal_balance_is_explicit, allow_direct_posting)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 0, FALSE, 'Active', $8, $9, $10, TRUE, $11)`,
+         [accId, orgId, normalizedCode, name.trim(), description?.trim() || null, normalizedType, normalizedSubType, parentAccountId, reportingGroup, normalBalance, allowDirectPosting]
       );
       await client.query(
         `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state)
          VALUES ($1, $2, $3, 'ACCOUNT_CREATED', 'Account', $4, $5)`,
-         [newId('aud'), orgId, req.auth!.userId, accId, JSON.stringify({ code: normalizedCode, name: name.trim(), type: normalizedType, subType: normalizedSubType, parentAccountId, reportingGroup, normalBalance, allowDirectPosting })]
+         [newId('aud'), orgId, req.auth!.userId, accId, JSON.stringify({ code: normalizedCode, name: name.trim(), description: description?.trim() || null, type: normalizedType, subType: normalizedSubType, parentAccountId, reportingGroup, normalBalance, allowDirectPosting })]
       );
       });
-      res.status(201).json({ id: accId, code: normalizedCode, name: name.trim(), type: normalizedType, subType: normalizedSubType, balance: 0, status: 'Active', parentAccountId, reportingGroup, normalBalance, allowDirectPosting });
+      res.status(201).json({ id: accId, code: normalizedCode, name: name.trim(), description: description?.trim() || null, type: normalizedType, subType: normalizedSubType, balance: 0, status: 'Active', parentAccountId, reportingGroup, normalBalance, allowDirectPosting });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Account could not be created';
       const statusCode = message.startsWith('ACCOUNT_PARENT_') ? 400 : 409;
@@ -255,13 +259,17 @@ export class FinanceController {
   public static async updateAccount(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
     const accountId = req.params.id;
-    const { name, parentAccountId, reportingGroup, allowDirectPosting, status } = req.body;
+    const { name, description, parentAccountId, reportingGroup, allowDirectPosting, status } = req.body;
     if (name !== undefined && (typeof name !== 'string' || name.trim().length < 2 || name.trim().length > 160)) {
       res.status(400).json({ error: 'Account name must contain 2-160 characters' });
       return;
     }
     if (reportingGroup !== undefined && reportingGroup !== null && (typeof reportingGroup !== 'string' || reportingGroup.trim().length > 100)) {
       res.status(400).json({ error: 'Reporting group cannot exceed 100 characters' });
+      return;
+    }
+    if (description !== undefined && (typeof description !== 'string' || description.length > 500)) {
+      res.status(400).json({ error: 'Account description cannot exceed 500 characters' });
       return;
     }
     if (parentAccountId !== undefined && parentAccountId !== null && typeof parentAccountId !== 'string') {
@@ -326,23 +334,24 @@ export class FinanceController {
 
         const after = {
           name: name === undefined ? existing.name : name.trim(),
+          description: description === undefined ? existing.description : (description.trim() || null),
           parentAccountId: nextParentId,
           reportingGroup: reportingGroup === undefined ? existing.reporting_group : (reportingGroup?.trim() || null),
           allowDirectPosting: allowDirectPosting ?? existing.allow_direct_posting,
           status: nextStatus,
         };
         const result = await client.query(
-          `UPDATE accounts SET name = $1, parent_account_id = $2, reporting_group = $3, allow_direct_posting = $4, status = $5,
-             archived_at = CASE WHEN $5 = 'Archived' THEN CURRENT_TIMESTAMP ELSE NULL END,
-             archived_by = CASE WHEN $5 = 'Archived' THEN $6 ELSE NULL END
-           WHERE organization_id = $7 AND id = $8 RETURNING *`,
-          [after.name, after.parentAccountId, after.reportingGroup, after.allowDirectPosting, after.status, req.auth!.userId, orgId, accountId]
+          `UPDATE accounts SET name = $1, description = $2, parent_account_id = $3, reporting_group = $4, allow_direct_posting = $5, status = $6,
+             archived_at = CASE WHEN $6 = 'Archived' THEN CURRENT_TIMESTAMP ELSE NULL END,
+             archived_by = CASE WHEN $6 = 'Archived' THEN $7 ELSE NULL END
+           WHERE organization_id = $8 AND id = $9 RETURNING *`,
+          [after.name, after.description, after.parentAccountId, after.reportingGroup, after.allowDirectPosting, after.status, req.auth!.userId, orgId, accountId]
         );
         await client.query(
           `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state, after_state)
            VALUES ($1, $2, $3, $4, 'Account', $5, $6, $7)`,
           [newId('aud'), orgId, req.auth!.userId, nextStatus === 'Archived' ? 'ACCOUNT_ARCHIVED' : 'ACCOUNT_UPDATED', accountId,
-            JSON.stringify({ name: existing.name, parentAccountId: existing.parent_account_id, reportingGroup: existing.reporting_group, allowDirectPosting: existing.allow_direct_posting, status: existing.status }), JSON.stringify(after)]
+            JSON.stringify({ name: existing.name, description: existing.description, parentAccountId: existing.parent_account_id, reportingGroup: existing.reporting_group, allowDirectPosting: existing.allow_direct_posting, status: existing.status }), JSON.stringify(after)]
         );
         return result.rows[0];
       });

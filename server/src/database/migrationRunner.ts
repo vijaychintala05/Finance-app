@@ -120,6 +120,7 @@ export class MigrationRunner {
         organization_id VARCHAR(64) NOT NULL,
         code VARCHAR(32) NOT NULL,
         name VARCHAR(255) NOT NULL,
+        description VARCHAR(500),
         type VARCHAR(50) NOT NULL,
         sub_type VARCHAR(50) NOT NULL,
         balance NUMERIC(15, 2) DEFAULT 0.00,
@@ -1349,6 +1350,7 @@ export class MigrationRunner {
       `CREATE TRIGGER audit_logs_immutable BEFORE UPDATE OR DELETE ON audit_logs
         FOR EACH ROW EXECUTE FUNCTION prevent_audit_log_mutation()`,
       `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS parent_account_id VARCHAR(64)`,
+      `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS description VARCHAR(500)`,
       `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS reporting_group VARCHAR(100)`,
       `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS normal_balance VARCHAR(6) NOT NULL DEFAULT 'Debit'`,
       `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS normal_balance_is_explicit BOOLEAN NOT NULL DEFAULT FALSE`,

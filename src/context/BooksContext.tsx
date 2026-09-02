@@ -49,6 +49,19 @@ const camelizeRecord = (value: any): any => {
   ]));
 };
 
+// A disabled optional workflow must not make core accounting data appear empty.
+// These endpoints deliberately return 503 until their server-side controls are enabled.
+const OPTIONAL_UNAVAILABLE_READ_ENDPOINTS = new Set(['vendor-payments']);
+
+const isExpectedOptionalReadFailure = (endpoint: string, status: number): boolean => (
+  status === 503 && OPTIONAL_UNAVAILABLE_READ_ENDPOINTS.has(endpoint)
+);
+
+const upsertAccount = (accounts: Account[], account: Account): Account[] => (
+  [...accounts.filter((existing) => existing.id !== account.id), account]
+    .sort((left, right) => left.code.localeCompare(right.code) || left.name.localeCompare(right.name))
+);
+
 const normalizeInvoiceForUi = (record: any): Invoice => {
   const rawStatus = String(record.status || '').trim().toUpperCase().replaceAll(' ', '_');
   const hasBalance = Number(record.balanceDue || 0) > 0;
@@ -557,12 +570,16 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         'payments-received', 'credit-notes', 'bills', 'vendor-payments', 'audit',
       ] as const;
       const responses = await Promise.all(endpoints.map((endpoint) => apiClient.get<any[]>(`/finance/${endpoint}`)));
-      const failure = responses.find((response) => response.error && response.status !== 403);
+      const failure = responses.find((response, index) => (
+        response.error
+        && response.status !== 403
+        && !isExpectedOptionalReadFailure(endpoints[index], response.status)
+      ));
       if (failure) throw new Error(failure.error || 'Authoritative financial data is unavailable');
       if (activeOrgIdRef.current !== requestedOrgId) return;
       const data = Object.fromEntries(endpoints.map((endpoint, index) => [
         endpoint,
-        camelizeRecord(responses[index].data || []),
+        responses[index].error ? [] : camelizeRecord(responses[index].data || []),
       ]));
       setAccounts(data.accounts);
       setClients(data.clients);
@@ -611,23 +628,23 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       await refreshAuthoritativeData();
     } catch (error) {
       console.error('A committed transaction could not be reloaded for verification:', error);
-      setAccounts([]); setClients([]); setVendors([]); setProjects([]); setInvoices([]);
-      setEstimates([]); setExpenses([]); setJournalEntries([]); setPeriodLocks([]);
-      setTimeEntries([]); setProjectSummaries([]);
-      setSalesOrders([]); setDeliveryChallans([]); setPaymentsReceived([]); setCreditNotes([]); setBills([]);
-      setAuditLogs([]);
       window.alert('The server committed this transaction, but the verification refresh failed. Do not submit it again; reload the page before continuing.');
     }
   }, [refreshAuthoritativeData]);
 
-  const refreshAccountsAfterCommittedWrite = useCallback(async (): Promise<void> => {
+  const refreshAccountsAfterCommittedWrite = useCallback(async (expectedAccountId?: string): Promise<void> => {
     if (!currentOrgId || !localStorage.getItem('firmbooks_authenticated')) return;
     const requestedOrgId = currentOrgId;
     localStorage.setItem('active_organization_id', requestedOrgId);
     const response = await apiClient.get<any[]>('/finance/accounts');
     if (response.error) throw new Error(response.error);
     if (activeOrgIdRef.current !== requestedOrgId) return;
-    setAccounts(camelizeRecord(response.data || []));
+    if (!Array.isArray(response.data)) throw new Error('The account list response was invalid');
+    const refreshedAccounts = camelizeRecord(response.data) as Account[];
+    if (expectedAccountId && !refreshedAccounts.some((account) => account.id === expectedAccountId)) {
+      throw new Error('The server did not return the account that was just saved');
+    }
+    setAccounts(refreshedAccounts);
   }, [currentOrgId]);
 
   // PostgreSQL is the sole authority for accounting data. Browser storage is
@@ -637,11 +654,6 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     refreshAuthoritativeData().catch((error) => {
       if (!cancelled) {
         console.error('Financial data unavailable; no local fallback was used:', error);
-        setAccounts([]); setClients([]); setVendors([]); setProjects([]); setInvoices([]);
-        setEstimates([]); setExpenses([]); setJournalEntries([]); setPeriodLocks([]);
-        setTimeEntries([]); setProjectSummaries([]);
-        setSalesOrders([]); setDeliveryChallans([]); setPaymentsReceived([]); setCreditNotes([]); setBills([]);
-        setAuditLogs([]);
       }
     });
     return () => { cancelled = true; };
@@ -806,9 +818,10 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const addAccount = async (accountData: Omit<Account, 'id'>): Promise<Account> => {
     const response = await apiClient.post<Account>('/finance/accounts', accountData);
     if (!response.data) throw new Error(response.error || 'Account could not be created');
-    const newAcc: Account = { ...accountData, ...response.data };
+    const newAcc: Account = camelizeRecord({ ...accountData, ...response.data }) as Account;
+    setAccounts((current) => upsertAccount(current, newAcc));
     try {
-      await refreshAccountsAfterCommittedWrite();
+      await refreshAccountsAfterCommittedWrite(newAcc.id);
     } catch (error) {
       console.error('A committed account could not be reloaded for verification:', error);
       window.alert('The account was created, but its list could not be refreshed. Do not submit it again; reload the page before continuing.');
@@ -819,13 +832,18 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const updateAccount = async (id: string, updated: Partial<Account>): Promise<Account> => {
     const response = await apiClient.patch<Account>(`/finance/accounts/${id}`, updated);
     if (!response.data) throw new Error(response.error || 'Account could not be updated');
+    const updatedAccount = camelizeRecord(response.data) as Account;
+    setAccounts((current) => {
+      const existing = current.find((account) => account.id === id);
+      return upsertAccount(current, { ...existing, ...updated, ...updatedAccount, id });
+    });
     try {
-      await refreshAccountsAfterCommittedWrite();
+      await refreshAccountsAfterCommittedWrite(id);
     } catch (error) {
       console.error('A committed account change could not be reloaded for verification:', error);
       window.alert('The account change was saved, but its list could not be refreshed. Do not submit it again; reload the page before continuing.');
     }
-    return camelizeRecord(response.data) as Account;
+    return updatedAccount;
   };
 
   const addClient = async (clientData: Omit<Client, 'id' | 'createdAt'>): Promise<Client> => {

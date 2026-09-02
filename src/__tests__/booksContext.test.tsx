@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHook, act } from '@testing-library/react';
+import { renderHook, act, waitFor } from '@testing-library/react';
 import { BooksProvider, useBooks } from '../context/BooksContext';
 import { apiClient } from '../api/client';
 import { Invoice, Bill, PaymentReceipt } from '../types';
@@ -257,7 +257,41 @@ describe('BooksContext State Management & Financial Mutations', () => {
     expect(created?.amount).toBe(1500);
   });
 
-  it('10. useBooks throws if called outside BooksProvider', () => {
+  it('10. keeps the chart of accounts available when vendor settlements are disabled', async () => {
+    const account = {
+      id: 'acc-plywood',
+      code: '4003',
+      name: 'Plywood',
+      type: 'Expense',
+      subType: 'Office & Administrative',
+      balance: 0,
+      status: 'Active',
+    };
+    localStorage.setItem('firmbooks_authenticated', 'true');
+    localStorage.setItem('active_organization_id', 'org-1');
+
+    vi.spyOn(apiClient, 'get').mockImplementation(async (endpoint: string) => {
+      if (endpoint === '/organizations') {
+        return { data: [{ id: 'org-1', name: 'Sense Studios', publicOrgId: 'PUB-1', currency: 'INR', timezone: 'Asia/Kolkata', status: 'Active' }], error: null, status: 200 } as any;
+      }
+      if (endpoint === '/auth/me') {
+        return { data: { user: { id: 'user-1', email: 'owner@example.com', fullName: 'Owner' } }, error: null, status: 200 } as any;
+      }
+      if (endpoint === '/finance/accounts') return { data: [account], error: null, status: 200 } as any;
+      if (endpoint === '/finance/vendor-payments') {
+        return { data: null, error: 'This financial workflow is unavailable until its atomic posting and reversal controls are enabled.', status: 503 } as any;
+      }
+      return { data: [], error: null, status: 200 } as any;
+    });
+
+    const { result } = renderHook(() => useBooks(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.accounts).toEqual([account]);
+    });
+  });
+
+  it('11. useBooks throws if called outside BooksProvider', () => {
     expect(() => renderHook(() => useBooks())).toThrow('useBooks must be used within a BooksProvider');
   });
 });

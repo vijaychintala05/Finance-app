@@ -192,6 +192,11 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                 <span className="bg-slate-100 text-slate-700 font-bold px-2 py-0.5 rounded-md">
                   Vendor: {exp.vendorName || 'General'}
                 </span>
+                {exp.isItemized && (
+                  <span className="bg-purple-50 text-purple-700 font-bold px-2 py-0.5 rounded-md border border-purple-200">
+                    Itemized ({exp.items?.length || 1} items)
+                  </span>
+                )}
                 {exp.isBillable && (
                   <span className="bg-amber-50 text-amber-700 font-bold px-2 py-0.5 rounded-md border border-amber-200">
                     Billable

@@ -269,11 +269,14 @@ class DatabaseService {
           await client.query('COMMIT');
           return res;
         } catch (err) {
-          await client.query('ROLLBACK');
+          try {
+            await client.query('ROLLBACK');
+          } catch {
+            // Rollback failure is ignored
+          }
           memoryBackup.restore();
+          client.release(true);
           throw err;
-        } finally {
-          client.release();
         }
       } finally {
         unlock();
@@ -302,10 +305,13 @@ class DatabaseService {
           await client.query('COMMIT');
           return res;
         } catch (err) {
-          await client.query('ROLLBACK');
+          try {
+            await client.query('ROLLBACK');
+          } catch {
+            // Rollback failure is ignored
+          }
+          client.release(true);
           throw err;
-        } finally {
-          client.release();
         }
       } catch (err: any) {
         if ((err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND' || err.code === 'ETIMEDOUT' || err.code === 'EHOSTUNREACH' || err.code === 'ECONNRESET') && this.isMemoryAllowed()) {

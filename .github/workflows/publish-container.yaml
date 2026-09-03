@@ -66,12 +66,7 @@ jobs:
             -e AUTH_ENCRYPTION_KEY=firmbooks-ci-auth-encryption-key-at-least-thirty-two-characters \
             -e ALLOWED_ORIGINS=http://localhost:3000 \
             firmbooks-ci:${{ github.sha }}
-          for attempt in {1..60}; do
-            if curl --fail --silent --show-error http://127.0.0.1:3000/api/readyz; then exit 0; fi
-            sleep 2
-          done
-          docker logs firmbooks-app
-          exit 1
+          TEST_BASE_URL="http://127.0.0.1:3000" node scripts/ci-smoke-test.mjs
 
       - name: Show smoke-test logs on failure
         if: failure()

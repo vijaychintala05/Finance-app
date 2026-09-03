@@ -164,4 +164,36 @@ describe('AccountModal', () => {
 
     expect(screen.queryByRole('button', { name: /^delete$/i })).toBeNull();
   });
+  it('interactively updates the aside preview card when hovering over account types or filtering by category', () => {
+    render(<AccountModal isOpen onClose={vi.fn()} />);
+
+    // Initially defaults to Asset / Bank or Cash
+    expect(screen.getAllByText('Normal balance').length).toBeGreaterThanOrEqual(1);
+
+    // Open account type dropdown
+    const typeDropdownButton = screen.getByRole('button', { name: /Account type:/i });
+    fireEvent.click(typeDropdownButton);
+
+    // Click Equity category pill
+    const equityPill = screen.getByRole('button', { name: 'Equity' });
+    fireEvent.click(equityPill);
+
+    // Preview badge or Equity preview should be triggered
+    expect(screen.getAllByText('Equity').length).toBeGreaterThanOrEqual(1);
+
+    // Find Retained Earnings option and hover over it
+    const retainedEarningsOption = screen.getByRole('option', { name: /Retained Earnings/i });
+    fireEvent.mouseEnter(retainedEarningsOption);
+
+    // The aside preview card should now interactively preview Retained Earnings
+    expect(screen.getByText('Live Preview')).toBeTruthy();
+    expect(screen.getByText(/Accumulated earnings/i)).toBeTruthy();
+
+    // Now select it by clicking
+    fireEvent.click(retainedEarningsOption);
+
+    // Dropdown closes, live preview returns to Active state
+    expect(screen.queryByText('Live Preview')).toBeNull();
+    expect(screen.getByText('Active')).toBeTruthy();
+  });
 });

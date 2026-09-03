@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Archive, Check, CheckCircle2, ChevronDown, Info, RefreshCw, Search, Trash2, X } from 'lucide-react';
 import { Account, AccountSubType, AccountType } from '../../types';
 import { useBooks } from '../../context/BooksContext';
@@ -119,6 +119,8 @@ export const AccountModal: React.FC<AccountModalProps> = ({
   const { accounts = [], addAccount, updateAccount, deleteAccount } = useBooks();
   const [catalogIndex, setCatalogIndex] = useState(0);
   const [isTypePickerOpen, setIsTypePickerOpen] = useState(false);
+  const [hoveredEntry, setHoveredEntry] = useState<(typeof ACCOUNT_TYPE_CATALOG)[number] | null>(null);
+  const typePickerRef = useRef<HTMLDivElement>(null);
   const [typePickerCategory, setTypePickerCategory] = useState<AccountType | 'All'>('All');
   const [typeSearch, setTypeSearch] = useState('');
   const [name, setName] = useState('');
@@ -196,6 +198,18 @@ export const AccountModal: React.FC<AccountModalProps> = ({
     });
   }, [typePickerCategory, typeSearch]);
 
+  useEffect(() => {
+    if (!isTypePickerOpen) return;
+    const handleClickOutside = (event: MouseEvent) => {
+      if (typePickerRef.current && !typePickerRef.current.contains(event.target as Node)) {
+        setIsTypePickerOpen(false);
+        setHoveredEntry(null);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isTypePickerOpen]);
+
   if (!isOpen) return null;
 
   const handleTypeChange = (newIndex: number) => {
@@ -214,6 +228,7 @@ export const AccountModal: React.FC<AccountModalProps> = ({
 
   const chooseAccountType = (newIndex: number) => {
     handleTypeChange(newIndex);
+    setHoveredEntry(null);
     setIsTypePickerOpen(false);
     setTypeSearch('');
   };
@@ -394,13 +409,17 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                           />
                         </div>
                         <div className="mt-2 flex gap-1.5 overflow-x-auto pb-0.5">
-                          <button type="button" onClick={() => setTypePickerCategory('All')} className={`shrink-0 rounded-md px-2.5 py-1 text-xs font-medium ${typePickerCategory === 'All' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'}`}>All</button>
+                          <button type="button" onClick={() => { setTypePickerCategory('All'); setHoveredEntry(null); }} className={`shrink-0 rounded-md px-2.5 py-1 text-xs font-medium ${typePickerCategory === 'All' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'}`}>All</button>
                           {typePickerCategories.map((category) => (
-                            <button key={category} type="button" onClick={() => setTypePickerCategory(category)} className={`shrink-0 rounded-md px-2.5 py-1 text-xs font-medium ${typePickerCategory === category ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'}`}>{category}</button>
+                            <button key={category} type="button" onClick={() => {
+                              setTypePickerCategory(category);
+                              const firstInCat = ACCOUNT_TYPE_CATALOG.find((e) => e.category === category);
+                              if (firstInCat) setHoveredEntry(firstInCat);
+                            }} className={`shrink-0 rounded-md px-2.5 py-1 text-xs font-medium ${typePickerCategory === category ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'}`}>{category}</button>
                           ))}
                         </div>
                       </div>
-                      <div role="listbox" aria-label="Account type options" className="max-h-64 overflow-y-auto p-1.5">
+                      <div role="listbox" aria-label="Account type options" onMouseLeave={() => setHoveredEntry(null)} className="max-h-64 overflow-y-auto p-1.5">
                         {matchingAccountTypes.length === 0 ? (
                           <p className="px-3 py-6 text-center text-sm text-slate-500 dark:text-slate-400">No account types match that search.</p>
                         ) : matchingAccountTypes.map((entry) => {
@@ -517,11 +536,60 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                 </details>
               </div>
 
-              <aside className="h-fit border-l-2 border-slate-800 bg-slate-800 px-4 py-3.5 text-sm text-white dark:border-slate-600 dark:bg-slate-800 rounded-r-lg">
-                <div className="flex items-center gap-2 font-semibold"><Info className="h-4 w-4" />{selected.category}</div>
-                <p className="mt-2 text-sm leading-5 text-slate-100">{selected.description}</p>
-                <dl className="mt-4 space-y-2 border-t border-slate-600 pt-3 text-xs text-slate-200"><div className="flex justify-between gap-3"><dt>Normal balance</dt><dd className="font-medium text-white">{normalBalance}</dd></div><div className="flex justify-between gap-3"><dt>Opening balance</dt><dd className="font-medium text-white">Journal entry only</dd></div></dl>
-              </aside>
+              {(() => {
+                const activePreview = hoveredEntry || selected;
+                const isPreviewing = Boolean(hoveredEntry && hoveredEntry !== selected);
+                const isBalanceSheet = ['Asset', 'Liability', 'Equity'].includes(activePreview.category);
+
+                return (
+                  <aside className="h-fit rounded-xl border border-slate-700/80 bg-slate-900 p-5 text-sm text-white shadow-xl dark:border-slate-700 dark:bg-slate-900 transition-all duration-150">
+                    <div className="flex items-center justify-between gap-2 border-b border-slate-700/70 pb-3">
+                      <div className="flex items-center gap-2 font-bold text-white text-base">
+                        <Info className="h-4.5 w-4.5 text-blue-400" />
+                        <span>{activePreview.category}</span>
+                      </div>
+                      {isPreviewing ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-blue-500/20 px-2 py-0.5 text-[10px] font-bold text-blue-300 border border-blue-500/40">
+                          <span className="h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse" />
+                          Live Preview
+                        </span>
+                      ) : (
+                        <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-semibold text-slate-400 border border-slate-700">
+                          Active
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="mt-3">
+                      <p className="text-sm font-bold text-white tracking-tight">
+                        {activePreview.subType}
+                      </p>
+                      <p className="mt-1 text-xs leading-relaxed text-slate-300 min-h-[32px]">
+                        {activePreview.description}
+                      </p>
+                    </div>
+
+                    <dl className="mt-4 space-y-2.5 border-t border-slate-700/70 pt-3.5 text-xs text-slate-300">
+                      <div className="flex items-center justify-between gap-3">
+                        <dt className="text-slate-400">Normal balance</dt>
+                        <dd className={`font-bold ${activePreview.normalBalance === 'Debit' ? 'text-blue-400' : 'text-emerald-400'}`}>
+                          {activePreview.normalBalance}
+                        </dd>
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <dt className="text-slate-400">Opening balance</dt>
+                        <dd className="font-medium text-slate-200">Journal entry only</dd>
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <dt className="text-slate-400">Financial statement</dt>
+                        <dd className="font-medium text-slate-200">
+                          {isBalanceSheet ? 'Balance Sheet' : 'Profit & Loss'}
+                        </dd>
+                      </div>
+                    </dl>
+                  </aside>
+                );
+              })()}
             </div>
           </div>
 

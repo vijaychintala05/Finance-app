@@ -203,27 +203,77 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     dashboard?.overview.activityTrend.reduce((acc, p) => acc + p.expenses, 0) || 0;
   const totalTrendNet = totalTrendIncome - totalTrendExpense;
 
-  // These lower insights deliberately come from the dashboard DTO, not browser caches.
+  // Dynamic insights and categories from authoritative backend dashboard DTO
   const topExpenseCategories = useMemo(() => {
-    const categories = dashboard?.commandCenter.insights.topExpenses || [];
-    const total = categories.reduce((sum, category) => sum + category.amount, 0);
-    return { categories: categories.map((category) => ({ ...category, percent: total > 0 ? Math.round((category.amount / total) * 100) : 0 })), total };
-  }, [dashboard]);
-  const liquidAccounts = dashboard?.commandCenter.insights.bankAccounts || [];
-  const timelinePoints = useMemo(() => {
-    const pts = dashboard?.commandCenter?.performance?.cashMovement || dashboard?.overview?.activityTrend || [];
-    if (pts.length >= 5) return pts;
-    return [
-      { date: 'Aug 27', income: 7800000, expenses: 800000 },
-      { date: 'Aug 28', income: 0, expenses: 9200000 },
-      { date: 'Aug 29', income: 6500000, expenses: 0 },
-      { date: 'Aug 30', income: 1000000, expenses: 200000 },
-      { date: 'Aug 31', income: 5500000, expenses: 8800000 },
-      { date: 'Sep 1', income: 6000000, expenses: 0 },
-      { date: 'Sep 2', income: 1500000, expenses: 4800000 },
-    ];
+    const raw = dashboard?.commandCenter.insights.topExpenses || [];
+    const colors = ['#3b82f6', '#ef4444', '#8b5cf6', '#06b6d4', '#eab308', '#10b981', '#f97316'];
+    const total = raw.reduce((sum, c) => sum + c.amount, 0);
+    return {
+      categories: raw.map((c, i) => ({
+        name: c.name,
+        amount: c.amount,
+        percent: total > 0 ? Math.round((c.amount / total) * 100) : 0,
+        color: colors[i % colors.length],
+      })),
+      total,
+    };
   }, [dashboard]);
 
+  const liquidAccounts = dashboard?.commandCenter.insights.bankAccounts || [];
+
+  // Real timeline points from authoritative backend response
+  const timelinePoints = useMemo(() => {
+    const pts = dashboard?.commandCenter?.performance?.cashMovement || dashboard?.overview?.activityTrend || [];
+    if (!pts || pts.length === 0) return [];
+    return pts.map((p) => {
+      const inc = Number(p.income || 0);
+      const exp = Number(p.expenses || 0);
+      return {
+        date: formatDate(p.date),
+        rawDate: p.date,
+        income: inc,
+        expenses: exp,
+        net: inc - exp,
+      };
+    });
+  }, [dashboard]);
+
+  const chartTotals = useMemo(() => {
+    const totalIncome = timelinePoints.reduce((acc, p) => acc + p.income, 0);
+    const totalExpenses = timelinePoints.reduce((acc, p) => acc + p.expenses, 0);
+    const totalNet = totalIncome - totalExpenses;
+    return { totalIncome, totalExpenses, totalNet };
+  }, [timelinePoints]);
+
+  const chartScale = useMemo(() => {
+    const peak = timelinePoints.length > 0
+      ? Math.max(...timelinePoints.map((p) => Math.max(p.income, p.expenses, Math.abs(p.net))))
+      : 0;
+
+    const maxVal = peak > 0 ? Math.max(1000, Math.ceil(peak * 1.15)) : 10000;
+
+    const formatTick = (val) => {
+      const abs = Math.abs(val);
+      const sign = val < 0 ? '-' : '';
+      if (abs >= 1_000_000) return sign + (abs / 1_000_000).toFixed(abs % 1_000_000 === 0 ? 0 : 1) + 'M';
+      if (abs >= 1_000) return sign + (abs / 1_000).toFixed(abs % 1_000 === 0 ? 0 : 1) + 'K';
+      return '' + val;
+    };
+
+    return {
+      maxVal,
+      hasData: peak > 0,
+      yTicks: [
+        { y: 20, label: formatTick(maxVal) },
+        { y: 55, label: formatTick(Math.round(maxVal * 0.66)) },
+        { y: 90, label: formatTick(Math.round(maxVal * 0.33)) },
+        { y: 125, label: '0' },
+        { y: 155, label: formatTick(Math.round(-maxVal * 0.33)) },
+        { y: 185, label: formatTick(Math.round(-maxVal * 0.66)) },
+        { y: 215, label: formatTick(-maxVal) },
+      ]
+    };
+  }, [timelinePoints]);
 
   const Metric = ({
     title,
@@ -853,7 +903,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
                 <div className="mt-4">
                   <div className="text-2xl font-black tracking-tight text-slate-900 sm:text-[1.7rem] dark:text-white">
-                    {money(dashboard.commandCenter?.financialPosition?.cashAtBank || dashboard.overview?.bankBalance || 300000)}
+                    {money(dashboard.commandCenter?.financialPosition?.cashAtBank ?? dashboard.overview?.bankBalance ?? 0)}
                   </div>
                   <p className="mt-1 text-xs text-slate-400 font-medium">
                     Posted bank and cash journals
@@ -898,7 +948,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
                 <div className="mt-4">
                   <div className="text-2xl font-black tracking-tight text-slate-900 sm:text-[1.7rem] dark:text-white">
-                    {money(dashboard.commandCenter?.financialPosition?.toCollect || dashboard.overview?.receivables || 7800000)}
+                    {money(dashboard.commandCenter?.financialPosition?.toCollect ?? dashboard.overview?.receivables ?? 0)}
                   </div>
                   <div className="mt-1 flex items-center justify-between text-xs text-slate-500 font-medium">
                     <span>Overdue Collections</span>
@@ -934,7 +984,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
                 <div className="mt-4">
                   <div className="text-2xl font-black tracking-tight text-slate-900 sm:text-[1.7rem] dark:text-white">
-                    {money(dashboard.commandCenter?.financialPosition?.toPay || dashboard.overview?.payables || 0)}
+                    {money(dashboard.commandCenter?.financialPosition?.toPay ?? dashboard.overview?.payables ?? 0)}
                   </div>
                   <div className="mt-1 flex items-center justify-between text-xs text-slate-500 font-medium">
                     <span>Overdue Payables</span>
@@ -965,55 +1015,73 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                 </div>
               </div>
 
-              <div className="mt-3 flex items-center justify-between gap-3">
-                {/* SVG Donut Chart */}
-                <div className="relative shrink-0 flex items-center justify-center">
-                  <svg viewBox="0 0 100 100" className="h-20 w-20 -rotate-90">
-                    {(() => {
-                      let acc = 0;
-                      return topExpenseCategories.categories.map((cat, idx) => {
-                        const dash = cat.percent + ' ' + (100 - cat.percent);
-                        const offset = -acc;
-                        acc += cat.percent;
-                        return (
-                          <circle
-                            key={idx}
-                            cx="50"
-                            cy="50"
-                            r="36"
-                            fill="transparent"
-                            stroke={cat.color}
-                            strokeWidth="16"
-                            strokeDasharray={dash}
-                            strokeDashoffset={offset}
-                            pathLength="100"
-                          />
-                        );
-                      });
-                    })()}
-                  </svg>
-                </div>
+              {topExpenseCategories.categories.length > 0 ? (
+                <div className="mt-3 flex items-center justify-between gap-3">
+                  {/* SVG Donut Chart */}
+                  <div className="relative shrink-0 flex items-center justify-center">
+                    <svg viewBox="0 0 100 100" className="h-20 w-20 -rotate-90">
+                      {(() => {
+                        let acc = 0;
+                        return topExpenseCategories.categories.map((cat, idx) => {
+                          const dash = cat.percent + ' ' + (100 - cat.percent);
+                          const offset = -acc;
+                          acc += cat.percent;
+                          return (
+                            <circle
+                              key={idx}
+                              cx="50"
+                              cy="50"
+                              r="36"
+                              fill="transparent"
+                              stroke={cat.color}
+                              strokeWidth="16"
+                              strokeDasharray={dash}
+                              strokeDashoffset={offset}
+                              pathLength="100"
+                            />
+                          );
+                        });
+                      })()}
+                    </svg>
+                  </div>
 
-                {/* Categories Breakdown List */}
-                <div className="min-w-0 flex-1 space-y-1 text-[10px]">
-                  {topExpenseCategories.categories.slice(0, 5).map((cat, idx) => (
-                    <div key={idx} className="flex items-center justify-between gap-1 text-slate-600 dark:text-slate-400">
-                      <div className="flex items-center gap-1.5 truncate">
-                        <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: cat.color }} />
-                        <span className="truncate">{cat.name}</span>
+                  {/* Categories Breakdown List */}
+                  <div className="min-w-0 flex-1 space-y-1 text-[10px]">
+                    {topExpenseCategories.categories.slice(0, 5).map((cat, idx) => (
+                      <div key={idx} className="flex items-center justify-between gap-1 text-slate-600 dark:text-slate-400">
+                        <div className="flex items-center gap-1.5 truncate">
+                          <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: cat.color }} />
+                          <span className="truncate">{cat.name}</span>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1.5 font-medium text-slate-700 dark:text-slate-300">
+                          <span>{money(cat.amount)}</span>
+                          <span className="w-6 text-right font-bold text-slate-500">{cat.percent}%</span>
+                        </div>
                       </div>
-                      <div className="flex shrink-0 items-center gap-1.5 font-medium text-slate-700 dark:text-slate-300">
-                        <span>{money(cat.amount)}</span>
-                        <span className="w-6 text-right font-bold text-slate-500">{cat.percent}%</span>
-                      </div>
+                    ))}
+                    <div className="mt-1 border-t border-slate-100 pt-1 flex items-center justify-between font-bold text-slate-800 dark:border-slate-800 dark:text-white">
+                      <span>Total</span>
+                      <span>{money(topExpenseCategories.total)}</span>
                     </div>
-                  ))}
-                  <div className="mt-1 border-t border-slate-100 pt-1 flex items-center justify-between font-bold text-slate-800 dark:border-slate-800 dark:text-white">
-                    <span>Total</span>
-                    <span>{money(topExpenseCategories.total)}</span>
                   </div>
                 </div>
-              </div>
+              ) : (
+                <div className="mt-3 flex items-center justify-between gap-3">
+                  <div className="relative shrink-0 flex items-center justify-center">
+                    <svg viewBox="0 0 100 100" className="h-20 w-20">
+                      <circle cx="50" cy="50" r="36" fill="transparent" stroke="#e2e8f0" strokeWidth="14" className="dark:stroke-slate-800" />
+                    </svg>
+                  </div>
+                  <div className="min-w-0 flex-1 text-left">
+                    <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">No operational expenses</p>
+                    <p className="text-[11px] text-slate-400">Recorded for this period</p>
+                    <div className="mt-1 border-t border-slate-100 pt-1 flex items-center justify-between font-bold text-slate-700 dark:border-slate-800 dark:text-slate-300 text-[10px]">
+                      <span>Total</span>
+                      <span>{money(0)}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </section>
 
@@ -1037,18 +1105,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                     </p>
                   </div>
 
+                  {/* Real Dynamic Totals in Chart Legend */}
                   <div className="flex items-center gap-4 text-xs font-semibold">
                     <div className="flex items-center gap-1.5 text-slate-700 dark:text-slate-300">
                       <span className="h-2 w-2 rounded-full bg-blue-600" />
-                      <span>Income: <strong className="font-financial text-slate-900 dark:text-white">{money(0)}</strong></span>
+                      <span>Income: <strong className="font-financial text-slate-900 dark:text-white">{money(chartTotals.totalIncome)}</strong></span>
                     </div>
                     <div className="flex items-center gap-1.5 text-slate-700 dark:text-slate-300">
                       <span className="h-2 w-2 rounded-full bg-rose-500" />
-                      <span>Expenses: <strong className="font-financial text-slate-900 dark:text-white">{money(0)}</strong></span>
+                      <span>Expenses: <strong className="font-financial text-slate-900 dark:text-white">{money(chartTotals.totalExpenses)}</strong></span>
                     </div>
                     <div className="flex items-center gap-1.5 text-slate-700 dark:text-slate-300">
                       <span className="h-0.5 w-3 bg-emerald-500" />
-                      <span>Net: <strong className="font-financial text-emerald-600">{money(0)}</strong></span>
+                      <span>Net: <strong className={'font-financial ' + (chartTotals.totalNet >= 0 ? 'text-emerald-600' : 'text-rose-600')}>{money(chartTotals.totalNet)}</strong></span>
                     </div>
                     <button
                       type="button"
@@ -1061,92 +1130,144 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                   </div>
                 </div>
 
-                {/* SVG Combo Chart (Bar + Spline curve) */}
+                {/* SVG Combo Chart (Bar + Dynamic Net Spline curve) */}
                 <div className="mt-6 relative h-64 w-full">
                   <svg viewBox="0 0 700 220" className="w-full h-full" preserveAspectRatio="none">
-                    {/* Y-Axis Grid Lines and Labels */}
-                    {[
-                      { y: 20, label: '12M' },
-                      { y: 55, label: '8M' },
-                      { y: 90, label: '4M' },
-                      { y: 125, label: '0' },
-                      { y: 155, label: '-4M' },
-                      { y: 185, label: '-8M' },
-                      { y: 215, label: '-12M' },
-                    ].map((grid, i) => (
+                    {/* Dynamic Y-Axis Grid Lines and Labels based on real peak */}
+                    {chartScale.yTicks.map((grid, i) => (
                       <g key={i}>
                         <text x="0" y={grid.y + 3} className="text-[9px] fill-slate-400 font-semibold" textAnchor="start">
                           {grid.label}
                         </text>
-                        <line x1="30" y1={grid.y} x2="690" y2={grid.y} stroke="#e2e8f0" strokeDasharray="3 3" strokeWidth="1" opacity="0.7" />
+                        <line x1="32" y1={grid.y} x2="690" y2={grid.y} stroke="#e2e8f0" strokeDasharray="3 3" strokeWidth="1" opacity="0.7" />
                       </g>
                     ))}
 
                     <text x="0" y="10" className="text-[9px] font-bold fill-slate-400">INR</text>
 
-                    {/* Bars for Timeline Points */}
+                    {/* Bars for Real Timeline Points */}
                     {timelinePoints.map((pt, idx) => {
-                      const colWidth = 660 / timelinePoints.length;
-                      const xCenter = 40 + idx * colWidth + colWidth / 2;
+                      const colWidth = 640 / Math.max(1, timelinePoints.length);
+                      const xCenter = 42 + idx * colWidth + colWidth / 2;
 
-                      const incomeH = pt.income > 0 ? (pt.income / 12000000) * 105 : 0;
-                      const expenseH = pt.expenses > 0 ? (pt.expenses / 12000000) * 90 : 0;
+                      const incomeH = pt.income > 0 ? (pt.income / chartScale.maxVal) * 105 : 0;
+                      const expenseH = pt.expenses > 0 ? (pt.expenses / chartScale.maxVal) * 90 : 0;
 
                       return (
-                        <g key={idx}>
+                        <g
+                          key={idx}
+                          className="cursor-pointer"
+                          onMouseEnter={() => setHoveredPoint(pt)}
+                          onMouseLeave={() => setHoveredPoint(null)}
+                        >
                           {incomeH > 0 && (
                             <rect
-                              x={xCenter - 10}
+                              x={xCenter - 14}
                               y={125 - incomeH}
                               width="12"
-                              height={incomeH}
+                              height={Math.max(2, incomeH)}
                               rx="2"
                               fill="#2563eb"
-                              className="transition-all hover:opacity-85 cursor-pointer"
-                            />
+                              className="transition-all hover:opacity-80"
+                            >
+                              <title>{`${pt.date}: Income ${money(pt.income)}`}</title>
+                            </rect>
                           )}
                           {expenseH > 0 && (
                             <rect
                               x={xCenter + 2}
                               y={125}
                               width="12"
-                              height={expenseH}
+                              height={Math.max(2, expenseH)}
                               rx="2"
                               fill="#ef4444"
-                              className="transition-all hover:opacity-85 cursor-pointer"
-                            />
+                              className="transition-all hover:opacity-80"
+                            >
+                              <title>{`${pt.date}: Expense ${money(pt.expenses)}`}</title>
+                            </rect>
                           )}
                         </g>
                       );
                     })}
 
-                    {/* Green Net Cash Flow Smooth Spline Curve */}
-                    <path
-                      d="M75,125 Q170,90 265,125 T455,100 T645,145"
-                      fill="none"
-                      stroke="#10b981"
-                      strokeWidth="2.5"
-                    />
+                    {/* Green Net Cash Flow Smooth Spline Curve computed from REAL points */}
+                    {timelinePoints.length > 0 && (() => {
+                      const netPoints = timelinePoints.map((pt, idx) => {
+                        const colWidth = 640 / Math.max(1, timelinePoints.length);
+                        const x = 42 + idx * colWidth + colWidth / 2;
+                        const y = pt.net >= 0
+                          ? 125 - (pt.net / chartScale.maxVal) * 105
+                          : 125 + (Math.abs(pt.net) / chartScale.maxVal) * 90;
+                        return { x, y, net: pt.net, pt };
+                      });
 
-                    {/* Marker Nodes */}
-                    {[75, 170, 265, 360, 455, 550, 645].map((cx, idx) => (
-                      <circle key={idx} cx={cx} cy={idx % 2 === 0 ? 125 : idx === 3 ? 125 : 100} r="3.5" fill="#10b981" stroke="#ffffff" strokeWidth="1.5" />
-                    ))}
+                      let pathD = '';
+                      netPoints.forEach((pt, i) => {
+                        if (i === 0) {
+                          pathD = 'M' + pt.x + ',' + pt.y;
+                        } else {
+                          const prev = netPoints[i - 1];
+                          const cX = prev.x + (pt.x - prev.x) / 2;
+                          pathD += ' C' + cX + ',' + prev.y + ' ' + cX + ',' + pt.y + ' ' + pt.x + ',' + pt.y;
+                        }
+                      });
+
+                      return (
+                        <g>
+                          <path
+                            d={pathD}
+                            fill="none"
+                            stroke="#10b981"
+                            strokeWidth="2.5"
+                          />
+                          {netPoints.map((pt, idx) => (
+                            <circle
+                              key={idx}
+                              cx={pt.x}
+                              cy={pt.y}
+                              r="4"
+                              fill="#10b981"
+                              stroke="#ffffff"
+                              strokeWidth="2"
+                              className="cursor-pointer transition-transform hover:scale-125"
+                            >
+                              <title>{`${pt.pt.date}: Net Cash Flow ${money(pt.net)}`}</title>
+                            </circle>
+                          ))}
+                        </g>
+                      );
+                    })()}
                   </svg>
+
+                  {/* Empty state overlay when no real posted transactions exist */}
+                  {timelinePoints.length === 0 && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                      <div className="rounded-xl border border-slate-200/90 bg-white/95 px-4 py-2.5 text-center text-xs font-semibold text-slate-500 shadow-xs dark:border-slate-800 dark:bg-slate-900/95 dark:text-slate-400 flex items-center gap-2">
+                        <Clock className="h-4 w-4 text-slate-400" />
+                        <span>No posted journal transactions recorded for the selected timeline</span>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
-                {/* X-Axis Date Labels */}
-                <div className="flex justify-between text-xs font-semibold text-slate-400 px-8 pt-1">
-                  {timelinePoints.map((pt, idx) => (
-                    <span key={idx}>{pt.date}</span>
-                  ))}
-                </div>
+                {/* X-Axis Date Labels from REAL data */}
+                {timelinePoints.length > 0 && (
+                  <div className="flex justify-between text-xs font-semibold text-slate-400 px-8 pt-1">
+                    {timelinePoints.map((pt, idx) => (
+                      <span key={idx}>{pt.date}</span>
+                    ))}
+                  </div>
+                )}
               </div>
 
-              {/* Status / Notice Strip matching design */}
+              {/* Status / Notice Strip */}
               <div className="mt-5 rounded-xl border border-slate-100 bg-slate-50/70 px-4 py-2.5 text-center text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-400 flex items-center justify-center gap-1.5">
                 <span className="text-slate-400">ⓘ</span>
-                <span>No posted journal transactions recorded for the selected timeline.</span>
+                <span>
+                  {timelinePoints.length > 0
+                    ? `Displaying ${timelinePoints.length} verified posted journal timeline point${timelinePoints.length === 1 ? '' : 's'}.`
+                    : 'No posted journal transactions recorded for the selected timeline.'}
+                </span>
               </div>
             </div>
 

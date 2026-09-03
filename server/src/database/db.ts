@@ -203,6 +203,13 @@ class DatabaseService {
 
       const savepoint = `firmbooks_nested_${++this.savepointSequence}`;
       await ambientClient.query(`SAVEPOINT ${savepoint}`);
+      if (orgId && !this.isMemoryMode()) {
+        try {
+          await ambientClient.query("SELECT set_config('app.current_org_id', $1, true)", [orgId]);
+        } catch {
+          // Non-blocking in case setting is not configured
+        }
+      }
       try {
         const result = await callback(ambientClient);
         await ambientClient.query(`RELEASE SAVEPOINT ${savepoint}`);
@@ -248,7 +255,7 @@ class DatabaseService {
           await client.query('BEGIN');
           if (orgId && !this.isMemoryMode()) {
             try {
-              await client.query(`SET LOCAL app.current_org_id = $1`, [orgId]);
+              await client.query("SELECT set_config('app.current_org_id', $1, true)", [orgId]);
             } catch {
               // Non-blocking in case setting is not configured
             }

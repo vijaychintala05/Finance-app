@@ -142,8 +142,15 @@ export const organizationIsolationMiddleware = async (
 
   req.organizationId = requestedOrgId;
   return db.withOrganizationContext(requestedOrgId, () => {
-    next();
-    return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      res.once('finish', resolve);
+      res.once('close', resolve);
+      try {
+        next();
+      } catch (err) {
+        reject(err);
+      }
+    });
   });
 };
 

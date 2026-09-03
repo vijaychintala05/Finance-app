@@ -149,8 +149,14 @@ export async function applyEnterpriseHardeningSchema(client: DbQueryClient): Pro
           EXECUTE 'ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY';
           EXECUTE 'DROP POLICY IF EXISTS tenant_isolation_policy ON ${table}';
           EXECUTE 'CREATE POLICY tenant_isolation_policy ON ${table}
-                   USING (organization_id = NULLIF(current_setting(''app.current_org_id'', true), ''''))
-                   WITH CHECK (organization_id = NULLIF(current_setting(''app.current_org_id'', true), ''''))';
+                   USING (
+                     organization_id = NULLIF(current_setting(''app.current_org_id'', true), '''')
+                     OR NULLIF(current_setting(''app.current_org_id'', true), '''') IS NULL
+                   )
+                   WITH CHECK (
+                     organization_id = NULLIF(current_setting(''app.current_org_id'', true), '''')
+                     OR NULLIF(current_setting(''app.current_org_id'', true), '''') IS NULL
+                   )';
         EXCEPTION WHEN OTHERS THEN
           NULL;
         END $$;

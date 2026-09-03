@@ -87,12 +87,14 @@ describe('ExpenseModal Realtime Chart of Accounts Integration', () => {
     expect(mockRefreshAccounts).toHaveBeenCalled();
   });
 
-  it('populates Expense, Cost of Goods Sold, and Other Expense in the dropdown', () => {
+  it('populates Expense, Cost of Goods Sold, and Other Expense in the searchable account picker', () => {
     render(<ExpenseModal isOpen={true} onClose={vi.fn()} />);
 
-    expect(screen.getByText(/6010 — Office Rent \(Expense\)/i)).toBeDefined();
-    expect(screen.getByText(/5010 — Raw Materials & Hardware \(Cost of Goods Sold\)/i)).toBeDefined();
-    expect(screen.getByText(/6900 — Interest & Finance Charges \(Other Expense\)/i)).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: /expense account:/i }));
+
+    expect(screen.getByRole('option', { name: /6010 - Office Rent \(Expense, Office & Administrative\)/i })).toBeDefined();
+    expect(screen.getByRole('option', { name: /5010 - Raw Materials & Hardware \(Cost of Goods Sold, Materials\)/i })).toBeDefined();
+    expect(screen.getByRole('option', { name: /6900 - Interest & Finance Charges \(Other Expense, Interest Expense\)/i })).toBeDefined();
   });
 
   it('populates Bank and Credit Card accounts in the Paid through dropdown', () => {

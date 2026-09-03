@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import {
   CheckCircle,
   Eye,
+  FileSpreadsheet,
   FileText,
   History,
   Plus,
@@ -11,6 +12,7 @@ import {
 import { Invoice } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate, getStatusBadgeStyle } from '../../utils/formatters';
+import { EmptyStateCard } from '../common/EmptyStateCard';
 import { InvoiceEditorModal } from './InvoiceEditorModal';
 import { InvoicePreviewModal } from './InvoicePreviewModal';
 
@@ -98,18 +100,25 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
           <p className="text-[10px] text-slate-400 mt-0.5">Uncollected invoice balance</p>
         </div>
 
-        <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs">
-          <p className="text-[10px] font-extrabold uppercase tracking-wider text-rose-600 dark:text-rose-400">Overdue Balance</p>
-          <p className="text-xl font-black font-mono text-rose-600 dark:text-rose-400 mt-1">
-            {formatCurrency(
-              invoices
-                .filter((i) => i.status === 'Overdue' || (i.dueDate < new Date().toISOString().split('T')[0] && i.balanceDue > 0))
-                .reduce((s, i) => s + i.balanceDue, 0),
-              settings.currencySymbol
-            )}
-          </p>
-          <p className="text-[10px] text-slate-400 mt-0.5">Past due payment date</p>
-        </div>
+        {(() => {
+          const overdueBalance = invoices
+            .filter((i) => i.status === 'Overdue' || (i.dueDate < new Date().toISOString().split('T')[0] && i.balanceDue > 0))
+            .reduce((s, i) => s + i.balanceDue, 0);
+          const hasOverdue = overdueBalance > 0;
+          return (
+            <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs">
+              <p className={`text-[10px] font-extrabold uppercase tracking-wider ${hasOverdue ? 'text-rose-600 dark:text-rose-400' : 'text-slate-500'}`}>
+                Overdue Balance
+              </p>
+              <p className={`text-xl font-black font-mono mt-1 ${hasOverdue ? 'text-rose-600 dark:text-rose-400' : 'text-slate-900 dark:text-slate-100'}`}>
+                {formatCurrency(overdueBalance, settings.currencySymbol)}
+              </p>
+              <p className="text-[10px] text-slate-400 mt-0.5">
+                {hasOverdue ? 'Past due payment date' : 'All invoices up to date'}
+              </p>
+            </div>
+          );
+        })()}
 
         <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs">
           <p className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">Draft Invoices</p>
@@ -164,10 +173,17 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
       {/* Mobile Card Feed View (lg:hidden) */}
       <div className="block lg:hidden space-y-3">
         {filteredInvoices.length === 0 ? (
-          <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 text-center text-slate-400 space-y-2">
-            <FileText className="w-8 h-8 mx-auto text-slate-300" />
-            <p className="text-xs font-semibold">No invoices match your search</p>
-          </div>
+          <EmptyStateCard
+            icon={FileSpreadsheet}
+            title={search || statusFilter !== 'All' ? 'No matching invoices found' : 'No invoices created yet'}
+            description={
+              search || statusFilter !== 'All'
+                ? 'Try adjusting your search query or status filter.'
+                : 'Create your first sales invoice to bill clients and track accounts receivable.'
+            }
+            actionLabel="Create Invoice"
+            onAction={() => setIsEditorOpen(true)}
+          />
         ) : (
           filteredInvoices.map((inv) => (
             <div
@@ -231,88 +247,106 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
                 <th className="p-3">Client</th>
                 <th className="p-3">Project</th>
                 <th className="p-3">Issue / Due Date</th>
-                <th className="p-3">Total Amount</th>
-                <th className="p-3">Balance Due</th>
+                <th className="p-3 text-right">Total Amount</th>
+                <th className="p-3 text-right">Balance Due</th>
                 <th className="p-3">Status</th>
                 <th className="p-3 text-right pr-4">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {filteredInvoices.map((inv) => (
-                <tr
-                  key={inv.id}
-                  onClick={() => setPreviewInvoice(inv)}
-                  className="hover:bg-blue-50/50 dark:hover:bg-slate-800/60 transition-colors cursor-pointer group"
-                  title="Click to view full invoice bill statement"
-                >
-                  <td className="p-3 pl-4 font-mono font-bold text-blue-600 dark:text-blue-400 flex items-center space-x-1.5">
-                    <span className="group-hover:underline">{inv.invoiceNumber}</span>
-                    {inv.editHistory && inv.editHistory.length > 0 && (
-                      <span
-                        className="inline-flex items-center space-x-0.5 text-[9px] bg-amber-100 text-amber-800 dark:bg-amber-950/80 dark:text-amber-300 font-bold px-1.5 py-0.2 rounded border border-amber-300 dark:border-amber-700"
-                        title={`${inv.editHistory.length} edit revision(s) logged`}
-                      >
-                        <History className="w-2.5 h-2.5" />
-                        <span>Rev {inv.editHistory.length}</span>
-                      </span>
-                    )}
-                  </td>
-
-                  <td className="p-3 font-semibold text-slate-800 dark:text-slate-200">
-                    {inv.clientName}
-                  </td>
-
-                  <td className="p-3 text-slate-500">{inv.projectName || '-'}</td>
-
-                  <td className="p-3 text-slate-500 space-y-0.5">
-                    <div>{formatDate(inv.issueDate)}</div>
-                    <div className="text-[10px] text-slate-400">Due: {formatDate(inv.dueDate)}</div>
-                  </td>
-
-                  <td className="p-3 font-bold font-mono text-slate-900 dark:text-slate-100">
-                    {formatCurrency(inv.totalAmount, settings.currencySymbol)}
-                  </td>
-
-                  <td className="p-3 font-bold font-mono text-amber-600 dark:text-amber-400">
-                    {formatCurrency(inv.balanceDue, settings.currencySymbol)}
-                  </td>
-
-                  <td className="p-3">
-                    <span
-                      className={`text-[10px] px-2 py-0.5 rounded border font-semibold ${getStatusBadgeStyle(
-                        inv.status
-                      )}`}
-                    >
-                      {inv.status}
-                    </span>
-                  </td>
-
-                  <td className="p-3 pr-4 text-right space-x-1">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setPreviewInvoice(inv);
-                      }}
-                      className="p-1.5 text-blue-600 hover:bg-blue-100 dark:hover:bg-slate-700 rounded-lg cursor-pointer"
-                      title="View / Print Invoice"
-                    >
-                      <Eye className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (window.confirm(`Void invoice ${inv.invoiceNumber} by posting an audited reversal?`)) {
-                          void deleteInvoice(inv.id).catch((error) => window.alert(error.message));
-                        }
-                      }}
-                      className="p-1.5 text-rose-500 hover:bg-rose-100 dark:hover:bg-slate-700 rounded-lg cursor-pointer"
-                      title="Void invoice with an audited reversal"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+              {filteredInvoices.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="p-8">
+                    <EmptyStateCard
+                      icon={FileSpreadsheet}
+                      title={search || statusFilter !== 'All' ? 'No matching invoices found' : 'No invoices created yet'}
+                      description={
+                        search || statusFilter !== 'All'
+                          ? 'Try adjusting your search query or status filter.'
+                          : 'Create your first sales invoice to bill clients and track accounts receivable.'
+                      }
+                      actionLabel="Create Invoice"
+                      onAction={() => setIsEditorOpen(true)}
+                    />
                   </td>
                 </tr>
-              ))}
+              ) : (
+                filteredInvoices.map((inv) => (
+                  <tr
+                    key={inv.id}
+                    onClick={() => setPreviewInvoice(inv)}
+                    className="hover:bg-blue-50/50 dark:hover:bg-slate-800/60 transition-colors cursor-pointer group"
+                    title="Click to view full invoice bill statement"
+                  >
+                    <td className="p-3 pl-4 font-mono font-bold text-blue-600 dark:text-blue-400 flex items-center space-x-1.5">
+                      <span className="group-hover:underline">{inv.invoiceNumber}</span>
+                      {inv.editHistory && inv.editHistory.length > 0 && (
+                        <span
+                          className="inline-flex items-center space-x-0.5 text-[9px] bg-amber-100 text-amber-800 dark:bg-amber-950/80 dark:text-amber-300 font-bold px-1.5 py-0.2 rounded border border-amber-300 dark:border-amber-700"
+                          title={`${inv.editHistory.length} edit revision(s) logged`}
+                        >
+                          <History className="w-2.5 h-2.5" />
+                          <span>Rev {inv.editHistory.length}</span>
+                        </span>
+                      )}
+                    </td>
+
+                    <td className="p-3 font-semibold text-slate-800 dark:text-slate-200">
+                      {inv.clientName}
+                    </td>
+
+                    <td className="p-3 text-slate-500">{inv.projectName || '-'}</td>
+
+                    <td className="p-3 text-slate-500 space-y-0.5">
+                      <div>{formatDate(inv.issueDate)}</div>
+                      <div className="text-[10px] text-slate-400">Due: {formatDate(inv.dueDate)}</div>
+                    </td>
+
+                    <td className="p-3 text-right font-bold font-mono text-slate-900 dark:text-slate-100">
+                      {formatCurrency(inv.totalAmount, settings.currencySymbol)}
+                    </td>
+
+                    <td className="p-3 text-right font-bold font-mono text-amber-600 dark:text-amber-400">
+                      {formatCurrency(inv.balanceDue, settings.currencySymbol)}
+                    </td>
+
+                    <td className="p-3">
+                      <span
+                        className={`text-[10px] px-2 py-0.5 rounded border font-semibold ${getStatusBadgeStyle(
+                          inv.status
+                        )}`}
+                      >
+                        {inv.status}
+                      </span>
+                    </td>
+
+                    <td className="p-3 pr-4 text-right space-x-1">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setPreviewInvoice(inv);
+                        }}
+                        className="p-1.5 text-blue-600 hover:bg-blue-100 dark:hover:bg-slate-700 rounded-lg cursor-pointer"
+                        title="View / Print Invoice"
+                      >
+                        <Eye className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (window.confirm(`Void invoice ${inv.invoiceNumber} by posting an audited reversal?`)) {
+                            void deleteInvoice(inv.id).catch((error) => window.alert(error.message));
+                          }
+                        }}
+                        className="p-1.5 text-rose-500 hover:bg-rose-100 dark:hover:bg-slate-700 rounded-lg cursor-pointer"
+                        title="Void invoice with an audited reversal"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>

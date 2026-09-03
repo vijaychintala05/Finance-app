@@ -1,4 +1,5 @@
 import express from "express";
+import compression from "compression";
 import 'dotenv/config';
 import path from "path";
 import react from "@vitejs/plugin-react";
@@ -55,8 +56,19 @@ async function startServer() {
       );
       next();
     });
-    apiApp.use(express.static(distPath));
+    apiApp.use(compression({ threshold: 1024 }));
+    apiApp.use(express.static(distPath, {
+      index: false,
+      setHeaders: (res, filePath) => {
+        if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        } else {
+          res.setHeader('Cache-Control', 'public, max-age=0, must-revalidate');
+        }
+      },
+    }));
     apiApp.get('*', (req, res) => {
+      res.setHeader('Cache-Control', 'public, max-age=0, must-revalidate');
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }

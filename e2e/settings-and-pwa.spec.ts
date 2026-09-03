@@ -7,13 +7,14 @@ test.describe('V1 settings and PWA shell', () => {
   test('shows only implemented settings and exposes install metadata', async ({ page, request }, testInfo) => {
     await registerTenant(page, testInfo);
 
-    const settingsButton = page.getByRole('button', { name: 'Settings', exact: true });
     if (testInfo.project.name.includes('mobile')) {
       await page.getByRole('button', { name: 'Open Mobile Menu' }).click();
-    }
-    await settingsButton.click();
-    if (testInfo.project.name.includes('mobile')) {
-      await page.getByRole('button', { name: 'Settings', exact: true }).last().click();
+      const mobileNav = page.locator('div.fixed.inset-0.z-50.lg\\:hidden');
+      const settingsActions = mobileNav.getByRole('button', { name: 'Settings', exact: true });
+      await settingsActions.first().click();
+      await settingsActions.last().click();
+    } else {
+      await page.getByRole('button', { name: 'Settings', exact: true }).click();
     }
     await expect(page.getByRole('heading', { name: 'All Settings', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: /Identity & Password/ })).toBeVisible();

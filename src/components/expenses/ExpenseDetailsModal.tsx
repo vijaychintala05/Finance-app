@@ -4,6 +4,7 @@ import {
   Building2,
   Calendar,
   CreditCard,
+  Download,
   FileText,
   FolderKanban,
   MoreVertical,
@@ -33,6 +34,7 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
   const { settings, deleteExpense } = useBooks();
   const [showMoreMenu, setShowMoreMenu] = useState(false);
   const [receiptUrls, setReceiptUrls] = useState<Record<string, string>>({});
+  const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -60,6 +62,30 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
 
   if (!isOpen || !expense) return null;
 
+  const handleDownloadPdf = async () => {
+    if (!expense?.id) return;
+    try {
+      setIsDownloadingPdf(true);
+      setShowMoreMenu(false);
+      const res = await apiClient.getBlob(`/finance/expenses/${expense.id}/pdf`);
+      if (res.data) {
+        const blob = new Blob([res.data], { type: 'application/pdf' });
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `ExpenseVoucher-${expense.referenceNumber || expense.id}.pdf`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.URL.revokeObjectURL(url);
+      }
+    } catch (err: any) {
+      window.alert('Failed to download expense voucher PDF: ' + (err.message || 'Unknown error'));
+    } finally {
+      setIsDownloadingPdf(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 z-50 animate-fade-in overflow-y-auto">
       <div className="bg-white dark:bg-slate-900 rounded-3xl max-w-lg w-full overflow-hidden shadow-2xl border border-slate-200 dark:border-slate-800 my-auto">
@@ -77,16 +103,34 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
             </h3>
           </div>
 
-          <div className="flex items-center space-x-1 relative">
+          <div className="flex items-center space-x-2 relative">
+            <button
+              onClick={handleDownloadPdf}
+              disabled={isDownloadingPdf}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors disabled:opacity-50"
+              title="Download Certified Expense Voucher PDF"
+            >
+              <Download className="w-3.5 h-3.5 text-slate-600 dark:text-slate-300" />
+              <span>{isDownloadingPdf ? 'Generating...' : 'Download PDF'}</span>
+            </button>
+
             <button
               onClick={() => setShowMoreMenu(!showMoreMenu)}
-              className="p-2.5 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 cursor-pointer transition-colors"
+              className="p-2 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 cursor-pointer transition-colors"
             >
               <MoreVertical className="w-4 h-4" />
             </button>
 
             {showMoreMenu && (
               <div className="absolute right-0 top-12 w-48 bg-white dark:bg-slate-800 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-700 py-2 z-20">
+                <button
+                  onClick={handleDownloadPdf}
+                  className="w-full text-left px-4 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 flex items-center space-x-2"
+                >
+                  <Download className="w-4 h-4 text-slate-500" />
+                  <span>Download Voucher PDF</span>
+                </button>
+
                 <button
                   onClick={() => {
                     setShowMoreMenu(false);
@@ -112,7 +156,6 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
                     <span>Void Expense</span>
                   </button>
                 )}
-
               </div>
             )}
           </div>
@@ -131,7 +174,7 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
                 {formatCurrency(expense.amount, settings.currencySymbol)}
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mt-1">
-                on {formatDate(expense.date)} • Ref #{expense.referenceNumber}
+                on {formatDate(expense.date)} ? Ref #{expense.referenceNumber}
               </p>
               {expense.status === 'VOIDED' && <p className="mt-2 text-xs font-bold uppercase text-slate-500">Voided by audited reversal</p>}
             </div>
@@ -167,7 +210,7 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
                     {receiptUrls[attachment.id] ? (
                       <img src={receiptUrls[attachment.id]} alt={attachment.fileName} className="aspect-square w-full object-cover" />
                     ) : (
-                      <div className="grid aspect-square place-items-center text-xs text-slate-400">Loading receipt…</div>
+                      <div className="grid aspect-square place-items-center text-xs text-slate-400">Loading receipt?</div>
                     )}
                     <span className="block truncate px-2 py-1.5 text-[10px] font-medium text-slate-600 dark:text-slate-300">{attachment.fileName}</span>
                   </a>
@@ -225,46 +268,53 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
               </p>
             </div>
 
-            {/* Customer */}
-            <div>
-              <p className="text-xs text-slate-400 dark:text-slate-500 font-medium">Customer</p>
-              <p className="text-sm font-bold text-blue-600 dark:text-blue-400 mt-0.5 flex items-center gap-2">
-                <User className="w-4 h-4 text-blue-500" />
-                <span>{expense.clientName || 'N/A (Internal Firm Expense)'}</span>
-              </p>
-            </div>
+            {/* Vendor */}
+            {expense.vendorName && (
+              <div>
+                <p className="text-xs text-slate-400 dark:text-slate-500 font-medium">Vendor</p>
+                <p className="text-sm font-bold text-slate-900 dark:text-slate-100 mt-0.5 flex items-center gap-2">
+                  <Building2 className="w-4 h-4 text-slate-400" />
+                  <span>{expense.vendorName}</span>
+                </p>
+              </div>
+            )}
 
-            {/* Paid To (Vendor) */}
-            <div>
-              <p className="text-xs text-slate-400 dark:text-slate-500 font-medium">Paid To</p>
-              <p className="text-sm font-bold text-slate-800 dark:text-slate-200 mt-0.5 flex items-center gap-2">
-                <Building2 className="w-4 h-4 text-slate-400" />
-                <span>{expense.vendorName || 'N/A'}</span>
-              </p>
-            </div>
+            {/* Customer / Project */}
+            {(expense.clientName || expense.projectName) && (
+              <div className="grid grid-cols-2 gap-4">
+                {expense.clientName && (
+                  <div>
+                    <p className="text-xs text-slate-400 dark:text-slate-500 font-medium">Customer</p>
+                    <p className="text-sm font-bold text-slate-900 dark:text-slate-100 mt-0.5 flex items-center gap-2">
+                      <User className="w-4 h-4 text-slate-400" />
+                      <span>{expense.clientName}</span>
+                    </p>
+                  </div>
+                )}
+                {expense.projectName && (
+                  <div>
+                    <p className="text-xs text-slate-400 dark:text-slate-500 font-medium">Project</p>
+                    <p className="text-sm font-bold text-slate-900 dark:text-slate-100 mt-0.5 flex items-center gap-2">
+                      <FolderKanban className="w-4 h-4 text-slate-400" />
+                      <span>{expense.projectName}</span>
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
 
-            {/* Project Name */}
-            <div>
-              <p className="text-xs text-slate-400 dark:text-slate-500 font-medium">Project Name</p>
-              <p className="text-sm font-bold text-slate-900 dark:text-slate-100 mt-0.5 flex items-center gap-2">
-                <FolderKanban className="w-4 h-4 text-amber-500" />
-                <span>{expense.projectName || 'General Organization'}</span>
-              </p>
-            </div>
-
-            {/* Description */}
-            <div>
-              <p className="text-xs text-slate-400 dark:text-slate-500 font-medium">Description / Particulars</p>
-              <p className="text-sm font-medium text-slate-700 dark:text-slate-300 mt-0.5 bg-slate-50 dark:bg-slate-800/60 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
-                {expense.notes || expense.description || 'No notes provided.'}
-              </p>
-            </div>
-          </div>
-
-          <div className="pt-4 border-t border-slate-100 dark:border-slate-800 flex justify-end">
-            <button onClick={onClose} className="px-4 py-2.5 text-xs font-bold text-white bg-slate-900 dark:bg-blue-600 rounded-xl">
-              Close
-            </button>
+            {/* Description Notes */}
+            {expense.description && (
+              <div>
+                <p className="text-xs text-slate-400 dark:text-slate-500 font-medium">Notes / Memo</p>
+                <div className="mt-1 p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-100 dark:border-slate-700/60 flex items-start gap-2.5">
+                  <FileText className="w-4 h-4 text-slate-400 mt-0.5 shrink-0" />
+                  <p className="text-xs text-slate-700 dark:text-slate-300 whitespace-pre-wrap leading-relaxed">
+                    {expense.description}
+                  </p>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>

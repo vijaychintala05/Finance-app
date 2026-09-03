@@ -82,6 +82,23 @@ describe('AccountModal', () => {
     expect(nextExpenseCode).not.toBe('6000'); // reserved
   });
 
+  it('uses the in-app searchable picker to select an expense subtype', () => {
+    render(<AccountModal isOpen onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByLabelText(/account type: asset - bank/i));
+    const search = screen.getByPlaceholderText('Search account types');
+    fireEvent.click(screen.getByRole('button', { name: 'Expense', exact: true }));
+
+    expect(screen.getByRole('option', { name: 'Expense: Payroll' })).toBeTruthy();
+    fireEvent.change(search, { target: { value: 'software' } });
+    expect(screen.getByRole('option', { name: 'Expense: Software & Subscriptions' })).toBeTruthy();
+    expect(screen.queryByRole('option', { name: 'Expense: Payroll' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('option', { name: 'Expense: Software & Subscriptions' }));
+    expect(screen.getByLabelText(/account type: expense - software & subscriptions/i)).toBeTruthy();
+    expect(screen.queryByPlaceholderText('Search account types')).toBeNull();
+  });
+
   it('detects collision with active account code and displays warning', () => {
     render(<AccountModal isOpen onClose={vi.fn()} />);
 
@@ -100,6 +117,22 @@ describe('AccountModal', () => {
     fireEvent.change(codeInput, { target: { value: '6020' } });
 
     expect(screen.getByText(/belongs to archived account "Archived Subscriptions"/i)).toBeTruthy();
+  });
+
+  it('reveals a compatible parent picker when creating a sub-account', () => {
+    render(<AccountModal isOpen onClose={vi.fn()} />);
+
+    const toggle = screen.getByRole('checkbox', { name: /make this a sub-account/i });
+    expect((toggle as HTMLInputElement).checked).toBe(false);
+    expect(screen.queryByLabelText(/^parent account/i)).toBeNull();
+
+    fireEvent.click(toggle);
+
+    const parentPicker = screen.getByLabelText(/^parent account/i) as HTMLSelectElement;
+    expect(parentPicker.required).toBe(true);
+    expect(screen.getByRole('option', { name: '1010 - Petty Cash' })).toBeTruthy();
+    fireEvent.change(parentPicker, { target: { value: 'acc-1' } });
+    expect(parentPicker.value).toBe('acc-1');
   });
 
   it('shows Restore to Active button when viewing an archived account', async () => {

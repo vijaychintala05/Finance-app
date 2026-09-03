@@ -276,20 +276,28 @@ export class SalesEngine {
     transactionClient?: QueryClient
   ): Promise<string> {
     const queryClient: QueryClient = transactionClient || db;
+    const accountIdentifiers = Array.from(new Set(
+      lines.flatMap((line) => [line.accountId, line.accountCode].filter(Boolean))
+    ));
+
+    const accountsMap = new Map<string, { id: string; code: string; name: string }>();
+    if (accountIdentifiers.length > 0) {
+      const accRes = await queryClient.query(
+        `SELECT id, code, name FROM accounts WHERE organization_id = $1 AND (id = ANY($2::text[]) OR code = ANY($2::text[]))`,
+        [orgId, accountIdentifiers]
+      );
+      for (const row of accRes.rows) {
+        accountsMap.set(row.id, row);
+        accountsMap.set(row.code, row);
+      }
+    }
+
     const resolvedLines: any[] = [];
     for (const line of lines) {
-      let accId = line.accountId;
-      let accCode = line.accountCode;
-      let accName = line.accountName;
-      const accRes = await queryClient.query(
-        `SELECT id, code, name FROM accounts WHERE organization_id = $1 AND (id = $2 OR code = $3 OR code = $2)`,
-        [orgId, accId, accCode || accId]
-      );
-      if (accRes.rows.length > 0) {
-        accId = accRes.rows[0].id;
-        accCode = accRes.rows[0].code;
-        accName = accRes.rows[0].name;
-      }
+      const matched = (line.accountId && accountsMap.get(line.accountId)) || (line.accountCode && accountsMap.get(line.accountCode));
+      const accId = matched ? matched.id : line.accountId;
+      const accCode = matched ? matched.code : line.accountCode;
+      const accName = matched ? matched.name : line.accountName;
       resolvedLines.push({ ...line, accountId: accId, accountCode: accCode, accountName: accName });
     }
 

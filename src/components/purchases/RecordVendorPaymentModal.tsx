@@ -140,6 +140,7 @@ export const RecordVendorPaymentModal: React.FC<RecordVendorPaymentModalProps> =
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitting) return;
     setError('');
 
     const parsedAmount = Number(amount);

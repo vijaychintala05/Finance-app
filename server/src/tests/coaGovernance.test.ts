@@ -58,6 +58,13 @@ describe('chart of accounts governance', () => {
     });
     expect(local.status).toBeGreaterThanOrEqual(400);
 
+    const systemParent = await request(app).post('/api/v1/finance/accounts').set(auth).send({
+      code: '6106', name: 'System parent attempt', type: 'Asset', subType: 'Cash',
+      parentAccountId: (await db.query(`SELECT id FROM accounts WHERE organization_id = $1 AND code = '1000'`, [orgId])).rows[0].id,
+    });
+    expect(systemParent.status).toBe(400);
+    expect(systemParent.body.error).toMatch(/system or locked account/i);
+
     const parent = await request(app).post('/api/v1/finance/accounts').set(auth).send({
       code: '6104', name: 'Local operations', type: 'Expense', subType: 'Office & Administrative', allowDirectPosting: false,
     });

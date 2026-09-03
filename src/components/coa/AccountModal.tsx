@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Archive, CheckCircle2, Info, RefreshCw, Trash2, X } from 'lucide-react';
+import { AlertTriangle, Archive, Check, CheckCircle2, ChevronDown, Info, RefreshCw, Search, Trash2, X } from 'lucide-react';
 import { Account, AccountSubType, AccountType } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 
@@ -118,9 +118,13 @@ export const AccountModal: React.FC<AccountModalProps> = ({
 }) => {
   const { accounts = [], addAccount, updateAccount, deleteAccount } = useBooks();
   const [catalogIndex, setCatalogIndex] = useState(0);
+  const [isTypePickerOpen, setIsTypePickerOpen] = useState(false);
+  const [typePickerCategory, setTypePickerCategory] = useState<AccountType | 'All'>('All');
+  const [typeSearch, setTypeSearch] = useState('');
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
   const [description, setDescription] = useState('');
+  const [isSubAccount, setIsSubAccount] = useState(false);
   const [parentAccountId, setParentAccountId] = useState('');
   const [reportingGroup, setReportingGroup] = useState('');
   const [allowDirectPosting, setAllowDirectPosting] = useState(true);
@@ -137,9 +141,14 @@ export const AccountModal: React.FC<AccountModalProps> = ({
       : 0;
     const activeIndex = existingIndex >= 0 ? existingIndex : 0;
     setCatalogIndex(activeIndex);
+    setIsTypePickerOpen(false);
+    setTypePickerCategory('All');
+    setTypeSearch('');
     setName(accountToEdit?.name || '');
     setDescription(accountToEdit?.description || '');
-    setParentAccountId(accountToEdit?.parentAccountId || accountToEdit?.parentId || initialParentId || '');
+    const initialParentAccountId = accountToEdit?.parentAccountId || accountToEdit?.parentId || initialParentId || '';
+    setIsSubAccount(Boolean(initialParentAccountId));
+    setParentAccountId(initialParentAccountId);
     setReportingGroup(accountToEdit?.reportingGroup || initialSubCategory || '');
     setAllowDirectPosting(accountToEdit?.allowDirectPosting ?? true);
     setNormalBalance(accountToEdit?.normalBalance || ACCOUNT_TYPE_CATALOG[activeIndex]?.normalBalance || 'Debit');
@@ -174,14 +183,39 @@ export const AccountModal: React.FC<AccountModalProps> = ({
     return null;
   }, [code, accounts, accountToEdit]);
 
+  const typePickerCategories = useMemo(
+    () => ACCOUNT_CATEGORIES.filter((category) => ACCOUNT_TYPE_CATALOG.some((entry) => entry.category === category)),
+    []
+  );
+  const matchingAccountTypes = useMemo(() => {
+    const query = typeSearch.trim().toLowerCase();
+    return ACCOUNT_TYPE_CATALOG.filter((entry) => {
+      const inCategory = typePickerCategory === 'All' || entry.category === typePickerCategory;
+      const matchesQuery = !query || `${entry.category} ${entry.subType} ${entry.description}`.toLowerCase().includes(query);
+      return inCategory && matchesQuery;
+    });
+  }, [typePickerCategory, typeSearch]);
+
   if (!isOpen) return null;
 
   const handleTypeChange = (newIndex: number) => {
     setCatalogIndex(newIndex);
     setNormalBalance(ACCOUNT_TYPE_CATALOG[newIndex].normalBalance);
+    if (parentAccountId && !accounts.some((account) =>
+      account.id === parentAccountId && account.type === ACCOUNT_TYPE_CATALOG[newIndex].category
+    )) {
+      setIsSubAccount(false);
+      setParentAccountId('');
+    }
     if (!accountToEdit) {
       setCode(getNextAvailableAccountCode(ACCOUNT_TYPE_CATALOG[newIndex].category, accounts));
     }
+  };
+
+  const chooseAccountType = (newIndex: number) => {
+    handleTypeChange(newIndex);
+    setIsTypePickerOpen(false);
+    setTypeSearch('');
   };
 
   const handleSubmit = async (event: React.FormEvent) => {
@@ -226,7 +260,7 @@ export const AccountModal: React.FC<AccountModalProps> = ({
         await updateAccount(accountToEdit.id, {
           name: name.trim(),
           description: description.trim(),
-          parentAccountId: parentAccountId || null,
+          parentAccountId: isSubAccount ? parentAccountId || null : null,
           reportingGroup: reportingGroup.trim() || undefined,
           allowDirectPosting,
         });
@@ -237,7 +271,7 @@ export const AccountModal: React.FC<AccountModalProps> = ({
           type: selected.category,
           subType: selected.subType,
           description: description.trim() || undefined,
-          parentAccountId: parentAccountId || undefined,
+          parentAccountId: isSubAccount && parentAccountId ? parentAccountId : undefined,
           reportingGroup: reportingGroup.trim() || undefined,
           allowDirectPosting,
           normalBalance,
@@ -299,7 +333,11 @@ export const AccountModal: React.FC<AccountModalProps> = ({
   };
 
   const availableParents = accounts.filter((account) =>
-    account.id !== accountToEdit?.id && account.status === 'Active' && account.type === selected.category
+    account.id !== accountToEdit?.id &&
+    account.status === 'Active' &&
+    !account.isSystemAccount &&
+    !account.isLocked &&
+    account.type === selected.category
   );
 
   return (
@@ -327,19 +365,66 @@ export const AccountModal: React.FC<AccountModalProps> = ({
 
             <div className="grid gap-7 lg:grid-cols-[minmax(0,1fr)_18rem]">
               <div className="space-y-5">
-                <label className="block text-sm font-medium text-slate-800 dark:text-slate-200">
-                  Account type <span className="text-rose-600">*</span>
-                  <select disabled={Boolean(accountToEdit)} value={catalogIndex} onChange={(event) => handleTypeChange(Number(event.target.value))} className="mt-1.5 block h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-800 outline-none transition focus:border-blue-600 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:focus:ring-blue-950 cursor-pointer">
-                    {ACCOUNT_CATEGORIES.map((category) => (
-                      <optgroup key={category} label={category}>
-                        {ACCOUNT_TYPE_CATALOG.filter((entry) => entry.category === category).map((entry) => {
+                <div className="relative">
+                  <span className="block text-sm font-medium text-slate-800 dark:text-slate-200">Account type <span className="text-rose-600">*</span></span>
+                  <button
+                    type="button"
+                    disabled={Boolean(accountToEdit)}
+                    aria-label={`Account type: ${selected.category} - ${selected.subType}`}
+                    aria-haspopup="listbox"
+                    aria-expanded={isTypePickerOpen}
+                    onClick={() => setIsTypePickerOpen((open) => !open)}
+                    className="mt-1.5 flex h-10 w-full items-center justify-between rounded-md border border-slate-300 bg-white px-3 text-left text-sm text-slate-800 outline-none transition hover:border-slate-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:focus:ring-blue-950"
+                  >
+                    <span className="min-w-0 truncate"><span className="text-slate-500 dark:text-slate-400">{selected.category}</span> <span className="text-slate-300 dark:text-slate-600">/</span> {selected.subType}</span>
+                    <ChevronDown className={`h-4 w-4 shrink-0 text-slate-400 transition-transform ${isTypePickerOpen ? 'rotate-180' : ''}`} />
+                  </button>
+                  {isTypePickerOpen && !accountToEdit && (
+                    <div className="absolute z-30 mt-1.5 w-full overflow-hidden rounded-md border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-900">
+                      <div className="border-b border-slate-100 p-2.5 dark:border-slate-800">
+                        <div className="relative">
+                          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                          <input
+                            autoFocus
+                            value={typeSearch}
+                            onChange={(event) => setTypeSearch(event.target.value)}
+                            onKeyDown={(event) => { if (event.key === 'Escape') setIsTypePickerOpen(false); }}
+                            placeholder="Search account types"
+                            className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 pl-9 pr-3 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-blue-600 focus:bg-white focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:focus:bg-slate-900 dark:focus:ring-blue-950"
+                          />
+                        </div>
+                        <div className="mt-2 flex gap-1.5 overflow-x-auto pb-0.5">
+                          <button type="button" onClick={() => setTypePickerCategory('All')} className={`shrink-0 rounded-md px-2.5 py-1 text-xs font-medium ${typePickerCategory === 'All' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'}`}>All</button>
+                          {typePickerCategories.map((category) => (
+                            <button key={category} type="button" onClick={() => setTypePickerCategory(category)} className={`shrink-0 rounded-md px-2.5 py-1 text-xs font-medium ${typePickerCategory === category ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'}`}>{category}</button>
+                          ))}
+                        </div>
+                      </div>
+                      <div role="listbox" aria-label="Account type options" className="max-h-64 overflow-y-auto p-1.5">
+                        {matchingAccountTypes.length === 0 ? (
+                          <p className="px-3 py-6 text-center text-sm text-slate-500 dark:text-slate-400">No account types match that search.</p>
+                        ) : matchingAccountTypes.map((entry) => {
                           const index = ACCOUNT_TYPE_CATALOG.indexOf(entry);
-                          return <option key={entry.subType} value={index}>{entry.subType}</option>;
+                          const isSelected = index === catalogIndex;
+                          return (
+                            <button
+                              key={`${entry.category}-${entry.subType}`}
+                              type="button"
+                              role="option"
+                              aria-selected={isSelected}
+                              aria-label={`${entry.category}: ${entry.subType}`}
+                              onClick={() => chooseAccountType(index)}
+                              className={`flex w-full items-start gap-3 rounded-md px-3 py-2.5 text-left transition-colors ${isSelected ? 'bg-blue-50 text-blue-900 dark:bg-blue-950/40 dark:text-blue-100' : 'text-slate-800 hover:bg-slate-50 dark:text-slate-100 dark:hover:bg-slate-800'}`}
+                            >
+                              <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${isSelected ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-300 dark:border-slate-600'}`}><Check className={`h-3 w-3 ${isSelected ? 'opacity-100' : 'opacity-0'}`} /></span>
+                              <span className="min-w-0"><span className="block text-sm font-medium">{entry.subType}</span><span className="block text-xs text-slate-500 dark:text-slate-400">{entry.category} - {entry.description}</span></span>
+                            </button>
+                          );
                         })}
-                      </optgroup>
-                    ))}
-                  </select>
-                </label>
+                      </div>
+                    </div>
+                  )}
+                </div>
 
                 <label className="block text-sm font-medium text-slate-800 dark:text-slate-200">
                   Account name <span className="text-rose-600">*</span>
@@ -386,6 +471,36 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                   ) : null}
                 </div>
 
+                <div className="border-y border-slate-200 py-4 dark:border-slate-800">
+                  <label className="flex cursor-pointer items-center gap-2.5 text-sm font-medium text-slate-800 dark:text-slate-200">
+                    <input
+                      type="checkbox"
+                      checked={isSubAccount}
+                      onChange={(event) => {
+                        setIsSubAccount(event.target.checked);
+                        if (!event.target.checked) setParentAccountId('');
+                      }}
+                      className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    Make this a sub-account
+                  </label>
+                  {isSubAccount && (
+                    <label className="mt-3 block text-sm font-medium text-slate-800 dark:text-slate-200">
+                      Parent account <span className="text-rose-600">*</span>
+                      <select
+                        required
+                        value={parentAccountId}
+                        onChange={(event) => setParentAccountId(event.target.value)}
+                        className="mt-1.5 block h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-800 outline-none transition focus:border-blue-600 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:focus:ring-blue-950 cursor-pointer"
+                      >
+                        <option value="">Select a parent account</option>
+                        {availableParents.map((account) => <option key={account.id} value={account.id}>{account.code} - {account.name}</option>)}
+                      </select>
+                      {availableParents.length === 0 && <p className="mt-1.5 text-xs font-normal text-amber-700 dark:text-amber-300">Create an active {selected.category} account first, then use it as the parent.</p>}
+                    </label>
+                  )}
+                </div>
+
                 <label className="block text-sm font-medium text-slate-800 dark:text-slate-200">
                   Description <span className="font-normal text-slate-400">(optional)</span>
                   <textarea maxLength={500} rows={3} value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Add a short note for your team" className="mt-1.5 block w-full resize-none rounded-md border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:focus:ring-blue-950" />
@@ -395,7 +510,6 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                 <details className="border-t border-slate-200 pt-4 dark:border-slate-800">
                   <summary className="cursor-pointer text-sm font-medium text-slate-600 marker:text-slate-400 dark:text-slate-300">Additional account settings</summary>
                   <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                    <label className="block text-sm font-medium text-slate-800 dark:text-slate-200 sm:col-span-2">Parent account<select value={parentAccountId} onChange={(event) => setParentAccountId(event.target.value)} className="mt-1.5 block h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-800 outline-none transition focus:border-blue-600 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:focus:ring-blue-950"><option value="">No parent account</option>{availableParents.map((account) => <option key={account.id} value={account.id}>{account.code} - {account.name}</option>)}</select></label>
                     <label className="block text-sm font-medium text-slate-800 dark:text-slate-200">Reporting group<input maxLength={100} value={reportingGroup} onChange={(event) => setReportingGroup(event.target.value)} placeholder="e.g. Operations" className="mt-1.5 block h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:focus:ring-blue-950" /></label>
                     <label className="block text-sm font-medium text-slate-800 dark:text-slate-200">Normal balance<select disabled={Boolean(accountToEdit)} value={normalBalance} onChange={(event) => setNormalBalance(event.target.value as 'Debit' | 'Credit')} className="mt-1.5 block h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-800 outline-none transition focus:border-blue-600 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:focus:ring-blue-950"><option value="Debit">Debit</option><option value="Credit">Credit</option></select></label>
                     <label className="flex items-center gap-2.5 text-sm font-medium text-slate-700 dark:text-slate-300 sm:col-span-2"><input type="checkbox" checked={allowDirectPosting} onChange={(event) => setAllowDirectPosting(event.target.checked)} className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500" />Allow direct journal posting</label>

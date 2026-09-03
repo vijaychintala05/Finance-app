@@ -36,7 +36,7 @@ test.describe('End-to-End Payment Allocation, Relational Integrity & Ledger Veri
     await expect(page.getByText('Create New Sales Invoice')).toBeVisible();
 
     // Verify Unsaved Changes Guard
-    await page.getByPlaceholder('Item or service detail').first().fill('Cloud Consulting');
+    await page.locator('input[placeholder="Item or service detail"]:visible').fill('Cloud Consulting');
     await page.getByRole('button', { name: 'Cancel' }).click();
     await expect(page.getByRole('heading', { name: 'Unsaved Changes' })).toBeVisible();
     await page.getByRole('button', { name: 'Keep Editing' }).click();
@@ -47,15 +47,15 @@ test.describe('End-to-End Payment Allocation, Relational Integrity & Ledger Veri
     await expect(clientSelect.locator('option')).not.toHaveCount(0, { timeout: 10_000 });
     await clientSelect.selectOption({ index: 0 });
 
-    const numberInputs = page.locator('input[type="number"]');
-    await numberInputs.nth(1).fill('500');
+    const numberInputs = page.locator('input[type="number"]:visible');
+    await numberInputs.nth(testInfo.project.name.includes('mobile') ? 2 : 1).fill('500');
 
     const [createInvoiceResponse] = await Promise.all([
       page.waitForResponse((response) =>
         response.request().method() === 'POST' &&
         new URL(response.url()).pathname.includes('/api/v1/finance/invoices')
       ),
-      page.getByRole('button', { name: 'Create Invoice' }).click(),
+      page.locator('form').getByRole('button', { name: 'Create Invoice' }).click(),
     ]);
     expect(createInvoiceResponse.status()).toBe(201);
     await expect(page.getByText('Cloud Consulting', { exact: false }).first()).toBeVisible({ timeout: 10_000 });

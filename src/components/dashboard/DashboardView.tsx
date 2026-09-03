@@ -260,7 +260,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       </div>
 
       <div className="mt-3.5 space-y-2">
-        <div className={`font-financial min-w-0 text-xl font-black tracking-tight sm:text-[1.7rem] ${tone}`}>{value}</div>
+        <div className={`font-financial min-w-0 text-base font-black tracking-tight sm:text-[1.7rem] ${tone}`}>{value}</div>
         {progressPercent !== undefined && progressLabel && (
           <div className="space-y-1 pt-1">
             <div className="flex justify-between text-[11px] font-semibold text-slate-500 dark:text-slate-400">

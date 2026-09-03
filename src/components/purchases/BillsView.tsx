@@ -10,6 +10,7 @@ import {
 import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate } from '../../utils/formatters';
 import { Bill } from '../../types';
+import { EmptyStateCard } from '../common/EmptyStateCard';
 import { BillDetailsModal } from './BillDetailsModal';
 import { RecordVendorPaymentModal } from './RecordVendorPaymentModal';
 import { AccountModal } from '../coa/AccountModal';
@@ -242,7 +243,24 @@ export const BillsView: React.FC<BillsViewProps> = ({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
-              {filtered.map((b) => {
+              {filtered.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="p-8">
+                    <EmptyStateCard
+                      icon={FileText}
+                      title={search ? 'No matching bills found' : 'No vendor bills recorded yet'}
+                      description={
+                        search
+                          ? 'Try adjusting your search query.'
+                          : 'Record your vendor bills and supplier invoices to track accounts payable liabilities.'
+                      }
+                      actionLabel={vendors.length > 0 && expenseAccounts.length > 0 ? 'New Bill' : undefined}
+                      onAction={vendors.length > 0 && expenseAccounts.length > 0 ? openCreateModal : undefined}
+                    />
+                  </td>
+                </tr>
+              ) : (
+                filtered.map((b) => {
                 const bal =
                   b.balanceDue !== undefined
                     ? b.balanceDue
@@ -285,7 +303,8 @@ export const BillsView: React.FC<BillsViewProps> = ({
                     </td>
                   </tr>
                 );
-              })}
+              })
+            )}
             </tbody>
           </table>
         </div>

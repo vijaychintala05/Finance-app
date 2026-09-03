@@ -220,8 +220,8 @@ describe('System-wide Realtime Chart of Accounts Integration Suite', () => {
       expect(mockRefreshAccounts).toHaveBeenCalled();
 
       // Revenue and Other Income both available
-      expect(screen.getByText(/4010 — Design & Architecture Fees/i)).toBeDefined();
-      expect(screen.getByText(/4900 — Interest on Fixed Deposits/i)).toBeDefined();
+      expect(screen.getAllByText(/4010 — Design & Architecture Fees/i)).toHaveLength(2);
+      expect(screen.getAllByText(/4900 — Interest on Fixed Deposits/i)).toHaveLength(2);
     });
   });
 

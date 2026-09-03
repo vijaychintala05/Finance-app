@@ -3,6 +3,7 @@ import { Edit, Mail, Phone, Plus, Search, Trash2, Users } from 'lucide-react';
 import { Client } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 import { formatCurrency } from '../../utils/formatters';
+import { EmptyStateCard } from '../common/EmptyStateCard';
 import { ClientModal } from './ClientModal';
 import { CustomerWorkspace } from './CustomerWorkspace';
 
@@ -117,7 +118,23 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
 
       {/* Mobile Client Contact Cards Feed (lg:hidden) */}
       <div className="block lg:hidden space-y-3">
-        {filteredClients.map((client) => {
+        {filteredClients.length === 0 ? (
+          <EmptyStateCard
+            icon={Users}
+            title={search ? 'No matching clients found' : 'No clients created yet'}
+            description={
+              search
+                ? 'Try searching with a different client name or company.'
+                : 'Add your clients to bill them with tax invoices and manage client balances.'
+            }
+            actionLabel="Add Client"
+            onAction={() => {
+              setClientToEdit(null);
+              setIsModalOpen(true);
+            }}
+          />
+        ) : (
+          filteredClients.map((client) => {
           const clientInvoices = invoices.filter(
             (i) => (i.clientId === client.id || i.clientName === client.companyName) && i.status !== 'Void'
           );
@@ -205,7 +222,7 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
               </div>
             </div>
           );
-        })}
+        }))}
       </div>
 
       {/* Desktop High-Density Clients Table (hidden lg:block) */}
@@ -218,94 +235,114 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
                 <th className="p-3">Contact</th>
                 <th className="p-3">Payment Terms</th>
                 <th className="p-3">Active Projects</th>
-                <th className="p-3">Total Invoiced</th>
-                <th className="p-3">Outstanding (AR)</th>
+                <th className="p-3 text-right">Total Invoiced</th>
+                <th className="p-3 text-right">Outstanding (AR)</th>
                 <th className="p-3 text-right pr-4">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {filteredClients.map((client) => {
-                const clientInvoices = invoices.filter(
-                  (i) => (i.clientId === client.id || i.clientName === client.companyName) && i.status !== 'Void'
-                );
-                const totalBilled = clientInvoices.reduce((sum, i) => sum + i.totalAmount, 0);
-                const totalAR = clientInvoices.reduce((sum, i) => sum + i.balanceDue, 0);
-                const clientProjects = projects.filter((p) => p.clientId === client.id);
+              {filteredClients.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="p-8">
+                    <EmptyStateCard
+                      icon={Users}
+                      title={search ? 'No matching clients found' : 'No clients created yet'}
+                      description={
+                        search
+                          ? 'Try searching with a different client name or company.'
+                          : 'Add your clients to bill them with tax invoices and manage client balances.'
+                      }
+                      actionLabel="Add Client"
+                      onAction={() => {
+                        setClientToEdit(null);
+                        setIsModalOpen(true);
+                      }}
+                    />
+                  </td>
+                </tr>
+              ) : (
+                filteredClients.map((client) => {
+                  const clientInvoices = invoices.filter(
+                    (i) => (i.clientId === client.id || i.clientName === client.companyName) && i.status !== 'Void'
+                  );
+                  const totalBilled = clientInvoices.reduce((sum, i) => sum + i.totalAmount, 0);
+                  const totalAR = clientInvoices.reduce((sum, i) => sum + i.balanceDue, 0);
+                  const clientProjects = projects.filter((p) => p.clientId === client.id);
 
-                return (
-                  <tr
-                    key={client.id}
-                    onClick={() => setViewingClient(client)}
-                    className="hover:bg-slate-50/50 dark:hover:bg-slate-800/40 transition-colors cursor-pointer group"
-                  >
-                    <td className="p-3 pl-4">
-                      <div className="font-bold text-slate-900 dark:text-slate-100 group-hover:text-blue-600 transition-colors">
-                        {client.companyName}
-                      </div>
-                      <div className="text-[11px] text-slate-500">{client.name}</div>
-                    </td>
-
-                    <td className="p-3 space-y-0.5">
-                      <div className="flex items-center space-x-1 text-slate-600 dark:text-slate-300">
-                        <Mail className="w-3 h-3 text-slate-400" />
-                        <span>{client.email}</span>
-                      </div>
-                      {client.phone && (
-                        <div className="flex items-center space-x-1 text-slate-500 text-[11px]">
-                          <Phone className="w-3 h-3 text-slate-400" />
-                          <span>{client.phone}</span>
+                  return (
+                    <tr
+                      key={client.id}
+                      onClick={() => setViewingClient(client)}
+                      className="hover:bg-slate-50/50 dark:hover:bg-slate-800/40 transition-colors cursor-pointer group"
+                    >
+                      <td className="p-3 pl-4">
+                        <div className="font-bold text-slate-900 dark:text-slate-100 group-hover:text-blue-600 transition-colors">
+                          {client.companyName}
                         </div>
-                      )}
-                    </td>
+                        <div className="text-[11px] text-slate-500">{client.name}</div>
+                      </td>
 
-                    <td className="p-3">
-                      <span className="bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 px-2 py-0.5 rounded text-[11px] font-medium border border-slate-200 dark:border-slate-700">
-                        {client.paymentTerms}
-                      </span>
-                    </td>
+                      <td className="p-3 space-y-0.5">
+                        <div className="flex items-center space-x-1 text-slate-600 dark:text-slate-300">
+                          <Mail className="w-3 h-3 text-slate-400" />
+                          <span>{client.email}</span>
+                        </div>
+                        {client.phone && (
+                          <div className="flex items-center space-x-1 text-slate-500 text-[11px]">
+                            <Phone className="w-3 h-3 text-slate-400" />
+                            <span>{client.phone}</span>
+                          </div>
+                        )}
+                      </td>
 
-                    <td className="p-3 font-semibold text-slate-800 dark:text-slate-200">
-                      {clientProjects.length} projects
-                    </td>
+                      <td className="p-3">
+                        <span className="bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 px-2 py-0.5 rounded text-[11px] font-medium border border-slate-200 dark:border-slate-700">
+                          {client.paymentTerms}
+                        </span>
+                      </td>
 
-                    <td className="p-3 font-bold font-financial text-slate-900 dark:text-slate-100">
-                      {formatCurrency(totalBilled, settings.currencySymbol)}
-                    </td>
+                      <td className="p-3 font-semibold text-slate-800 dark:text-slate-200">
+                        {clientProjects.length} projects
+                      </td>
 
-                    <td className={`p-3 font-bold font-financial ${totalAR > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-slate-500'}`}>
-                      {formatCurrency(totalAR, settings.currencySymbol)}
-                    </td>
+                      <td className="p-3 text-right font-bold font-financial text-slate-900 dark:text-slate-100">
+                        {formatCurrency(totalBilled, settings.currencySymbol)}
+                      </td>
 
-                    <td className="p-3 pr-4 text-right space-x-2" onClick={(e) => e.stopPropagation()}>
-                      <button
-                        onClick={() => {
-                          setClientToEdit(client);
-                          setIsModalOpen(true);
-                        }}
-                        className="p-1.5 text-blue-600 hover:bg-blue-50 dark:hover:bg-slate-800 rounded-lg cursor-pointer"
-                        title="Edit Client"
-                      >
-                        <Edit className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={() => {
-                          if (
-                            window.confirm(
-                              `Delete client ${client.name}? Linked invoices will remain.`
-                            )
-                          ) {
-                            deleteClient(client.id);
-                          }
-                        }}
-                        className="p-1.5 text-rose-500 hover:bg-rose-50 dark:hover:bg-slate-800 rounded-lg cursor-pointer"
-                        title="Delete Client"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
+                      <td className={`p-3 text-right font-bold font-financial ${totalAR > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-slate-500'}`}>
+                        {formatCurrency(totalAR, settings.currencySymbol)}
+                      </td>
+
+                      <td className="p-3 pr-4 text-right space-x-2" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          onClick={() => {
+                            setClientToEdit(client);
+                            setIsModalOpen(true);
+                          }}
+                          className="p-1.5 text-blue-600 hover:bg-blue-50 dark:hover:bg-slate-800 rounded-lg cursor-pointer"
+                          title="Edit Client"
+                        >
+                          <Edit className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (
+                              window.confirm(
+                                `Delete client ${client.name}? Linked invoices will remain.`
+                              )
+                            ) {
+                              deleteClient(client.id);
+                            }
+                          }}
+                          className="p-1.5 text-rose-500 hover:bg-rose-50 dark:hover:bg-slate-800 rounded-lg cursor-pointer"
+                          title="Delete Client"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                }))}
             </tbody>
           </table>
         </div>

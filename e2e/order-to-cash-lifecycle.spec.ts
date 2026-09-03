@@ -40,16 +40,16 @@ test.describe('Order-to-Cash (O2C) Full Accounting Lifecycle', () => {
     await clientSelect.selectOption({ index: 0 });
 
     // Set item detail & price
-    await page.getByPlaceholder('Item or service detail').first().fill('Enterprise Cloud Consulting');
-    const numberInputs = page.locator('input[type="number"]');
-    await numberInputs.nth(1).fill('2500');
+    await page.locator('input[placeholder="Item or service detail"]:visible').fill('Enterprise Cloud Consulting');
+    const numberInputs = page.locator('input[type="number"]:visible');
+    await numberInputs.nth(testInfo.project.name.includes('mobile') ? 2 : 1).fill('2500');
 
     const [createInvoiceResponse] = await Promise.all([
       page.waitForResponse((response) =>
         response.request().method() === 'POST' &&
         new URL(response.url()).pathname.includes('/api/v1/finance/invoices')
       ),
-      page.getByRole('button', { name: 'Create Invoice' }).click(),
+      page.locator('form').getByRole('button', { name: 'Create Invoice' }).click(),
     ]);
     expect(createInvoiceResponse.status()).toBe(201);
 

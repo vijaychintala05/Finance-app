@@ -855,7 +855,7 @@ export class FinancialDestructiveActionsService {
       );
       const vendorBalance = await client.query(
         `UPDATE vendors SET payables_balance = payables_balance - $1
-          WHERE organization_id = $2 AND id = $3 AND payables_balance >= $1`,
+          WHERE organization_id = $2 AND id = $3`,
         [Number(databaseMoneyToCents(bill.total_amount, 'Voided bill total')) / 100, organizationId, bill.vendor_id]
       );
       if (vendorBalance.rowCount !== 1) throw new Error('Bill vendor balance does not reconcile to the document being voided');

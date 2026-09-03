@@ -33,18 +33,19 @@ describe('InvoiceEditorModal UI & Interaction Component Tests', () => {
   it('3. Clicking Add Row appends a new item row', () => {
     renderWithProvider(<InvoiceEditorModal isOpen={true} onClose={vi.fn()} />);
     const initialInputs = screen.getAllByPlaceholderText('Item or service detail');
-    expect(initialInputs.length).toBe(1);
+    // The editor renders desktop and mobile presentations of the same item state.
+    expect(initialInputs.length).toBe(2);
 
     const addButton = screen.getByText('Add Row');
     fireEvent.click(addButton);
 
     const afterInputs = screen.getAllByPlaceholderText('Item or service detail');
-    expect(afterInputs.length).toBe(2);
+    expect(afterInputs.length).toBe(4);
   });
 
   it('4. Updates item description and price dynamically', () => {
     renderWithProvider(<InvoiceEditorModal isOpen={true} onClose={vi.fn()} />);
-    const descInput = screen.getByPlaceholderText('Item or service detail');
+    const [descInput] = screen.getAllByPlaceholderText('Item or service detail');
     fireEvent.change(descInput, { target: { value: 'Software Architecture Consulting' } });
     expect((descInput as HTMLInputElement).value).toBe('Software Architecture Consulting');
   });

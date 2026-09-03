@@ -46,6 +46,7 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
   const [terms, setTerms] = useState('Net 30. Please remit payment via bank transfer.');
   const [editReason, setEditReason] = useState('');
   const [formError, setFormError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
 
   const revenueAccounts = useMemo(
@@ -232,15 +233,18 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
     setItems((prev) => prev.filter((_, idx) => idx !== index));
   };
 
-  const subtotal = items.reduce((sum, item) => sum + (item.amount || 0), 0);
-  const taxTotal = items.reduce(
-    (sum, item) => sum + Math.round((item.amount || 0) * ((item.taxRate || 0) / 100)),
-    0
-  );
-  const totalAmount = Math.max(0, subtotal + taxTotal - Number(discount));
+  const subtotal = Math.round(items.reduce((sum, item) => sum + (item.amount || 0), 0) * 100) / 100;
+  const taxTotal = Math.round(
+    items.reduce(
+      (sum, item) => sum + Math.round((item.amount || 0) * (item.taxRate || 0)) / 100,
+      0
+    ) * 100
+  ) / 100;
+  const totalAmount = Math.max(0, Math.round((subtotal + taxTotal - Number(discount || 0)) * 100) / 100);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
     if (!clientId) return;
 
     const selectedClient = clients.find((c) => c.id === clientId);
@@ -314,35 +318,39 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
         onInvoiceUpdated(updatedInvoice);
       }
     } else {
+      setIsSubmitting(true);
+      setFormError('');
       try {
-      const newInvoice = await addInvoice({
-        clientId,
-        clientName: clientDisplayName,
-        clientEmail: selectedClient?.email || '',
-        projectId: projectId || undefined,
-        projectName: selectedProject?.name || undefined,
-        salespersonId: salespersonId || undefined,
-        salespersonName: selectedSalesperson?.name || undefined,
-        issueDate,
-        dueDate,
-        items,
-        subtotal,
-        taxTotal,
-        discount: Number(discount) || 0,
-        totalAmount,
-        paidAmount: 0,
-        balanceDue: totalAmount,
-        status: 'Sent',
-        notes,
-        terms,
-      });
+        const newInvoice = await addInvoice({
+          clientId,
+          clientName: clientDisplayName,
+          clientEmail: selectedClient?.email || '',
+          projectId: projectId || undefined,
+          projectName: selectedProject?.name || undefined,
+          salespersonId: salespersonId || undefined,
+          salespersonName: selectedSalesperson?.name || undefined,
+          issueDate,
+          dueDate,
+          items,
+          subtotal,
+          taxTotal,
+          discount: Number(discount) || 0,
+          totalAmount,
+          paidAmount: 0,
+          balanceDue: totalAmount,
+          status: 'Sent',
+          notes,
+          terms,
+        });
 
-      onClose();
-      if (onInvoiceCreated) {
-        onInvoiceCreated(newInvoice);
-      }
+        onClose();
+        if (onInvoiceCreated) {
+          onInvoiceCreated(newInvoice);
+        }
       } catch (error: any) {
         setFormError(error.message || 'Invoice could not be posted');
+      } finally {
+        setIsSubmitting(false);
       }
     }
   };
@@ -366,8 +374,9 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-5 overflow-y-auto flex-1 space-y-5 text-xs">
-          {formError && (
+        <form onSubmit={handleSubmit} className="flex flex-col flex-1 overflow-hidden min-h-0">
+          <div className="p-5 overflow-y-auto flex-1 space-y-5 text-xs">
+            {formError && (
             <div className="p-3 bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 rounded-xl text-xs font-semibold flex items-center justify-between">
               <span>{formError}</span>
               <button type="button" onClick={() => setFormError('')} className="p-1 hover:bg-rose-100 rounded">
@@ -519,7 +528,8 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
               </button>
             </div>
 
-            <div className="border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
+            {/* Desktop Table (hidden md:block) */}
+            <div className="hidden md:block border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
               <table className="w-full text-left">
                 <thead className="bg-slate-50 dark:bg-slate-800/70 text-slate-500 uppercase text-[10px]">
                   <tr>
@@ -528,7 +538,7 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
                     <th className="p-2.5 w-20">Qty</th>
                     <th className="p-2.5 w-24">Price ({settings.currencySymbol})</th>
                     <th className="p-2.5 w-20">Tax %</th>
-                    <th className="p-2.5 w-24">Amount</th>
+                    <th className="p-2.5 w-24 text-right">Amount</th>
                     <th className="p-2.5 w-10"></th>
                   </tr>
                 </thead>
@@ -590,7 +600,7 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
                         />
                       </td>
 
-                      <td className="p-2 font-bold font-mono text-slate-900 dark:text-slate-100">
+                      <td className="p-2 font-bold font-mono text-slate-900 dark:text-slate-100 text-right">
                         {formatCurrency(item.amount, settings.currencySymbol)}
                       </td>
 
@@ -607,6 +617,96 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
                   ))}
                 </tbody>
               </table>
+            </div>
+
+            {/* Mobile Responsive Cards (block md:hidden) */}
+            <div className="block md:hidden space-y-3">
+              {items.map((item, idx) => (
+                <div key={item.id} className="bg-slate-50 dark:bg-slate-800/60 p-3.5 rounded-xl border border-slate-200 dark:border-slate-700 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-[11px] text-slate-700 dark:text-slate-300">Line Item #{idx + 1}</span>
+                    <div className="flex items-center space-x-2">
+                      <span className="font-bold font-mono text-xs text-blue-600 dark:text-blue-400">
+                        {formatCurrency(item.amount, settings.currencySymbol)}
+                      </span>
+                      {items.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => removeItem(idx)}
+                          className="p-1 text-slate-400 hover:text-rose-500 cursor-pointer"
+                          aria-label={`Remove item ${idx + 1}`}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] text-slate-400 font-medium block mb-0.5">Description *</label>
+                    <input
+                      type="text"
+                      value={item.description}
+                      onChange={(e) => handleItemChange(idx, 'description', e.target.value)}
+                      placeholder="Item or service detail"
+                      required
+                      className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-2 text-xs text-slate-800 dark:text-slate-200"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[10px] text-slate-400 font-medium block mb-0.5">Account</label>
+                      <select
+                        value={item.accountId}
+                        onChange={(e) => handleItemChange(idx, 'accountId', e.target.value)}
+                        className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-2 text-[11px] text-slate-800 dark:text-slate-200"
+                      >
+                        {revenueAccounts.map((a) => (
+                          <option key={a.id} value={a.id}>
+                            {a.code ? `${a.code} — ${a.name}` : a.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] text-slate-400 font-medium block mb-0.5">Tax %</label>
+                      <input
+                        type="number"
+                        value={item.taxRate}
+                        onChange={(e) => handleItemChange(idx, 'taxRate', Number(e.target.value))}
+                        className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-2 text-xs text-slate-800 dark:text-slate-200 font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[10px] text-slate-400 font-medium block mb-0.5">Qty</label>
+                      <input
+                        type="number"
+                        step="0.1"
+                        value={item.quantity}
+                        onChange={(e) => handleItemChange(idx, 'quantity', Number(e.target.value))}
+                        required
+                        className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-2 text-xs text-slate-800 dark:text-slate-200 font-mono"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] text-slate-400 font-medium block mb-0.5">Price ({settings.currencySymbol})</label>
+                      <input
+                        type="number"
+                        value={item.unitPrice}
+                        onChange={(e) => handleItemChange(idx, 'unitPrice', Number(e.target.value))}
+                        required
+                        className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-2 text-xs text-slate-800 dark:text-slate-200 font-mono"
+                      />
+                    </div>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
 
@@ -653,33 +753,38 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
               </div>
             </div>
           </div>
+        </div>
 
-          <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex justify-end space-x-2">
-            <button
-              type="button"
-              onClick={handleRequestClose}
-              className="px-4 py-2 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 font-medium cursor-pointer"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              className="px-5 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-semibold shadow-sm cursor-pointer flex items-center space-x-1.5"
-            >
-              {editingInvoice ? (
-                <>
-                  <Edit3 className="w-4 h-4" />
-                  <span>Save Changes</span>
-                </>
-              ) : (
-                <>
-                  <FileText className="w-4 h-4" />
-                  <span>Create Invoice</span>
-                </>
-              )}
-            </button>
-          </div>
-        </form>
+        {/* Fixed Bottom Action Footer */}
+        <div className="p-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 flex justify-end space-x-2 shrink-0">
+          <button
+            type="button"
+            onClick={handleRequestClose}
+            className="px-4 py-2 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 font-medium cursor-pointer"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={isSubmitting}
+            className={`px-5 py-2 text-white rounded-xl font-bold shadow-xs flex items-center space-x-1.5 cursor-pointer ${
+              isSubmitting ? 'bg-blue-400 cursor-not-allowed opacity-75' : 'bg-blue-600 hover:bg-blue-500'
+            }`}
+          >
+            {editingInvoice ? (
+              <>
+                <Edit3 className="w-4 h-4" />
+                <span>Save Changes</span>
+              </>
+            ) : (
+              <>
+                <FileText className="w-4 h-4" />
+                <span>Create Invoice</span>
+              </>
+            )}
+          </button>
+        </div>
+      </form>
       </div>
 
       {showDiscardConfirm && (

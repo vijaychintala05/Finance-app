@@ -130,8 +130,7 @@ export const BankTransactionsFeed: React.FC<BankTransactionsFeedProps> = ({
             <div>
               <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">GL Balance</span>
               <span className="text-base font-black font-mono text-slate-900 dark:text-slate-100 mt-0.5 block">
-                {currencySymbol}
-                {activeAccount.balance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                {formatCurrency(activeAccount.balance, currencySymbol)}
               </span>
             </div>
 

@@ -141,7 +141,10 @@ export const organizationIsolationMiddleware = async (
   };
 
   req.organizationId = requestedOrgId;
-  next();
+  return db.withOrganizationContext(requestedOrgId, () => {
+    next();
+    return Promise.resolve();
+  });
 };
 
 export const requirePermission = (permissionCode: string | string[]) => {

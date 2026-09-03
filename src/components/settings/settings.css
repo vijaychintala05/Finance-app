@@ -36,6 +36,8 @@
 .settings-content-heading > span { font-size: 12px; color: var(--settings-muted); }
 .settings-directory { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 42px; row-gap: 34px; }
 .settings-category { min-width: 0; }
+.settings-category-header { display: flex; align-items: center; gap: 10px; padding-bottom: 13px; border-bottom: 1px solid var(--settings-line); }
+.settings-category-header h3 { font-size: 14px; font-weight: 600; }
 .settings-category-heading { display: flex; align-items: center; gap: 10px; padding-bottom: 13px; border-bottom: 1px solid var(--settings-line); }
 .settings-category-heading h3 { font-size: 14px; font-weight: 600; }
 .settings-category-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 6px; flex-shrink: 0; }
@@ -44,6 +46,13 @@
 .tone-rose { color: #b64662; background: #fff0f3; }
 .tone-amber { color: #946a16; background: #faf4e6; }
 .settings-links { padding-top: 7px; }
+.settings-card-grid { display: grid; gap: 6px; padding-top: 7px; }
+.settings-card { display: flex; width: 100%; min-width: 0; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 8px; text-align: left; border-radius: 5px; }
+.settings-card:hover { background: var(--settings-hover); }
+.settings-card-body { display: grid; min-width: 0; gap: 3px; }
+.settings-card-title { display: block; font-weight: 500; color: #225ca8; line-height: 1.5; }
+.settings-card-detail { display: block; color: var(--settings-muted); font-size: 12px; line-height: 1.5; }
+.settings-card-arrow { flex-shrink: 0; color: #959ca7; }
 .settings-link { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 8px; text-align: left; border-radius: 5px; }
 .settings-link:hover { background: var(--settings-hover); }
 .settings-link > span { min-width: 0; }
@@ -74,6 +83,7 @@
 .dark .settings-nav-item:hover { background: #293342; }
 .dark .settings-nav-item.is-active { background: #243954; color: #a4c8fc; }
 .dark .settings-link-label { color: #a4c8fc; }
+.dark .settings-card-title { color: #a4c8fc; }
 .dark .settings-search { border-color: #485263; }
 .dark .organization-form { color: #d1d5db; }
 .dark .organization-form label { color: #d1d5db; }
@@ -91,6 +101,8 @@
   .settings-main { padding: 24px 16px; }
   .settings-directory { grid-template-columns: minmax(0, 1fr); row-gap: 24px; }
   .settings-content-heading { margin-bottom: 22px; }
+  .settings-card { min-height: 64px; padding: 12px 8px; }
+  .settings-card-detail { font-size: 12px; }
   .settings-link { min-height: 64px; }
   .settings-detail-heading h2 { font-size: 16px; }
 }

@@ -29,14 +29,16 @@ export class CustomerStatementService {
     fromDate: string,
     toDate: string
   ): Promise<CustomerStatementResponse> {
-    const custRes = await db.query(
-      `SELECT id, display_name, legal_name FROM customers WHERE organization_id = $1 AND (id = $2 OR customer_id = $2)`,
-      [orgId, customerId]
-    );
-    const clientRes = await db.query(
-      `SELECT id, name, company_name FROM clients WHERE organization_id = $1 AND id = $2`,
-      [orgId, customerId]
-    );
+    const [custRes, clientRes, invOpen, payOpen, cnOpen, invoices, payments, creditNotes] = await Promise.all([
+      db.query(`SELECT id, display_name, legal_name FROM customers WHERE organization_id = $1 AND (id = $2 OR customer_id = $2)`, [orgId, customerId]),
+      db.query(`SELECT id, name, company_name FROM clients WHERE organization_id = $1 AND id = $2`, [orgId, customerId]),
+      db.query(`SELECT COALESCE(SUM(total_amount), 0) as total FROM invoices WHERE organization_id = $1 AND (customer_id = $2 OR client_id = $2) AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED') AND issue_date < $3`, [orgId, customerId, fromDate]),
+      db.query(`SELECT COALESCE(SUM(amount), 0) as total FROM payments_received WHERE organization_id = $1 AND client_id = $2 AND UPPER(status) NOT IN ('DRAFT', 'SUBMITTED', 'REVERSED', 'VOID', 'VOIDED') AND payment_date < $3`, [orgId, customerId, fromDate]),
+      db.query(`SELECT COALESCE(SUM(total_amount), 0) as total FROM credit_notes WHERE organization_id = $1 AND client_id = $2 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED', 'REVERSED') AND date < $3`, [orgId, customerId, fromDate]),
+      db.query(`SELECT id, invoice_number as number, issue_date as date, total_amount as amount, notes FROM invoices WHERE organization_id = $1 AND (customer_id = $2 OR client_id = $2) AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED') AND issue_date >= $3 AND issue_date <= $4`, [orgId, customerId, fromDate, toDate]),
+      db.query(`SELECT id, payment_number as number, payment_date as date, amount, reference FROM payments_received WHERE organization_id = $1 AND client_id = $2 AND UPPER(status) NOT IN ('DRAFT', 'SUBMITTED', 'REVERSED', 'VOID', 'VOIDED') AND payment_date >= $3 AND payment_date <= $4`, [orgId, customerId, fromDate, toDate]),
+      db.query(`SELECT id, credit_note_number as number, date, total_amount as amount, reason FROM credit_notes WHERE organization_id = $1 AND client_id = $2 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED', 'REVERSED') AND date >= $3 AND date <= $4`, [orgId, customerId, fromDate, toDate]),
+    ]);
 
     const customerName =
       custRes.rows[0]?.display_name ||
@@ -45,40 +47,10 @@ export class CustomerStatementService {
       clientRes.rows[0]?.company_name ||
       'Customer';
 
-    // 1. Opening balance before fromDate
-    const invOpen = await db.query(
-      `SELECT COALESCE(SUM(total_amount), 0) as total FROM invoices WHERE organization_id = $1 AND (customer_id = $2 OR client_id = $2) AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED') AND issue_date < $3`,
-      [orgId, customerId, fromDate]
-    );
-    const payOpen = await db.query(
-      `SELECT COALESCE(SUM(amount), 0) as total FROM payments_received WHERE organization_id = $1 AND client_id = $2 AND UPPER(status) NOT IN ('DRAFT', 'SUBMITTED', 'REVERSED', 'VOID', 'VOIDED') AND payment_date < $3`,
-      [orgId, customerId, fromDate]
-    );
-    const cnOpen = await db.query(
-      `SELECT COALESCE(SUM(total_amount), 0) as total FROM credit_notes WHERE organization_id = $1 AND client_id = $2 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED', 'REVERSED') AND date < $3`,
-      [orgId, customerId, fromDate]
-    );
-
     const openingBalance =
       Number(invOpen.rows[0]?.total || 0) -
       Number(payOpen.rows[0]?.total || 0) -
       Number(cnOpen.rows[0]?.total || 0);
-
-    // 2. In-range transactions
-    const invoices = await db.query(
-      `SELECT id, invoice_number as number, issue_date as date, total_amount as amount, notes FROM invoices WHERE organization_id = $1 AND (customer_id = $2 OR client_id = $2) AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED') AND issue_date >= $3 AND issue_date <= $4`,
-      [orgId, customerId, fromDate, toDate]
-    );
-
-    const payments = await db.query(
-      `SELECT id, payment_number as number, payment_date as date, amount, reference FROM payments_received WHERE organization_id = $1 AND client_id = $2 AND UPPER(status) NOT IN ('DRAFT', 'SUBMITTED', 'REVERSED', 'VOID', 'VOIDED') AND payment_date >= $3 AND payment_date <= $4`,
-      [orgId, customerId, fromDate, toDate]
-    );
-
-    const creditNotes = await db.query(
-      `SELECT id, credit_note_number as number, date, total_amount as amount, reason FROM credit_notes WHERE organization_id = $1 AND client_id = $2 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED', 'REVERSED') AND date >= $3 AND date <= $4`,
-      [orgId, customerId, fromDate, toDate]
-    );
 
     const rawTxns: { date: string; type: string; reference: string; debit: number; credit: number }[] = [];
 

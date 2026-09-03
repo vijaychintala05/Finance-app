@@ -1,6 +1,7 @@
 import React from 'react';
 import { CreditCard, Landmark, Plus, RefreshCw, Upload, Wallet } from 'lucide-react';
 import { Account } from '../../types';
+import { formatCurrency } from '../../utils/formatters';
 import { QuickAccountCategory } from '../common/QuickAddAccountModal';
 
 interface BankAccountsSummaryCardsProps {
@@ -86,8 +87,7 @@ export const BankAccountsSummaryCards: React.FC<BankAccountsSummaryCardsProps> =
             <Landmark className="w-4 h-4" />
           </div>
           <p className="text-2xl font-black text-slate-900 dark:text-slate-100 font-mono tracking-tight mt-1">
-            {currencySymbol}
-            {totalCashInBank.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+            {formatCurrency(totalCashInBank, currencySymbol)}
           </p>
           <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
             {bankAccountsList.length} active bank {bankAccountsList.length === 1 ? 'account' : 'accounts'}
@@ -103,8 +103,7 @@ export const BankAccountsSummaryCards: React.FC<BankAccountsSummaryCardsProps> =
             <Wallet className="w-4 h-4" />
           </div>
           <p className="text-2xl font-black text-slate-900 dark:text-slate-100 font-mono tracking-tight mt-1">
-            {currencySymbol}
-            {totalPettyCash.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+            {formatCurrency(totalPettyCash, currencySymbol)}
           </p>
           <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
             {pettyCashList.length} physical cash & wallet {pettyCashList.length === 1 ? 'vault' : 'vaults'}
@@ -120,8 +119,7 @@ export const BankAccountsSummaryCards: React.FC<BankAccountsSummaryCardsProps> =
             <CreditCard className="w-4 h-4" />
           </div>
           <p className="text-2xl font-black text-slate-900 dark:text-slate-100 font-mono tracking-tight mt-1">
-            {currencySymbol}
-            {totalCreditCardLoans.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+            {formatCurrency(totalCreditCardLoans, currencySymbol)}
           </p>
           <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
             {creditCardLoansList.length} credit card & loan {creditCardLoansList.length === 1 ? 'account' : 'accounts'}
@@ -133,10 +131,10 @@ export const BankAccountsSummaryCards: React.FC<BankAccountsSummaryCardsProps> =
       <div className="flex items-center space-x-3 pt-2">
         <button
           onClick={() => setShowMoreDetails(!showMoreDetails)}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center space-x-2 ${
+          className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center space-x-2 border ${
             showMoreDetails
-              ? 'bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 shadow-2xs'
-              : 'bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'
+              ? 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/60 dark:text-blue-300 dark:border-blue-800 shadow-2xs'
+              : 'bg-slate-100 text-slate-700 border-transparent hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'
           }`}
         >
           <span>{showMoreDetails ? 'Hide Account Details' : 'Show Account Details'}</span>

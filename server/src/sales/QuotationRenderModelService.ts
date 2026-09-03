@@ -1,5 +1,6 @@
 import { db } from '../database/db';
 import { QuotationEngine, QuotationTemplateModel } from './QuotationEngine';
+import { amountToWords } from '../utils/numberToWords';
 
 export interface QuotationRenderDTO {
   document: {
@@ -15,6 +16,8 @@ export interface QuotationRenderDTO {
     projectId?: string;
     notes?: string;
     terms?: string;
+    amountInWords?: string;
+    upiString?: string;
   };
   customerSnapshot: {
     displayName: string;
@@ -24,6 +27,13 @@ export interface QuotationRenderDTO {
     phone?: string;
     placeOfSupply?: string;
     billingAddress?: {
+      street?: string;
+      city?: string;
+      state?: string;
+      pincode?: string;
+      country?: string;
+    };
+    shippingAddress?: {
       street?: string;
       city?: string;
       state?: string;
@@ -67,6 +77,14 @@ export interface QuotationRenderDTO {
     taxTotal: number;
     roundOffAmount: number;
     grandTotal: number;
+    amountInWords?: string;
+    gstBreakdown?: {
+      isInterState: boolean;
+      cgstTotal: number;
+      sgstTotal: number;
+      igstTotal: number;
+      taxableAmount: number;
+    };
   };
   template: {
     name: string;
@@ -235,6 +253,26 @@ export class QuotationRenderModelService {
       ? Math.round((grandTotal - taxTotal - roundOffAmount) * 100) / 100
       : Math.round((subtotal - overallDiscount) * 100) / 100;
 
+    const currencySymbol = targetData.currencySymbol || orgRow.currency_symbol || baseCurrency;
+    const words = amountToWords(grandTotal, currencySymbol);
+
+    // Intra-state vs Inter-state GST breakdown
+    const orgState = (orgRow.state || '').trim().toLowerCase();
+    const custState = (targetData.customerSnapshot?.billingAddress?.state || targetData.customerSnapshot?.placeOfSupply || '').trim().toLowerCase();
+    const isInterState = Boolean(orgState && custState && orgState !== custState);
+    const cgstTotal = isInterState ? 0 : Math.round((taxTotal / 2) * 100) / 100;
+    const sgstTotal = isInterState ? 0 : Math.round((taxTotal / 2) * 100) / 100;
+    const igstTotal = isInterState ? taxTotal : 0;
+
+    // UPI payment string (if bank details or UPI ID present)
+    let upiString: string | undefined = undefined;
+    const bankStr = resolvedTemplate.bankDetails || '';
+    const vpaMatch = bankStr.match(/(?:UPI|VPA)[\s:]+([a-zA-Z0-9.\-_]+@[a-zA-Z0-9]+)/i);
+    const upiId = vpaMatch ? vpaMatch[1] : (orgRow.upi_id || '');
+    if (upiId && grandTotal > 0) {
+      upiString = `upi://pay?pa=${encodeURIComponent(upiId)}&pn=${encodeURIComponent(orgSnapshot.legalName || 'FirmBooks')}&am=${grandTotal}&cu=INR`;
+    }
+
     return {
       document: {
         quotationId: targetData.id,
@@ -244,13 +282,13 @@ export class QuotationRenderModelService {
         issueDate: targetData.issueDate || new Date().toISOString().split('T')[0],
         expiryDate: targetData.expiryDate || new Date(Date.now() + 30 * 84600000).toISOString().split('T')[0],
         currency: targetData.currency || targetData.customerSnapshot?.currency || baseCurrency,
-        // Organization configuration is authoritative when the document has no
-        // immutable currency display snapshot.
-        currencySymbol: targetData.currencySymbol || orgRow.currency_symbol || baseCurrency,
+        currencySymbol,
         isGstInclusive: Boolean(targetData.isGstInclusive),
         projectId: targetData.projectId || undefined,
         notes: targetData.notes || '',
         terms: targetData.terms || resolvedTemplate.termsAndConditions || '',
+        amountInWords: words,
+        upiString,
       },
       customerSnapshot: {
         displayName: targetData.customerName || targetData.customerSnapshot?.displayName || '',
@@ -258,9 +296,12 @@ export class QuotationRenderModelService {
         gstin: targetData.customerSnapshot?.gstin || '',
         email: targetData.customerSnapshot?.email || '',
         phone: targetData.customerSnapshot?.phone || '',
-        placeOfSupply: targetData.customerSnapshot?.billingAddress?.state || '',
+        placeOfSupply: targetData.customerSnapshot?.billingAddress?.state || targetData.customerSnapshot?.placeOfSupply || '',
         billingAddress: targetData.customerSnapshot?.billingAddress && Object.values(targetData.customerSnapshot.billingAddress).some(Boolean)
           ? targetData.customerSnapshot.billingAddress
+          : undefined,
+        shippingAddress: targetData.customerSnapshot?.shippingAddress && Object.values(targetData.customerSnapshot.shippingAddress).some(Boolean)
+          ? targetData.customerSnapshot.shippingAddress
           : undefined,
       },
       organization: orgSnapshot,
@@ -274,6 +315,14 @@ export class QuotationRenderModelService {
         taxTotal,
         roundOffAmount,
         grandTotal,
+        amountInWords: words,
+        gstBreakdown: {
+          isInterState,
+          cgstTotal,
+          sgstTotal,
+          igstTotal,
+          taxableAmount: authoritativeTaxable,
+        },
       },
       template: {
         name: resolvedTemplate.name,

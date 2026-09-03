@@ -10,7 +10,10 @@ const currencyFormatter = new Intl.NumberFormat('en-US', {
 export const formatCurrency = (amount: number, symbol: string = ''): string => {
   const safeAmount = typeof amount === 'number' && !isNaN(amount) ? amount : 0;
   const formatted = currencyFormatter.format(Math.abs(safeAmount));
-  return `${safeAmount < 0 ? '-' : ''}${symbol}${formatted}`;
+  const cleanSymbol = symbol.trim();
+  const separator = /^[A-Za-z]{2,4}$/.test(cleanSymbol) ? ' ' : '';
+  const prefix = cleanSymbol ? `${cleanSymbol}${separator}` : '';
+  return `${safeAmount < 0 ? '-' : ''}${prefix}${formatted}`;
 };
 
 export const formatDate = (dateString?: string): string => {

@@ -51,7 +51,11 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
     <div className="p-4 sm:p-6 space-y-6 max-w-7xl mx-auto">
       {/* Top Navigation Tabs Header for Accounting */}
       <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-2 sm:p-2.5 shadow-xs flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center space-x-1 sm:space-x-2 overflow-x-auto pb-1 sm:pb-0 w-full md:w-auto scrollbar-none">
+        <div className="relative w-full md:w-auto">
+          <div
+            className="flex items-center space-x-1 overflow-x-auto pb-1 pr-7 sm:space-x-2 sm:pr-0 sm:pb-0 scrollbar-none"
+            aria-label="Accounting workspace tabs"
+          >
           <button
             onClick={() => handleSubTabClick('journals')}
             className={`min-h-[40px] px-4 py-2 rounded-xl font-bold text-xs flex items-center space-x-2 transition-all cursor-pointer whitespace-nowrap active:scale-98 ${
@@ -99,6 +103,8 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
             <Lock className="w-4 h-4 shrink-0" />
             <span>Transaction Locking</span>
           </button>
+          </div>
+          <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-white to-transparent dark:from-slate-900 md:hidden" />
         </div>
 
         <div className="hidden lg:flex items-center space-x-2 text-slate-400 dark:text-slate-500 text-xs font-semibold pr-2">

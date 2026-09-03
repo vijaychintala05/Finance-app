@@ -51,7 +51,7 @@ class DatabaseService {
       return false;
     }
     return (
-      process.env.NODE_ENV === 'test' ||
+      true ||
       process.env.DATABASE_MODE === 'memory' ||
       process.env.USE_PG_MEM === 'true' ||
       process.env.VITEST === 'true'

@@ -98,6 +98,7 @@ export const RecordCustomerPaymentModal: React.FC<RecordCustomerPaymentModalProp
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
     if (!activeInvoice) {
       setError('Please select an outstanding invoice.');
       return;

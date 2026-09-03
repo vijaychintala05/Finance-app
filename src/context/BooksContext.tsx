@@ -53,6 +53,25 @@ const camelizeRecord = (value: any): any => {
 // These endpoints deliberately return 503 until their server-side controls are enabled.
 const OPTIONAL_UNAVAILABLE_READ_ENDPOINTS = new Set(['vendor-payments']);
 
+// Keep startup from exhausting a small self-hosted PostgreSQL pool while the
+// provider reloads its authoritative tenant state.
+const INITIAL_READ_CONCURRENCY = 4;
+
+const fetchFinancialReadBatch = async (endpoints: readonly string[]) => {
+  const responses = new Array<Awaited<ReturnType<typeof apiClient.get<any[]>>>>(endpoints.length);
+  let nextIndex = 0;
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= endpoints.length) return;
+      responses[index] = await apiClient.get<any[]>(`/finance/${endpoints[index]}`);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(INITIAL_READ_CONCURRENCY, endpoints.length) }, worker));
+  return responses;
+};
+
 const isExpectedOptionalReadFailure = (endpoint: string, status: number): boolean => (
   status === 503 && OPTIONAL_UNAVAILABLE_READ_ENDPOINTS.has(endpoint)
 );
@@ -569,7 +588,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         'expenses', 'journals', 'period-locks', 'sales-orders', 'delivery-challans', 'time-entries', 'project-summaries',
         'payments-received', 'credit-notes', 'bills', 'vendor-payments', 'audit',
       ] as const;
-      const responses = await Promise.all(endpoints.map((endpoint) => apiClient.get<any[]>(`/finance/${endpoint}`)));
+      const responses = await fetchFinancialReadBatch(endpoints);
       const failure = responses.find((response, index) => (
         response.error
         && response.status !== 403
@@ -1018,9 +1037,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const addExpense = async (expenseData: Omit<Expense, 'id' | 'createdAt' | 'referenceNumber'>): Promise<void> => {
-    if (expenseData.isItemized || expenseData.items?.length) {
-      throw new Error('Itemized expenses are not enabled until every line can be persisted and posted atomically.');
-    }
+
     if (Number(expenseData.taxAmount || 0) !== 0) {
       throw new Error('Expense tax posting is not enabled. Record a bill with verified tax lines instead.');
     }
@@ -1040,6 +1057,8 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       projectId: expenseData.projectId,
       clientId: expenseData.clientId,
       isBillable: expenseData.isBillable,
+      isItemized: expenseData.isItemized,
+      items: expenseData.items,
       receiptImages: expenseData.receiptImages,
     });
     if (!response.data) throw new Error(response.error || 'Expense could not be posted');

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, ImagePlus, Plus, Receipt, RefreshCw, ShieldCheck, Trash2, X } from 'lucide-react';
+import { AlertTriangle, ImagePlus, Layers, Plus, Receipt, RefreshCw, ShieldCheck, Trash2, X } from 'lucide-react';
 import { useBooks } from '../../context/BooksContext';
 import { Expense, ExpenseReceiptUpload } from '../../types';
 import { AccountModal } from '../coa/AccountModal';
@@ -11,6 +11,13 @@ interface ExpenseModalProps {
   expenseToEdit?: Expense | null;
   defaultProjectId?: string;
   defaultClientId?: string;
+}
+
+interface ItemizedLine {
+  id: string;
+  accountId: string;
+  description: string;
+  amount: string;
 }
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -117,6 +124,10 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
   const [isRefreshingAccounts, setIsRefreshingAccounts] = useState(false);
   const [isAddExpenseModalOpen, setIsAddExpenseModalOpen] = useState(false);
   const [isAddPaymentModalOpen, setIsAddPaymentModalOpen] = useState(false);
+  const [isItemized, setIsItemized] = useState(false);
+  const [items, setItems] = useState<ItemizedLine[]>([
+    { id: 'item-1', accountId: '', description: '', amount: '' },
+  ]);
   const receiptInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -163,6 +174,8 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
       setError('');
       setIsSubmitting(false);
       setReceiptFiles([]);
+      setIsItemized(false);
+      setItems([{ id: 'item-1', accountId: expenseAccounts[0]?.id || '', description: '', amount: '' }]);
       if (refreshAccounts) {
         refreshAccounts().catch((err) => console.error('Realtime accounts fetch error:', err));
       }
@@ -181,6 +194,24 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
   if (!isOpen) return null;
 
   const postingUnavailable = expenseAccounts.length === 0 || paymentAccounts.length === 0;
+
+  const handleAddItem = () => {
+    setItems((curr) => [
+      ...curr,
+      { id: 'item-' + Date.now() + '-' + (curr.length + 1), accountId: expenseAccounts[0]?.id || '', description: '', amount: '' },
+    ]);
+  };
+
+  const handleRemoveItem = (index: number) => {
+    if (items.length <= 1) return;
+    setItems((curr) => curr.filter((_, idx) => idx !== index));
+  };
+
+  const handleUpdateItem = (index: number, field: keyof ItemizedLine, value: string) => {
+    setItems((curr) => curr.map((it, idx) => (idx === index ? { ...it, [field]: value } : it)));
+  };
+
+  const calculatedItemizedTotal = items.reduce((sum, it) => sum + (Number(it.amount) || 0), 0);
 
   const appendReceiptFiles = (incoming: File[]) => {
     if (incoming.length === 0) return;

@@ -1157,6 +1157,8 @@ export class MigrationRunner {
       `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS reversed_at TIMESTAMP WITH TIME ZONE`,
       `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS reversed_by VARCHAR(64)`,
       `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS reversal_reason TEXT`,
+      `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS is_itemized BOOLEAN NOT NULL DEFAULT FALSE`,
+      `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS items JSONB`,
       `ALTER TABLE bills ADD COLUMN IF NOT EXISTS reversal_journal_id VARCHAR(64)`,
       `ALTER TABLE bills ADD COLUMN IF NOT EXISTS reversed_at TIMESTAMP WITH TIME ZONE`,
       `ALTER TABLE bills ADD COLUMN IF NOT EXISTS reversed_by VARCHAR(64)`,

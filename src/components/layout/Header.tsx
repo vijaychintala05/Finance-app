@@ -124,14 +124,14 @@ export const Header: React.FC<HeaderProps> = ({
                 {currentOrg.name ? currentOrg.name.charAt(0).toUpperCase() : 'O'}
               </div>
             )}
-            <div className="text-left">
+            <div className="text-left min-w-0">
               <div className="flex items-center space-x-1">
-                <h1 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white leading-tight truncate max-w-[160px] sm:max-w-[220px]">
+                <h1 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white leading-tight truncate max-w-[120px] sm:max-w-[220px]">
                   {currentOrg.name}
                 </h1>
-                <ChevronDown className="w-3.5 h-3.5 text-slate-400 group-hover:text-slate-700 dark:group-hover:text-slate-200 transition-transform" />
+                <ChevronDown className="w-3.5 h-3.5 text-slate-400 group-hover:text-slate-700 dark:group-hover:text-slate-200 transition-transform shrink-0" />
               </div>
-              <span className="text-[10px] text-slate-400 font-medium block">
+              <span className="text-[10px] text-slate-400 font-medium block truncate max-w-[120px] sm:max-w-[220px]">
                 {currentOrg.publicOrgId || `#${currentOrg.orgCode}`}
               </span>
             </div>

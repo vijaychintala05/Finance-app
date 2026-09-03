@@ -183,23 +183,41 @@ export const Sidebar: React.FC<SidebarProps> = ({
     <aside className="hidden lg:flex flex-col w-64 bg-[#1d50bd] text-white h-full shrink-0 select-none z-30 shadow-md">
       {/* Brand Header / "Books +" Pill Button */}
       <div className="p-3">
-        <div className="bg-[#1442a0] hover:bg-[#11388b] text-white p-2.5 rounded-xl flex items-center justify-between cursor-pointer transition-colors shadow-xs">
+        <div
+          onClick={onOpenOrgSwitcher}
+          className="bg-[#1442a0] hover:bg-[#11388b] text-white p-2.5 rounded-xl flex items-center justify-between cursor-pointer transition-colors shadow-xs"
+          title="Switch Organization Workspace"
+        >
           <div className="flex items-center space-x-2.5 min-w-0">
-            <div className="w-7 h-7 rounded-lg bg-white text-[#1d50bd] flex items-center justify-center font-black text-sm shrink-0 shadow-2xs">
-              L
-            </div>
+            {currentOrg.logoUrl ? (
+              <img
+                src={currentOrg.logoUrl}
+                alt={currentOrg.name}
+                className="w-7 h-7 rounded-lg object-contain bg-white p-0.5 shrink-0"
+              />
+            ) : (
+              <div className="w-7 h-7 rounded-lg bg-white text-[#1d50bd] flex items-center justify-center font-black text-xs shrink-0 shadow-2xs">
+                {currentOrg.name ? currentOrg.name.charAt(0).toUpperCase() : 'F'}
+              </div>
+            )}
             <div className="min-w-0">
               <h1 className="font-bold text-white text-xs leading-snug truncate">
-                Books
+                {currentOrg.name || 'FirmBooks'}
               </h1>
-              <p className="text-[10px] text-blue-200 truncate">LedgerFlow</p>
+              <p className="text-[10px] text-blue-200 truncate">
+                {currentOrg.publicOrgId || 'FirmBooks Authority'}
+              </p>
             </div>
           </div>
           {onOpenQuickCreate && (
             <button
-              onClick={onOpenQuickCreate}
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenQuickCreate();
+              }}
               className="w-6 h-6 rounded-md bg-white/20 hover:bg-white/30 text-white flex items-center justify-center font-bold text-sm transition-colors cursor-pointer"
               title="Quick Entry"
+              aria-label="Quick create financial record"
             >
               +
             </button>

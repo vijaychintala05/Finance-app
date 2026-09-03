@@ -34,6 +34,7 @@ import { FinancialDestructiveActionsService } from '../accounting/FinancialDestr
 import { isIsoCalendarDate } from '../utils/date';
 import { ExpensePostingService } from '../services/ExpensePostingService';
 import { ExpenseReceiptService } from '../services/ExpenseReceiptService';
+import { ExpensePdfService } from '../services/ExpensePdfService';
 import { GSTComplianceService } from '../services/GSTComplianceService';
 
 export class FinanceController {
@@ -226,11 +227,12 @@ export class FinanceController {
       await db.transaction(async (client) => {
         if (parentAccountId) {
         const parent = await client.query(
-          `SELECT id, type, status FROM accounts WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+          `SELECT id, type, status, is_system_account, is_locked FROM accounts WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
           [orgId, parentAccountId]
         );
         if (parent.rows.length !== 1) throw new Error('ACCOUNT_PARENT_INVALID: Parent account does not belong to this organization');
         if (parent.rows[0].status !== 'Active') throw new Error('ACCOUNT_PARENT_INACTIVE: An archived account cannot be a parent');
+        if (parent.rows[0].is_system_account || parent.rows[0].is_locked) throw new Error('ACCOUNT_PARENT_PROTECTED: A system or locked account cannot be a parent');
           if (parent.rows[0].type !== normalizedType) throw new Error('ACCOUNT_PARENT_TYPE_MISMATCH: Parent and child must share an account type');
           await client.query(
             `UPDATE accounts SET allow_direct_posting = FALSE WHERE organization_id = $1 AND id = $2`,
@@ -943,9 +945,25 @@ export class FinanceController {
       const customerSnapshot = typeof inv.customer_snapshot === 'string'
         ? JSON.parse(inv.customer_snapshot)
         : inv.customer_snapshot || null;
-      const lineItems = typeof inv.line_items === 'string'
-        ? JSON.parse(inv.line_items)
-        : inv.line_items || [];
+
+      const itemResult = await db.query(
+        `SELECT id, invoice_id, description, account_id, quantity, unit_price, tax_rate, amount
+           FROM invoice_items WHERE organization_id = $1 AND invoice_id = $2 ORDER BY id`,
+        [orgId, id]
+      );
+      const lineItems = itemResult.rows.length > 0
+        ? itemResult.rows.map((item) => ({
+            id: item.id,
+            description: item.description,
+            accountId: item.account_id,
+            quantity: Number(item.quantity),
+            unitPrice: Number(item.unit_price),
+            taxRate: Number(item.tax_rate),
+            amount: Number(item.amount),
+          }))
+        : typeof inv.line_items === 'string'
+          ? JSON.parse(inv.line_items)
+          : inv.line_items || [];
 
       res.json({
         invoice: {
@@ -1075,22 +1093,25 @@ export class FinanceController {
       const finalCustomerName = customerName || clientName;
       const resolvedDepositAccountId = depositToAccountId || depositAccountId;
 
-      const result = await SalesEngine.recordPayment(orgId, {
-        customerId: finalCustomerId,
-        clientId: finalCustomerId,
-        customerName: finalCustomerName,
-        clientName: finalCustomerName,
-        paymentDate,
-        paymentMode: paymentMode || 'Bank Wire',
-        depositToAccountId: resolvedDepositAccountId,
-        reference: reference || referenceNumber || '',
-        notes: notes || '',
-        amount: parsedAmount,
-        allocations: invoiceId ? [{ invoiceId, amount: parsedAmount }] : undefined,
-        actorId: req.auth!.userId,
-      } as any);
+      const result = await db.transaction(async (client) => {
+        const payment = await SalesEngine.recordPayment(orgId, {
+          customerId: finalCustomerId,
+          clientId: finalCustomerId,
+          customerName: finalCustomerName,
+          clientName: finalCustomerName,
+          paymentDate,
+          paymentMode: paymentMode || 'Bank Wire',
+          depositToAccountId: resolvedDepositAccountId,
+          reference: reference || referenceNumber || '',
+          notes: notes || '',
+          amount: parsedAmount,
+          allocations: invoiceId ? [{ invoiceId, amount: parsedAmount }] : undefined,
+          actorId: req.auth!.userId,
+        } as any, client);
 
-      await FinanceController.logAudit(orgId, req.auth!.userId, 'PAYMENT_RECORDED', 'PaymentReceived', result.id, result);
+        await FinanceController.logAudit(orgId, req.auth!.userId, 'PAYMENT_RECORDED', 'PaymentReceived', payment.id, payment, client);
+        return payment;
+      });
 
       res.status(201).json({ id: result.id, paymentNumber: result.paymentNumber, amount: parsedAmount, status: 'Recorded', ...result });
     } catch (error: any) {
@@ -1120,6 +1141,8 @@ export class FinanceController {
       isBillable: Boolean(expense.is_billable), paymentStatus: 'Paid', status: expense.status || 'POSTED', description: expense.description || '', createdAt: expense.created_at,
       receiptAttachments: attachmentsByExpense.get(expense.id) || [],
       receiptFileName: attachmentsByExpense.get(expense.id)?.[0]?.fileName,
+      isItemized: Boolean(expense.is_itemized),
+      items: typeof expense.items === 'string' ? JSON.parse(expense.items) : (expense.items || []),
     })));
   }
 
@@ -1134,6 +1157,27 @@ export class FinanceController {
     } catch (error: any) {
       const message = error.message || 'Expense could not be posted';
       res.status(message.startsWith('EXPENSE_INPUT_INVALID:') || message.startsWith('EXPENSE_RECEIPT_INVALID:') ? 400 : 422).json({ error: message });
+    }
+  }
+
+  public static async getExpensePdf(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const pdfBuffer = await ExpensePdfService.generateExpensePdf(
+        db,
+        req.auth!.organizationId,
+        req.params.id
+      );
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Length', String(pdfBuffer.length));
+      res.setHeader('Content-Disposition', `inline; filename="ExpenseVoucher-${req.params.id}.pdf"`);
+      res.send(pdfBuffer);
+    } catch (err: any) {
+      console.error('GENERATE_EXPENSE_PDF_ERROR:', err);
+      if (err.message && err.message.includes('not found')) {
+        res.status(404).json({ error: err.message });
+      } else {
+        res.status(500).json({ error: err.message || 'Failed to generate expense voucher PDF' });
+      }
     }
   }
 
@@ -1488,31 +1532,68 @@ export class FinanceController {
     const orgId = req.auth!.organizationId;
     const now = new Date().toISOString();
     const deliveryDate = req.body.deliveryDate || now.split('T')[0];
-    const id = newId('dc');
-    const challanNum = await DocumentNumberingEngine.getNextNumber(orgId, 'DELIVERY_CHALLAN', deliveryDate);
+    const customerId = req.body.customerId;
 
-    await db.query(
-      `INSERT INTO delivery_challans (id, organization_id, challan_number, customer_id, customer_name, sales_order_id, delivery_date, status, reason, line_items, transport_details, notes, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-      [
-        id,
-        orgId,
-        challanNum,
-        req.body.customerId,
-        req.body.customerName || 'Customer',
-        req.body.salesOrderId || null,
-        deliveryDate,
-        req.body.status || 'DRAFT',
-        req.body.reason || 'Supply on Approval',
-        JSON.stringify(req.body.lineItems || []),
-        JSON.stringify(req.body.transportDetails || {}),
-        req.body.notes || '',
-        now,
-      ]
-    );
+    if (!customerId || typeof customerId !== 'string') {
+      res.status(400).json({ error: 'A valid customerId is required' });
+      return;
+    }
 
-    await FinanceController.logAudit(orgId, req.auth!.userId, 'DELIVERY_CHALLAN_CREATED', 'DeliveryChallan', id, req.body);
-    res.status(201).json({ id, challanNumber: challanNum, ...req.body });
+    try {
+      const result = await db.transaction(async (client) => {
+        const custRes = await client.query(
+          `SELECT id, display_name AS name FROM customers WHERE organization_id = $1 AND id = $2
+           UNION ALL SELECT id, name FROM clients WHERE organization_id = $1 AND id = $2 LIMIT 1`,
+          [orgId, customerId]
+        );
+        if (custRes.rows.length === 0) {
+          throw new Error('CUSTOMER_NOT_FOUND: Customer does not belong to this organization');
+        }
+        const resolvedCustomerName = custRes.rows[0].name || req.body.customerName || 'Customer';
+
+        if (req.body.salesOrderId) {
+          const soRes = await client.query(
+            `SELECT id FROM sales_orders WHERE organization_id = $1 AND id = $2`,
+            [orgId, req.body.salesOrderId]
+          );
+          if (soRes.rows.length === 0) {
+            throw new Error('SALES_ORDER_NOT_FOUND: Sales order does not belong to this organization');
+          }
+        }
+
+        const id = newId('dc');
+        const challanNum = await DocumentNumberingEngine.getNextNumber(orgId, 'DELIVERY_CHALLAN', deliveryDate, undefined, client);
+
+        await client.query(
+          `INSERT INTO delivery_challans (id, organization_id, challan_number, customer_id, customer_name, sales_order_id, delivery_date, status, reason, line_items, transport_details, notes, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+          [
+            id,
+            orgId,
+            challanNum,
+            customerId,
+            resolvedCustomerName,
+            req.body.salesOrderId || null,
+            deliveryDate,
+            req.body.status || 'DRAFT',
+            req.body.reason || 'Supply on Approval',
+            JSON.stringify(req.body.lineItems || []),
+            JSON.stringify(req.body.transportDetails || {}),
+            req.body.notes || '',
+            now,
+          ]
+        );
+
+        await FinanceController.logAudit(orgId, req.auth!.userId, 'DELIVERY_CHALLAN_CREATED', 'DeliveryChallan', id, req.body, client);
+        return { id, challanNumber: challanNum, customerName: resolvedCustomerName };
+      });
+
+      res.status(201).json({ ...req.body, ...result });
+    } catch (error: any) {
+      const message = error?.message || 'Delivery challan could not be created';
+      const statusCode = message.startsWith('CUSTOMER_NOT_FOUND') || message.startsWith('SALES_ORDER_NOT_FOUND') ? 400 : 422;
+      res.status(statusCode).json({ error: message.replace(/^[A-Z_]+: /, '') });
+    }
   }
 
   // --- ADVANCES, CREDIT NOTES, REFUNDS & WRITE-OFFS ---

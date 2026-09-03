@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, ImagePlus, Layers, Plus, Receipt, RefreshCw, ShieldCheck, Trash2, X } from 'lucide-react';
+import { AlertTriangle, Check, ChevronDown, ImagePlus, Layers, Plus, Receipt, RefreshCw, Search, ShieldCheck, Trash2, X } from 'lucide-react';
 import { useBooks } from '../../context/BooksContext';
-import { Expense, ExpenseReceiptUpload } from '../../types';
+import { Account, Expense, ExpenseReceiptUpload } from '../../types';
 import { AccountModal } from '../coa/AccountModal';
 import { QuickAddAccountModal } from '../common/QuickAddAccountModal';
 
@@ -24,6 +24,131 @@ const today = () => new Date().toISOString().slice(0, 10);
 
 const MAX_RECEIPT_IMAGES = 3;
 const MAX_RECEIPT_BYTES = 900 * 1024;
+
+interface SearchableAccountPickerProps {
+  accounts: Account[];
+  id: string;
+  label: string;
+  placeholder: string;
+  value: string;
+  onChange: (accountId: string) => void;
+}
+
+const SearchableAccountPicker: React.FC<SearchableAccountPickerProps> = ({
+  accounts,
+  id,
+  label,
+  placeholder,
+  value,
+  onChange,
+}) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const searchRef = useRef<HTMLInputElement>(null);
+  const selectedAccount = accounts.find((account) => account.id === value);
+  const matchingAccounts = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    if (!normalizedQuery) return accounts;
+    return accounts.filter((account) =>
+      [account.code, account.name, account.type, account.subType]
+        .filter(Boolean)
+        .some((field) => field.toLowerCase().includes(normalizedQuery))
+    );
+  }, [accounts, query]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setQuery('');
+    requestAnimationFrame(() => searchRef.current?.focus());
+  }, [isOpen]);
+
+  const close = () => setIsOpen(false);
+  const chooseAccount = (accountId: string) => {
+    onChange(accountId);
+    close();
+  };
+  const selectedLabel = selectedAccount
+    ? `${selectedAccount.code} - ${selectedAccount.name}`
+    : placeholder;
+
+  return (
+    <div className="relative">
+      <button
+        id={id}
+        type="button"
+        aria-label={`${label}: ${selectedLabel}`}
+        aria-haspopup="listbox"
+        aria-expanded={isOpen}
+        aria-controls={`${id}-options`}
+        onClick={() => setIsOpen((open) => !open)}
+        className="flex h-11 w-full items-center justify-between gap-3 rounded-md border border-slate-300 bg-white px-3 text-left font-normal text-slate-900 outline-hidden transition hover:border-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:focus:ring-blue-950"
+      >
+        <span className={`min-w-0 truncate text-sm ${selectedAccount ? '' : 'text-slate-400 dark:text-slate-500'}`}>
+          {selectedLabel}
+        </span>
+        <ChevronDown className={`h-4 w-4 shrink-0 text-slate-400 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+      </button>
+
+      {isOpen && (
+        <>
+          <div aria-hidden="true" className="fixed inset-0 z-30" onMouseDown={close} />
+          <div className="absolute z-40 mt-1.5 w-full overflow-hidden rounded-md border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-900">
+            <div className="border-b border-slate-100 p-2.5 dark:border-slate-800">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <input
+                  ref={searchRef}
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Escape') close();
+                  }}
+                  placeholder="Search expense accounts"
+                  className="h-10 w-full rounded-md border border-slate-200 bg-slate-50 pl-9 pr-3 text-sm text-slate-900 outline-hidden placeholder:text-slate-400 focus:border-blue-600 focus:bg-white focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:focus:bg-slate-900 dark:focus:ring-blue-950"
+                />
+              </div>
+              <p className="mt-2 px-0.5 text-xs text-slate-500 dark:text-slate-400">
+                Search by account name, code, type, or sub-type.
+              </p>
+            </div>
+            <div id={`${id}-options`} role="listbox" aria-label={`${label} options`} className="max-h-72 overflow-y-auto p-1.5">
+              {matchingAccounts.length === 0 ? (
+                <p className="px-3 py-7 text-center text-sm text-slate-500 dark:text-slate-400">No expense accounts match that search.</p>
+              ) : (
+                matchingAccounts.map((account) => {
+                  const isSelected = account.id === value;
+                  return (
+                    <button
+                      key={account.id}
+                      type="button"
+                      role="option"
+                      aria-selected={isSelected}
+                      aria-label={`${account.code} - ${account.name} (${account.type}, ${account.subType})`}
+                      onClick={() => chooseAccount(account.id)}
+                      className={`flex w-full items-start gap-3 rounded-md px-3 py-3 text-left transition-colors ${
+                        isSelected
+                          ? 'bg-blue-50 text-blue-900 dark:bg-blue-950/40 dark:text-blue-100'
+                          : 'text-slate-800 hover:bg-slate-50 dark:text-slate-100 dark:hover:bg-slate-800'
+                      }`}
+                    >
+                      <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${isSelected ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-300 dark:border-slate-600'}`}>
+                        <Check className={`h-3 w-3 ${isSelected ? 'opacity-100' : 'opacity-0'}`} />
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-medium">{account.code} - {account.name}</span>
+                        <span className="mt-0.5 block truncate text-xs text-slate-500 dark:text-slate-400">{account.type} / {account.subType}</span>
+                      </span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
 
 async function compressReceiptImage(file: File): Promise<ExpenseReceiptUpload> {
   if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
@@ -233,16 +358,40 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
       return;
     }
 
-    const parsedAmount = Number(amount);
+    const parsedAmount = isItemized ? calculatedItemizedTotal : Number(amount);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       setError('Enter a valid posting date.');
       return;
     }
-    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0 || Math.round(parsedAmount * 100) !== parsedAmount * 100) {
-      setError('Amount must be positive and contain no more than two decimal places.');
-      return;
+    if (!isItemized) {
+      if (!Number.isFinite(parsedAmount) || parsedAmount <= 0 || Math.round(parsedAmount * 100) !== parsedAmount * 100) {
+        setError('Amount must be positive and contain no more than two decimal places.');
+        return;
+      }
+    } else {
+      if (items.length === 0) {
+        setError('Add at least one itemized line.');
+        return;
+      }
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        const itAmt = Number(it.amount);
+        if (!it.accountId) {
+          setError('Select an expense category account for line ' + (i + 1) + '.');
+          return;
+        }
+        if (!Number.isFinite(itAmt) || itAmt <= 0 || Math.round(itAmt * 100) !== itAmt * 100) {
+          setError('Line ' + (i + 1) + ' amount must be positive with at most two decimal places.');
+          return;
+        }
+      }
+      if (calculatedItemizedTotal <= 0) {
+        setError('Total itemized amount must be greater than zero.');
+        return;
+      }
     }
-    const expenseAccount = expenseAccounts.find((account) => account.id === expenseAccountId);
+    const targetAccountId = isItemized ? items[0].accountId : expenseAccountId;
+    const expenseAccount = expenseAccounts.find((account) => account.id === targetAccountId);
     const paymentAccount = paymentAccounts.find((account) => account.id === paidFromAccountId);
     if (!expenseAccount || !paymentAccount) {
       setError('Select an active expense account and an active bank, cash, wallet, or credit card account.');
@@ -269,6 +418,15 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
         isBillable: false,
         receiptImages,
         paymentStatus: 'Paid',
+        isItemized,
+        items: isItemized
+          ? items.map((it) => ({
+              accountId: it.accountId,
+              accountName: expenseAccounts.find((a) => a.id === it.accountId)?.name || '',
+              description: it.description,
+              amount: Number(it.amount),
+            }))
+          : undefined,
         description: description.trim() || `Expense paid${vendor ? ` to ${vendor.companyName || vendor.name}` : ''}`,
       });
       onClose();
@@ -335,6 +493,31 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                       <span className="flex h-9 w-9 items-center justify-center rounded-md bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300"><Receipt className="h-4 w-4" /></span>
                       <div><h3 className="text-base font-bold text-slate-900 dark:text-white">Expense details</h3><p className="mt-0.5 text-xs text-slate-500">Add the payment and accounting information.</p></div>
                     </div>
+
+                    {/* Zoho Books Style Mode Switcher */}
+                    <div className="mb-5 flex rounded-lg bg-slate-100 p-1 dark:bg-slate-800">
+                      <button
+                        type="button"
+                        onClick={() => setIsItemized(false)}
+                        className={'flex-1 rounded-md py-2 text-xs font-bold transition-all ' + (!isItemized ? 'bg-white text-blue-700 shadow-sm dark:bg-slate-900 dark:text-blue-400' : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white')}
+                      >
+                        Single Expense
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsItemized(true);
+                          if (items.length === 1 && !items[0].amount && amount) {
+                            setItems([{ id: 'item-1', accountId: expenseAccountId || expenseAccounts[0]?.id || '', description: description || '', amount }]);
+                          }
+                        }}
+                        className={'flex-1 rounded-md py-2 text-xs font-bold transition-all ' + (isItemized ? 'bg-white text-blue-700 shadow-sm dark:bg-slate-900 dark:text-blue-400' : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white')}
+                      >
+                        Itemized Expense (Split)
+                      </button>
+                    </div>
+
+                    {!isItemized ? (
                     <div className="grid gap-x-5 gap-y-4 sm:grid-cols-2">
                       <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200">
                         <span>Posting date <span className="text-rose-600">*</span></span>
@@ -373,20 +556,14 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                             </button>
                           </div>
                         </div>
-                        <select
+                        <SearchableAccountPicker
                           id="expense-account-select"
-                          required
+                          label="Expense account"
+                          placeholder={`Select expense account (${expenseAccounts.length} available)`}
+                          accounts={expenseAccounts}
                           value={expenseAccountId}
-                          onChange={(event) => setExpenseAccountId(event.target.value)}
-                          className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal text-slate-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-                        >
-                          <option value="">Select expense account ({expenseAccounts.length} available)</option>
-                          {expenseAccounts.map((account) => (
-                            <option key={account.id} value={account.id}>
-                              {account.code} — {account.name} ({account.type})
-                            </option>
-                          ))}
-                        </select>
+                          onChange={setExpenseAccountId}
+                        />
                       </div>
 
                       <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200">
@@ -398,7 +575,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                             min="0.01"
                             step="0.01"
                             inputMode="decimal"
-                            required
+                            required={!isItemized}
                             value={amount}
                             onChange={(event) => setAmount(event.target.value)}
                             placeholder="0.00"
@@ -407,6 +584,97 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                         </div>
                       </label>
                     </div>
+                    ) : (
+                      <div className="space-y-4">
+                        <label className="block space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200">
+                          <span>Posting date <span className="text-rose-600">*</span></span>
+                          <input
+                            type="date"
+                            required
+                            value={date}
+                            onChange={(event) => setDate(event.target.value)}
+                            className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal text-slate-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                          />
+                        </label>
+
+                        <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
+                          <table className="w-full text-left text-xs">
+                            <thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:bg-slate-800/80 dark:text-slate-400">
+                              <tr>
+                                <th className="p-2.5 pl-3">Expense Category</th>
+                                <th className="p-2.5">Description</th>
+                                <th className="p-2.5 w-32">Amount</th>
+                                <th className="p-2.5 w-10 text-center"></th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                              {items.map((it, idx) => (
+                                <tr key={it.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/40">
+                                  <td className="p-2 pl-3">
+                                    <select
+                                      value={it.accountId}
+                                      onChange={(e) => handleUpdateItem(idx, 'accountId', e.target.value)}
+                                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-900 outline-hidden focus:border-blue-500 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                                    >
+                                      <option value="">Select Category</option>
+                                      {expenseAccounts.map((acc) => (
+                                        <option key={acc.id} value={acc.id}>
+                                          {acc.code} - {acc.name}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </td>
+                                  <td className="p-2">
+                                    <input
+                                      type="text"
+                                      placeholder="Memo/Description"
+                                      value={it.description}
+                                      onChange={(e) => handleUpdateItem(idx, 'description', e.target.value)}
+                                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-900 outline-hidden focus:border-blue-500 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                                    />
+                                  </td>
+                                  <td className="p-2">
+                                    <input
+                                      type="number"
+                                      min="0.01"
+                                      step="0.01"
+                                      placeholder="0.00"
+                                      value={it.amount}
+                                      onChange={(e) => handleUpdateItem(idx, 'amount', e.target.value)}
+                                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-right font-mono text-xs text-slate-900 outline-hidden focus:border-blue-500 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                                    />
+                                  </td>
+                                  <td className="p-2 text-center">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemoveItem(idx)}
+                                      disabled={items.length <= 1}
+                                      className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-30 dark:hover:bg-rose-950/50"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </button>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        <div className="flex items-center justify-between pt-1">
+                          <button
+                            type="button"
+                            onClick={handleAddItem}
+                            className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                            <span>Add another line</span>
+                          </button>
+                          <div className="rounded-md bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-800 dark:bg-slate-800 dark:text-slate-200">
+                            Total: <span className="font-mono text-blue-600 dark:text-blue-400">{settings.currencySymbol} {calculatedItemizedTotal.toFixed(2)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </section>
 
                   <section className="border border-slate-200 p-5 dark:border-slate-700 sm:p-6">

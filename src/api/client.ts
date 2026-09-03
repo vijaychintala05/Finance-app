@@ -121,7 +121,7 @@ export class ApiClient {
         }
         return {
           data: null,
-          error: errorData.error || errorData.message || `HTTP Error ${response.status}`,
+          error: errorData.details || errorData.error || errorData.message || `HTTP Error ${response.status}`,
           status: response.status,
         };
       }

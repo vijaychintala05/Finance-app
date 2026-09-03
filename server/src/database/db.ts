@@ -65,12 +65,44 @@ class DatabaseService {
     this.initPool();
   }
 
-  public async checkHealth(): Promise<{ isConnected: boolean; isMemoryMode: boolean }> {
+  public async checkHealth(): Promise<{
+    isConnected: boolean;
+    isMemoryMode: boolean;
+    tablesCount?: number;
+    schemaVersion?: string;
+    serverTime?: string;
+    error?: string;
+  }> {
     try {
-      await this.query('SELECT 1');
-      return { isConnected: true, isMemoryMode: this.isMemoryMode() };
-    } catch (e) {
-      return { isConnected: false, isMemoryMode: false };
+      const ping = await this.query('SELECT CURRENT_TIMESTAMP as now, 1 as alive');
+      let tablesCount = 0;
+      let schemaVersion = 'uninitialized';
+      try {
+        const tblRes = await this.query(`SELECT count(*)::int as count FROM information_schema.tables WHERE table_schema = 'public'`);
+        tablesCount = tblRes.rows[0]?.count ?? 0;
+      } catch {
+        // Safe fallback in memory or restricted permissions
+      }
+      try {
+        const migRes = await this.query(`SELECT version FROM schema_migrations ORDER BY applied_at DESC LIMIT 1`);
+        if (migRes.rows.length > 0) schemaVersion = migRes.rows[0].version;
+      } catch {
+        // schema_migrations table might not exist yet
+      }
+
+      return {
+        isConnected: true,
+        isMemoryMode: this.isMemoryMode(),
+        tablesCount,
+        schemaVersion,
+        serverTime: ping.rows[0]?.now ? new Date(ping.rows[0].now).toISOString() : new Date().toISOString(),
+      };
+    } catch (e: any) {
+      return {
+        isConnected: false,
+        isMemoryMode: this.isMemoryMode(),
+        error: e?.message || 'Database connection error',
+      };
     }
   }
 

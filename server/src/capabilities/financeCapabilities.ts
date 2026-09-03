@@ -19,6 +19,10 @@ const CORE_ENABLED = new Set([
   'expense-posting',
   'manual-journals',
   'period-locks',
+  // A zero-balance bank ledger is required before users can record expenses
+  // or customer receipts. It has no statement-import or reconciliation side
+  // effects, both of which remain separately deployment-gated.
+  'bank-account-management',
 ]);
 
 const LABELS: Record<string, string> = {

@@ -30,9 +30,12 @@ import { AccountingPeriodService } from '../accounting/AccountingPeriodService';
 export class BankReconciliationService {
   // --- 1. BANK ACCOUNTS ---
   public static async getBankAccounts(orgId: string): Promise<BankAccount[]> {
-    const res = await db.query<BankAccount>(
-      `SELECT * FROM bank_accounts WHERE organization_id = $1 AND is_active = TRUE ORDER BY created_at DESC`,
-      [orgId]
+    const res = await db.transaction(
+      (client) => client.query<BankAccount>(
+        `SELECT * FROM bank_accounts WHERE organization_id = $1 AND is_active = TRUE ORDER BY created_at DESC`,
+        [orgId]
+      ),
+      { organizationId: orgId }
     );
     return (res.rows || []).map((r) => this.formatBankAccount(r));
   }
@@ -50,14 +53,6 @@ export class BankReconciliationService {
     if (Number(data.currentBalance || 0) !== 0) {
       throw new Error('Bank balances must be established through balanced ledger postings');
     }
-    const ledgerAccount = await db.query(
-      `SELECT id FROM accounts
-        WHERE organization_id = $1 AND id = $2 AND type = 'Asset' AND status = 'Active'
-          AND LOWER(COALESCE(sub_type, '')) IN ('bank', 'cash', 'wallet')`,
-      [orgId, data.ledgerAccountId]
-    );
-    if (ledgerAccount.rows.length !== 1) throw new Error('Bank account must link to an active tenant bank, cash, or wallet ledger account');
-
     const id = data.id || newId('bank-acc');
     const maskedNumber = data.accountNumber ? `•••• ${data.accountNumber.slice(-4)}` : '•••• 0000';
 
@@ -82,6 +77,15 @@ export class BankReconciliationService {
     };
 
     await db.transaction(async (client) => {
+      const ledgerAccount = await client.query(
+        `SELECT id FROM accounts
+          WHERE organization_id = $1 AND id = $2 AND type = 'Asset' AND status = 'Active'
+            AND LOWER(COALESCE(sub_type, '')) IN ('bank', 'cash', 'wallet')`,
+        [orgId, data.ledgerAccountId]
+      );
+      if (ledgerAccount.rows.length !== 1) {
+        throw new Error('Bank account must link to an active tenant bank, cash, or wallet ledger account');
+      }
       await client.query(
         `INSERT INTO bank_accounts (id, organization_id, ledger_account_id, account_name, account_number, masked_account_number, bank_name, account_type, currency, country, current_balance, opening_balance_date, statement_import_enabled, status, is_active)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
@@ -95,7 +99,7 @@ export class BankReconciliationService {
          VALUES ($1, $2, $3, 'BANK_ACCOUNT_CREATED', 'BankAccount', $4, $5)`,
         [newId('aud'), orgId, actorId, id, JSON.stringify({ accountName, bankName, maskedAccountNumber: maskedNumber, ledgerAccountId: data.ledgerAccountId })]
       );
-    });
+    }, { organizationId: orgId });
 
     return account;
   }

@@ -8,7 +8,7 @@ const router = Router();
 
 // Accounts
 router.get('/accounts', requirePermission('banking.view'), BankingController.getAccounts);
-router.post('/accounts', requirePermission('settings.manage_accounts'), requireTrustedFinanceFeature('bank-account-management'), BankingController.createAccount);
+router.post('/accounts', requirePermission('settings.manage_accounts'), BankingController.createAccount);
 
 // Statement Imports
 router.post('/accounts/:accountId/statements/import', requirePermission('banking.import'), requireTrustedFinanceFeature('bank-statement-import'), BankingController.importStatement);

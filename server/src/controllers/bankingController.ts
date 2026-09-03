@@ -31,7 +31,8 @@ export class BankingController {
       const account = await BankReconciliationService.createBankAccount(orgId, input, (req as any).auth.userId);
       res.status(201).json({ success: true, data: account });
     } catch (e: any) {
-      res.status(400).json({ success: false, error: e.message });
+      const message = e instanceof Error && e.message ? e.message : 'Bank account could not be created';
+      res.status(e?.code === '23505' ? 409 : 400).json({ success: false, error: message });
     }
   }
 

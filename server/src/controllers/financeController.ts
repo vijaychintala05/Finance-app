@@ -249,7 +249,7 @@ export class FinanceController {
          VALUES ($1, $2, $3, 'ACCOUNT_CREATED', 'Account', $4, $5)`,
          [newId('aud'), orgId, req.auth!.userId, accId, JSON.stringify({ code: normalizedCode, name: name.trim(), description: description?.trim() || null, type: normalizedType, subType: normalizedSubType, parentAccountId, reportingGroup, normalBalance, allowDirectPosting })]
       );
-      });
+      }, { organizationId: orgId });
       res.status(201).json({ id: accId, code: normalizedCode, name: name.trim(), description: description?.trim() || null, type: normalizedType, subType: normalizedSubType, balance: 0, status: 'Active', parentAccountId, reportingGroup, normalBalance, allowDirectPosting });
     } catch (error: any) {
       if (error?.code === '23505' || String(error?.message || '').includes('uk_org_account_code')) {

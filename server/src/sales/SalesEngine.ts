@@ -10,6 +10,7 @@ import { DocumentNumberingEngine } from '../services/DocumentNumberingEngine';
 import { OrganizationProvisioningService } from '../services/OrganizationProvisioningService';
 import { AccountingIntegrityService } from '../services/AccountingIntegrityService';
 import { ApprovalWorkflowService } from '../approvals/ApprovalWorkflowService';
+import { FinancialDestructiveActionsService } from '../accounting/FinancialDestructiveActionsService';
 
 const roundMoney = (value: number): number => Math.round((value + Number.EPSILON) * 100) / 100;
 
@@ -1111,6 +1112,351 @@ export class SalesEngine {
       notes: data.notes || '',
       journalEntryId,
     };
+  }
+
+  public static async updateInvoice(
+    orgId: string,
+    invoiceId: string,
+    data: {
+      customerId?: string;
+      clientId?: string;
+      customerName?: string;
+      clientName?: string;
+      customerEmail?: string;
+      clientEmail?: string;
+      projectId?: string;
+      salespersonId?: string;
+      issueDate?: string;
+      dueDate?: string;
+      lineItems?: any[];
+      items?: any[];
+      discount?: number;
+      roundOffAmount?: number;
+      isGstInclusive?: boolean;
+      notes?: string;
+      terms?: string;
+      editReason?: string;
+    },
+    userId: string,
+    transactionClient?: QueryClient
+  ): Promise<InvoiceModel> {
+    const execute = async (client: QueryClient) => {
+      const invRes = await client.query(
+        `SELECT * FROM invoices WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, invoiceId]
+      );
+      if (invRes.rows.length === 0) throw new Error('INVOICE_NOT_FOUND: Invoice does not exist');
+      const inv = invRes.rows[0];
+
+      if (['VOID', 'VOIDED'].includes(String(inv.status).toUpperCase())) {
+        throw new Error('INVOICE_VOIDED: Voided invoices are immutable and cannot be edited');
+      }
+
+      const originalIssueDate = inv.issue_date instanceof Date ? inv.issue_date.toISOString().slice(0, 10) : String(inv.issue_date).slice(0, 10);
+      const newIssueDate = data.issueDate ? String(data.issueDate).slice(0, 10) : originalIssueDate;
+      const originalDueDate = inv.due_date instanceof Date ? inv.due_date.toISOString().slice(0, 10) : String(inv.due_date).slice(0, 10);
+      const newDueDate = data.dueDate ? String(data.dueDate).slice(0, 10) : originalDueDate;
+
+      if (!isIsoCalendarDate(newIssueDate) || !isIsoCalendarDate(newDueDate) || newDueDate < newIssueDate) {
+        throw new Error('INVOICE_INVALID_DATES: Issue date and due date must be valid ISO calendar dates and due date cannot precede issue date');
+      }
+
+      await SalesEngine.checkPeriodLock(orgId, originalIssueDate, client);
+      if (newIssueDate !== originalIssueDate) {
+        await SalesEngine.checkPeriodLock(orgId, newIssueDate, client);
+      }
+
+      const customerId = data.customerId || data.clientId || inv.customer_id || inv.client_id;
+      let resolvedCustomerName = inv.client_name;
+      let resolvedCustomerEmail = inv.client_email || '';
+      let resolvedCustomerSnapshot = inv.customer_snapshot;
+
+      if (customerId && customerId !== (inv.customer_id || inv.client_id)) {
+        let customer = await client.query(
+          `SELECT id, display_name AS name, legal_name, email, phone, gstin, pan, billing_address, place_of_supply
+             FROM customers WHERE organization_id = $1 AND id = $2`,
+          [orgId, customerId]
+        );
+        if (customer.rows.length === 0) {
+          customer = await client.query(
+            `SELECT id, name, company_name AS legal_name, email, phone, tax_id AS gstin, billing_address
+               FROM clients WHERE organization_id = $1 AND id = $2`,
+            [orgId, customerId]
+          );
+        }
+        if (customer.rows.length === 0) throw new Error('Invoice customer does not belong to this organization');
+        resolvedCustomerName = customer.rows[0].name || data.customerName || data.clientName || 'Customer';
+        resolvedCustomerEmail = customer.rows[0].email || data.customerEmail || data.clientEmail || '';
+        resolvedCustomerSnapshot = {
+          customerId,
+          displayName: resolvedCustomerName,
+          legalName: customer.rows[0].legal_name || resolvedCustomerName,
+          email: resolvedCustomerEmail,
+          phone: customer.rows[0].phone || '',
+          gstin: customer.rows[0].gstin || '',
+          pan: customer.rows[0].pan || '',
+          billingAddress: customer.rows[0].billing_address || null,
+          placeOfSupply: customer.rows[0].place_of_supply || null,
+        };
+      }
+
+      const rawItems = data.lineItems || data.items || (typeof inv.line_items === 'string' ? JSON.parse(inv.line_items) : inv.line_items) || [];
+      const discountInput = data.discount !== undefined ? data.discount : inv.discount;
+      const isGstInclusive = data.isGstInclusive !== undefined ? Boolean(data.isGstInclusive) : Boolean(inv.is_gst_inclusive);
+      const roundOffInput = data.roundOffAmount !== undefined ? data.roundOffAmount : inv.round_off_amount;
+
+      const {
+        items,
+        subtotal,
+        taxTotal,
+        discount: invoiceDiscount,
+        roundOff,
+        totalAmount: finalTotal,
+      } = calculateTrustedInvoiceTotals(rawItems, discountInput, isGstInclusive, roundOffInput);
+
+      const paidAmount = Number(inv.paid_amount || 0);
+      const amountCredited = Number(inv.amount_credited || 0);
+      const amountWrittenOff = Number(inv.amount_written_off || 0);
+
+      if (finalTotal < paidAmount) {
+        throw new Error(`CANNOT_REDUCE_BELOW_PAID: Invoice total (${finalTotal}) cannot be reduced below the amount already paid (${paidAmount})`);
+      }
+
+      const newBalanceDue = roundMoney(Math.max(0, finalTotal - paidAmount - amountCredited - amountWrittenOff));
+
+      let updatedStatus = inv.status;
+      if (['POSTED', 'SENT', 'VIEWED', 'OVERDUE', 'PARTIALLY_PAID', 'PAID'].includes(String(inv.status).toUpperCase())) {
+        if (newBalanceDue === 0 && paidAmount > 0) {
+          updatedStatus = 'PAID';
+        } else if (paidAmount > 0) {
+          updatedStatus = 'PARTIALLY_PAID';
+        } else if (newDueDate < new Date().toISOString().slice(0, 10)) {
+          updatedStatus = 'OVERDUE';
+        } else {
+          updatedStatus = inv.status === 'DRAFT' ? 'POSTED' : inv.status;
+        }
+      }
+
+      let currentJournalEntryId = inv.journal_entry_id;
+      const isPostedState = ['POSTED', 'SENT', 'VIEWED', 'OVERDUE', 'PARTIALLY_PAID', 'PAID'].includes(String(inv.status).toUpperCase());
+
+      if (isPostedState && currentJournalEntryId) {
+        const reverseReason = data.editReason || `Audited adjustment for invoice ${inv.invoice_number}`;
+        try {
+          await FinancialDestructiveActionsService.reversePostedJournal(
+            client,
+            orgId,
+            currentJournalEntryId,
+            userId,
+            reverseReason,
+            `Invoice ${inv.invoice_number}`
+          );
+        } catch (revErr: any) {
+          console.warn('[Invoice Edit Reversal Warning]', revErr?.message || revErr);
+        }
+
+        const defaultRevenueId = await OrganizationProvisioningService.resolveSystemAccountId(client, orgId, 'SALES_REVENUE', ['Income', 'Revenue']);
+        const arAccountId = await OrganizationProvisioningService.resolveAccountId(client, orgId, '1100', ['Asset']);
+        const salesAccountId = defaultRevenueId;
+        const taxAccountId = taxTotal > 0
+          ? await OrganizationProvisioningService.resolveAccountId(client, orgId, '2200', ['Liability'])
+          : '';
+
+        const preTaxRevenue = isGstInclusive
+          ? Math.round((subtotal - invoiceDiscount - taxTotal) * 100) / 100
+          : Math.round((subtotal - invoiceDiscount) * 100) / 100;
+
+        const journalLines: any[] = [
+          {
+            accountId: arAccountId,
+            accountCode: '1100',
+            accountName: 'Accounts Receivable',
+            debit: finalTotal,
+            credit: 0,
+            description: `Invoice ${inv.invoice_number} Receivable (Revision)`,
+          },
+          {
+            accountId: salesAccountId,
+            accountCode: '4000',
+            accountName: 'Sales Revenue',
+            debit: 0,
+            credit: preTaxRevenue,
+            description: `Invoice ${inv.invoice_number} Revenue (Revision)`,
+          },
+        ];
+
+        if (taxTotal > 0) {
+          journalLines.push({
+            accountId: taxAccountId,
+            accountCode: '2200',
+            accountName: 'GST Output Liability',
+            debit: 0,
+            credit: taxTotal,
+            description: `Invoice ${inv.invoice_number} Tax (Revision)`,
+          });
+        }
+
+        if (roundOff !== 0) {
+          if (roundOff > 0) {
+            journalLines.push({
+              accountId: await OrganizationProvisioningService.resolveAccountId(client, orgId, '4900', ['Income', 'Revenue']),
+              accountCode: '4900',
+              accountName: 'Round-Off Income',
+              debit: 0,
+              credit: roundOff,
+              description: `Invoice ${inv.invoice_number} Rounding (Revision)`,
+            });
+          } else {
+            journalLines.push({
+              accountId: await OrganizationProvisioningService.resolveAccountId(client, orgId, '5900', ['Expense']),
+              accountCode: '5900',
+              accountName: 'Round-Off Expense',
+              debit: Math.abs(roundOff),
+              credit: 0,
+              description: `Invoice ${inv.invoice_number} Rounding (Revision)`,
+            });
+          }
+        }
+
+        currentJournalEntryId = await SalesEngine.persistJournalEntry(
+          orgId,
+          `JE-${inv.invoice_number}-REV-${Date.now().toString().slice(-4)}`,
+          newIssueDate,
+          inv.invoice_number,
+          `Revised Invoice ${inv.invoice_number} for ${resolvedCustomerName}`,
+          journalLines,
+          client
+        );
+
+        const delta = roundMoney(finalTotal - Number(inv.total_amount));
+        if (delta !== 0 && customerId) {
+          await client.query(
+            `UPDATE customers SET receivables_balance = receivables_balance + $1 WHERE organization_id = $2 AND id = $3`,
+            [delta, orgId, customerId]
+          );
+        }
+      }
+
+      const existingHistory = (typeof inv.edit_history === 'string' ? JSON.parse(inv.edit_history) : inv.edit_history) || [];
+      const historyEntry = {
+        id: `edit-${Date.now()}`,
+        editedAt: new Date().toISOString(),
+        editedBy: userId,
+        reason: (data.editReason || 'Invoice updated').trim(),
+        previousTotal: Number(inv.total_amount),
+        newTotal: finalTotal,
+        changesSummary: `Updated invoice. Amount changed from ${inv.total_amount} to ${finalTotal}.`,
+      };
+      const updatedHistory = [...existingHistory, historyEntry];
+
+      const newNotes = data.notes !== undefined ? data.notes : inv.notes;
+      const newTerms = data.terms !== undefined ? data.terms : inv.terms;
+      const newProjectId = data.projectId !== undefined ? data.projectId : inv.project_id;
+      const newSalespersonId = data.salespersonId !== undefined ? data.salespersonId : inv.salesperson_id;
+
+      await client.query(
+        `UPDATE invoices
+            SET customer_id = $1, client_id = $1, client_name = $2, client_email = $3,
+                project_id = $4, salesperson_id = $5, issue_date = $6, due_date = $7,
+                subtotal = $8, tax_total = $9, discount = $10, round_off_amount = $11,
+                total_amount = $12, balance_due = $13, notes = $14, terms = $15,
+                line_items = $16, customer_snapshot = $17, is_gst_inclusive = $18,
+                journal_entry_id = $19, edit_history = $20, status = $21
+          WHERE organization_id = $22 AND id = $23`,
+        [
+          customerId,
+          resolvedCustomerName,
+          resolvedCustomerEmail,
+          newProjectId || null,
+          newSalespersonId || null,
+          newIssueDate,
+          newDueDate,
+          subtotal,
+          taxTotal,
+          invoiceDiscount,
+          roundOff,
+          finalTotal,
+          newBalanceDue,
+          newNotes || '',
+          newTerms || '',
+          JSON.stringify(items),
+          typeof resolvedCustomerSnapshot === 'string' ? resolvedCustomerSnapshot : JSON.stringify(resolvedCustomerSnapshot || null),
+          isGstInclusive,
+          currentJournalEntryId,
+          JSON.stringify(updatedHistory),
+          updatedStatus,
+          orgId,
+          invoiceId,
+        ]
+      );
+
+      await client.query(`DELETE FROM invoice_items WHERE organization_id = $1 AND invoice_id = $2`, [orgId, invoiceId]);
+      for (const it of items) {
+        const lineQty = Number(it.quantity ?? 1);
+        const lineUnitPrice = Number(it.unitPrice ?? it.rate ?? 0);
+        const lineTax = Number(it.taxRate ?? 0);
+        const lineAmt = Number(it.amount ?? lineQty * lineUnitPrice);
+        await client.query(
+          `INSERT INTO invoice_items (id, organization_id, invoice_id, description, account_id, quantity, unit_price, tax_rate, amount, item_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+          [
+            newId('ii'),
+            orgId,
+            invoiceId,
+            it.description || it.name || 'Line Item',
+            it.accountId || null,
+            lineQty,
+            lineUnitPrice,
+            lineTax,
+            lineAmt,
+            it.itemId || null,
+          ]
+        );
+      }
+
+      await client.query(
+        `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state, after_state)
+         VALUES ($1, $2, $3, 'INVOICE_UPDATED', 'Invoice', $4, $5, $6)`,
+        [
+          newId('aud'),
+          orgId,
+          userId,
+          invoiceId,
+          JSON.stringify({ totalAmount: inv.total_amount, status: inv.status, balanceDue: inv.balance_due }),
+          JSON.stringify({ totalAmount: finalTotal, status: updatedStatus, balanceDue: newBalanceDue, editReason: data.editReason }),
+        ]
+      );
+
+      return {
+        id: invoiceId,
+        organizationId: orgId,
+        invoiceNumber: inv.invoice_number,
+        customerId,
+        customerName: resolvedCustomerName,
+        customerEmail: resolvedCustomerEmail,
+        customerSnapshot: resolvedCustomerSnapshot,
+        projectId: newProjectId || undefined,
+        salespersonId: newSalespersonId || undefined,
+        issueDate: newIssueDate,
+        dueDate: newDueDate,
+        subtotal,
+        taxTotal,
+        discount: invoiceDiscount,
+        roundOffAmount: roundOff,
+        isGstInclusive,
+        totalAmount: finalTotal,
+        paidAmount,
+        balanceDue: newBalanceDue,
+        status: updatedStatus as any,
+        lineItems: items,
+        notes: newNotes || '',
+        paymentTerms: newTerms || '',
+        journalEntryId: currentJournalEntryId,
+      };
+    };
+
+    if (transactionClient) return execute(transactionClient);
+    return db.transaction(execute);
   }
 
   public static async postApprovedInvoice(

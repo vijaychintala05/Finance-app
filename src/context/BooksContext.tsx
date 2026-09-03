@@ -152,7 +152,7 @@ interface BooksContextType {
 
   invoices: Invoice[];
   addInvoice: (invoice: Omit<Invoice, 'id' | 'createdAt' | 'invoiceNumber'>) => Promise<Invoice>;
-  updateInvoice: (id: string, invoice: Partial<Invoice>) => void;
+  updateInvoice: (id: string, invoice: Partial<Invoice>) => Promise<Invoice>;
   deleteInvoice: (id: string) => Promise<void>;
 
   estimates: Estimate[];
@@ -1015,8 +1015,33 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return newInv;
   };
 
-  const updateInvoice = (id: string, invoiceData: Partial<Invoice>) => {
-    window.alert('Posted invoices are immutable. Use an audited adjustment, void, or credit-note workflow.');
+  const updateInvoice = async (id: string, invoiceData: Partial<Invoice>): Promise<Invoice> => {
+    const response = await apiClient.put<any>(`/finance/invoices/${id}`, {
+      clientId: invoiceData.clientId,
+      clientName: invoiceData.clientName,
+      clientEmail: invoiceData.clientEmail,
+      projectId: invoiceData.projectId,
+      salespersonId: invoiceData.salespersonId,
+      issueDate: invoiceData.issueDate,
+      dueDate: invoiceData.dueDate,
+      items: invoiceData.items,
+      discount: invoiceData.discount,
+      notes: invoiceData.notes,
+      terms: invoiceData.terms,
+      editReason: (invoiceData as any)?.editReason,
+    });
+    if (!response.data) throw new Error(response.error || 'Invoice could not be updated');
+    const updated = normalizeInvoiceForUi({
+      ...invoiceData,
+      ...response.data,
+      id: response.data.id,
+      invoiceNumber: response.data.invoiceNumber,
+      totalAmount: Number(response.data.totalAmount),
+      balanceDue: Number(response.data.balanceDue),
+      status: response.data.status,
+    });
+    await refreshAfterCommittedWrite();
+    return updated;
   };
 
   const deleteInvoice = async (id: string): Promise<void> => {

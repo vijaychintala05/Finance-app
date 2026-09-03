@@ -256,13 +256,16 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
       : selectedClient?.name || 'Client';
 
     if (editingInvoice) {
-      setFormError('Posted invoices are immutable. Use a credit note or void-and-reissue workflow.');
-      return;
-      if (!editReason.trim()) {
+      if (totalAmount < (editingInvoice.paidAmount || 0)) {
+        setFormError(`Invoice total cannot be reduced below the amount already paid (${formatCurrency(editingInvoice.paidAmount, settings.currencySymbol)}).`);
+        return;
+      }
+      if (editingInvoice.status !== 'Draft' && !editReason.trim()) {
         setFormError('Please provide a reason for editing this invoice to maintain the audit log.');
         return;
       }
       setFormError('');
+      setIsSubmitting(true);
 
       const historyLog: InvoiceEditHistory = {
         id: `edit-${Date.now()}`,
@@ -280,16 +283,15 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
         )} to ${formatCurrency(totalAmount, settings.currencySymbol)}.`,
       };
 
-      const newBalanceDue = Math.max(0, totalAmount - editingInvoice.paidAmount);
+      const newBalanceDue = Math.max(0, totalAmount - (editingInvoice.paidAmount || 0) - (editingInvoice.amountCredited || 0) - (editingInvoice.amountWrittenOff || 0));
       const updatedStatus =
-        newBalanceDue === 0
+        newBalanceDue === 0 && (editingInvoice.paidAmount || 0) > 0
           ? 'Paid'
-          : editingInvoice.paidAmount > 0
+          : (editingInvoice.paidAmount || 0) > 0
           ? 'Partially Paid'
           : editingInvoice.status;
 
-      const updatedInvoice: Invoice = {
-        ...editingInvoice,
+      const updatedInvoicePayload: Partial<Invoice> & { editReason?: string } = {
         clientId,
         clientName: clientDisplayName,
         clientEmail: selectedClient?.email || editingInvoice.clientEmail,
@@ -308,14 +310,20 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
         status: updatedStatus,
         notes,
         terms,
+        editReason: editReason.trim(),
         editHistory: [...(editingInvoice.editHistory || []), historyLog],
       };
 
-      updateInvoice(editingInvoice.id, updatedInvoice);
-
-      onClose();
-      if (onInvoiceUpdated) {
-        onInvoiceUpdated(updatedInvoice);
+      try {
+        const updatedInvoice = await updateInvoice(editingInvoice.id, updatedInvoicePayload as any);
+        setIsSubmitting(false);
+        onClose();
+        if (onInvoiceUpdated) {
+          onInvoiceUpdated(updatedInvoice);
+        }
+      } catch (err: any) {
+        setIsSubmitting(false);
+        setFormError(err?.message || 'Failed to update invoice');
       }
     } else {
       setIsSubmitting(true);
@@ -713,15 +721,44 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
           {/* Totals Summary */}
           <div className="flex flex-col sm:flex-row justify-between items-start gap-4 pt-3 border-t border-slate-200 dark:border-slate-800">
             <div className="space-y-3 w-full sm:w-1/2">
+              {editingInvoice && (
+                <div>
+                  <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1 flex items-center space-x-1.5 text-xs">
+                    <History className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                    <span>Reason for Edit {editingInvoice.status !== 'Draft' && <span className="text-rose-500">*</span>}</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={editReason}
+                    onChange={(e) => setEditReason(e.target.value)}
+                    placeholder="e.g. Corrected line item pricing, revised quantities"
+                    required={editingInvoice.status !== 'Draft'}
+                    className="w-full bg-amber-50/50 dark:bg-amber-950/20 border border-amber-300 dark:border-amber-700/60 rounded-lg p-2 text-xs text-slate-800 dark:text-slate-200 focus:ring-2 focus:ring-amber-500/20"
+                  />
+                  <p className="text-[10px] text-slate-400 mt-0.5">Recorded in the invoice audit history revision log</p>
+                </div>
+              )}
               <div>
-                <label className="block text-slate-600 dark:text-slate-300 font-medium mb-1">
+                <label className="block text-slate-600 dark:text-slate-300 font-medium mb-1 text-xs">
                   Notes
                 </label>
                 <textarea
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
                   rows={2}
-                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-2 text-slate-800 dark:text-slate-200"
+                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-2 text-xs text-slate-800 dark:text-slate-200"
+                />
+              </div>
+              <div>
+                <label className="block text-slate-600 dark:text-slate-300 font-medium mb-1 text-xs">
+                  Terms & Conditions
+                </label>
+                <input
+                  type="text"
+                  value={terms}
+                  onChange={(e) => setTerms(e.target.value)}
+                  placeholder="e.g. Net 30. Payment via bank transfer."
+                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-2 text-xs text-slate-800 dark:text-slate-200"
                 />
               </div>
             </div>

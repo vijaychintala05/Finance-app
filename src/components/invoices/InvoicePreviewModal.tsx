@@ -2,6 +2,7 @@ import React from 'react';
 import {
   Building2,
   CreditCard,
+  Edit3,
   History,
   Printer,
   ShieldCheck,
@@ -15,11 +16,14 @@ interface InvoicePreviewModalProps {
   invoice: Invoice | null;
   onClose: () => void;
   onEditRequested?: (invoice: Invoice) => void;
+  onEdit?: (invoice: Invoice) => void;
 }
 
 export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
   invoice,
   onClose,
+  onEditRequested,
+  onEdit,
 }) => {
   const { settings } = useBooks();
 
@@ -54,6 +58,22 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
           </div>
 
           <div className="flex items-center flex-wrap gap-2">
+            {invoice.status !== 'Void' && (onEdit || onEditRequested) && (
+              <button
+                type="button"
+                onClick={() => {
+                  const callback = onEdit || onEditRequested;
+                  if (callback) callback(invoice);
+                  onClose();
+                }}
+                className="px-3.5 py-1.5 bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/60 dark:hover:bg-blue-900/80 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 rounded-lg text-xs font-semibold flex items-center space-x-1.5 shadow-xs cursor-pointer select-none"
+                title="Edit this invoice"
+              >
+                <Edit3 className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                <span>Edit Invoice</span>
+              </button>
+            )}
+
             <button
               type="button"
               onClick={handlePrint}

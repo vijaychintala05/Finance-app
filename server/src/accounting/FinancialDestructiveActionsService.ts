@@ -22,7 +22,7 @@ function todayUtc(): string {
 }
 
 export class FinancialDestructiveActionsService {
-  private static async reversePostedJournal(
+  public static async reversePostedJournal(
     client: DbQueryClient,
     organizationId: string,
     journalEntryId: string,

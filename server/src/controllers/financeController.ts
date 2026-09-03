@@ -1045,6 +1045,79 @@ export class FinanceController {
     }
   }
 
+  public static async updateInvoice(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const invoiceId = req.params.id;
+    const { clientId, clientName, clientEmail, projectId, salespersonId, issueDate, dueDate, items, discount, notes, terms, editReason } = req.body;
+
+    if (!invoiceId) {
+      res.status(400).json({ error: 'Invoice ID is required' });
+      return;
+    }
+
+    try {
+      const invoice = await SalesEngine.updateInvoice(
+        orgId,
+        invoiceId,
+        {
+          customerId: clientId,
+          clientName,
+          clientEmail,
+          projectId,
+          salespersonId,
+          issueDate,
+          dueDate,
+          lineItems: items,
+          discount: discount !== undefined ? Number(discount) : undefined,
+          notes,
+          terms,
+          editReason,
+        },
+        req.auth!.userId
+      );
+
+      res.status(200).json({
+        id: invoice.id,
+        invoiceNumber: invoice.invoiceNumber,
+        clientId: invoice.customerId,
+        clientName: invoice.customerName,
+        clientEmail: invoice.customerEmail,
+        projectId: invoice.projectId,
+        salespersonId: invoice.salespersonId,
+        issueDate: invoice.issueDate,
+        dueDate: invoice.dueDate,
+        subtotal: invoice.subtotal,
+        taxTotal: invoice.taxTotal,
+        discount: invoice.discount,
+        roundOffAmount: invoice.roundOffAmount,
+        totalAmount: invoice.totalAmount,
+        paidAmount: invoice.paidAmount,
+        balanceDue: invoice.balanceDue,
+        status: invoice.status,
+        lineItems: invoice.lineItems,
+        items: invoice.lineItems,
+        notes: invoice.notes,
+        terms: invoice.paymentTerms,
+        journalEntryId: invoice.journalEntryId,
+      });
+    } catch (error: any) {
+      const message = error?.message || 'Invoice could not be updated';
+      if (message.includes('INVOICE_NOT_FOUND')) {
+        res.status(404).json({ error: 'Invoice not found' });
+        return;
+      }
+      if (message.includes('CANNOT_REDUCE_BELOW_PAID')) {
+        res.status(422).json({ error: message.replace(/^CANNOT_REDUCE_BELOW_PAID:\s*/, '') });
+        return;
+      }
+      if (message.includes('INVOICE_VOIDED')) {
+        res.status(422).json({ error: 'Voided invoices cannot be edited' });
+        return;
+      }
+      res.status(422).json({ error: message });
+    }
+  }
+
   // --- PAYMENTS RECEIVED ---
   public static async getPaymentsReceived(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;

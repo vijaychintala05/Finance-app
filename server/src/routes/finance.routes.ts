@@ -55,6 +55,7 @@ router.post('/delivery-challans', requirePermission(['delivery_challans.create',
 router.get('/invoices', requirePermission(['invoices.view']), FinanceController.getInvoices);
 router.get('/invoices/:id', requirePermission(['invoices.view']), FinanceController.getInvoice);
 router.post('/invoices', requirePermission(['invoices.create']), FinanceController.createInvoice);
+router.put('/invoices/:id', requirePermission(['invoices.edit', 'invoices.create']), FinanceController.updateInvoice);
 router.post('/invoices/:id/post-approved', requirePermission(['invoices.create', 'accounting.post']), FinanceController.postApprovedInvoice);
 
 // Payments Received & Advances

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   CheckCircle,
+  Edit3,
   Eye,
   FileSpreadsheet,
   FileText,
@@ -35,6 +36,7 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
   const [statusFilter, setStatusFilter] = useState('All');
 
   const [isEditorOpen, setIsEditorOpen] = useState(autoOpenCreateModal);
+  const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null);
   const [previewInvoice, setPreviewInvoice] = useState<Invoice | null>(null);
 
   useEffect(() => {
@@ -321,6 +323,19 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
                     </td>
 
                     <td className="p-3 pr-4 text-right space-x-1">
+                      {inv.status !== 'Void' && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEditingInvoice(inv);
+                            setIsEditorOpen(true);
+                          }}
+                          className="p-1.5 text-slate-600 hover:text-blue-600 hover:bg-blue-100 dark:text-slate-300 dark:hover:text-blue-400 dark:hover:bg-slate-700 rounded-lg cursor-pointer transition-colors"
+                          title="Edit Invoice"
+                        >
+                          <Edit3 className="w-4 h-4" />
+                        </button>
+                      )}
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -354,18 +369,27 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
 
       <InvoiceEditorModal
         isOpen={isEditorOpen}
+        editingInvoice={editingInvoice}
         onClose={() => {
           setIsEditorOpen(false);
+          setEditingInvoice(null);
           if (onModalClosed) onModalClosed();
         }}
         onInvoiceCreated={(createdInvoice) => setPreviewInvoice(createdInvoice)}
-        onInvoiceUpdated={(updatedInvoice) => setPreviewInvoice(updatedInvoice)}
+        onInvoiceUpdated={(updatedInvoice) => {
+          setEditingInvoice(null);
+          setPreviewInvoice(updatedInvoice);
+        }}
       />
       <InvoicePreviewModal
         invoice={previewInvoice}
         onClose={() => {
           setPreviewInvoice(null);
           if (onSelectedEntityClosed) onSelectedEntityClosed();
+        }}
+        onEdit={(inv) => {
+          setEditingInvoice(inv);
+          setIsEditorOpen(true);
         }}
       />
     </div>

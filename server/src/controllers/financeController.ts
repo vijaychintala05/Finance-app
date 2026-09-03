@@ -89,7 +89,13 @@ export class FinanceController {
   // --- ACCOUNTS ---
   public static async getAccounts(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
-    const result = await db.query('SELECT * FROM accounts WHERE organization_id = $1 ORDER BY code ASC', [orgId]);
+    // PostgreSQL RLS uses app.current_org_id, which only exists for the lifetime
+    // of a tenant-scoped transaction. Without this, a just-created account can
+    // be hidden on the verification refresh even though the write committed.
+    const result = await db.transaction(
+      (client) => client.query('SELECT * FROM accounts WHERE organization_id = $1 ORDER BY code ASC', [orgId]),
+      { organizationId: orgId }
+    );
     res.json(result.rows);
   }
 

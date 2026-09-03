@@ -45,6 +45,16 @@ describe('Core bank account setup API', () => {
     });
     expect(ledger.status).toBe(201);
 
+    // The client refreshes this endpoint immediately after creating the
+    // ledger account. It must retain the tenant context under PostgreSQL RLS.
+    const refreshedLedgerAccounts = await request(app)
+      .get('/api/v1/finance/accounts')
+      .set(authHeaders);
+    expect(refreshedLedgerAccounts.status).toBe(200);
+    expect(refreshedLedgerAccounts.body).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: ledger.body.id, code: '1610' }),
+    ]));
+
     const created = await request(app).post('/api/v1/banking/accounts').set({
       ...authHeaders,
       'Idempotency-Key': `bank-profile-${suffix}`,

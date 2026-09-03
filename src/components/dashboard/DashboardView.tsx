@@ -29,6 +29,12 @@ import {
   ShieldCheck,
   Sparkles,
   Star,
+  Clock,
+  FileCheck,
+  Wrench,
+  ChevronDown,
+  UserCheck,
+  Plus,
   Tag,
   TrendingDown,
   TrendingUp,
@@ -38,12 +44,14 @@ import {
 } from 'lucide-react';
 import { NavigationTab } from '../../types';
 import { useBooks } from '../../context/BooksContext';
+import { useAuth } from '../../context/AuthContext';
 import { apiClient } from '../../api/client';
 import { formatCurrency, formatDate } from '../../utils/formatters';
 import { InvoiceEditorModal } from '../invoices/InvoiceEditorModal';
 import { ExpenseModal } from '../expenses/ExpenseModal';
 import { ClientModal } from '../clients/ClientModal';
 import { MetricCardSkeleton, TableSkeleton } from '../common/TableSkeleton';
+import { Dashboard as StudioDashboard } from './studio/Dashboard';
 
 type DashboardViewKey = 'overview' | 'cash-operations' | 'close-controls';
 type DatePreset = 'today' | 'mtd' | 'qtd' | 'ytd' | 'custom';
@@ -130,7 +138,8 @@ const getPresetDate = (preset: DatePreset): string => {
 };
 
 export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
-  const { settings } = useBooks();
+  const { settings, projects = [] } = useBooks();
+  const [dashboardViewMode, setDashboardViewMode] = useState<'operations' | 'finance'>('operations');
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [view, setView] = useState<DashboardViewKey>('overview');
   const [asOfDate, setAsOfDate] = useState(localIsoDate);
@@ -237,34 +246,34 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       type="button"
       onClick={onClick}
       disabled={!onClick}
-      className={`group flex flex-col justify-between rounded-lg border border-slate-200/90 bg-white p-4 text-left shadow-xs transition-all dark:border-slate-800/90 dark:bg-slate-900 ${
+      className={`group flex min-w-0 flex-col justify-between rounded-lg border border-slate-200/90 bg-white p-4 text-left shadow-xs transition-all dark:border-slate-800/90 dark:bg-slate-900 ${
         onClick
           ? 'cursor-pointer hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-md dark:hover:border-slate-700'
           : 'cursor-default'
       }`}
     >
-      <div className="flex w-full items-start justify-between gap-2">
-        <div className="flex items-center gap-2.5">
+      <div className="flex w-full flex-col items-start gap-2 sm:flex-row sm:justify-between">
+        <div className="flex min-w-0 items-start gap-2.5">
           <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md ${iconBg} transition-transform group-hover:scale-105`}>
             <Icon className="h-5 w-5" />
           </div>
-          <div>
-            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">{title}</h2>
+          <div className="min-w-0 pt-0.5">
+            <h2 className="break-words text-xs font-bold uppercase leading-4 tracking-wider text-slate-500 dark:text-slate-400">{title}</h2>
           </div>
         </div>
         {badge && (
-          <span className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[11px] font-bold ${badgeTone}`}>
+          <span className={`inline-flex max-w-full shrink-0 truncate rounded-full px-2 py-0.5 text-[11px] font-bold ${badgeTone}`}>
             {badge}
           </span>
         )}
       </div>
 
       <div className="mt-3.5 space-y-2">
-        <div className={`font-financial min-w-0 text-base font-black tracking-tight sm:text-[1.7rem] ${tone}`}>{value}</div>
+        <div className={`font-financial min-w-0 break-words text-xs font-black leading-5 tracking-tight sm:text-[1.7rem] sm:leading-8 ${tone}`}>{value}</div>
         {progressPercent !== undefined && progressLabel && (
           <div className="space-y-1 pt-1">
-            <div className="flex justify-between text-[11px] font-semibold text-slate-500 dark:text-slate-400">
-              <span>{progressLabel}</span>
+            <div className="flex min-w-0 items-center justify-between gap-2 text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+              <span className="min-w-0 truncate">{progressLabel}</span>
               <span className="font-financial">{Math.round(progressPercent)}%</span>
             </div>
             <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
@@ -277,8 +286,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
             </div>
           </div>
         )}
-        <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-          <span className="truncate font-medium">{subtitle}</span>
+        <div className="flex min-w-0 items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+          <span className="min-w-0 flex-1 truncate font-medium">{subtitle}</span>
           {onClick && (
             <ArrowUpRight className="h-3.5 w-3.5 opacity-0 transition-opacity group-hover:opacity-100 text-blue-600 dark:text-blue-400 shrink-0 ml-1" />
           )}
@@ -671,11 +680,68 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     </section>
   );
 
+  if (dashboardViewMode === 'operations') {
+    return (
+      <div className="space-y-4">
+        <div className="max-w-[1600px] mx-auto px-4 sm:px-6 pt-4 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Dashboard Mode:</span>
+            <div className="flex rounded-xl bg-slate-100 p-1 dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700">
+              <button
+                type="button"
+                onClick={() => setDashboardViewMode('operations')}
+                className="px-3 py-1.5 text-xs font-bold rounded-lg bg-white text-emerald-700 shadow-2xs dark:bg-slate-900 dark:text-emerald-400 cursor-pointer"
+              >
+                Live Operations Center
+              </button>
+              <button
+                type="button"
+                onClick={() => setDashboardViewMode('finance')}
+                className="px-3 py-1.5 text-xs font-bold rounded-lg text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white cursor-pointer"
+              >
+                Financial Command Center
+              </button>
+            </div>
+          </div>
+        </div>
+        <StudioDashboard
+          projects={projects as any || []}
+          tasks={[]}
+          schedule={[]}
+          employees={[]}
+          courses={[]}
+          onNavigate={onNavigate}
+          onOpenNewTask={() => onNavigate('projects')}
+          onSelectProject={() => onNavigate('projects')}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="mx-auto min-h-full max-w-[1500px] space-y-4 bg-slate-50/60 p-4 text-slate-900 sm:p-6 lg:p-7 dark:bg-slate-950 dark:text-slate-100">
       {/* Header Banner */}
       <header className="flex flex-col gap-4 border-b border-slate-200/90 bg-white px-1 py-4 dark:border-slate-800/90 dark:bg-slate-950 lg:flex-row lg:items-center lg:justify-between">
         <div className="space-y-1">
+          <div className="mb-2 flex items-center gap-2">
+            <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Dashboard:</span>
+            <div className="flex rounded-xl bg-slate-100 p-1 dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700">
+              <button
+                type="button"
+                onClick={() => setDashboardViewMode('operations')}
+                className="px-3 py-1 text-xs font-bold rounded-lg text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white cursor-pointer"
+              >
+                Live Operations Center
+              </button>
+              <button
+                type="button"
+                onClick={() => setDashboardViewMode('finance')}
+                className="px-3 py-1 text-xs font-bold rounded-lg bg-white text-blue-700 shadow-2xs dark:bg-slate-900 dark:text-blue-400 cursor-pointer"
+              >
+                Financial Command Center
+              </button>
+            </div>
+          </div>
           <div className="flex items-center gap-2">
             <span className="inline-flex items-center gap-1 rounded-md bg-blue-50 px-2 py-1 text-[11px] font-bold text-blue-700 dark:bg-blue-950/80 dark:text-blue-400">
               <ShieldCheck className="h-3.5 w-3.5" />
@@ -812,7 +878,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
             <QuickActions />
           </div>
           {/* Top 4 KPI Metric Cards */}
-          <section className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+          <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <Metric
               title="Operating Cash & Bank"
               value={money(dashboard.commandCenter.financialPosition.cashAtBank)}

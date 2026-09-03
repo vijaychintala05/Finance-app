@@ -356,9 +356,9 @@ export const AccountModal: React.FC<AccountModalProps> = ({
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-3 sm:p-6" onClick={onClose}>
-      <div className="max-h-[calc(100vh-1.5rem)] w-full max-w-4xl overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900 sm:max-h-[calc(100vh-3rem)]" onClick={(event) => event.stopPropagation()}>
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-800 sm:px-6">
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-950/50 p-0 sm:p-6" onClick={onClose}>
+      <div className="max-h-[92vh] sm:max-h-[calc(100vh-3rem)] w-full max-w-4xl overflow-y-auto rounded-t-2xl sm:rounded-xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900" onClick={(event) => event.stopPropagation()}>
+        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3.5 dark:border-slate-800 sm:px-6 sm:py-4">
           <h3 className="text-base font-semibold text-slate-900 dark:text-white">
             {accountToEdit ? `Account details: ${accountToEdit.name}` : 'Create account'}
           </h3>
@@ -593,7 +593,7 @@ export const AccountModal: React.FC<AccountModalProps> = ({
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-5 py-4 dark:border-slate-800 sm:px-6">
+          <div className="sticky bottom-0 z-20 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-white/95 backdrop-blur-xs px-4 py-3 dark:border-slate-800 dark:bg-slate-900/95 sm:px-6">
             <div className="flex items-center gap-2">
               {accountToEdit && !accountToEdit.isSystemAccount && !accountToEdit.isLocked && (
                 <button type="button" onClick={handleDelete} disabled={isSubmitting} className="inline-flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-rose-700 transition hover:bg-rose-50 disabled:opacity-50 dark:text-rose-300 dark:hover:bg-rose-950/30 cursor-pointer">

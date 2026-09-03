@@ -87,7 +87,7 @@ describe('AccountModal', () => {
 
     fireEvent.click(screen.getByLabelText(/account type: asset - bank/i));
     const search = screen.getByPlaceholderText('Search account types');
-    fireEvent.click(screen.getByRole('button', { name: 'Expense', exact: true }));
+    fireEvent.click(screen.getByRole('button', { name: /^Expense$/ }));
 
     expect(screen.getByRole('option', { name: 'Expense: Payroll' })).toBeTruthy();
     fireEvent.change(search, { target: { value: 'software' } });

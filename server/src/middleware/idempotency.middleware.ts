@@ -77,7 +77,10 @@ export async function idempotencyMiddleware(
   const originalJson = res.json.bind(res);
 
   try {
-    const outcome = await db.transaction<CapturedResponse>(async (client) => {
+    // This transaction owns every production mutation. Keep the organization
+    // context explicit here so downstream nested writes retain their PostgreSQL
+    // RLS scope even when Express continues the middleware chain asynchronously.
+    const outcome = await db.withOrganizationContext(organizationId, () => db.transaction<CapturedResponse>(async (client) => {
       const existing = await client.query(
         `SELECT request_hash, state, response_status, response_body
            FROM api_idempotency_keys
@@ -120,7 +123,7 @@ export async function idempotencyMiddleware(
         [captured.status, JSON.stringify(captured.body), organizationId, key]
       );
       return captured;
-    });
+    }, { organizationId }));
 
     res.json = originalJson as Response['json'];
     res.status(outcome.status);

@@ -1,10 +1,13 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import request from 'supertest';
+import fs from 'fs';
+import path from 'path';
 import app from '../index';
 import { db } from '../database/db';
 import { MigrationRunner } from '../database/migrationRunner';
 import { JwtAuth } from '../auth/jwt';
 import { newId } from '../utils/ids';
+import { TENANT_SCOPED_TABLES } from '../database/enterpriseHardeningSchema';
 
 describe('NAS Server & Production RLS Hardening Suite', () => {
   const orgId = `org_nas_${Date.now()}`;
@@ -100,7 +103,6 @@ describe('NAS Server & Production RLS Hardening Suite', () => {
   });
 
   it('4. Successfully records an expense through the full middleware chain (document numbering + audit)', async () => {
-    // Setup required accounts first
     const expAccRes = await db.query(
       `INSERT INTO accounts (id, organization_id, code, name, type, sub_type, balance, status)
        VALUES ($1, $2, '6050', 'Hardware Maintenance', 'Expense', 'Operating Expense', 0, 'Active') RETURNING id`,
@@ -133,7 +135,86 @@ describe('NAS Server & Production RLS Hardening Suite', () => {
     expect(Number(dbCheck.rows[0].amount)).toBe(350);
   });
 
-  it('5. Verifies set_config execution during db.transaction and savepoints', async () => {
+  it('5. Successfully creates an invoice through the full middleware chain', async () => {
+    // Create client and required accounts first
+    const clientRes = await db.query(
+      `INSERT INTO clients (id, organization_id, name, company_name, email, currency)
+       VALUES ($1, $2, 'Invoice NAS Client', 'Invoice NAS Client', 'inv@nas.test', 'USD') RETURNING id`,
+      [newId('cli'), orgId]
+    );
+    await db.query(
+      `INSERT INTO accounts (id, organization_id, code, name, type, sub_type, balance, status)
+       VALUES ($1, $2, '1100', 'Accounts Receivable', 'Asset', 'Accounts Receivable', 0, 'Active')`,
+      [newId('acc'), orgId]
+    );
+    await db.query(
+      `INSERT INTO accounts (id, organization_id, code, name, type, sub_type, balance, status)
+       VALUES ($1, $2, '4000', 'Sales Revenue', 'Income', 'Operating Revenue', 0, 'Active')`,
+      [newId('acc'), orgId]
+    );
+
+    const res = await request(app)
+      .post('/api/v1/finance/invoices')
+      .set('Authorization', `Bearer ${token}`)
+      .set('x-organization-id', orgId)
+      .set('Idempotency-Key', `nas-inv-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`)
+      .send({
+        clientId: clientRes.rows[0].id,
+        clientName: 'Invoice NAS Client',
+        issueDate: '2026-09-03',
+        dueDate: '2026-10-03',
+        items: [{ description: 'Cloud Infrastructure Engineering', quantity: 1, unitPrice: 2400, taxRate: 0, amount: 2400 }],
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.totalAmount).toBe(2400);
+
+    const dbCheck = await db.query('SELECT * FROM invoices WHERE organization_id = $1', [orgId]);
+    expect(dbCheck.rows).toHaveLength(1);
+  });
+
+  it('6. Successfully creates a bill through the full middleware chain', async () => {
+    // Create vendor and required accounts first
+    const vendorRes = await db.query(
+      `INSERT INTO vendors (id, organization_id, name, company_name, email, currency)
+       VALUES ($1, $2, 'Bill NAS Vendor', 'Bill NAS Vendor', 'bill@nas.test', 'USD') RETURNING id`,
+      [newId('ven'), orgId]
+    );
+    await db.query(
+      `INSERT INTO accounts (id, organization_id, code, name, type, sub_type, balance, status)
+       VALUES ($1, $2, '2000', 'Accounts Payable', 'Liability', 'Accounts Payable', 0, 'Active')`,
+      [newId('acc'), orgId]
+    );
+    await db.query(
+      `INSERT INTO accounts (id, organization_id, code, name, type, sub_type, balance, status)
+       VALUES ($1, $2, '6000', 'Operating Expense', 'Expense', 'Operating Expense', 0, 'Active')`,
+      [newId('acc'), orgId]
+    );
+
+    const res = await request(app)
+      .post('/api/v1/finance/bills')
+      .set('Authorization', `Bearer ${token}`)
+      .set('x-organization-id', orgId)
+      .set('Idempotency-Key', `nas-bill-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`)
+      .send({
+        vendorId: vendorRes.rows[0].id,
+        vendorName: 'Bill NAS Vendor',
+        billDate: '2026-09-03',
+        dueDate: '2026-10-03',
+        totalAmount: 1800,
+        subtotal: 1800,
+        taxTotal: 0,
+        lineItems: [{ description: 'Dedicated Rackspace', quantity: 1, unitPrice: 1800, taxRate: 0, amount: 1800 }],
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.totalAmount).toBe(1800);
+
+    const dbCheck = await db.query('SELECT * FROM bills WHERE organization_id = $1', [orgId]);
+    expect(dbCheck.rows).toHaveLength(1);
+  });
+
+  it('7. Verifies set_config execution during db.transaction and savepoints', async () => {
     await db.transaction(async (tx) => {
       // Test nested transaction with savepoint
       await db.transaction(async (nestedTx) => {
@@ -141,5 +222,63 @@ describe('NAS Server & Production RLS Hardening Suite', () => {
         expect(check.rows[0].alive).toBe(1);
       }, { organizationId: orgId });
     }, { organizationId: orgId });
+  });
+
+  it('8. Code Guardian: Strictly forbids invalid parameterized "SET LOCAL" syntax in database layer', () => {
+    const dbSource = fs.readFileSync(path.join(__dirname, '../database/db.ts'), 'utf-8');
+
+    // Reject parameterized SET / SET LOCAL
+    const invalidSetRegex = /SET\s+LOCAL\s+[A-Za-z0-9_.]+\s*=\s*\$1/i;
+    expect(invalidSetRegex.test(dbSource)).toBe(false);
+
+    // Mandate use of set_config with local parameter
+    const setConfigRegex = /set_config\(\s*'app\.current_org_id'\s*,\s*\$1\s*,\s*true\s*\)/;
+    expect(setConfigRegex.test(dbSource)).toBe(true);
+  });
+
+  it('9. Schema Guardian: Guarantees enterpriseHardeningSchema RLS policy includes null fallback safeguard', () => {
+    const schemaSource = fs.readFileSync(path.join(__dirname, '../database/enterpriseHardeningSchema.ts'), 'utf-8');
+
+    // Ensure policy has the null-safe check so unconfigured administrative tasks do not explode
+    expect(schemaSource).toContain("OR NULLIF(current_setting(''app.current_org_id'', true), '''') IS NULL");
+
+    // Ensure all critical tables are registered
+    expect(TENANT_SCOPED_TABLES).toContain('accounts');
+    expect(TENANT_SCOPED_TABLES).toContain('invoices');
+    expect(TENANT_SCOPED_TABLES).toContain('bills');
+    expect(TENANT_SCOPED_TABLES).toContain('expenses');
+    expect(TENANT_SCOPED_TABLES).toContain('audit_logs');
+    expect(TENANT_SCOPED_TABLES).toContain('document_sequences');
+  });
+
+  it('10. Organization Context Guardian: Retains store across asynchronous microtasks and timer ticks', async () => {
+    const testOrg = 'org_async_context_verify';
+
+    await db.withOrganizationContext(testOrg, async () => {
+      expect(db.getCurrentOrganizationId()).toBe(testOrg);
+
+      // Verify across microtask
+      await Promise.resolve();
+      expect(db.getCurrentOrganizationId()).toBe(testOrg);
+
+      // Verify across macrotask (setImmediate)
+      await new Promise<void>((resolve) => {
+        setImmediate(() => {
+          expect(db.getCurrentOrganizationId()).toBe(testOrg);
+          resolve();
+        });
+      });
+
+      // Verify across timer macrotask (setTimeout)
+      await new Promise<void>((resolve) => {
+        setTimeout(() => {
+          expect(db.getCurrentOrganizationId()).toBe(testOrg);
+          resolve();
+        }, 10);
+      });
+    });
+
+    // Cleaned up outside context
+    expect(db.getCurrentOrganizationId()).toBeUndefined();
   });
 });

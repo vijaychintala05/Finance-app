@@ -1748,9 +1748,13 @@ export class MigrationRunner {
           ALTER TABLE journal_lines ADD CONSTRAINT fk_journal_lines_account_org
           FOREIGN KEY (organization_id, account_id) REFERENCES accounts(organization_id, id) ON DELETE RESTRICT;
         END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_invoices_amounts_nonnegative') THEN
+          ALTER TABLE invoices ADD CONSTRAINT ck_invoices_amounts_nonnegative
+          CHECK (subtotal >= 0 AND tax_total >= 0 AND total_amount >= 0 AND paid_amount >= 0 AND balance_due >= 0);
+        END IF;
         IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_bills_amounts_nonnegative') THEN
           ALTER TABLE bills ADD CONSTRAINT ck_bills_amounts_nonnegative
-          CHECK (subtotal >= 0 AND tax_total >= 0 AND total_amount >= 0 AND paid_amount >= 0 AND balance_due >= 0);
+          CHECK (subtotal >= 0 AND tax_total >= 0 AND total_amount >= 0 AND amount_paid >= 0 AND balance_due >= 0);
         END IF;
         IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_payments_made_positive') THEN
           ALTER TABLE payments_made ADD CONSTRAINT ck_payments_made_positive

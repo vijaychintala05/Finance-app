@@ -37,6 +37,9 @@ async function run() {
       email: userEmail,
       password: 'Password@12345678',
       fullName: 'CI Smoke Admin',
+      organizationName: 'CI Smoke Enterprises',
+      country: 'United States',
+      baseCurrency: 'USD',
     }),
   });
 

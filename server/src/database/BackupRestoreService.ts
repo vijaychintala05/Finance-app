@@ -63,6 +63,7 @@ export class BackupRestoreService {
     'vendor_credits',
     'debit_note_applications',
     'ap_write_offs',
+    'vendor_refunds',
     'expenses',
     'expense_receipt_attachments',
     'journal_entries',

@@ -226,6 +226,18 @@ export class Phase8Controller {
     }
   }
 
+  public static async cancelQuotation(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const orgId = req.auth!.organizationId;
+      const reason = req.body?.reason || 'Cancelled by user';
+      const quotation = await QuotationEngine.cancelQuotation(orgId, req.params.id, req.auth!.userId, reason);
+      res.json({ quotation });
+    } catch (err: any) {
+      const message = err.message || 'Quotation cancellation failed';
+      res.status(message.includes('already been converted') ? 409 : message.includes('not found') ? 404 : 400).json({ error: message });
+    }
+  }
+
   // --- PUBLIC CUSTOMER PORTAL API (UNPROTECTED) ---
   public static async getPublicQuotation(req: Request, res: Response): Promise<void> {
     try {

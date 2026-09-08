@@ -101,4 +101,70 @@ export class ProfitAndLossReportService {
       netProfit,
     };
   }
+
+  public static async getComparativeProfitAndLoss(
+    orgId: string,
+    options: {
+      currentFromDate: string;
+      currentToDate: string;
+      priorFromDate: string;
+      priorToDate: string;
+      projectId?: string;
+    }
+  ) {
+    const [currentPnl, priorPnl] = await Promise.all([
+      this.getProfitAndLoss(orgId, { fromDate: options.currentFromDate, toDate: options.currentToDate, projectId: options.projectId }),
+      this.getProfitAndLoss(orgId, { fromDate: options.priorFromDate, toDate: options.priorToDate, projectId: options.projectId }),
+    ]);
+
+    const alignRows = (currentRows: any[], priorRows: any[]) => {
+      const map = new Map<string, { accountId: string; accountCode: string; accountName: string; currentAmount: number; priorAmount: number }>();
+      for (const r of priorRows) {
+        map.set(r.accountCode, { accountId: r.accountId, accountCode: r.accountCode, accountName: r.accountName, currentAmount: 0, priorAmount: Number(r.amount || 0) });
+      }
+      for (const r of currentRows) {
+        const existing = map.get(r.accountCode);
+        if (existing) {
+          existing.currentAmount = Number(r.amount || 0);
+        } else {
+          map.set(r.accountCode, { accountId: r.accountId, accountCode: r.accountCode, accountName: r.accountName, currentAmount: Number(r.amount || 0), priorAmount: 0 });
+        }
+      }
+      return Array.from(map.values())
+        .sort((a, b) => a.accountCode.localeCompare(b.accountCode))
+        .map((item) => {
+          const varianceAmount = Math.round((item.currentAmount - item.priorAmount) * 100) / 100;
+          const variancePercentage = item.priorAmount !== 0
+            ? Math.round(((item.currentAmount - item.priorAmount) / Math.abs(item.priorAmount)) * 10000) / 100
+            : null;
+          return {
+            ...item,
+            varianceAmount,
+            variancePercentage,
+          };
+        });
+    };
+
+    const calcTotalVariance = (currentTotal: number, priorTotal: number) => {
+      const varianceAmount = Math.round((currentTotal - priorTotal) * 100) / 100;
+      const variancePercentage = priorTotal !== 0
+        ? Math.round(((currentTotal - priorTotal) / Math.abs(priorTotal)) * 10000) / 100
+        : null;
+      return { current: currentTotal, prior: priorTotal, varianceAmount, variancePercentage };
+    };
+
+    return {
+      organizationId: orgId,
+      currentPeriod: { fromDate: options.currentFromDate, toDate: options.currentToDate },
+      priorPeriod: { fromDate: options.priorFromDate, toDate: options.priorToDate },
+      incomeAccounts: alignRows(currentPnl.incomeAccounts, priorPnl.incomeAccounts),
+      expenseAccounts: alignRows(currentPnl.expenseAccounts, priorPnl.expenseAccounts),
+      directCostAccounts: alignRows(currentPnl.directCostAccounts, priorPnl.directCostAccounts),
+      totalRevenue: calcTotalVariance(currentPnl.totalRevenue, priorPnl.totalRevenue),
+      totalExpenses: calcTotalVariance(currentPnl.totalExpenses, priorPnl.totalExpenses),
+      grossProfit: calcTotalVariance(currentPnl.grossProfit, priorPnl.grossProfit),
+      netProfit: calcTotalVariance(currentPnl.netProfit, priorPnl.netProfit),
+    };
+  }
 }
+

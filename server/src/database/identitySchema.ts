@@ -43,6 +43,8 @@ export async function applyIdentitySchema(client: DbQueryClient): Promise<void> 
       delivery_status VARCHAR(30) NOT NULL,
       retry_count INT NOT NULL DEFAULT 0,
       max_retries INT NOT NULL DEFAULT 5,
+      lease_owner VARCHAR(128),
+      lease_expires_at TIMESTAMP WITH TIME ZONE,
       last_error TEXT,
       next_retry_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
       sent_at TIMESTAMP WITH TIME ZONE,

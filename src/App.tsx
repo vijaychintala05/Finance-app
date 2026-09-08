@@ -39,9 +39,17 @@ const TeamAccessView = lazyNamed(() => import('./components/settings/TeamAccessV
 const RecoveryCenterView = lazyNamed(() => import('./components/settings/RecoveryCenterView'), 'RecoveryCenterView');
 const SettlementWorkspace = lazyNamed(() => import('./components/accounting/SettlementWorkspace'), 'SettlementWorkspace');
 const SecurityCenterView = lazyNamed(() => import('./components/security/SecurityCenterView'), 'SecurityCenterView');
+const DocumentInboxView = lazyNamed(() => import('./components/inbox/DocumentInboxView'), 'DocumentInboxView');
+const CustomerPortalView = lazyNamed(() => import('./components/portal/CustomerPortalView'), 'CustomerPortalView');
+const DataMigrationModal = lazyNamed(() => import('./components/migration/DataMigrationModal'), 'DataMigrationModal');
 
 const parseHashRoute = (): { tab: string; entityId?: string } => {
   if (typeof window === 'undefined') return { tab: 'dashboard' };
+  const searchParams = new URLSearchParams(window.location.search);
+  if (searchParams.has('portal_token')) {
+    return { tab: 'customer_portal' };
+  }
+
   const rawHash = window.location.hash.replace(/^#\/?/, '').trim();
   if (!rawHash) return { tab: 'dashboard' };
   const [routePart, queryPart] = rawHash.split('?');
@@ -50,6 +58,9 @@ const parseHashRoute = (): { tab: string; entityId?: string } => {
   if (queryPart) {
     const params = new URLSearchParams(queryPart);
     entityId = params.get('id') || undefined;
+    if (params.has('portal_token') || tab === 'customer_portal') {
+      return { tab: 'customer_portal', entityId };
+    }
   }
   return { tab, entityId };
 };
@@ -324,6 +335,14 @@ function MainAppLayout() {
       case 'security_center':
       case 'identity_center':
         return <SecurityCenterView />;
+
+      // Stage 6 — Usability, Document Handling & Customer Portal
+      case 'document_inbox':
+        return <DocumentInboxView />;
+      case 'customer_portal':
+        return <CustomerPortalView />;
+      case 'data_migration':
+        return <DataMigrationModal isOpen={true} onClose={() => setActiveTab('accounting')} />;
 
       default:
         return <DashboardView onNavigate={handleNavigate} />;

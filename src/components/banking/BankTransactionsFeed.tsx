@@ -9,6 +9,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Trash2,
   Upload,
   Wallet,
 } from 'lucide-react';
@@ -27,6 +28,7 @@ interface BankTransactionsFeedProps {
   onOpenReconcile: () => void;
   onOpenImportStatement: () => void;
   onOpenRecordTx: () => void;
+  onOpenDeleteAccount?: () => void;
   onSelectTx: (tx: BankTransactionItem) => void;
 }
 
@@ -41,6 +43,7 @@ export const BankTransactionsFeed: React.FC<BankTransactionsFeedProps> = ({
   onOpenReconcile,
   onOpenImportStatement,
   onOpenRecordTx,
+  onOpenDeleteAccount,
   onSelectTx,
 }) => {
   if (!activeAccount) {
@@ -119,6 +122,18 @@ export const BankTransactionsFeed: React.FC<BankTransactionsFeedProps> = ({
                 >
                   <Plus className="w-4 h-4" />
                   <span>Record Transaction</span>
+                </button>
+              )}
+
+              {onOpenDeleteAccount && (
+                <button
+                  type="button"
+                  onClick={onOpenDeleteAccount}
+                  className="px-3.5 py-2 bg-rose-50 dark:bg-rose-950/50 hover:bg-rose-100 dark:hover:bg-rose-900/50 text-rose-700 dark:text-rose-300 text-xs font-bold border border-rose-200 dark:border-rose-800 rounded-xl flex items-center space-x-1.5 cursor-pointer transition-colors"
+                  title="Delete this account profile"
+                >
+                  <Trash2 className="w-4 h-4 text-rose-600 dark:text-rose-400" />
+                  <span>Delete</span>
                 </button>
               )}
 

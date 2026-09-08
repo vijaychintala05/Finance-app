@@ -16,6 +16,7 @@ import {
   FileSpreadsheet,
   FileText,
   FolderKanban,
+  Globe,
   History,
   Layers,
   Loader2,
@@ -45,6 +46,7 @@ import { formatCurrency, formatDate, getStatusBadgeStyle } from '../../utils/for
 import { InvoiceEditorModal } from '../invoices/InvoiceEditorModal';
 import { RecordCustomerPaymentModal } from '../sales/RecordCustomerPaymentModal';
 import { apiClient } from '../../api/client';
+import { CustomerPortalView } from '../portal/CustomerPortalView';
 
 interface CustomerWorkspaceProps {
   client: Client;
@@ -100,6 +102,7 @@ export const CustomerWorkspace: React.FC<CustomerWorkspaceProps> = ({
   const [selectedEstimateForConvert, setSelectedEstimateForConvert] = useState<Estimate | null>(null);
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
   const [selectedInvoiceForPayment, setSelectedInvoiceForPayment] = useState<Invoice | null>(null);
+  const [isPortalModalOpen, setIsPortalModalOpen] = useState(false);
 
   const money = (value: number) => formatCurrency(value, settings.currencySymbol);
 
@@ -481,6 +484,13 @@ export const CustomerWorkspace: React.FC<CustomerWorkspaceProps> = ({
           >
             <Edit2 className="h-3.5 w-3.5 text-slate-500" />
             <span>Edit Profile</span>
+          </button>
+          <button
+            onClick={() => setIsPortalModalOpen(true)}
+            className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-indigo-200 bg-indigo-50/70 px-3.5 text-xs font-bold text-indigo-700 shadow-xs hover:bg-indigo-100 dark:border-indigo-800/60 dark:bg-indigo-950/40 dark:text-indigo-300 cursor-pointer transition-colors"
+          >
+            <Globe className="h-3.5 w-3.5 text-indigo-600 dark:text-indigo-400" />
+            <span>Customer Portal</span>
           </button>
           <button
             onClick={handleDelete}
@@ -1209,6 +1219,29 @@ export const CustomerWorkspace: React.FC<CustomerWorkspaceProps> = ({
           clientId={client.id}
           targetInvoice={selectedInvoiceForPayment}
         />
+      )}
+
+      {/* Customer Portal Hub Modal */}
+      {isPortalModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-5xl h-[85vh] shadow-2xl flex flex-col overflow-hidden">
+            <div className="p-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-800/50">
+              <span className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-2">
+                <Globe className="w-4 h-4 text-indigo-500" />
+                Customer Portal Hub · {client.companyName || client.name}
+              </span>
+              <button
+                onClick={() => setIsPortalModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-lg font-bold px-2"
+              >
+                &times;
+              </button>
+            </div>
+            <div className="flex-1 overflow-hidden">
+              <CustomerPortalView customerId={client.id} onClose={() => setIsPortalModalOpen(false)} />
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -25,6 +25,7 @@ router.get('/quotations/:id/revisions/:revisionNumber/pdf', requirePermission('i
 router.get('/quotations/:id/revisions', requirePermission('invoices.view'), Phase8Controller.getQuotationRevisions);
 router.post('/quotations/:id/convert-so', requirePermission('invoices.create'), Phase8Controller.convertQuotationToSO);
 router.post('/quotations/:id/convert-inv', requirePermission('invoices.create'), Phase8Controller.convertQuotationToInvoice);
+router.post('/quotations/:id/cancel', requirePermission('invoices.edit'), Phase8Controller.cancelQuotation);
 
 // Document Numbering API
 router.get('/document-numbering/next', requirePermission(['invoices.view', 'purchases.view']), Phase8Controller.getNextDocumentNumber);

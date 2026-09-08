@@ -157,6 +157,10 @@ export class ServerPostingEngine {
           'UPDATE accounts SET balance = balance + $1 WHERE id = $2 AND organization_id = $3',
           [balanceDelta, line.accountId, payload.organizationId]
         );
+        await client.query(
+          'UPDATE bank_accounts SET current_balance = current_balance + $1, updated_at = CURRENT_TIMESTAMP WHERE (ledger_account_id = $2 OR id = $2) AND organization_id = $3',
+          [balanceDelta, line.accountId, payload.organizationId]
+        );
       }
 
       return { entryId };

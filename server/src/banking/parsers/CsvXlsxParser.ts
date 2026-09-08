@@ -170,7 +170,7 @@ export class CsvXlsxParser {
       closingBalance: closingBalance || calculatedClosing,
       statementFrom: transactions[0]?.transactionDate,
       statementTo: transactions[transactions.length - 1]?.transactionDate,
-      currency: 'INR',
+      currency: (mapping as any)?.currency || 'INR',
       transactions,
       discrepancy,
     };

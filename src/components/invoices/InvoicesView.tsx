@@ -280,8 +280,24 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
                     className="hover:bg-blue-50/50 dark:hover:bg-slate-800/60 transition-colors cursor-pointer group"
                     title="Click to view full invoice bill statement"
                   >
-                    <td className="p-3 pl-4 font-mono font-bold text-blue-600 dark:text-blue-400 flex items-center space-x-1.5">
+                    <td className="p-3 pl-4 font-mono font-bold text-blue-600 dark:text-blue-400 flex items-center space-x-1.5 flex-wrap">
                       <span className="group-hover:underline">{inv.invoiceNumber}</span>
+                      {inv.salesOrderId && (
+                        <span
+                          className="inline-flex items-center text-[9px] bg-indigo-50 text-indigo-700 dark:bg-indigo-950/80 dark:text-indigo-300 font-bold px-1.5 py-0.5 rounded border border-indigo-200 dark:border-indigo-800"
+                          title="Generated from Sales Order"
+                        >
+                          SO
+                        </span>
+                      )}
+                      {inv.estimateId && (
+                        <span
+                          className="inline-flex items-center text-[9px] bg-teal-50 text-teal-700 dark:bg-teal-950/80 dark:text-teal-300 font-bold px-1.5 py-0.5 rounded border border-teal-200 dark:border-teal-800"
+                          title="Generated from Quotation / Estimate"
+                        >
+                          Quote
+                        </span>
+                      )}
                       {inv.editHistory && inv.editHistory.length > 0 && (
                         <span
                           className="inline-flex items-center space-x-0.5 text-[9px] bg-amber-100 text-amber-800 dark:bg-amber-950/80 dark:text-amber-300 font-bold px-1.5 py-0.2 rounded border border-amber-300 dark:border-amber-700"

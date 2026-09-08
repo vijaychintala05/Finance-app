@@ -47,7 +47,10 @@ export type NavigationTab =
   | 'banking_overview'
   | 'accounting_overview'
   | 'reports_overview'
-  | 'settings_overview';
+  | 'settings_overview'
+  | 'document_inbox'
+  | 'data_migration'
+  | 'customer_portal';
 
 export type AccountType =
   | 'Asset'
@@ -299,6 +302,8 @@ export interface Invoice {
   salespersonName?: string;
   projectId?: string;
   projectName?: string;
+  salesOrderId?: string;
+  estimateId?: string;
   issueDate: string;
   dueDate: string;
   items: InvoiceItem[];
@@ -788,11 +793,15 @@ export interface ProjectFinancialSummary {
 export interface SalesOrder {
   id: string;
   orderNumber: string;
+  clientId?: string;
   clientName: string;
+  estimateId?: string;
   orderDate: string;
-  expectedDeliveryDate: string;
+  expectedDeliveryDate?: string;
   totalAmount: number;
-  status: 'Confirmed' | 'In Production' | 'Shipped' | 'Invoiced' | 'Cancelled';
+  invoicedAmount?: number;
+  fulfilledAmount?: number;
+  status: 'Draft' | 'Confirmed' | 'In Production' | 'Shipped' | 'Partially Invoiced' | 'Invoiced' | 'Partially Fulfilled' | 'Fulfilled' | 'Cancelled';
   notes: string;
 }
 
@@ -844,11 +853,14 @@ export interface RecurringInvoiceProfile {
 export interface PurchaseOrder {
   id: string;
   poNumber: string;
+  vendorId?: string;
   vendorName: string;
   orderDate: string;
-  expectedDate: string;
+  expectedDate?: string;
   totalAmount: number;
-  status: 'Issued' | 'Pending Receipt' | 'Billed' | 'Cancelled';
+  billedAmount?: number;
+  receivedAmount?: number;
+  status: 'Draft' | 'Issued' | 'Approved' | 'Partially Received' | 'Received' | 'Pending Receipt' | 'Partially Billed' | 'Billed' | 'Cancelled';
   notes: string;
 }
 
@@ -857,6 +869,7 @@ export interface Bill {
   billNumber: string;
   vendorId?: string;
   vendorName: string;
+  purchaseOrderId?: string;
   billDate: string;
   dueDate: string;
   totalAmount: number;

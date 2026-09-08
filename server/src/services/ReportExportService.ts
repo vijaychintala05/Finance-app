@@ -46,6 +46,15 @@ export class ReportExportService {
     };
   }
 
+  public static sanitizeCsvValue(val: string): string {
+    if (!val) return '';
+    // CWE-1236: Prevent CSV Formula Injection in spreadsheet applications (Excel, Calc)
+    if (/^[=+\-@\t\r]/.test(val)) {
+      return `'${val}`;
+    }
+    return val;
+  }
+
   public static convertToCSV(dataRows: any[], headers?: string[]): string {
     if (!dataRows || dataRows.length === 0) return '';
     const cols = headers || Object.keys(dataRows[0]);
@@ -54,8 +63,9 @@ export class ReportExportService {
     const rowLines = dataRows.map((row) =>
       cols
         .map((col) => {
-          const val = row[col] !== undefined && row[col] !== null ? String(row[col]) : '';
-          const escaped = val.replace(/"/g, '""');
+          const raw = row[col] !== undefined && row[col] !== null ? String(row[col]) : '';
+          const sanitized = this.sanitizeCsvValue(raw);
+          const escaped = sanitized.replace(/"/g, '""');
           return `"${escaped}"`;
         })
         .join(',')

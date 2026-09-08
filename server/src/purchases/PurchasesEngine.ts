@@ -49,7 +49,7 @@ export interface PurchaseOrderModel {
   discount: number;
   totalAmount: number;
   billedAmount: number;
-  status: 'DRAFT' | 'APPROVED' | 'PARTIALLY_BILLED' | 'BILLED' | 'CANCELLED';
+  status: 'DRAFT' | 'APPROVED' | 'PARTIALLY_BILLED' | 'BILLED' | 'CANCELLED' | 'PARTIALLY_RECEIVED' | 'RECEIVED';
   lineItems: any[];
   notes?: string;
   createdAt?: string;
@@ -111,6 +111,7 @@ export interface VendorPaymentModel {
   notes?: string;
   unallocatedAmount?: number;
   status?: string;
+  billId?: string;
   allocations?: { billId: string; amount: number }[];
   _debugFailPoint?: 'after_journal' | 'after_payment' | 'after_first_allocation';
   journalEntryId?: string;
@@ -132,6 +133,8 @@ export interface DebitNoteModel {
   remainingCredit: number;
   status: 'OPEN' | 'PARTIALLY_APPLIED' | 'CLOSED' | 'VOID';
   reason?: string;
+  items?: any[];
+  lineItems?: any[];
   journalEntryId?: string;
   createdAt?: string;
 }
@@ -139,7 +142,7 @@ export interface DebitNoteModel {
 export class PurchasesEngine {
   // Helper for checking Period Lock
   private static async checkPeriodLock(orgId: string, dateStr: string, transactionClient?: QueryClient): Promise<void> {
-    const client = transactionClient || db;
+    const client = (transactionClient && typeof (transactionClient as any).query === 'function') ? transactionClient : db;
     const lockRes = await client.query(
       `SELECT lock_date FROM period_locks WHERE organization_id = $1 AND status = 'Active'`,
       [orgId]
@@ -174,31 +177,78 @@ export class PurchasesEngine {
     const accountIdentifiers = Array.from(new Set(
       lines.flatMap((line) => [line.accountId, line.accountCode].filter(Boolean))
     ));
+    const codeCandidates = Array.from(new Set(
+      accountIdentifiers.map(id => {
+        const match = String(id).match(/(\d{4})$/);
+        return match ? match[1] : id;
+      })
+    ));
 
     const accountsMap = new Map<string, { id: string; code: string; name: string }>();
-    if (accountIdentifiers.length > 0) {
-      const accRes = await queryClient.query(
-        `SELECT id, code, name FROM accounts WHERE organization_id = $1 AND (id = ANY($2::text[]) OR code = ANY($2::text[]))`,
-        [orgId, accountIdentifiers]
-      );
-      for (const row of accRes.rows) {
-        accountsMap.set(row.id, row);
-        accountsMap.set(row.code, row);
-      }
+    const accRes = await queryClient.query(
+      `SELECT id, code, name FROM accounts WHERE organization_id = $1`,
+      [orgId]
+    );
+    for (const row of accRes.rows) {
+      accountsMap.set(row.id, row);
+      accountsMap.set(row.code, row);
     }
 
-    const resolvedLines = lines.map((line) => {
-      const matched = (line.accountId && accountsMap.get(line.accountId)) || (line.accountCode && accountsMap.get(line.accountCode));
+    const resolvedLines: any[] = [];
+    for (const line of lines) {
+      const idCode = line.accountId ? (String(line.accountId).match(/(\d{4})$/)?.[1]) : null;
+      let matched = (line.accountId && accountsMap.get(line.accountId))
+        || (line.accountCode && accountsMap.get(line.accountCode))
+        || (idCode && accountsMap.get(idCode));
+
+      if (!matched && (line.accountId === '2000' || line.accountId === 'acc-ap-control' || line.accountCode === '2000' || line.accountName?.toLowerCase().includes('payable'))) {
+        const apRes = await queryClient.query(
+          `SELECT id, code, name FROM accounts WHERE organization_id = $1 AND (sub_type = 'Accounts Payable' OR name ILIKE '%Accounts Payable%' OR code = '2000') LIMIT 1`,
+          [orgId]
+        );
+        if (apRes.rows.length > 0) {
+          const row = apRes.rows[0];
+          accountsMap.set('2000', row);
+          accountsMap.set('acc-ap-control', row);
+          matched = row;
+        }
+      }
+
+      if (!matched && (line.accountId === 'acc-vendor-advances' || line.accountCode === '1150' || line.accountCode === '1200' || line.accountName?.toLowerCase().includes('advance'))) {
+        const advRes = await queryClient.query(
+          `SELECT id, code, name FROM accounts WHERE organization_id = $1 AND (name ILIKE '%vendor advance%' OR name ILIKE '%advance%' OR sub_type = 'Current Asset' OR code IN ('1150', '1200')) LIMIT 1`,
+          [orgId]
+        );
+        if (advRes.rows.length > 0) {
+          const row = advRes.rows[0];
+          accountsMap.set('1150', row);
+          accountsMap.set('acc-vendor-advances', row);
+          matched = row;
+        }
+      }
+
+      if (!matched && (line.accountId === '1010' || line.accountCode === '1010' || line.accountName?.toLowerCase().includes('bank') || line.accountName?.toLowerCase().includes('cash'))) {
+        const bankRes = await queryClient.query(
+          `SELECT id, code, name FROM accounts WHERE organization_id = $1 AND (type IN ('Asset', 'Bank', 'Cash') OR sub_type IN ('Bank', 'Cash') OR code = '1010') LIMIT 1`,
+          [orgId]
+        );
+        if (bankRes.rows.length > 0) {
+          const row = bankRes.rows[0];
+          accountsMap.set('1010', row);
+          matched = row;
+        }
+      }
+
       const accId = matched ? matched.id : line.accountId;
       const accCode = line.accountCode || (matched ? matched.code : undefined);
       const accName = line.accountName || (matched ? matched.name : undefined);
-      return {
+      resolvedLines.push({
         ...line,
         accountId: accId,
         accountCode: accCode,
         accountName: accName,
-      };
-    });
+      });
+    }
 
     const postRes = await ServerPostingEngine.postEntry({
       organizationId: orgId,
@@ -376,6 +426,18 @@ export class PurchasesEngine {
   // 2. PURCHASE ORDERS (PO)
   // -------------------------------------------------------------
   public static async createPurchaseOrder(orgId: string, data: Partial<PurchaseOrderModel>): Promise<PurchaseOrderModel> {
+    if (!data.vendorId) {
+      throw new Error('Vendor ID is required for purchase orders');
+    }
+    const vendorRes = await db.query(
+      `SELECT id, name, company_name, email FROM vendors WHERE organization_id = $1 AND id = $2`,
+      [orgId, data.vendorId]
+    );
+    if (vendorRes.rows.length === 0) {
+      throw new Error('Purchase order vendor does not belong to this organization or does not exist');
+    }
+    data.vendorName = vendorRes.rows[0].name || vendorRes.rows[0].company_name || data.vendorName;
+
     const now = new Date().toISOString();
     const orderDate = data.orderDate || now.split('T')[0];
     const id = newId('po');
@@ -436,13 +498,35 @@ export class PurchasesEngine {
     };
   }
 
-  public static async approvePurchaseOrder(orgId: string, id: string): Promise<PurchaseOrderModel> {
+  public static async approvePurchaseOrder(
+    orgId: string,
+    id: string,
+    actorId?: string,
+    actorRole?: string
+  ): Promise<PurchaseOrderModel> {
+    const po = await this.getPurchaseOrder(orgId, id);
+    if (!po) throw new Error('Purchase Order not found');
+    if (po.status === 'CANCELLED') {
+      throw new Error('Cannot approve a cancelled purchase order');
+    }
+    if (po.status === 'APPROVED') {
+      return po;
+    }
+
+    const requiresApproval = await ApprovalWorkflowService.requiresApproval(orgId, 'PURCHASE_ORDER', po.totalAmount);
+    if (requiresApproval) {
+      if (!actorId) {
+        throw new Error('Approval credentials required to approve this purchase order');
+      }
+      const role = actorRole || 'Purchase';
+      await ApprovalWorkflowService.approveRequest(orgId, 'PURCHASE_ORDER', id, actorId, role);
+    }
+
     await db.query(
       `UPDATE purchase_orders SET status = 'APPROVED' WHERE organization_id = $1 AND id = $2`,
       [orgId, id]
     );
-    const po = await this.getPurchaseOrder(orgId, id);
-    if (!po) throw new Error('Purchase Order not found');
+    po.status = 'APPROVED';
     return po;
   }
 
@@ -472,6 +556,346 @@ export class PurchasesEngine {
       notes: r.notes,
       createdAt: r.created_at,
     };
+  }
+
+  public static async listPurchaseOrders(
+    orgId: string,
+    filter?: { vendorId?: string; status?: string; search?: string }
+  ): Promise<PurchaseOrderModel[]> {
+    let sql = `SELECT * FROM purchase_orders WHERE organization_id = $1`;
+    const params: any[] = [orgId];
+
+    if (filter?.vendorId) {
+      params.push(filter.vendorId);
+      sql += ` AND vendor_id = $${params.length}`;
+    }
+    if (filter?.status && filter.status !== 'All') {
+      params.push(filter.status);
+      sql += ` AND UPPER(status) = UPPER($${params.length})`;
+    }
+    if (filter?.search && filter.search.trim()) {
+      params.push(`%${filter.search.trim().toLowerCase()}%`);
+      sql += ` AND (LOWER(purchase_order_number) LIKE $${params.length} OR LOWER(vendor_name) LIKE $${params.length} OR LOWER(notes) LIKE $${params.length})`;
+    }
+
+    sql += ` ORDER BY order_date DESC, created_at DESC`;
+    const res = await db.query(sql, params);
+    return res.rows.map((r) => ({
+      id: r.id,
+      organizationId: r.organization_id,
+      purchaseOrderNumber: r.purchase_order_number,
+      vendorId: r.vendor_id,
+      vendorName: r.vendor_name,
+      vendorSnapshot: typeof r.vendor_snapshot === 'string' ? JSON.parse(r.vendor_snapshot || '{}') : r.vendor_snapshot,
+      orderDate: r.order_date instanceof Date ? r.order_date.toISOString().split('T')[0] : String(r.order_date).split('T')[0],
+      expectedDelivery: r.expected_delivery ? (r.expected_delivery instanceof Date ? r.expected_delivery.toISOString().split('T')[0] : String(r.expected_delivery).split('T')[0]) : undefined,
+      subtotal: Number(r.subtotal || 0),
+      taxTotal: Number(r.tax_total || 0),
+      discount: Number(r.discount || 0),
+      totalAmount: Number(r.total_amount || 0),
+      billedAmount: Number(r.billed_amount || 0),
+      status: r.status,
+      lineItems: typeof r.line_items === 'string' ? JSON.parse(r.line_items || '[]') : r.line_items,
+      notes: r.notes || '',
+      createdAt: r.created_at,
+    }));
+  }
+
+  public static async updatePurchaseOrder(
+    orgId: string,
+    purchaseOrderId: string,
+    updates: Partial<PurchaseOrderModel>,
+    actorId: string = 'system'
+  ): Promise<PurchaseOrderModel> {
+    return db.transaction(async (client) => {
+      const existingRes = await client.query(
+        `SELECT * FROM purchase_orders WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, purchaseOrderId]
+      );
+      if (existingRes.rows.length === 0) throw new Error(`Purchase Order ${purchaseOrderId} not found`);
+      const po = existingRes.rows[0];
+
+      if (po.status === 'CANCELLED') {
+        throw new Error('Cancelled purchase orders cannot be edited');
+      }
+
+      if (Number(po.billed_amount || 0) > 0) {
+        if (updates.lineItems || updates.totalAmount !== undefined || updates.subtotal !== undefined) {
+          throw new Error('Amounts and line items cannot be modified after billing has commenced');
+        }
+      }
+
+      const expectedDelivery = updates.expectedDelivery !== undefined ? updates.expectedDelivery : po.expected_delivery;
+      const notes = updates.notes !== undefined ? updates.notes : po.notes;
+      const newStatus = updates.status !== undefined ? updates.status : po.status;
+
+      await client.query(
+        `UPDATE purchase_orders
+            SET expected_delivery = $1, notes = $2, status = $3
+          WHERE organization_id = $4 AND id = $5`,
+        [expectedDelivery || null, notes || '', newStatus, orgId, purchaseOrderId]
+      );
+
+      await client.query(
+        `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state, after_state)
+         VALUES ($1, $2, $3, 'PURCHASE_ORDER_UPDATED', 'PurchaseOrder', $4, $5, $6)`,
+        [newId('aud'), orgId, actorId, purchaseOrderId, JSON.stringify({ status: po.status }), JSON.stringify({ status: newStatus, notes })]
+      );
+
+      const updated = await this.getPurchaseOrder(orgId, purchaseOrderId);
+      return updated!;
+    });
+  }
+
+  public static async convertPurchaseOrderToBill(
+    orgId: string,
+    purchaseOrderId: string,
+    actorId: string = 'system',
+    partialAmount?: number
+  ): Promise<BillModel> {
+    return db.transaction(async (client) => {
+      const poRes = await client.query(
+        `SELECT * FROM purchase_orders WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, purchaseOrderId]
+      );
+      if (poRes.rows.length === 0) throw new Error(`Purchase Order ${purchaseOrderId} not found`);
+      const po = poRes.rows[0];
+
+      const currentStatus = String(po.status).toUpperCase();
+      if (currentStatus === 'CANCELLED') {
+        throw new Error(`Purchase Order cannot be converted from status ${po.status}`);
+      }
+      if (currentStatus === 'BILLED') {
+        throw new Error(`Purchase order ${po.purchase_order_number} is already fully billed`);
+      }
+
+      const totalAmount = Number(po.total_amount || 0);
+      const billedAmount = Number(po.billed_amount || 0);
+      const remainingUnbilled = Math.round((totalAmount - billedAmount) * 100) / 100;
+
+      if (remainingUnbilled <= 0) {
+        throw new Error(`Purchase order ${po.purchase_order_number} is already fully billed`);
+      }
+
+      const billAmount = partialAmount ? Number(partialAmount) : remainingUnbilled;
+      if (billAmount <= 0) throw new Error('Bill amount must be greater than zero');
+      if (billAmount > remainingUnbilled + 0.009) {
+        throw new Error(`Bill amount (${billAmount}) exceeds unbilled purchase order balance (${remainingUnbilled})`);
+      }
+
+      const rawItems = typeof po.line_items === 'string' ? JSON.parse(po.line_items) : (po.line_items || []);
+      let items = rawItems;
+      if (Math.abs(billAmount - totalAmount) > 0.001) {
+        const ratio = billAmount / totalAmount;
+        items = rawItems.map((it: any) => {
+          const origAmt = Number(it.amount || (Number(it.quantity || 1) * Number(it.unitPrice || it.rate || 0)));
+          const scaledAmt = Math.round(origAmt * ratio * 100) / 100;
+          return {
+            ...it,
+            quantity: 1,
+            unitPrice: scaledAmt,
+            amount: scaledAmt,
+          };
+        });
+        const linesSum = Math.round(items.reduce((s: number, l: any) => s + Number(l.amount || 0), 0) * 100) / 100;
+        const diff = Math.round((billAmount - linesSum) * 100) / 100;
+        if (diff !== 0 && items.length > 0) {
+          items[items.length - 1].amount = Math.round((items[items.length - 1].amount + diff) * 100) / 100;
+          items[items.length - 1].unitPrice = items[items.length - 1].amount;
+        }
+      }
+      const billDate = new Date().toISOString().split('T')[0];
+      const dueDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+      const existingBillsRes = await client.query(
+        `SELECT COUNT(*) as count FROM bills WHERE organization_id = $1 AND purchase_order_id = $2`,
+        [orgId, po.id]
+      );
+      const billCount = parseInt(existingBillsRes.rows[0]?.count || '0', 10);
+      const vendorInvNumber = billCount > 0 
+        ? `INV-${po.purchase_order_number}-${billCount + 1}` 
+        : `INV-${po.purchase_order_number}`;
+
+      const bill = await this.createAndPostBill(
+        orgId,
+        {
+          purchaseOrderId: po.id,
+          vendorId: po.vendor_id,
+          vendorName: po.vendor_name,
+          vendorInvoiceNumber: vendorInvNumber,
+          billDate,
+          dueDate,
+          totalAmount: billAmount,
+          subtotal: billAmount,
+          lineItems: items,
+          notes: `Converted from Purchase Order ${po.purchase_order_number}`,
+          status: 'POSTED',
+          createdBy: actorId,
+        } as any,
+        client
+      );
+
+      return bill;
+    });
+  }
+
+  public static async receivePurchaseOrder(
+    orgId: string,
+    purchaseOrderId: string,
+    actorId: string = 'system',
+    receiptData: { receiptDate?: string; notes?: string; lineItems?: any[]; status?: 'RECEIVED' | 'INSPECTED' | 'ACCEPTED' | 'REJECTED'; receivedAmount?: number } = {}
+  ): Promise<GoodsServiceReceiptModel> {
+    return db.transaction(async (client) => {
+      const poRes = await client.query(
+        `SELECT * FROM purchase_orders WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, purchaseOrderId]
+      );
+      if (poRes.rows.length === 0) throw new Error(`Purchase Order ${purchaseOrderId} not found`);
+      const po = poRes.rows[0];
+
+      if (po.status === 'CANCELLED') {
+        throw new Error('Cancelled purchase orders cannot receive goods');
+      }
+      if (po.status === 'RECEIVED') {
+        throw new Error(`Purchase order ${po.purchase_order_number} is already fully received`);
+      }
+
+      const poTotal = Number(po.total_amount || 0);
+      const existingReceiptsRes = await client.query(
+        `SELECT line_items FROM goods_service_receipts WHERE organization_id = $1 AND purchase_order_id = $2 AND status != 'REJECTED'`,
+        [orgId, purchaseOrderId]
+      );
+      let alreadyReceived = 0;
+      for (const row of existingReceiptsRes.rows) {
+        const rcptLines = typeof row.line_items === 'string' ? JSON.parse(row.line_items || '[]') : (row.line_items || []);
+        const rcptSum = rcptLines.reduce(
+          (sum: number, it: any) => sum + (Number(it.amount) || ((Number(it.quantity) || 0) * (Number(it.unitPrice || it.rate) || 0))),
+          0
+        );
+        alreadyReceived += rcptSum;
+      }
+      alreadyReceived = Math.round(alreadyReceived * 100) / 100;
+
+      if (poTotal > 0 && alreadyReceived >= poTotal - 0.009) {
+        throw new Error(`Purchase order ${po.purchase_order_number} is already fully received`);
+      }
+
+      const items = receiptData.lineItems || (typeof po.line_items === 'string' ? JSON.parse(po.line_items) : (po.line_items || []));
+      const thisReceiptAmount = receiptData.receivedAmount !== undefined
+        ? Number(receiptData.receivedAmount)
+        : items.reduce((sum: number, it: any) => sum + (Number(it.amount) || ((Number(it.quantity) || 0) * (Number(it.unitPrice || it.rate) || 0))), 0);
+
+      const unreceivedAmount = Math.max(0, Math.round((poTotal - alreadyReceived) * 100) / 100);
+      if (poTotal > 0 && thisReceiptAmount > unreceivedAmount + 0.009) {
+        throw new Error(`Receipt amount (${thisReceiptAmount}) exceeds remaining unreceived balance (${unreceivedAmount}) for purchase order ${po.purchase_order_number}`);
+      }
+
+      const now = new Date().toISOString();
+      const receiptDate = receiptData.receiptDate || now.split('T')[0];
+      const id = newId('rcpt');
+      const rcptNum = await DocumentNumberingEngine.getNextNumber(orgId, 'GOODS_RECEIPT', receiptDate, undefined, client);
+      const receiptStatus = receiptData.status || 'RECEIVED';
+
+      await client.query(
+        `INSERT INTO goods_service_receipts (id, organization_id, receipt_number, purchase_order_id, vendor_id, vendor_name, receipt_date, status, line_items, notes, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        [
+          id,
+          orgId,
+          rcptNum,
+          purchaseOrderId,
+          po.vendor_id,
+          po.vendor_name,
+          receiptDate,
+          receiptStatus,
+          JSON.stringify(items),
+          receiptData.notes || `Received against Purchase Order ${po.purchase_order_number}`,
+          now,
+        ]
+      );
+
+      const totalReceivedAfter = Math.round((alreadyReceived + thisReceiptAmount) * 100) / 100;
+      const isFullyReceived = poTotal > 0 ? (totalReceivedAfter >= poTotal - 0.009) : true;
+      const nextPoStatus = isFullyReceived ? 'RECEIVED' : 'PARTIALLY_RECEIVED';
+
+      await client.query(
+        `UPDATE purchase_orders SET status = $1 WHERE organization_id = $2 AND id = $3`,
+        [nextPoStatus, orgId, purchaseOrderId]
+      );
+
+      await client.query(
+        `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state)
+         VALUES ($1, $2, $3, 'PURCHASE_ORDER_RECEIVED', 'PurchaseOrder', $4, $5)`,
+        [newId('aud'), orgId, actorId, purchaseOrderId, JSON.stringify({ receiptNumber: rcptNum, status: nextPoStatus, totalReceived: totalReceivedAfter })]
+      );
+
+      return {
+        id,
+        organizationId: orgId,
+        receiptNumber: rcptNum,
+        purchaseOrderId,
+        vendorId: po.vendor_id,
+        vendorName: po.vendor_name,
+        receiptDate,
+        status: receiptStatus,
+        lineItems: items,
+        notes: receiptData.notes || '',
+        createdAt: now,
+      };
+    });
+  }
+
+  public static async cancelPurchaseOrder(
+    orgId: string,
+    purchaseOrderId: string,
+    actorId: string = 'system',
+    reason: string = 'Cancelled by user'
+  ): Promise<PurchaseOrderModel> {
+    return db.transaction(async (client) => {
+      const poRes = await client.query(
+        `SELECT * FROM purchase_orders WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, purchaseOrderId]
+      );
+      if (poRes.rows.length === 0) throw new Error(`Purchase Order ${purchaseOrderId} not found`);
+      const po = poRes.rows[0];
+
+      if (po.status === 'CANCELLED') {
+        const existing = await this.getPurchaseOrder(orgId, purchaseOrderId);
+        return existing!;
+      }
+
+      if (Number(po.billed_amount || 0) > 0) {
+        throw new Error(`Cannot cancel a purchase order with active bills (${po.purchase_order_number}, billed amount ₹${po.billed_amount}). Void linked bills first.`);
+      }
+
+      const receiptRes = await client.query(
+        `SELECT id FROM goods_service_receipts WHERE organization_id = $1 AND purchase_order_id = $2 AND status != 'REJECTED'`,
+        [orgId, purchaseOrderId]
+      );
+      if (receiptRes.rows.length > 0) {
+        throw new Error(`Cannot cancel purchase order ${po.purchase_order_number} with existing active goods receipts.`);
+      }
+
+      await client.query(
+        `UPDATE purchase_orders SET status = 'CANCELLED' WHERE organization_id = $1 AND id = $2`,
+        [orgId, purchaseOrderId]
+      );
+
+      await client.query(
+        `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state, after_state)
+         VALUES ($1, $2, $3, 'PURCHASE_ORDER_CANCELLED', 'PurchaseOrder', $4, $5, $6)`,
+        [
+          newId('aud'),
+          orgId,
+          actorId,
+          purchaseOrderId,
+          JSON.stringify({ status: po.status }),
+          JSON.stringify({ status: 'CANCELLED', reason }),
+        ]
+      );
+
+      const updated = await this.getPurchaseOrder(orgId, purchaseOrderId);
+      return updated!;
+    });
   }
 
   // -------------------------------------------------------------
@@ -516,15 +940,42 @@ export class PurchasesEngine {
     };
   }
 
+  public static async listGoodsReceipts(orgId: string, purchaseOrderId?: string): Promise<GoodsServiceReceiptModel[]> {
+    let sql = `SELECT * FROM goods_service_receipts WHERE organization_id = $1`;
+    const params: any[] = [orgId];
+    if (purchaseOrderId) {
+      params.push(purchaseOrderId);
+      sql += ` AND purchase_order_id = $2`;
+    }
+    sql += ` ORDER BY receipt_date DESC, created_at DESC`;
+    const res = await db.query(sql, params);
+    return res.rows.map((r) => ({
+      id: r.id,
+      organizationId: r.organization_id,
+      receiptNumber: r.receipt_number,
+      purchaseOrderId: r.purchase_order_id,
+      vendorId: r.vendor_id,
+      vendorName: r.vendor_name,
+      receiptDate: r.receipt_date instanceof Date ? r.receipt_date.toISOString().split('T')[0] : String(r.receipt_date).split('T')[0],
+      status: r.status,
+      lineItems: typeof r.line_items === 'string' ? JSON.parse(r.line_items || '[]') : r.line_items,
+      notes: r.notes || '',
+      createdAt: r.created_at,
+    }));
+  }
+
   // -------------------------------------------------------------
   // 4. VENDOR BILLS (POSTING & AP BALANCES)
   // -------------------------------------------------------------
   public static async createAndPostBill(
     orgId: string,
     data: Partial<BillModel>,
-    transactionClient?: QueryClient,
+    actorIdOrClient?: string | QueryClient,
     _debugFailPoint?: 'after_journal' | 'after_bill' | 'after_po' | 'after_vendor'
   ): Promise<BillModel> {
+    const isClient = typeof actorIdOrClient === 'object' && actorIdOrClient !== null && 'query' in actorIdOrClient;
+    const effectiveClient = isClient ? (actorIdOrClient as QueryClient) : undefined;
+    const effectiveFailPoint = _debugFailPoint || (typeof actorIdOrClient === 'string' && actorIdOrClient.startsWith('after_') ? (actorIdOrClient as any) : undefined);
     const execute = async (client: QueryClient) => {
       const billDate = data.billDate || new Date().toISOString().split('T')[0];
       await this.checkPeriodLock(orgId, billDate, client);
@@ -792,7 +1243,7 @@ export class PurchasesEngine {
       };
     };
 
-    if (transactionClient) return await execute(transactionClient);
+    if (effectiveClient) return await execute(effectiveClient);
     return await db.transaction(execute);
   }
 
@@ -985,11 +1436,25 @@ export class PurchasesEngine {
   // -------------------------------------------------------------
   // 5. VENDOR PAYMENTS & ALLOCATION
   // -------------------------------------------------------------
+  public static async createVendorPayment(
+    orgId: string,
+    data: Partial<VendorPaymentModel>,
+    actorIdOrClient?: string | QueryClient,
+    maybeClient?: QueryClient
+  ): Promise<VendorPaymentModel> {
+    return this.recordVendorPayment(orgId, data, actorIdOrClient, maybeClient);
+  }
+
   public static async recordVendorPayment(
     orgId: string,
     data: Partial<VendorPaymentModel>,
-    transactionClient?: QueryClient
+    actorIdOrClient?: string | QueryClient,
+    maybeClient?: QueryClient
   ): Promise<VendorPaymentModel> {
+    const clientCandidate = (typeof actorIdOrClient === 'object' && actorIdOrClient !== null && 'query' in actorIdOrClient)
+      ? (actorIdOrClient as QueryClient)
+      : maybeClient;
+
     const execute = async (client: QueryClient) => {
       const paymentDate = data.paymentDate || new Date().toISOString().split('T')[0];
       await this.checkPeriodLock(orgId, paymentDate, client);
@@ -1036,6 +1501,10 @@ export class PurchasesEngine {
           status: 'SUBMITTED',
           allocations: data.allocations || [],
         };
+      }
+
+      if (!data.allocations && (data as any).billId) {
+        data.allocations = [{ billId: (data as any).billId, amount }];
       }
 
       // 1. Group and aggregate allocation amounts by billId
@@ -1101,7 +1570,7 @@ export class PurchasesEngine {
           }] : []),
           ...(unallocatedAmount > 0 ? [{
             accountId: 'acc-vendor-advances',
-            accountCode: '1200',
+            accountCode: '1150',
             accountName: 'Vendor Advances Asset',
             debit: unallocatedAmount,
             credit: 0,
@@ -1216,7 +1685,7 @@ export class PurchasesEngine {
       };
     };
 
-    if (transactionClient) return await execute(transactionClient);
+    if (clientCandidate) return await execute(clientCandidate);
     return await db.transaction(execute);
   }
 
@@ -1292,7 +1761,7 @@ export class PurchasesEngine {
           }] : []),
           ...(unallocatedAmount > 0 ? [{
             accountId: 'acc-vendor-advances',
-            accountCode: '1200',
+            accountCode: '1150',
             accountName: 'Vendor Advances Asset',
             debit: unallocatedAmount,
             credit: 0,
@@ -1564,8 +2033,12 @@ export class PurchasesEngine {
       const dnNum = await DocumentNumberingEngine.getNextNumber(orgId, 'DEBIT_NOTE', date, undefined, client);
       const now = new Date().toISOString();
 
-      const taxableAmount = data.taxableAmount || 0;
-      const taxAmount = data.taxAmount || 0;
+      let taxableAmount = data.taxableAmount || 0;
+      let taxAmount = data.taxAmount || 0;
+      if (!taxableAmount && data.items && data.items.length > 0) {
+        taxableAmount = data.items.reduce((s, it) => s + (Number(it.quantity || 0) * Number(it.unitPrice || 0)), 0);
+        taxAmount = data.items.reduce((s, it) => s + (Number(it.quantity || 0) * Number(it.unitPrice || 0) * (Number(it.taxRate || 0) / 100)), 0);
+      }
       const totalAmount = data.totalAmount || Math.round((taxableAmount + taxAmount) * 100) / 100;
 
       // GL Posting for Debit Note
@@ -1953,5 +2426,157 @@ export class PurchasesEngine {
       vendors: vendorSummary,
       totals,
     };
+  }
+
+  // -------------------------------------------------------------
+  // 10. VENDOR REFUNDS (FLOW 9)
+  // -------------------------------------------------------------
+  public static async recordVendorRefund(
+    orgId: string,
+    payload: {
+      vendorId: string;
+      debitNoteId?: string;
+      paymentId?: string;
+      refundDate: string;
+      amount: number;
+      depositToAccountId: string;
+      reference?: string;
+      notes?: string;
+    },
+    transactionClient?: QueryClient
+  ): Promise<{ refundId: string; refundNumber: string; journalEntryId: string }> {
+    const execute = async (client: QueryClient) => {
+      await this.checkPeriodLock(orgId, payload.refundDate, client);
+
+      if (!payload.vendorId) throw new Error('Vendor ID is required for vendor refund');
+      if (!payload.amount || Number(payload.amount) <= 0) throw new Error('Refund amount must be greater than zero');
+      if (!payload.depositToAccountId) throw new Error('Deposit to account ID is required');
+
+      const refundId = newId('vrf');
+      const refundNum = await DocumentNumberingEngine.getNextNumber(orgId, 'PAYMENT', payload.refundDate, undefined, client);
+
+      if (payload.debitNoteId) {
+        const dnRes = await client.query(
+          `SELECT * FROM vendor_credits WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+          [orgId, payload.debitNoteId]
+        );
+        if (dnRes.rows.length === 0) throw new Error('Debit note not found for vendor refund');
+        const remCredit = Number(dnRes.rows[0].remaining_credit || 0);
+        if (payload.amount > remCredit + 0.001) {
+          throw new Error(`Refund amount ${payload.amount} exceeds remaining debit note balance ${remCredit}`);
+        }
+        await client.query(
+          `UPDATE vendor_credits SET remaining_credit = remaining_credit - $1, status = CASE WHEN remaining_credit - $1 <= 0.001 THEN 'Closed' ELSE status END WHERE organization_id = $2 AND id = $3`,
+          [payload.amount, orgId, payload.debitNoteId]
+        );
+      }
+
+      // Update vendor payables balance: money returned to company reduces outstanding vendor credit / increases net payables back
+      await client.query(
+        `UPDATE vendors SET payables_balance = payables_balance + $1 WHERE organization_id = $2 AND id = $3`,
+        [payload.amount, orgId, payload.vendorId]
+      );
+
+      // GL Entry: Dr Bank/Cash (depositToAccountId), Cr Accounts Payable (2000)
+      const journalLines = [
+        {
+          accountId: payload.depositToAccountId,
+          accountCode: '1010',
+          accountName: 'Bank Account',
+          debit: payload.amount,
+          credit: 0,
+          description: `Vendor Refund ${refundNum} deposit`,
+          vendorId: payload.vendorId,
+        },
+        {
+          accountId: '2000',
+          accountCode: '2000',
+          accountName: 'Accounts Payable',
+          debit: 0,
+          credit: payload.amount,
+          description: `Vendor Refund ${refundNum}`,
+          vendorId: payload.vendorId,
+        },
+      ];
+
+      const journalEntryId = await PurchasesEngine.persistJournalEntry(
+        orgId,
+        `JE-${refundNum}`,
+        payload.refundDate,
+        refundNum,
+        `Vendor Refund ${refundNum}`,
+        journalLines,
+        client
+      );
+
+      await client.query(
+        `INSERT INTO vendor_refunds (
+          id, organization_id, refund_number, vendor_id, debit_note_id, payment_id,
+          refund_date, amount, deposit_to_account_id, reference, notes,
+          status, journal_entry_id, created_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'POSTED', $12, CURRENT_TIMESTAMP)`,
+        [
+          refundId,
+          orgId,
+          refundNum,
+          payload.vendorId,
+          payload.debitNoteId || null,
+          payload.paymentId || null,
+          payload.refundDate,
+          payload.amount,
+          payload.depositToAccountId,
+          payload.reference || null,
+          payload.notes || null,
+          journalEntryId,
+        ]
+      );
+
+      // Audit Log
+      await client.query(
+        `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, timestamp, after_state)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          newId('aud'),
+          orgId,
+          (payload as any).createdBy || 'SYSTEM',
+          'CREATE_VENDOR_REFUND',
+          'VENDOR_REFUND',
+          refundId,
+          new Date().toISOString(),
+          JSON.stringify({ refundNumber: refundNum, amount: payload.amount, journalEntryId }),
+        ]
+      );
+
+      return { refundId, refundNumber: refundNum, journalEntryId };
+    };
+
+    return transactionClient ? execute(transactionClient) : db.transaction(execute);
+  }
+
+  public static async getVendorRefunds(orgId: string, client?: QueryClient): Promise<any[]> {
+    const runner = client || db;
+    const res = await runner.query(
+      `SELECT vr.*, v.name as vendor_name, a.name as deposit_to_account_name
+       FROM vendor_refunds vr
+       LEFT JOIN vendors v ON v.organization_id = vr.organization_id AND v.id = vr.vendor_id
+       LEFT JOIN accounts a ON a.organization_id = vr.organization_id AND a.id = vr.deposit_to_account_id
+       WHERE vr.organization_id = $1
+       ORDER BY vr.refund_date DESC, vr.created_at DESC`,
+      [orgId]
+    );
+    return res.rows;
+  }
+
+  public static async getVendorRefundById(orgId: string, id: string, client?: QueryClient): Promise<any | null> {
+    const runner = client || db;
+    const res = await runner.query(
+      `SELECT vr.*, v.name as vendor_name, a.name as deposit_to_account_name
+       FROM vendor_refunds vr
+       LEFT JOIN vendors v ON v.organization_id = vr.organization_id AND v.id = vr.vendor_id
+       LEFT JOIN accounts a ON a.organization_id = vr.organization_id AND a.id = vr.deposit_to_account_id
+       WHERE vr.organization_id = $1 AND vr.id = $2`,
+      [orgId, id]
+    );
+    return res.rows[0] || null;
   }
 }

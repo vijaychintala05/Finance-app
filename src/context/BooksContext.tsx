@@ -37,6 +37,7 @@ import {
 } from '../types';
 import { apiClient } from '../api/client';
 import { createSafeDefaultSettings } from '../config/defaultSettings';
+import { BankingService } from '../services/bankingService';
 
 const SAFE_INITIAL_SETTINGS: FirmSettings = createSafeDefaultSettings();
 
@@ -108,6 +109,63 @@ const normalizeBillForUi = (record: any): Bill => {
   return { ...record, balanceDue, status } as Bill;
 };
 
+const normalizeSalesOrderForUi = (record: any): SalesOrder => {
+  const rawStatus = String(record.status || '').trim().toUpperCase().replaceAll(' ', '_');
+  let status: SalesOrder['status'];
+  if (['CANCELLED', 'VOID'].includes(rawStatus)) status = 'Cancelled';
+  else if (['FULFILLED', 'DELIVERED'].includes(rawStatus)) status = 'Fulfilled';
+  else if (['PARTIALLY_FULFILLED'].includes(rawStatus)) status = 'Partially Fulfilled';
+  else if (['INVOICED', 'CLOSED'].includes(rawStatus)) status = 'Invoiced';
+  else if (['PARTIALLY_INVOICED'].includes(rawStatus)) status = 'Partially Invoiced';
+  else if (['SHIPPED'].includes(rawStatus)) status = 'Shipped';
+  else if (['IN_PRODUCTION'].includes(rawStatus)) status = 'In Production';
+  else if (['DRAFT'].includes(rawStatus)) status = 'Draft';
+  else status = 'Confirmed';
+
+  return {
+    id: record.id,
+    orderNumber: record.orderNumber || record.salesOrderNumber || '',
+    clientId: record.clientId || record.customerId,
+    clientName: record.clientName || record.customerName || '',
+    estimateId: record.estimateId,
+    orderDate: record.orderDate || '',
+    expectedDeliveryDate: record.expectedDeliveryDate || record.expectedDelivery || '',
+    totalAmount: Number(record.totalAmount || 0),
+    invoicedAmount: Number(record.invoicedAmount || 0),
+    fulfilledAmount: Number(record.fulfilledAmount || 0),
+    status,
+    notes: record.notes || '',
+  };
+};
+
+const normalizePurchaseOrderForUi = (record: any): PurchaseOrder => {
+  const rawStatus = String(record.status || '').trim().toUpperCase().replaceAll(' ', '_');
+  let status: PurchaseOrder['status'];
+  if (['CANCELLED', 'VOID'].includes(rawStatus)) status = 'Cancelled';
+  else if (['BILLED'].includes(rawStatus)) status = 'Billed';
+  else if (['PARTIALLY_BILLED'].includes(rawStatus)) status = 'Partially Billed';
+  else if (['RECEIVED'].includes(rawStatus)) status = 'Received';
+  else if (['PARTIALLY_RECEIVED'].includes(rawStatus)) status = 'Partially Received';
+  else if (['APPROVED'].includes(rawStatus)) status = 'Approved';
+  else if (['DRAFT'].includes(rawStatus)) status = 'Draft';
+  else if (['PENDING_RECEIPT'].includes(rawStatus)) status = 'Pending Receipt';
+  else status = 'Issued';
+
+  return {
+    id: record.id,
+    poNumber: record.poNumber || record.purchaseOrderNumber || '',
+    vendorId: record.vendorId,
+    vendorName: record.vendorName || '',
+    orderDate: record.orderDate || '',
+    expectedDate: record.expectedDate || record.expectedDelivery || '',
+    totalAmount: Number(record.totalAmount || 0),
+    billedAmount: Number(record.billedAmount || 0),
+    receivedAmount: Number(record.receivedAmount || 0),
+    status,
+    notes: record.notes || '',
+  };
+};
+
 interface BooksContextType {
   organizations: OrganizationMeta[];
   currentOrg: OrganizationMeta;
@@ -124,6 +182,8 @@ interface BooksContextType {
   accounts: Account[];
   addAccount: (account: Omit<Account, 'id'>) => Promise<Account>;
   updateAccount: (id: string, updated: Partial<Account>) => Promise<Account>;
+  deleteAccount: (id: string) => Promise<void>;
+  deleteBankAccount: (id: string) => Promise<void>;
 
   clients: Client[];
   addClient: (client: Omit<Client, 'id' | 'createdAt'>) => Promise<Client>;
@@ -172,15 +232,16 @@ interface BooksContextType {
 
   // Documents
   salesOrders: SalesOrder[];
-  addSalesOrder: (order: Omit<SalesOrder, 'id'>) => SalesOrder | null;
-  updateSalesOrder: (id: string, updated: Partial<SalesOrder>) => void;
-  deleteSalesOrder: (id: string) => void;
-  convertSalesOrderToInvoice: (salesOrderId: string) => Promise<Invoice | null>;
+  addSalesOrder: (order: Omit<SalesOrder, 'id'>) => Promise<SalesOrder | null>;
+  updateSalesOrder: (id: string, updated: Partial<SalesOrder>) => Promise<void>;
+  deleteSalesOrder: (id: string, reason?: string) => Promise<void>;
+  convertSalesOrderToInvoice: (salesOrderId: string, partialAmount?: number) => Promise<Invoice | null>;
+  fulfillSalesOrder: (salesOrderId: string, details?: any) => Promise<any>;
 
   deliveryChallans: DeliveryChallan[];
-  addDeliveryChallan: (challan: Omit<DeliveryChallan, 'id'>) => DeliveryChallan | null;
-  updateDeliveryChallan: (id: string, updated: Partial<DeliveryChallan>) => void;
-  deleteDeliveryChallan: (id: string) => void;
+  addDeliveryChallan: (challan: Omit<DeliveryChallan, 'id'> & { salesOrderId?: string; customerId?: string }) => Promise<DeliveryChallan | null>;
+  updateDeliveryChallan: (id: string, updated: Partial<DeliveryChallan>) => Promise<void>;
+  deleteDeliveryChallan: (id: string) => Promise<void>;
 
   creditNotes: CreditNote[];
   addCreditNote: (note: Omit<CreditNote, 'id'>) => CreditNote | null;
@@ -197,9 +258,11 @@ interface BooksContextType {
   deleteRecurringInvoice: (id: string) => void;
 
   purchaseOrders: PurchaseOrder[];
-  addPurchaseOrder: (order: Omit<PurchaseOrder, 'id'>) => PurchaseOrder | null;
-  updatePurchaseOrder: (id: string, updated: Partial<PurchaseOrder>) => void;
-  deletePurchaseOrder: (id: string) => void;
+  addPurchaseOrder: (order: Omit<PurchaseOrder, 'id'>) => Promise<PurchaseOrder | null>;
+  updatePurchaseOrder: (id: string, updated: Partial<PurchaseOrder>) => Promise<void>;
+  deletePurchaseOrder: (id: string, reason?: string) => Promise<void>;
+  convertPurchaseOrderToBill: (purchaseOrderId: string, partialAmount?: number) => Promise<Bill | null>;
+  receivePurchaseOrder: (purchaseOrderId: string, receiptData?: any) => Promise<any>;
 
   bills: Bill[];
   addBill: (bill: Omit<Bill, 'id'> & { vendorId?: string; expenseAccountId?: string; payableAccountId?: string }) => Promise<Bill>;
@@ -585,7 +648,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       localStorage.setItem('active_organization_id', requestedOrgId);
       const endpoints = [
         'accounts', 'clients', 'vendors', 'projects', 'invoices', 'estimates',
-        'expenses', 'journals', 'period-locks', 'sales-orders', 'delivery-challans', 'time-entries', 'project-summaries',
+        'expenses', 'journals', 'period-locks', 'sales-orders', 'delivery-challans', 'purchase-orders', 'time-entries', 'project-summaries',
         'payments-received', 'credit-notes', 'bills', 'vendor-payments', 'audit',
       ] as const;
       const responses = await fetchFinancialReadBatch(endpoints);
@@ -611,8 +674,9 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setExpenses(data.expenses);
       setJournalEntries(data.journals);
       setPeriodLocks(data['period-locks']);
-      setSalesOrders(data['sales-orders']);
+      setSalesOrders((data['sales-orders'] || []).map(normalizeSalesOrderForUi));
       setDeliveryChallans(data['delivery-challans']);
+      setPurchaseOrders((data['purchase-orders'] || []).map(normalizePurchaseOrderForUi));
       setPaymentsReceived(data['payments-received']);
       setCreditNotes(data['credit-notes']);
       setBills((data.bills || []).map(normalizeBillForUi));
@@ -666,6 +730,10 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         case 'time-entries': setTimeEntries(data as TimeEntry[]); break;
         case 'project-summaries': setProjectSummaries(data as ProjectFinancialSummary[]); break;
         case 'period-locks': setPeriodLocks(data as PeriodLock[]); break;
+        case 'sales-orders': setSalesOrders((data || []).map(normalizeSalesOrderForUi)); break;
+        case 'delivery-challans': setDeliveryChallans(data as DeliveryChallan[]); break;
+        case 'purchase-orders': setPurchaseOrders((data || []).map(normalizePurchaseOrderForUi)); break;
+        case 'credit-notes': setCreditNotes(data as CreditNote[]); break;
       }
     });
   }, [currentOrgId]);
@@ -905,6 +973,16 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const response = await apiClient.delete<{ deleted: boolean; id: string }>(`/finance/accounts/${id}`);
     if (!response.data?.deleted) throw new Error(response.error || 'Account could not be deleted');
     setAccounts((current) => current.filter((account) => account.id !== id));
+  };
+
+  const deleteBankAccount = async (id: string): Promise<void> => {
+    const result = await BankingService.deleteAccount(id);
+    if (result.ledgerAccountId) {
+      setAccounts((current) => current.filter((account) => account.id !== result.ledgerAccountId && account.id !== id));
+    } else {
+      setAccounts((current) => current.filter((account) => account.id !== id));
+    }
+    await refreshAccounts();
   };
 
   const addClient = async (clientData: Omit<Client, 'id' | 'createdAt'>): Promise<Client> => {
@@ -1167,42 +1245,127 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   // Document handlers
-  const addSalesOrder = (orderData: Omit<SalesOrder, 'id'>): SalesOrder | null => {
-    window.alert('Sales order creation is paused until its server transaction is certified.');
-    return null;
-  };
-  const updateSalesOrder = (id: string, updated: Partial<SalesOrder>) => {
-    window.alert('Sales order editing is paused until its audited server workflow is certified.');
-  };
-  const deleteSalesOrder = (id: string) => {
-    window.alert('Sales orders cannot be deleted locally.');
-  };
-
-  const convertSalesOrderToInvoice = async (salesOrderId: string): Promise<Invoice | null> => {
-    window.alert('Sales-order conversion requires one atomic server transaction and is not enabled yet.');
-    return null;
-  };
-
-  const addDeliveryChallan = (challanData: Omit<DeliveryChallan, 'id'>): DeliveryChallan | null => {
-    window.alert('Delivery challan creation is paused until its server transaction is certified.');
-    return null;
-  };
-  const updateDeliveryChallan = (id: string, updated: Partial<DeliveryChallan>) => {
-    window.alert('Delivery challan editing requires an audited server workflow.');
-  };
-  const deleteDeliveryChallan = (id: string) => {
-    window.alert('Delivery challans cannot be deleted locally.');
+  const addSalesOrder = async (orderData: Omit<SalesOrder, 'id'>): Promise<SalesOrder | null> => {
+    const matchedClient = clients.find((c) => c.name === orderData.clientName || c.id === orderData.clientId);
+    const customerId = orderData.clientId || matchedClient?.id || clients[0]?.id;
+    const response = await apiClient.post<any>('/finance/sales-orders', {
+      customerId,
+      orderDate: orderData.orderDate || new Date().toISOString().split('T')[0],
+      expectedDelivery: orderData.expectedDeliveryDate,
+      totalAmount: orderData.totalAmount,
+      status: orderData.status === 'Confirmed' ? 'CONFIRMED' : 'DRAFT',
+      notes: orderData.notes,
+      lineItems: [
+        {
+          description: orderData.notes || 'Sales Order Items',
+          quantity: 1,
+          unitPrice: orderData.totalAmount,
+          taxRate: 0,
+          amount: orderData.totalAmount,
+        },
+      ],
+    });
+    if (!response.data) throw new Error(response.error || 'Sales order could not be created');
+    await refreshAfterCommittedWrite(['sales-orders', 'customers', 'clients']);
+    return normalizeSalesOrderForUi(response.data);
   };
 
-  const addCreditNote = (noteData: Omit<CreditNote, 'id'>): CreditNote | null => {
-    window.alert('Credit notes are paused until their atomic posting and application workflow is certified.');
-    return null;
+  const updateSalesOrder = async (id: string, updated: Partial<SalesOrder>): Promise<void> => {
+    const response = await apiClient.put(`/finance/sales-orders/${id}`, updated);
+    if (!response.data) throw new Error(response.error || 'Sales order could not be updated');
+    await refreshAfterCommittedWrite(['sales-orders']);
   };
+
+  const deleteSalesOrder = async (id: string, reason?: string): Promise<void> => {
+    const promptReason = reason || window.prompt('Reason for cancelling this sales order (required for audit trail):')?.trim();
+    if (!promptReason) return;
+    const response = await apiClient.post(`/finance/sales-orders/${id}/cancel`, { reason: promptReason });
+    if (!response.data) throw new Error(response.error || 'Sales order could not be cancelled');
+    await refreshAfterCommittedWrite(['sales-orders']);
+  };
+
+  const convertSalesOrderToInvoice = async (salesOrderId: string, partialAmount?: number): Promise<Invoice | null> => {
+    const response = await apiClient.post<any>(`/finance/sales-orders/${salesOrderId}/convert-inv`, {
+      partialAmount,
+    });
+    if (!response.data) throw new Error(response.error || 'Sales order could not be converted to invoice');
+    await refreshAfterCommittedWrite(['sales-orders', 'invoices', 'accounts', 'clients']);
+    return normalizeInvoiceForUi(response.data);
+  };
+
+  const fulfillSalesOrder = async (salesOrderId: string, details?: any): Promise<any> => {
+    const response = await apiClient.post<any>(`/finance/sales-orders/${salesOrderId}/fulfill`, details || {});
+    if (!response.data) throw new Error(response.error || 'Sales order fulfillment failed');
+    await refreshAfterCommittedWrite(['sales-orders', 'delivery-challans']);
+    return response.data;
+  };
+
+  const addDeliveryChallan = async (challanData: Omit<DeliveryChallan, 'id'> & { salesOrderId?: string; customerId?: string }): Promise<DeliveryChallan | null> => {
+    const matchedClient = clients.find((c) => c.name === challanData.clientName || c.id === challanData.customerId);
+    const customerId = challanData.customerId || matchedClient?.id || clients[0]?.id;
+    const response = await apiClient.post<any>('/finance/delivery-challans', {
+      customerId,
+      salesOrderId: challanData.salesOrderId,
+      deliveryDate: challanData.dispatchDate || new Date().toISOString().split('T')[0],
+      status: challanData.status === 'Delivered' ? 'DELIVERED' : 'DRAFT',
+      reason: challanData.itemsSummary || 'Supply on Approval',
+      notes: challanData.deliveryAddress || '',
+    });
+    if (!response.data) throw new Error(response.error || 'Delivery challan could not be created');
+    await refreshAfterCommittedWrite(['delivery-challans', 'sales-orders']);
+    return {
+      id: response.data.id,
+      challanNumber: response.data.challanNumber || challanData.challanNumber,
+      clientName: response.data.customerName || challanData.clientName,
+      dispatchDate: challanData.dispatchDate,
+      deliveryAddress: challanData.deliveryAddress,
+      itemsSummary: challanData.itemsSummary,
+      status: challanData.status,
+    };
+  };
+
+  const updateDeliveryChallan = async (id: string, updated: Partial<DeliveryChallan>): Promise<void> => {
+    window.alert('Delivery challans are audited records and should not be mutated directly.');
+  };
+
+  const deleteDeliveryChallan = async (id: string): Promise<void> => {
+    window.alert('Delivery challans cannot be deleted locally; audit trail is maintained.');
+  };
+
+  const addCreditNote = async (noteData: Omit<CreditNote, 'id'>): Promise<CreditNote | null> => {
+    const matchedClient = clients.find((c) => c.name === noteData.clientName);
+    const matchedInvoice = invoices.find((inv) => inv.invoiceNumber === noteData.originalInvoiceNumber);
+    const response = await apiClient.post<any>('/finance/credit-notes', {
+      invoiceId: matchedInvoice?.id,
+      customerId: matchedInvoice?.clientId || matchedClient?.id,
+      amount: noteData.totalAmount,
+      reason: noteData.reason || 'Sales return / adjustment',
+    });
+    if (!response.data) throw new Error(response.error || 'Credit note could not be created');
+    await refreshAfterCommittedWrite(['credit-notes', 'invoices', 'accounts']);
+    return {
+      id: response.data.id,
+      cnNumber: response.data.creditNoteNumber || noteData.cnNumber,
+      clientName: noteData.clientName,
+      originalInvoiceNumber: noteData.originalInvoiceNumber,
+      issueDate: noteData.issueDate || new Date().toISOString().split('T')[0],
+      totalAmount: noteData.totalAmount,
+      remainingAmount: noteData.remainingAmount ?? noteData.totalAmount,
+      status: 'Open',
+      reason: noteData.reason,
+    };
+  };
+
   const updateCreditNote = (id: string, updated: Partial<CreditNote>) => {
     window.alert('Posted credit notes require an audited server workflow.');
   };
-  const deleteCreditNote = (id: string) => {
-    window.alert('Posted credit notes are immutable and require an audited reversal.');
+
+  const deleteCreditNote = async (id: string): Promise<void> => {
+    const reason = window.prompt('Reason for reversing this credit note (required for audit trail):')?.trim();
+    if (!reason) return;
+    const response = await apiClient.post(`/finance/credit-notes/${id}/reverse`, { reason });
+    if (!response.data) throw new Error(response.error || 'Credit note could not be reversed');
+    await refreshAfterCommittedWrite(['credit-notes', 'invoices', 'accounts']);
   };
 
   const addPaymentReceived = async (paymentData: Omit<PaymentReceipt, 'id'> & { invoiceId?: string; clientId?: string; depositToAccountId?: string }): Promise<PaymentReceipt> => {
@@ -1245,15 +1408,60 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     window.alert('Recurring invoices require a server scheduler and are not enabled yet.');
   };
 
-  const addPurchaseOrder = (orderData: Omit<PurchaseOrder, 'id'>): PurchaseOrder | null => {
-    window.alert('Purchase order creation is paused until its server transaction is certified.');
-    return null;
+  const addPurchaseOrder = async (orderData: Omit<PurchaseOrder, 'id'>): Promise<PurchaseOrder | null> => {
+    const matchedVendor = vendors.find((v) => v.name === orderData.vendorName || v.id === orderData.vendorId);
+    const vendorId = orderData.vendorId || matchedVendor?.id || vendors[0]?.id;
+    const response = await apiClient.post<any>('/finance/purchase-orders', {
+      vendorId,
+      vendorName: orderData.vendorName,
+      orderDate: orderData.orderDate || new Date().toISOString().split('T')[0],
+      expectedDelivery: orderData.expectedDate,
+      totalAmount: orderData.totalAmount,
+      status: orderData.status === 'Issued' ? 'ISSUED' : 'DRAFT',
+      notes: orderData.notes,
+      lineItems: [
+        {
+          description: orderData.notes || 'Purchase Order Items',
+          quantity: 1,
+          unitPrice: orderData.totalAmount,
+          taxRate: 0,
+          amount: orderData.totalAmount,
+        },
+      ],
+    });
+    if (!response.data) throw new Error(response.error || 'Purchase order could not be created');
+    await refreshAfterCommittedWrite(['purchase-orders', 'vendors']);
+    return normalizePurchaseOrderForUi(response.data);
   };
-  const updatePurchaseOrder = (id: string, updated: Partial<PurchaseOrder>) => {
-    window.alert('Purchase order editing requires an audited server workflow.');
+
+  const updatePurchaseOrder = async (id: string, updated: Partial<PurchaseOrder>): Promise<void> => {
+    const response = await apiClient.put(`/finance/purchase-orders/${id}`, updated);
+    if (!response.data) throw new Error(response.error || 'Purchase order could not be updated');
+    await refreshAfterCommittedWrite(['purchase-orders']);
   };
-  const deletePurchaseOrder = (id: string) => {
-    window.alert('Purchase orders cannot be deleted locally.');
+
+  const deletePurchaseOrder = async (id: string, reason?: string): Promise<void> => {
+    const promptReason = reason || window.prompt('Reason for cancelling this purchase order (required for audit trail):')?.trim();
+    if (!promptReason) return;
+    const response = await apiClient.post(`/finance/purchase-orders/${id}/cancel`, { reason: promptReason });
+    if (!response.data) throw new Error(response.error || 'Purchase order could not be cancelled');
+    await refreshAfterCommittedWrite(['purchase-orders']);
+  };
+
+  const convertPurchaseOrderToBill = async (purchaseOrderId: string, partialAmount?: number): Promise<Bill | null> => {
+    const response = await apiClient.post<any>(`/finance/purchase-orders/${purchaseOrderId}/convert-bill`, {
+      partialAmount,
+    });
+    if (!response.data) throw new Error(response.error || 'Purchase order conversion to bill failed');
+    await refreshAfterCommittedWrite(['purchase-orders', 'bills', 'accounts', 'vendors']);
+    return normalizeBillForUi(response.data);
+  };
+
+  const receivePurchaseOrder = async (purchaseOrderId: string, receiptData?: any): Promise<any> => {
+    const response = await apiClient.post<any>(`/finance/purchase-orders/${purchaseOrderId}/receive`, receiptData || {});
+    if (!response.data) throw new Error(response.error || 'Purchase order receipt failed');
+    await refreshAfterCommittedWrite(['purchase-orders']);
+    return response.data;
   };
 
   const addBill = async (billData: Omit<Bill, 'id'> & { vendorId?: string; expenseAccountId?: string; payableAccountId?: string }): Promise<Bill> => {
@@ -1451,6 +1659,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       addAccount,
       updateAccount,
       deleteAccount,
+      deleteBankAccount,
       clients,
       addClient,
       updateClient,
@@ -1491,6 +1700,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       updateSalesOrder,
       deleteSalesOrder,
       convertSalesOrderToInvoice,
+      fulfillSalesOrder,
       deliveryChallans,
       addDeliveryChallan,
       updateDeliveryChallan,
@@ -1510,6 +1720,8 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       addPurchaseOrder,
       updatePurchaseOrder,
       deletePurchaseOrder,
+      convertPurchaseOrderToBill,
+      receivePurchaseOrder,
       bills,
       addBill,
       updateBill,

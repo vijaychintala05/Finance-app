@@ -18,7 +18,9 @@ export type AccountingTransactionType =
   | 'payment_made'
   | 'expense'
   | 'transfer'
-  | 'journal';
+  | 'journal'
+  | 'customer_refund'
+  | 'vendor_refund';
 
 export interface BankAccount {
   id: string;

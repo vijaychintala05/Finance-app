@@ -245,7 +245,7 @@ export interface InvoiceModel {
 export class SalesEngine {
   // Helper for checking Period Lock
   private static async checkPeriodLock(orgId: string, dateStr: string, transactionClient?: QueryClient): Promise<void> {
-    const client = transactionClient || db;
+    const client = (transactionClient && typeof (transactionClient as any).query === 'function') ? transactionClient : db;
     const lockRes = await client.query(
       `SELECT lock_date FROM period_locks WHERE organization_id = $1 AND status = 'Active'`,
       [orgId]
@@ -280,12 +280,18 @@ export class SalesEngine {
     const accountIdentifiers = Array.from(new Set(
       lines.flatMap((line) => [line.accountId, line.accountCode].filter(Boolean))
     ));
+    const codeCandidates = Array.from(new Set(
+      accountIdentifiers.map(id => {
+        const match = String(id).match(/(\d{4})$/);
+        return match ? match[1] : id;
+      })
+    ));
 
     const accountsMap = new Map<string, { id: string; code: string; name: string }>();
     if (accountIdentifiers.length > 0) {
       const accRes = await queryClient.query(
-        `SELECT id, code, name FROM accounts WHERE organization_id = $1 AND (id = ANY($2::text[]) OR code = ANY($2::text[]))`,
-        [orgId, accountIdentifiers]
+        `SELECT id, code, name FROM accounts WHERE organization_id = $1 AND (id = ANY($2::text[]) OR code = ANY($2::text[]) OR code = ANY($3::text[]))`,
+        [orgId, accountIdentifiers, codeCandidates]
       );
       for (const row of accRes.rows) {
         accountsMap.set(row.id, row);
@@ -295,7 +301,47 @@ export class SalesEngine {
 
     const resolvedLines: any[] = [];
     for (const line of lines) {
-      const matched = (line.accountId && accountsMap.get(line.accountId)) || (line.accountCode && accountsMap.get(line.accountCode));
+      const idCode = line.accountId ? (String(line.accountId).match(/(\d{4})$/)?.[1]) : null;
+      let matched = (line.accountId && accountsMap.get(line.accountId))
+        || (line.accountCode && accountsMap.get(line.accountCode))
+        || (idCode && accountsMap.get(idCode));
+
+      if (!matched && (line.accountId === '1100' || line.accountCode === '1100' || line.accountName?.toLowerCase().includes('receivable'))) {
+        const arRes = await queryClient.query(
+          `SELECT id, code, name FROM accounts WHERE organization_id = $1 AND (sub_type = 'Accounts Receivable' OR name ILIKE '%Accounts Receivable%') LIMIT 1`,
+          [orgId]
+        );
+        if (arRes.rows.length > 0) {
+          const row = arRes.rows[0];
+          accountsMap.set('1100', row);
+          matched = row;
+        }
+      }
+
+      if (!matched && (line.accountId === '2100' || line.accountCode === '2100' || line.accountName?.toLowerCase().includes('advance'))) {
+        const advRes = await queryClient.query(
+          `SELECT id, code, name FROM accounts WHERE organization_id = $1 AND (name ILIKE '%advance%' OR sub_type = 'Current Liability') LIMIT 1`,
+          [orgId]
+        );
+        if (advRes.rows.length > 0) {
+          const row = advRes.rows[0];
+          accountsMap.set('2100', row);
+          matched = row;
+        }
+      }
+
+      if (!matched && (line.accountId === '1010' || line.accountCode === '1010' || line.accountName?.toLowerCase().includes('bank') || line.accountName?.toLowerCase().includes('cash'))) {
+        const bankRes = await queryClient.query(
+          `SELECT id, code, name FROM accounts WHERE organization_id = $1 AND (type IN ('Asset', 'Bank', 'Cash') OR sub_type IN ('Bank', 'Cash')) LIMIT 1`,
+          [orgId]
+        );
+        if (bankRes.rows.length > 0) {
+          const row = bankRes.rows[0];
+          accountsMap.set('1010', row);
+          matched = row;
+        }
+      }
+
       const accId = matched ? matched.id : line.accountId;
       const accCode = matched ? matched.code : line.accountCode;
       const accName = matched ? matched.name : line.accountName;
@@ -765,14 +811,407 @@ export class SalesEngine {
     };
   }
 
+  public static async getSalesOrder(orgId: string, id: string, clientOrDb?: QueryClient): Promise<SalesOrderModel | null> {
+    const q = clientOrDb || db;
+    const res = await q.query(
+      `SELECT * FROM sales_orders WHERE organization_id = $1 AND id = $2`,
+      [orgId, id]
+    );
+    if (res.rows.length === 0) return null;
+    const r = res.rows[0];
+    return {
+      id: r.id,
+      organizationId: r.organization_id,
+      salesOrderNumber: r.sales_order_number,
+      estimateId: r.estimate_id,
+      customerId: r.customer_id,
+      customerName: r.customer_name,
+      customerSnapshot: typeof r.customer_snapshot === 'string' ? JSON.parse(r.customer_snapshot) : r.customer_snapshot,
+      orderDate: r.order_date instanceof Date ? r.order_date.toISOString().split('T')[0] : String(r.order_date).split('T')[0],
+      expectedDelivery: r.expected_delivery ? (r.expected_delivery instanceof Date ? r.expected_delivery.toISOString().split('T')[0] : String(r.expected_delivery).split('T')[0]) : undefined,
+      subtotal: Number(r.subtotal || 0),
+      taxTotal: Number(r.tax_total || 0),
+      discount: Number(r.discount || 0),
+      roundOffAmount: Number(r.round_off_amount || 0),
+      isGstInclusive: Boolean(r.is_gst_inclusive),
+      totalAmount: Number(r.total_amount || 0),
+      fulfilledAmount: Number(r.fulfilled_amount || 0),
+      invoicedAmount: Number(r.invoiced_amount || 0),
+      status: r.status,
+      lineItems: typeof r.line_items === 'string' ? JSON.parse(r.line_items) : (r.line_items || []),
+      projectId: r.project_id || undefined,
+      notes: r.notes || '',
+      createdAt: r.created_at,
+    };
+  }
+
+  public static async listSalesOrders(
+    orgId: string,
+    filter?: { customerId?: string; status?: string; search?: string }
+  ): Promise<SalesOrderModel[]> {
+    let sql = `SELECT * FROM sales_orders WHERE organization_id = $1`;
+    const params: any[] = [orgId];
+
+    if (filter?.customerId) {
+      params.push(filter.customerId);
+      sql += ` AND customer_id = $${params.length}`;
+    }
+    if (filter?.status && filter.status !== 'All') {
+      params.push(filter.status);
+      sql += ` AND UPPER(status) = UPPER($${params.length})`;
+    }
+    if (filter?.search && filter.search.trim()) {
+      params.push(`%${filter.search.trim().toLowerCase()}%`);
+      sql += ` AND (LOWER(sales_order_number) LIKE $${params.length} OR LOWER(customer_name) LIKE $${params.length} OR LOWER(notes) LIKE $${params.length})`;
+    }
+
+    sql += ` ORDER BY order_date DESC, created_at DESC`;
+    const res = await db.query(sql, params);
+    return res.rows.map((r) => ({
+      id: r.id,
+      organizationId: r.organization_id,
+      salesOrderNumber: r.sales_order_number,
+      estimateId: r.estimate_id,
+      customerId: r.customer_id,
+      customerName: r.customer_name,
+      customerSnapshot: typeof r.customer_snapshot === 'string' ? JSON.parse(r.customer_snapshot) : r.customer_snapshot,
+      orderDate: r.order_date instanceof Date ? r.order_date.toISOString().split('T')[0] : String(r.order_date).split('T')[0],
+      expectedDelivery: r.expected_delivery ? (r.expected_delivery instanceof Date ? r.expected_delivery.toISOString().split('T')[0] : String(r.expected_delivery).split('T')[0]) : undefined,
+      subtotal: Number(r.subtotal || 0),
+      taxTotal: Number(r.tax_total || 0),
+      discount: Number(r.discount || 0),
+      roundOffAmount: Number(r.round_off_amount || 0),
+      isGstInclusive: Boolean(r.is_gst_inclusive),
+      totalAmount: Number(r.total_amount || 0),
+      fulfilledAmount: Number(r.fulfilled_amount || 0),
+      invoicedAmount: Number(r.invoiced_amount || 0),
+      status: r.status,
+      lineItems: typeof r.line_items === 'string' ? JSON.parse(r.line_items) : (r.line_items || []),
+      projectId: r.project_id || undefined,
+      notes: r.notes || '',
+      createdAt: r.created_at,
+    }));
+  }
+
+  public static async updateSalesOrder(
+    orgId: string,
+    salesOrderId: string,
+    updates: Partial<SalesOrderModel>,
+    actorId: string = 'system'
+  ): Promise<SalesOrderModel> {
+    return db.transaction(async (client) => {
+      const existingRes = await client.query(
+        `SELECT * FROM sales_orders WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, salesOrderId]
+      );
+      if (existingRes.rows.length === 0) throw new Error(`Sales Order ${salesOrderId} not found`);
+      const so = existingRes.rows[0];
+
+      if (so.status === 'CANCELLED') {
+        throw new Error('Cancelled sales orders cannot be edited');
+      }
+
+      if (Number(so.invoiced_amount || 0) > 0 || Number(so.fulfilled_amount || 0) > 0) {
+        if (updates.lineItems || updates.totalAmount !== undefined || updates.subtotal !== undefined) {
+          throw new Error('Line items and amounts cannot be edited after invoicing or fulfillment has commenced');
+        }
+      }
+
+      const expectedDelivery = updates.expectedDelivery !== undefined ? updates.expectedDelivery : so.expected_delivery;
+      const notes = updates.notes !== undefined ? updates.notes : so.notes;
+      const newStatus = updates.status !== undefined ? updates.status : so.status;
+
+      await client.query(
+        `UPDATE sales_orders
+            SET expected_delivery = $1, notes = $2, status = $3
+          WHERE organization_id = $4 AND id = $5`,
+        [expectedDelivery || null, notes || '', newStatus, orgId, salesOrderId]
+      );
+
+      await client.query(
+        `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state, after_state)
+         VALUES ($1, $2, $3, 'SALES_ORDER_UPDATED', 'SalesOrder', $4, $5, $6)`,
+        [newId('aud'), orgId, actorId, salesOrderId, JSON.stringify({ status: so.status }), JSON.stringify({ status: newStatus, notes })]
+      );
+
+      const updated = await this.getSalesOrder(orgId, salesOrderId);
+      return updated!;
+    });
+  }
+
+  public static async convertSalesOrderToInvoice(
+    orgId: string,
+    salesOrderId: string,
+    actorId: string = 'system',
+    partialAmount?: number,
+    partialItems?: any[]
+  ): Promise<InvoiceModel & { invoice: InvoiceModel; salesOrder: SalesOrderModel }> {
+    return db.transaction(async (client) => {
+      const soRes = await client.query(
+        `SELECT * FROM sales_orders WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, salesOrderId]
+      );
+      if (soRes.rows.length === 0) throw new Error(`Sales Order ${salesOrderId} not found`);
+      const so = soRes.rows[0];
+
+      const currentStatus = String(so.status).toUpperCase();
+      if (currentStatus === 'INVOICED') {
+        throw new Error(`Sales order ${so.sales_order_number} is already fully invoiced`);
+      }
+      if (['CANCELLED', 'CLOSED'].includes(currentStatus)) {
+        throw new Error(`Sales Order cannot be converted from status ${so.status}`);
+      }
+
+      const totalAmount = Number(so.total_amount || 0);
+      const invoicedAmount = Number(so.invoiced_amount || 0);
+      const remainingUninvoiced = roundMoney(totalAmount - invoicedAmount);
+
+      if (remainingUninvoiced <= 0) {
+        throw new Error(`Sales order ${so.sales_order_number} is already fully invoiced`);
+      }
+
+      const billingAmount = partialAmount ? Number(partialAmount) : remainingUninvoiced;
+      if (billingAmount <= 0) throw new Error('Invoice amount must be greater than zero');
+      if (billingAmount > remainingUninvoiced + 0.009) {
+        throw new Error(`Invoice amount (${billingAmount}) exceeds remaining uninvoiced sales order balance (${remainingUninvoiced})`);
+      }
+
+      const orderLines = typeof so.line_items === 'string' ? JSON.parse(so.line_items) : (so.line_items || []);
+      const itemsToInvoice = partialItems && partialItems.length > 0 ? partialItems : orderLines;
+
+      const issueDate = new Date().toISOString().split('T')[0];
+      const dueDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+      const invNumber = await DocumentNumberingEngine.getNextNumber(orgId, 'INVOICE', issueDate, undefined, client);
+
+      const customerSnapshot = typeof so.customer_snapshot === 'string'
+        ? JSON.parse(so.customer_snapshot)
+        : so.customer_snapshot || null;
+
+      // Map line items to match invoice expectations
+      let invoiceLines = itemsToInvoice.map((it: any, idx: number) => ({
+        id: it.id || `inv-item-${idx}`,
+        itemId: it.itemId || it.item_id || null,
+        name: it.name || it.itemName || it.description || 'Order Item',
+        description: it.description || it.name || it.itemName || 'Order Item',
+        quantity: Number(it.quantity || 1),
+        unitPrice: Number(it.unitPrice || it.rate || 0),
+        taxRate: Number(it.taxRate || it.tax_rate || 0),
+        discountAmount: Number(it.discountAmount || 0),
+        discountPercent: Number(it.discountPercent || 0),
+      }));
+
+      if ((!partialItems || partialItems.length === 0) && Math.abs(billingAmount - totalAmount) > 0.001) {
+        const ratio = billingAmount / totalAmount;
+        invoiceLines = itemsToInvoice.map((it: any, idx: number) => {
+          const origAmt = Number(it.amount || (Number(it.quantity || 1) * Number(it.unitPrice || it.rate || 0)));
+          const scaledAmt = Math.round(origAmt * ratio * 100) / 100;
+          return {
+            id: it.id || `inv-item-${idx}`,
+            itemId: it.itemId || it.item_id || null,
+            name: it.name || it.itemName || it.description || 'Order Item',
+            description: it.description || it.name || it.itemName || 'Order Item',
+            quantity: 1,
+            unitPrice: scaledAmt,
+            taxRate: 0,
+            discountAmount: 0,
+            discountPercent: 0,
+          };
+        });
+        const linesSum = Math.round(invoiceLines.reduce((s: number, l: any) => s + Number(l.unitPrice || 0), 0) * 100) / 100;
+        const diff = Math.round((billingAmount - linesSum) * 100) / 100;
+        if (diff !== 0 && invoiceLines.length > 0) {
+          invoiceLines[invoiceLines.length - 1].unitPrice = Math.round((invoiceLines[invoiceLines.length - 1].unitPrice + diff) * 100) / 100;
+        }
+      }
+
+
+      const invoice = await SalesEngine.createAndPostInvoice(
+        orgId,
+        {
+          invoiceNumber: invNumber,
+          salesOrderId: so.id,
+          customerId: so.customer_id,
+          customerName: so.customer_name,
+          customerEmail: customerSnapshot?.email || '',
+          customerSnapshot,
+          projectId: so.project_id,
+          issueDate,
+          dueDate,
+          lineItems: invoiceLines,
+          notes: so.notes ? `Converted from Sales Order ${so.sales_order_number}. ${so.notes}` : `Converted from Sales Order ${so.sales_order_number}`,
+          status: 'POSTED',
+          createdBy: actorId,
+        },
+        client
+      );
+
+      const updatedSo = await this.getSalesOrder(orgId, salesOrderId, client);
+      return {
+        ...invoice,
+        invoice,
+        salesOrder: updatedSo,
+      } as any;
+    });
+  }
+
+  public static async fulfillSalesOrder(
+    orgId: string,
+    salesOrderId: string,
+    actorId: string = 'system',
+    deliveryDetails: {
+      deliveryDate?: string;
+      reason?: string;
+      notes?: string;
+      transportDetails?: any;
+      lineItems?: any[];
+      fulfilledAmount?: number;
+    } = {}
+  ): Promise<{ challanId: string; challanNumber: string; fulfilledAmount: number; status: string; salesOrder: { id: string; fulfilledAmount: number; status: string } }> {
+    return db.transaction(async (client) => {
+      const soRes = await client.query(
+        `SELECT * FROM sales_orders WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, salesOrderId]
+      );
+      if (soRes.rows.length === 0) throw new Error(`Sales Order ${salesOrderId} not found`);
+      const so = soRes.rows[0];
+
+      if (so.status === 'CANCELLED') {
+        throw new Error('Cannot fulfill a cancelled sales order');
+      }
+
+      const totalAmount = Number(so.total_amount || 0);
+      const currentFulfilled = Number(so.fulfilled_amount || 0);
+      const unfulfilled = roundMoney(totalAmount - currentFulfilled);
+
+      if (unfulfilled <= 0) {
+        throw new Error(`Sales order ${so.sales_order_number} is already fully fulfilled`);
+      }
+
+      const fulfillAmt = deliveryDetails.fulfilledAmount ? Number(deliveryDetails.fulfilledAmount) : unfulfilled;
+      if (fulfillAmt <= 0) throw new Error('Fulfilled amount must be positive');
+      if (fulfillAmt > unfulfilled + 0.009) {
+        throw new Error(`Fulfillment amount (${fulfillAmt}) exceeds remaining unfulfilled balance (${unfulfilled})`);
+      }
+
+      const now = new Date().toISOString();
+      const deliveryDate = deliveryDetails.deliveryDate || now.split('T')[0];
+      const challanId = newId('dc');
+      const challanNum = await DocumentNumberingEngine.getNextNumber(orgId, 'DELIVERY_CHALLAN', deliveryDate, undefined, client);
+
+      const items = deliveryDetails.lineItems || (typeof so.line_items === 'string' ? JSON.parse(so.line_items) : (so.line_items || []));
+
+      await client.query(
+        `INSERT INTO delivery_challans (id, organization_id, challan_number, customer_id, customer_name, sales_order_id, delivery_date, status, reason, line_items, transport_details, notes, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+        [
+          challanId,
+          orgId,
+          challanNum,
+          so.customer_id,
+          so.customer_name,
+          salesOrderId,
+          deliveryDate,
+          'ISSUED',
+          deliveryDetails.reason || 'Supply on Confirmation',
+          JSON.stringify(items),
+          JSON.stringify(deliveryDetails.transportDetails || {}),
+          deliveryDetails.notes || `Fulfilled from Sales Order ${so.sales_order_number}`,
+          now,
+        ]
+      );
+
+      const newFulfilled = roundMoney(currentFulfilled + fulfillAmt);
+      const newStatus = newFulfilled >= totalAmount - 0.009 ? 'FULFILLED' : 'PARTIALLY_FULFILLED';
+
+      await client.query(
+        `UPDATE sales_orders
+            SET fulfilled_amount = $1, status = $2
+          WHERE organization_id = $3 AND id = $4`,
+        [newFulfilled, newStatus, orgId, salesOrderId]
+      );
+
+      await client.query(
+        `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state)
+         VALUES ($1, $2, $3, 'SALES_ORDER_FULFILLED', 'SalesOrder', $4, $5)`,
+        [newId('aud'), orgId, actorId, salesOrderId, JSON.stringify({ challanNumber: challanNum, fulfilledAmount: newFulfilled, status: newStatus })]
+      );
+
+      return {
+        challanId,
+        challanNumber: challanNum,
+        fulfilledAmount: newFulfilled,
+        status: newStatus,
+        salesOrder: {
+          id: salesOrderId,
+          fulfilledAmount: newFulfilled,
+          status: newStatus,
+        },
+      };
+    });
+  }
+
+  public static async cancelSalesOrder(
+    orgId: string,
+    salesOrderId: string,
+    actorId: string = 'system',
+    reason: string = 'Cancelled by user'
+  ): Promise<SalesOrderModel> {
+    return db.transaction(async (client) => {
+      const soRes = await client.query(
+        `SELECT * FROM sales_orders WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, salesOrderId]
+      );
+      if (soRes.rows.length === 0) throw new Error(`Sales Order ${salesOrderId} not found`);
+      const so = soRes.rows[0];
+
+      if (so.status === 'CANCELLED') {
+        const existing = await this.getSalesOrder(orgId, salesOrderId);
+        return existing!;
+      }
+
+      if (Number(so.invoiced_amount || 0) > 0) {
+        throw new Error(`Cannot cancel sales order ${so.sales_order_number} with existing invoiced balance (₹${so.invoiced_amount}). Void linked invoices first.`);
+      }
+
+      if (Number(so.fulfilled_amount || 0) > 0) {
+        throw new Error(`Cannot cancel a sales order with active deliveries (${so.sales_order_number} (₹${so.fulfilled_amount}). Cancel linked delivery challans first.`);
+      }
+
+      await client.query(
+        `UPDATE sales_orders SET status = 'CANCELLED' WHERE organization_id = $1 AND id = $2`,
+        [orgId, salesOrderId]
+      );
+
+      await client.query(
+        `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state, after_state)
+         VALUES ($1, $2, $3, 'SALES_ORDER_CANCELLED', 'SalesOrder', $4, $5, $6)`,
+        [
+          newId('aud'),
+          orgId,
+          actorId,
+          salesOrderId,
+          JSON.stringify({ status: so.status }),
+          JSON.stringify({ status: 'CANCELLED', reason }),
+        ]
+      );
+
+      const updated = await this.getSalesOrder(orgId, salesOrderId);
+      return updated!;
+    });
+  }
+
   // -------------------------------------------------------------
   // 4. INVOICE CREATION & POSTING
   // -------------------------------------------------------------
   public static async createAndPostInvoice(
     orgId: string,
     data: Partial<InvoiceModel>,
-    transactionClient?: QueryClient
+    actorIdOrClient?: string | QueryClient,
+    maybeClient?: QueryClient
   ): Promise<InvoiceModel> {
+    const effectiveClient = (typeof actorIdOrClient === 'object' && actorIdOrClient !== null && 'query' in actorIdOrClient)
+      ? (actorIdOrClient as QueryClient)
+      : ((maybeClient && typeof (maybeClient as any).query === 'function') ? maybeClient : undefined);
     const id = data.id || newId('inv');
     const now = new Date().toISOString();
     const issueDate = data.issueDate || now.split('T')[0];
@@ -1054,7 +1493,7 @@ export class SalesEngine {
           const so = sourceSalesOrder;
           const newInvoiced = Number(so.invoiced_amount || 0) + finalTotal;
           const soTotal = Number(so.total_amount || 0);
-          const newSoStatus = newInvoiced >= soTotal ? 'INVOICED' : 'PARTIALLY_INVOICED';
+          const newSoStatus = newInvoiced >= (soTotal - 0.009) ? 'INVOICED' : 'PARTIALLY_INVOICED';
           await client.query(
             `UPDATE sales_orders SET invoiced_amount = $1, status = $2 WHERE organization_id = $3 AND id = $4`,
             [newInvoiced, newSoStatus, orgId, data.salesOrderId]
@@ -1083,7 +1522,7 @@ export class SalesEngine {
       );
     };
 
-    if (transactionClient) await persistInvoice(transactionClient);
+    if (effectiveClient) await persistInvoice(effectiveClient);
     else await db.transaction(persistInvoice);
 
     return {
@@ -1242,18 +1681,16 @@ export class SalesEngine {
 
       if (isPostedState && currentJournalEntryId) {
         const reverseReason = data.editReason || `Audited adjustment for invoice ${inv.invoice_number}`;
-        try {
-          await FinancialDestructiveActionsService.reversePostedJournal(
-            client,
-            orgId,
-            currentJournalEntryId,
-            userId,
-            reverseReason,
-            `Invoice ${inv.invoice_number}`
-          );
-        } catch (revErr: any) {
-          console.warn('[Invoice Edit Reversal Warning]', revErr?.message || revErr);
-        }
+        // The old posting and its replacement are one financial operation.
+        // Let reversal failures abort the enclosing document transaction.
+        await FinancialDestructiveActionsService.reversePostedJournal(
+          client,
+          orgId,
+          currentJournalEntryId,
+          userId,
+          reverseReason,
+          `Invoice ${inv.invoice_number}`
+        );
 
         const defaultRevenueId = await OrganizationProvisioningService.resolveSystemAccountId(client, orgId, 'SALES_REVENUE', ['Income', 'Revenue']);
         const arAccountId = await OrganizationProvisioningService.resolveAccountId(client, orgId, '1100', ['Asset']);
@@ -1580,7 +2017,7 @@ export class SalesEngine {
           const so = soRes.rows[0];
           const newInvoiced = Number(so.invoiced_amount || 0) + finalTotal;
           const soTotal = Number(so.total_amount || 0);
-          const newSoStatus = newInvoiced >= soTotal ? 'INVOICED' : 'PARTIALLY_INVOICED';
+          const newSoStatus = newInvoiced >= (soTotal - 0.009) ? 'INVOICED' : 'PARTIALLY_INVOICED';
           await client.query(
             `UPDATE sales_orders SET invoiced_amount = $1, status = $2 WHERE organization_id = $3 AND id = $4`,
             [newInvoiced, newSoStatus, orgId, inv.sales_order_id]
@@ -1640,6 +2077,41 @@ export class SalesEngine {
   // -------------------------------------------------------------
   // 5. PAYMENTS RECEIVED & MULTI-INVOICE ALLOCATION
   // -------------------------------------------------------------
+  public static async recordCustomerPayment(
+    orgId: string,
+    data: {
+      customerId?: string;
+      clientId?: string;
+      customerName?: string;
+      invoiceId?: string;
+      amount: number;
+      paymentDate?: string;
+      paymentMode?: string;
+      depositAccountId?: string;
+      depositToAccountId?: string;
+      reference?: string;
+      notes?: string;
+      allocations?: { invoiceId: string; amount: number }[];
+    },
+    actorId?: string,
+    transactionClient?: QueryClient
+  ): Promise<any> {
+    const allocations = data.allocations || (data.invoiceId ? [{ invoiceId: data.invoiceId, amount: data.amount }] : []);
+    const payload = {
+      customerId: data.customerId || data.clientId,
+      customerName: data.customerName,
+      paymentDate: data.paymentDate || new Date().toISOString().split('T')[0],
+      amount: data.amount,
+      paymentMode: data.paymentMode || 'Bank Transfer',
+      depositToAccountId: data.depositAccountId || data.depositToAccountId,
+      reference: data.reference,
+      notes: data.notes,
+      allocations,
+      actorId,
+    };
+    return this.recordPayment(orgId, payload, transactionClient);
+  }
+
   public static async recordPayment(
     orgId: string,
     payload: {
@@ -1647,24 +2119,35 @@ export class SalesEngine {
       clientId?: string;
       customerName?: string;
       clientName?: string;
+      invoiceId?: string;
       paymentDate: string;
       amount: number;
       paymentMode?: string;
       depositToAccountId?: string;
+      depositAccountId?: string;
       reference?: string;
       notes?: string;
       allocations?: { invoiceId: string; amount: number }[];
       _debugFailPoint?: 'after_journal' | 'after_payment' | 'after_first_allocation';
     },
-    transactionClient?: QueryClient
+    actorIdOrClient?: string | QueryClient,
+    maybeClient?: QueryClient
   ): Promise<{ id: string; paymentId: string; paymentNumber: string; amount: number; unallocatedAmount: number; journalEntryId: string }> {
+    const effectiveClient = (typeof actorIdOrClient === 'object' && actorIdOrClient !== null && 'query' in actorIdOrClient)
+      ? (actorIdOrClient as QueryClient)
+      : ((maybeClient && typeof (maybeClient as any).query === 'function') ? maybeClient : undefined);
+
+    if (!payload.allocations && payload.invoiceId) {
+      payload.allocations = [{ invoiceId: payload.invoiceId, amount: payload.amount }];
+    }
+
     const execute = async (client: QueryClient) => {
       await SalesEngine.checkPeriodLock(orgId, payload.paymentDate, client);
 
       let customerId = payload.customerId || payload.clientId || '';
       let customerName = payload.customerName || payload.clientName || '';
       const paymentMode = payload.paymentMode || 'Bank Transfer';
-      const depositToAccountId = payload.depositToAccountId || '1010';
+      const depositToAccountId = payload.depositToAccountId || payload.depositAccountId || '1010';
 
       if (!customerName && customerId) {
         const custRes = await client.query(
@@ -1711,6 +2194,10 @@ export class SalesEngine {
           unallocatedAmount: payload.amount,
           journalEntryId: '',
         };
+      }
+
+      if (!payload.allocations && (payload as any).invoiceId) {
+        payload.allocations = [{ invoiceId: (payload as any).invoiceId, amount: payload.amount }];
       }
 
       // 1. Group and aggregate allocation amounts by invoiceId
@@ -1880,7 +2367,7 @@ export class SalesEngine {
       return { id: paymentId, paymentId, paymentNumber: paymentNum, amount: payload.amount, unallocatedAmount, journalEntryId };
     };
 
-    if (transactionClient) return await execute(transactionClient);
+    if (effectiveClient) return await execute(effectiveClient);
     return await db.transaction(execute);
   }
 
@@ -2160,26 +2647,383 @@ export class SalesEngine {
     return await db.transaction(execute);
   }
 
+  public static async getInvoice(
+    orgId: string,
+    invoiceId: string,
+    transactionClient?: any
+  ): Promise<any | null> {
+    const client = transactionClient || db;
+    const res = await client.query(
+      `SELECT * FROM invoices WHERE organization_id = $1 AND id = $2`,
+      [orgId, invoiceId]
+    );
+    if (res.rows.length === 0) return null;
+    const inv = res.rows[0];
+    const totalAmount = Number(inv.total_amount || 0);
+    const paidAmount = Number(inv.paid_amount || 0);
+    const creditedAmount = Number(inv.amount_credited || 0);
+    const writtenOffAmount = Number(inv.amount_written_off || 0);
+    const balanceDue = Math.max(0, Math.round((totalAmount - paidAmount - creditedAmount - writtenOffAmount) * 100) / 100);
+
+    return {
+      id: inv.id,
+      invoiceNumber: inv.invoice_number,
+      customerId: inv.customer_id,
+      customerName: inv.customer_name,
+      salesOrderId: inv.sales_order_id,
+      estimateId: inv.estimate_id,
+      totalAmount,
+      paidAmount,
+      amountCredited: creditedAmount,
+      amountWrittenOff: writtenOffAmount,
+      balanceDue,
+      status: inv.status,
+      issueDate: inv.issue_date,
+      dueDate: inv.due_date,
+    };
+  }
+
+  // -------------------------------------------------------------
+  // CUSTOMER ADVANCES
+  // -------------------------------------------------------------
+  public static async recordCustomerAdvance(
+    orgId: string,
+    payload: {
+      customerId: string;
+      amount: number;
+      paymentDate: string;
+      depositAccountId: string;
+      paymentMode?: string;
+      reference?: string;
+      notes?: string;
+    },
+    actorIdOrClient?: string | any,
+    maybeClient?: any
+  ): Promise<{ id: string; advanceId: string; amount: number; unappliedAmount: number; status: string }> {
+    const clientCandidate = (typeof actorIdOrClient === 'object' && actorIdOrClient !== null && 'query' in actorIdOrClient)
+      ? actorIdOrClient
+      : maybeClient;
+    const actorId = typeof actorIdOrClient === 'string' ? actorIdOrClient : 'system';
+
+    const execute = async (client: any) => {
+      await SalesEngine.checkPeriodLock(orgId, payload.paymentDate, client);
+
+      const id = newId('cadv');
+      const now = new Date().toISOString();
+      const amount = roundMoney(payload.amount);
+      if (amount <= 0) throw new Error('Advance amount must be greater than zero');
+
+      const advNum = await DocumentNumberingEngine.getNextNumber(orgId, 'PAYMENT', payload.paymentDate, undefined, client);
+
+      const journalLines = [
+        {
+          accountId: payload.depositAccountId,
+          accountCode: '1010',
+          accountName: 'Bank / Deposit Account',
+          debit: amount,
+          credit: 0,
+          description: `Customer Advance ${advNum} Receipt`,
+        },
+        {
+          accountId: '2100',
+          accountCode: '2100',
+          accountName: 'Unearned Revenue',
+          debit: 0,
+          credit: amount,
+          description: `Customer Advance ${advNum} Liability`,
+        },
+      ];
+
+      const journalEntryId = await SalesEngine.persistJournalEntry(
+        orgId,
+        `JE-${advNum}`,
+        payload.paymentDate,
+        advNum,
+        `Customer Advance ${advNum}`,
+        journalLines,
+        client
+      );
+
+      await client.query(
+        `INSERT INTO customer_advances (id, organization_id, customer_id, amount, unapplied_amount, received_date, status, journal_entry_id, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, 'UNAPPLIED', $7, $8)`,
+        [id, orgId, payload.customerId, amount, amount, payload.paymentDate, journalEntryId, now]
+      );
+
+      return { id, advanceId: id, amount, unappliedAmount: amount, status: 'UNAPPLIED' };
+    };
+
+    if (clientCandidate) return await execute(clientCandidate);
+    return await db.transaction(execute);
+  }
+
+  public static async getCustomerAdvances(
+    orgId: string,
+    customerId: string,
+    transactionClient?: any
+  ): Promise<any[]> {
+    const client = transactionClient || db;
+    const res = await client.query(
+      `SELECT * FROM customer_advances WHERE organization_id = $1 AND customer_id = $2 ORDER BY created_at ASC`,
+      [orgId, customerId]
+    );
+    return res.rows.map((row) => ({
+      id: row.id,
+      organizationId: row.organization_id,
+      customerId: row.customer_id,
+      amount: Number(row.amount),
+      unappliedAmount: Number(row.unapplied_amount),
+      receivedDate: row.received_date,
+      status: row.status,
+      journalEntryId: row.journal_entry_id,
+      createdAt: row.created_at,
+    }));
+  }
+
+  public static async applyCustomerAdvance(
+    orgId: string,
+    payload: {
+      advanceId: string;
+      customerId: string;
+      invoiceId: string;
+      amount: number;
+      appliedDate: string;
+    },
+    actorIdOrClient?: string | any,
+    maybeClient?: any
+  ): Promise<{ id: string; advanceId: string; invoiceId: string; amountApplied: number }> {
+    const clientCandidate = (typeof actorIdOrClient === 'object' && actorIdOrClient !== null && 'query' in actorIdOrClient)
+      ? actorIdOrClient
+      : maybeClient;
+    const actorId = typeof actorIdOrClient === 'string' ? actorIdOrClient : 'system';
+
+    const execute = async (client: any) => {
+      await SalesEngine.checkPeriodLock(orgId, payload.appliedDate, client);
+
+      const advRes = await client.query(
+        `SELECT * FROM customer_advances WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, payload.advanceId]
+      );
+      if (advRes.rows.length === 0) throw new Error(`Customer advance ${payload.advanceId} not found`);
+      const adv = advRes.rows[0];
+
+      const availableAdv = Number(adv.unapplied_amount || 0);
+      const applyAmt = roundMoney(payload.amount);
+      if (applyAmt > availableAdv + 0.001) {
+        throw new Error(`Amount ${applyAmt} exceeds available customer advance balance ${availableAdv}`);
+      }
+
+      const invRes = await client.query(
+        `SELECT * FROM invoices WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, payload.invoiceId]
+      );
+      if (invRes.rows.length === 0) throw new Error(`Invoice ${payload.invoiceId} not found`);
+      const inv = invRes.rows[0];
+
+      const currentBal = Math.max(0, Math.round((Number(inv.total_amount) - Number(inv.paid_amount || 0) - Number(inv.amount_credited || 0) - Number(inv.amount_written_off || 0)) * 100) / 100);
+      if (applyAmt > currentBal + 0.009) {
+        throw new Error(`Amount ${applyAmt} exceeds invoice remaining balance ${currentBal}`);
+      }
+
+      const id = newId('caapp');
+      const now = new Date().toISOString();
+
+      const journalLines = [
+        {
+          accountId: '2100',
+          accountCode: '2100',
+          accountName: 'Unearned Revenue',
+          debit: applyAmt,
+          credit: 0,
+          description: `Apply Advance ${adv.id} to Invoice ${inv.invoice_number}`,
+        },
+        {
+          accountId: '1100',
+          accountCode: '1100',
+          accountName: 'Accounts Receivable',
+          debit: 0,
+          credit: applyAmt,
+          description: `Apply Advance ${adv.id} to Invoice ${inv.invoice_number}`,
+        },
+      ];
+
+      const journalEntryId = await SalesEngine.persistJournalEntry(
+        orgId,
+        newId('je'),
+        payload.appliedDate,
+        inv.invoice_number,
+        `Apply Advance to Invoice ${inv.invoice_number}`,
+        journalLines,
+        client
+      );
+
+      await client.query(
+        `INSERT INTO customer_advance_applications (id, organization_id, advance_id, invoice_id, amount_applied, applied_date, journal_entry_id, status, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'POSTED', $8)`,
+        [id, orgId, payload.advanceId, payload.invoiceId, applyAmt, payload.appliedDate, journalEntryId, now]
+      );
+
+      const newUnapplied = roundMoney(availableAdv - applyAmt);
+      await client.query(
+        `UPDATE customer_advances SET unapplied_amount = $1, status = $2 WHERE organization_id = $3 AND id = $4`,
+        [newUnapplied, newUnapplied === 0 ? 'FULLY_APPLIED' : 'PARTIALLY_APPLIED', orgId, payload.advanceId]
+      );
+
+      const newPaid = roundMoney(Number(inv.paid_amount || 0) + applyAmt);
+      const newBal = Math.max(0, roundMoney(Number(inv.total_amount) - newPaid - Number(inv.amount_credited || 0) - Number(inv.amount_written_off || 0)));
+      await client.query(
+        `UPDATE invoices SET paid_amount = $1, balance_due = $2, status = $3 WHERE organization_id = $4 AND id = $5`,
+        [newPaid, newBal, newBal === 0 ? 'Paid' : 'Partially Paid', orgId, payload.invoiceId]
+      );
+
+      return { id, advanceId: payload.advanceId, invoiceId: payload.invoiceId, amountApplied: applyAmt };
+    };
+
+    if (clientCandidate) return await execute(clientCandidate);
+    return await db.transaction(execute);
+  }
+
+  public static async reverseCustomerAdvanceApplication(
+    orgId: string,
+    applicationId: string,
+    actorIdOrClient?: string | any,
+    reason?: string,
+    maybeClient?: any
+  ): Promise<void> {
+    const clientCandidate = (typeof actorIdOrClient === 'object' && actorIdOrClient !== null && 'query' in actorIdOrClient)
+      ? actorIdOrClient
+      : maybeClient;
+    const actorId = typeof actorIdOrClient === 'string' ? actorIdOrClient : 'system';
+
+    const execute = async (client: any) => {
+      const appRes = await client.query(
+        `SELECT * FROM customer_advance_applications WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, applicationId]
+      );
+      if (appRes.rows.length === 0) throw new Error(`Advance application ${applicationId} not found`);
+      const app = appRes.rows[0];
+      if (app.status === 'REVERSED') throw new Error('Advance application is already reversed');
+
+      const applyAmt = Number(app.amount_applied);
+
+      const advRes = await client.query(
+        `SELECT * FROM customer_advances WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, app.advance_id]
+      );
+      if (advRes.rows.length === 0) throw new Error(`Advance ${app.advance_id} not found`);
+      const adv = advRes.rows[0];
+
+      const invRes = await client.query(
+        `SELECT * FROM invoices WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, app.invoice_id]
+      );
+      if (invRes.rows.length === 0) throw new Error(`Invoice ${app.invoice_id} not found`);
+      const inv = invRes.rows[0];
+
+      const now = new Date().toISOString();
+      const today = now.split('T')[0];
+
+      const journalLines = [
+        {
+          accountId: '1100',
+          accountCode: '1100',
+          accountName: 'Accounts Receivable',
+          debit: applyAmt,
+          credit: 0,
+          description: `Reverse Advance Application ${applicationId}`,
+        },
+        {
+          accountId: '2100',
+          accountCode: '2100',
+          accountName: 'Unearned Revenue',
+          debit: 0,
+          credit: applyAmt,
+          description: `Reverse Advance Application ${applicationId}`,
+        },
+      ];
+
+      const reversalJournalId = await SalesEngine.persistJournalEntry(
+        orgId,
+        newId('je'),
+        today,
+        inv.invoice_number,
+        `Reverse Advance Application on Invoice ${inv.invoice_number}`,
+        journalLines,
+        client
+      );
+
+      await client.query(
+        `UPDATE customer_advance_applications
+            SET status = 'REVERSED', reversed_at = NOW(), reversed_by = $1, reversal_reason = $2, reversal_journal_id = $3
+          WHERE organization_id = $4 AND id = $5`,
+        [actorId, reason || 'Reversal', reversalJournalId, orgId, applicationId]
+      );
+
+      const restoredUnapplied = roundMoney(Number(adv.unapplied_amount || 0) + applyAmt);
+      await client.query(
+        `UPDATE customer_advances SET unapplied_amount = $1, status = $2 WHERE organization_id = $3 AND id = $4`,
+        [restoredUnapplied, restoredUnapplied === Number(adv.amount) ? 'UNAPPLIED' : 'PARTIALLY_APPLIED', orgId, adv.id]
+      );
+
+      const restoredPaid = Math.max(0, roundMoney(Number(inv.paid_amount || 0) - applyAmt));
+      const restoredBal = Math.max(0, roundMoney(Number(inv.total_amount) - restoredPaid - Number(inv.amount_credited || 0) - Number(inv.amount_written_off || 0)));
+      await client.query(
+        `UPDATE invoices SET paid_amount = $1, balance_due = $2, status = $3 WHERE organization_id = $4 AND id = $5`,
+        [restoredPaid, restoredBal, restoredBal === Number(inv.total_amount) ? 'Unpaid' : (restoredBal === 0 ? 'Paid' : 'Partially Paid'), orgId, inv.id]
+      );
+    };
+
+    if (clientCandidate) return await execute(clientCandidate);
+    return await db.transaction(execute);
+  }
+
   // -------------------------------------------------------------
   // 7. CREDIT NOTES & APPLICATIONS
   // -------------------------------------------------------------
   public static async createCreditNote(
     orgId: string,
     payload: {
-      customerId: string;
-      customerName: string;
+      customerId?: string;
+      customerName?: string;
       invoiceId?: string;
-      date: string;
-      taxableAmount: number;
-      taxAmount: number;
+      date?: string;
+      issueDate?: string;
+      taxableAmount?: number;
+      taxAmount?: number;
+      amount?: number;
       reason?: string;
+      autoApply?: boolean;
     },
-    transactionClient?: QueryClient
-  ): Promise<{ creditNoteId: string; totalAmount: number }> {
-    const execute = async (client: QueryClient) => {
-      await SalesEngine.checkPeriodLock(orgId, payload.date, client);
+    actorIdOrClient?: string | QueryClient,
+    maybeClient?: QueryClient
+  ): Promise<{ id: string; creditNoteId: string; totalAmount: number; journalEntryId?: string }> {
+    const clientCandidate = (typeof actorIdOrClient === 'object' && actorIdOrClient !== null && 'query' in actorIdOrClient)
+      ? (actorIdOrClient as QueryClient)
+      : maybeClient;
 
-      const totalAmount = Math.round((payload.taxableAmount + payload.taxAmount) * 100) / 100;
+    const execute = async (client: QueryClient) => {
+      const issueDate = payload.date || payload.issueDate || new Date().toISOString().split('T')[0];
+      await SalesEngine.checkPeriodLock(orgId, issueDate, client);
+
+      const customerId = payload.customerId;
+      let customerName = payload.customerName;
+      if (!customerName && customerId) {
+        const custRes = await client.query(
+          `SELECT display_name, legal_name FROM customers WHERE organization_id = $1 AND id = $2`,
+          [orgId, customerId]
+        );
+        if (custRes.rows.length > 0) {
+          customerName = custRes.rows[0].display_name || custRes.rows[0].legal_name || 'Customer';
+        } else {
+          customerName = 'Customer';
+        }
+      }
+
+      const taxableAmount = payload.taxableAmount !== undefined
+        ? Number(payload.taxableAmount)
+        : (payload.amount !== undefined ? Number(payload.amount) : 0);
+      const taxAmount = Number(payload.taxAmount || 0);
+      const totalAmount = Math.round((taxableAmount + taxAmount) * 100) / 100;
 
       // Lock and validate invoice if linked directly to an invoice
       if (payload.invoiceId) {
@@ -2198,30 +3042,26 @@ export class SalesEngine {
       }
 
       const id = newId('cn');
-      const cnNumber = await DocumentNumberingEngine.getNextNumber(orgId, 'CREDIT_NOTE', payload.date, undefined, client);
+      const cnNumber = await DocumentNumberingEngine.getNextNumber(orgId, 'CREDIT_NOTE', issueDate, undefined, client);
       const now = new Date().toISOString();
 
-      // GL Posting for Credit Note:
-      // Dr Sales / Revenue (taxableAmount)
-      // Dr GST Output Liability Reversal (taxAmount)
-      // Cr Accounts Receivable (totalAmount)
       const journalLines: any[] = [
         {
           accountId: '4000',
           accountCode: '4000',
           accountName: 'Sales Revenue Reversal',
-          debit: payload.taxableAmount,
+          debit: taxableAmount,
           credit: 0,
           description: `Credit Note ${cnNumber} Revenue Reversal`,
         },
       ];
 
-      if (payload.taxAmount > 0) {
+      if (taxAmount > 0) {
         journalLines.push({
           accountId: '2200',
           accountCode: '2200',
           accountName: 'GST Output Tax Reversal',
-          debit: payload.taxAmount,
+          debit: taxAmount,
           credit: 0,
           description: `Credit Note ${cnNumber} Tax Reversal`,
         });
@@ -2239,7 +3079,7 @@ export class SalesEngine {
       const journalEntryId = await SalesEngine.persistJournalEntry(
         orgId,
         `JE-${cnNumber}`,
-        payload.date,
+        issueDate,
         cnNumber,
         `Credit Note ${cnNumber} Created`,
         journalLines,
@@ -2249,18 +3089,19 @@ export class SalesEngine {
       await client.query(
         `INSERT INTO credit_notes (id, organization_id, credit_note_number, client_id, client_name, date, total_amount, remaining_credit, status, reason, journal_entry_id, created_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-        [id, orgId, cnNumber, payload.customerId, payload.customerName, payload.date, totalAmount, totalAmount, 'Open', payload.reason || '', journalEntryId, now]
+        [id, orgId, cnNumber, customerId || null, customerName || 'Customer', issueDate, totalAmount, totalAmount, 'Open', payload.reason || '', journalEntryId, now]
       );
 
-      // If assigned directly against an invoice, auto-apply to invoice
-      if (payload.invoiceId) {
-        await SalesEngine.applyCreditNoteToInvoice(orgId, id, payload.invoiceId, totalAmount, payload.date, client);
+      // Auto-apply if requested or if taxableAmount is specified and autoApply is not false
+      const shouldAutoApply = payload.autoApply === true || (payload.autoApply !== false && payload.taxableAmount !== undefined);
+      if (payload.invoiceId && shouldAutoApply) {
+        await SalesEngine.applyCreditNoteToInvoice(orgId, id, payload.invoiceId, totalAmount, issueDate, client);
       }
 
-      return { creditNoteId: id, totalAmount };
+      return { id, creditNoteId: id, totalAmount, journalEntryId };
     };
 
-    if (transactionClient) return await execute(transactionClient);
+    if (clientCandidate) return await execute(clientCandidate);
     return await db.transaction(execute);
   }
 
@@ -2316,13 +3157,56 @@ export class SalesEngine {
 
       await client.query(
         `UPDATE invoices SET amount_credited = $1, balance_due = $2, status = $3 WHERE organization_id = $4 AND id = $5`,
-        [newCredited, newBal, newBal === 0 ? 'PAID' : 'PARTIALLY_PAID', orgId, invoiceId]
+        [newCredited, newBal, newBal === 0 ? 'Paid' : 'Partially Paid', orgId, invoiceId]
       );
 
       return { appliedAmount: actualApplied, remainingCreditNoteBalance: newRemCredit };
     };
 
     if (transactionClient) return await execute(transactionClient);
+    return await db.transaction(execute);
+  }
+
+  public static async applyCreditNote(
+    orgId: string,
+    payload: {
+      creditNoteId: string;
+      invoiceId: string;
+      amount: number;
+      appliedDate?: string;
+    },
+    actorIdOrClient?: string | QueryClient,
+    maybeClient?: QueryClient
+  ): Promise<{ id: string; creditNoteId: string; invoiceId: string; amountApplied: number; remainingCredit: number }> {
+    const clientCandidate = (typeof actorIdOrClient === 'object' && actorIdOrClient !== null && 'query' in actorIdOrClient)
+      ? (actorIdOrClient as QueryClient)
+      : maybeClient;
+
+    const execute = async (client: QueryClient) => {
+      const applyDate = payload.appliedDate || new Date().toISOString().split('T')[0];
+      const res = await SalesEngine.applyCreditNoteToInvoice(
+        orgId,
+        payload.creditNoteId,
+        payload.invoiceId,
+        payload.amount,
+        applyDate,
+        client
+      );
+      const appRes = await client.query(
+        `SELECT id FROM credit_note_applications WHERE organization_id = $1 AND credit_note_id = $2 AND invoice_id = $3 ORDER BY created_at DESC LIMIT 1`,
+        [orgId, payload.creditNoteId, payload.invoiceId]
+      );
+      const appId = appRes.rows[0]?.id || newId('cna');
+      return {
+        id: appId,
+        creditNoteId: payload.creditNoteId,
+        invoiceId: payload.invoiceId,
+        amountApplied: res.appliedAmount,
+        remainingCredit: res.remainingCreditNoteBalance,
+      };
+    };
+
+    if (clientCandidate) return await execute(clientCandidate);
     return await db.transaction(execute);
   }
 
@@ -2346,7 +3230,7 @@ export class SalesEngine {
       await SalesEngine.checkPeriodLock(orgId, payload.refundDate, client);
 
       const refundId = newId('ref');
-      const refundNum = await DocumentNumberingEngine.getNextNumber(orgId, 'CUSTOMER_REFUND', payload.refundDate, undefined, client);
+      const refundNum = await DocumentNumberingEngine.getNextNumber(orgId, 'PAYMENT', payload.refundDate, undefined, client);
       const now = new Date().toISOString();
 
       if (payload.creditNoteId) {
@@ -2357,17 +3241,17 @@ export class SalesEngine {
           throw new Error(`Refund amount ${payload.amount} exceeds remaining credit note balance ${remCredit}`);
         }
         await client.query(
-          `UPDATE credit_notes SET remaining_credit = remaining_credit - $1, status = CASE WHEN remaining_credit - $1 = 0 THEN 'Refunded' ELSE status END WHERE organization_id = $2 AND id = $3`,
+          `UPDATE credit_notes SET remaining_credit = remaining_credit - $1, status = CASE WHEN remaining_credit - $1 = 0 THEN 'Closed' ELSE status END WHERE organization_id = $2 AND id = $3`,
           [payload.amount, orgId, payload.creditNoteId]
         );
       }
 
-      // GL Entry: Dr Customer Credit / Liability, Cr Bank Account
+      // GL Entry: Dr Accounts Receivable (1100), Cr Bank Account
       const journalLines = [
         {
-          accountId: '2100',
-          accountCode: '2100',
-          accountName: 'Customer Credit Liability',
+          accountId: '1100',
+          accountCode: '1100',
+          accountName: 'Accounts Receivable',
           debit: payload.amount,
           credit: 0,
           description: `Customer Refund ${refundNum}`,
@@ -2405,23 +3289,95 @@ export class SalesEngine {
     return await db.transaction(execute);
   }
 
+  public static async recordCustomerRefund(
+    orgId: string,
+    payload: {
+      customerId?: string;
+      creditNoteId?: string;
+      refundDate?: string;
+      amount: number;
+      paymentAccountId?: string;
+      refundAccountId?: string;
+      paymentMode?: string;
+      reason?: string;
+      notes?: string;
+    },
+    actorIdOrClient?: string | QueryClient,
+    maybeClient?: QueryClient
+  ): Promise<{ id: string; refundId: string; amount: number }> {
+    const clientCandidate = (typeof actorIdOrClient === 'object' && actorIdOrClient !== null && 'query' in actorIdOrClient)
+      ? (actorIdOrClient as QueryClient)
+      : maybeClient;
+
+    const execute = async (client: QueryClient) => {
+      let customerId = payload.customerId;
+      if (!customerId && payload.creditNoteId) {
+        const cnRes = await client.query(
+          `SELECT client_id, customer_id FROM credit_notes WHERE organization_id = $1 AND id = $2`,
+          [orgId, payload.creditNoteId]
+        );
+        customerId = cnRes.rows[0]?.customer_id || cnRes.rows[0]?.client_id;
+      }
+      const refundAccountId = payload.paymentAccountId || payload.refundAccountId || `${orgId}-1010`;
+      const refundDate = payload.refundDate || new Date().toISOString().split('T')[0];
+
+      const res = await SalesEngine.recordRefund(
+        orgId,
+        {
+          customerId: customerId || '',
+          creditNoteId: payload.creditNoteId,
+          refundDate,
+          amount: payload.amount,
+          refundAccountId,
+          notes: payload.notes || payload.reason,
+        },
+        client
+      );
+
+      return { id: res.refundId, refundId: res.refundId, amount: payload.amount };
+    };
+
+    if (clientCandidate) return await execute(clientCandidate);
+    return await db.transaction(execute);
+  }
+
   public static async recordWriteOff(
     orgId: string,
     payload: {
       invoiceId: string;
-      customerId: string;
+      customerId?: string;
       writeOffDate: string;
       amount: number;
-      writeOffAccountId: string;
-      reason: string;
+      badDebtAccountId?: string;
+      writeOffAccountId?: string;
+      reason?: string;
       userId?: string;
     },
-    transactionClient?: QueryClient
-  ): Promise<{ writeOffId: string }> {
+    actorIdOrClient?: string | QueryClient,
+    maybeClient?: QueryClient
+  ): Promise<{ id: string; writeOffId: string; invoiceId: string; amount: number }> {
+    const clientCandidate = (typeof actorIdOrClient === 'object' && actorIdOrClient !== null && 'query' in actorIdOrClient)
+      ? (actorIdOrClient as QueryClient)
+      : maybeClient;
+    const actorId = typeof actorIdOrClient === 'string' ? actorIdOrClient : (payload.userId || 'system');
+
     const execute = async (client: QueryClient) => {
+      let customerId = payload.customerId;
+      if (!customerId) {
+        const invRes = await client.query(
+          `SELECT customer_id, client_id FROM invoices WHERE organization_id = $1 AND id = $2`,
+          [orgId, payload.invoiceId]
+        );
+        customerId = invRes.rows[0]?.customer_id || invRes.rows[0]?.client_id || '';
+      }
+      const writeOffAccountId = payload.badDebtAccountId || payload.writeOffAccountId || `${orgId}-6000`;
+
       await SalesEngine.checkPeriodLock(orgId, payload.writeOffDate, client);
 
-      const invRes = await client.query(`SELECT * FROM invoices WHERE organization_id = $1 AND id = $2 FOR UPDATE`, [orgId, payload.invoiceId]);
+      const invRes = await client.query(
+        `SELECT * FROM invoices WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, payload.invoiceId]
+      );
       if (invRes.rows.length === 0) throw new Error('Invoice not found');
       const inv = invRes.rows[0];
 
@@ -2433,11 +3389,10 @@ export class SalesEngine {
       const writeOffId = newId('wo');
       const now = new Date().toISOString();
 
-      // GL Posting: Dr Bad Debt / Write-Off Expense, Cr Accounts Receivable
       const journalLines = [
         {
-          accountId: payload.writeOffAccountId,
-          accountCode: '5800',
+          accountId: writeOffAccountId,
+          accountCode: '6000',
           accountName: 'Bad Debt Expense',
           debit: payload.amount,
           credit: 0,
@@ -2463,7 +3418,6 @@ export class SalesEngine {
         client
       );
 
-      // Update invoice record
       const newWrittenOff = Math.round((Number(inv.amount_written_off || 0) + payload.amount) * 100) / 100;
       const newBal = Math.max(0, Math.round((Number(inv.total_amount) - Number(inv.paid_amount || 0) - Number(inv.amount_credited || 0) - newWrittenOff) * 100) / 100);
 
@@ -2475,13 +3429,13 @@ export class SalesEngine {
       await client.query(
         `INSERT INTO ar_write_offs (id, organization_id, invoice_id, customer_id, write_off_date, amount, write_off_account_id, reason, user_id, journal_entry_id, created_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-        [writeOffId, orgId, payload.invoiceId, payload.customerId, payload.writeOffDate, payload.amount, payload.writeOffAccountId, payload.reason, payload.userId || 'Admin', journalEntryId, now]
+        [writeOffId, orgId, payload.invoiceId, customerId, payload.writeOffDate, payload.amount, writeOffAccountId, payload.reason || '', actorId, journalEntryId, now]
       );
 
-      return { writeOffId };
+      return { id: writeOffId, writeOffId, invoiceId: payload.invoiceId, amount: payload.amount };
     };
 
-    if (transactionClient) return await execute(transactionClient);
+    if (clientCandidate) return await execute(clientCandidate);
     return await db.transaction(execute);
   }
 

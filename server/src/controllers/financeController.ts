@@ -36,6 +36,9 @@ import { ExpensePostingService } from '../services/ExpensePostingService';
 import { ExpenseReceiptService } from '../services/ExpenseReceiptService';
 import { ExpensePdfService } from '../services/ExpensePdfService';
 import { GSTComplianceService } from '../services/GSTComplianceService';
+import { DrillDownService } from '../services/DrillDownService';
+import { ReportExportService } from '../services/ReportExportService';
+import { ApprovalWorkflowService } from '../approvals/ApprovalWorkflowService';
 
 export class FinanceController {
   // --- AUDIT LOG UTILITY ---
@@ -421,12 +424,36 @@ export class FinanceController {
           throw new Error('ACCOUNT_DELETE_BALANCE: An account with a non-zero balance cannot be deleted');
         }
 
+        // If linked to a bank account profile, verify that it has no statement imports or transactions
+        // before cleaning up the bank profile cleanly.
+        const bankProfileCheck = await client.query(
+          `SELECT id FROM bank_accounts WHERE organization_id = $1 AND ledger_account_id = $2`,
+          [orgId, accountId]
+        );
+        if (bankProfileCheck.rows.length > 0) {
+          const bankAccId = bankProfileCheck.rows[0].id;
+          const hasStatements = await client.query(
+            `SELECT 1 FROM bank_statement_imports WHERE organization_id = $1 AND bank_account_id = $2 LIMIT 1`,
+            [orgId, bankAccId]
+          );
+          if (hasStatements.rows.length > 0) {
+            throw new Error('ACCOUNT_DELETE_IN_USE: This account is used by a bank account with statement import history. Remove that reference or archive the account instead.');
+          }
+          const hasTransactions = await client.query(
+            `SELECT 1 FROM bank_statement_transactions WHERE organization_id = $1 AND bank_account_id = $2 LIMIT 1`,
+            [orgId, bankAccId]
+          );
+          if (hasTransactions.rows.length > 0) {
+            throw new Error('ACCOUNT_DELETE_IN_USE: This account is used by a bank account with statement transactions. Remove that reference or archive the account instead.');
+          }
+          await client.query(`DELETE FROM bank_accounts WHERE organization_id = $1 AND id = $2`, [orgId, bankAccId]);
+        }
+
         // A deleted account must not leave a financial or setup reference behind. Journal
         // lines are the hard accounting boundary; the other checks keep defaults and drafts valid.
         const usageChecks: Array<{ label: string; sql: string }> = [
           { label: 'child account', sql: `SELECT 1 FROM accounts WHERE organization_id = $1 AND parent_account_id = $2 LIMIT 1` },
           { label: 'accounting default', sql: `SELECT 1 FROM accounting_defaults WHERE organization_id = $1 AND account_id = $2 LIMIT 1` },
-          { label: 'bank account', sql: `SELECT 1 FROM bank_accounts WHERE organization_id = $1 AND ledger_account_id = $2 LIMIT 1` },
           { label: 'bank rule', sql: `SELECT 1 FROM bank_reconciliation_rules WHERE organization_id = $1 AND suggested_account_id = $2 LIMIT 1` },
           { label: 'invoice line', sql: `SELECT 1 FROM invoice_items WHERE organization_id = $1 AND account_id = $2 LIMIT 1` },
           { label: 'customer payment', sql: `SELECT 1 FROM payments_received WHERE organization_id = $1 AND deposit_to_account_id = $2 LIMIT 1` },
@@ -922,6 +949,8 @@ export class FinanceController {
       clientName: invoice.client_name,
       clientEmail: invoice.client_email || '',
       projectId: invoice.project_id || undefined,
+      salesOrderId: invoice.sales_order_id || undefined,
+      estimateId: invoice.estimate_id || undefined,
       issueDate: invoice.issue_date,
       dueDate: invoice.due_date,
       items: itemsByInvoiceId.get(invoice.id) || [],
@@ -1299,7 +1328,8 @@ export class FinanceController {
     }
     const result = await db.query(queryText, params);
     res.json(result.rows.map((bill) => ({
-      id: bill.id, billNumber: bill.bill_number, vendorName: bill.vendor_name,
+      id: bill.id, billNumber: bill.bill_number, vendorId: bill.vendor_id || undefined, vendorName: bill.vendor_name,
+      purchaseOrderId: bill.purchase_order_id || undefined,
       billDate: bill.bill_date, dueDate: bill.due_date, totalAmount: Number(bill.total_amount),
       amountPaid: Number(bill.amount_paid), balanceDue: Number(bill.balance_due ?? (Number(bill.total_amount) - Number(bill.amount_paid))),
       status: bill.status, notes: bill.notes || '',
@@ -1377,44 +1407,54 @@ export class FinanceController {
         ) {
           throw new Error('Bill debit lines must use an expense or cost of goods sold account and the credit account must be accounts payable');
         }
+        const requiresApproval = await ApprovalWorkflowService.requiresApproval(orgId, 'VENDOR_BILL', parsedTotal);
+        const initialStatus = requiresApproval ? 'SUBMITTED' : 'Unpaid';
+
         await client.query(
           `INSERT INTO bills (id, organization_id, bill_number, vendor_id, vendor_name, bill_date, due_date, subtotal, tax_total, total_amount, amount_paid, balance_due, status, notes, line_items)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0, $10, 'Unpaid', $11, $12)`,
-          [billId, orgId, finalBillNumber, vendorId, resolvedVendorName, billDate, dueDate, parsedSubtotal, parsedTax, parsedTotal, notes || '', JSON.stringify(normalizedLines)]
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0, $10, $11, $12, $13)`,
+          [billId, orgId, finalBillNumber, vendorId, resolvedVendorName, billDate, dueDate, parsedSubtotal, parsedTax, parsedTotal, initialStatus, notes || '', JSON.stringify(normalizedLines)]
         );
 
-        const posting = await ServerPostingEngine.postEntry({
-          organizationId: orgId,
-          entryNumber: `JRN-BILL-${billId}`,
-          date: billDate,
-          reference: finalBillNumber,
-          description: `Bill ${finalBillNumber} received from ${resolvedVendorName}`,
-          lines: [
-            ...(parsedSubtotal > 0 ? [{ accountId: finalExpenseAccountId, debit: parsedSubtotal, credit: 0 }] : []),
-            ...(parsedTax > 0 ? [{ accountId: inputTaxAccountId, debit: parsedTax, credit: 0 }] : []),
-            { accountId: finalPayableAccountId, debit: 0, credit: parsedTotal },
-          ],
-        }, client);
+        let postingEntryId: string | undefined;
 
-        await client.query(
-          `UPDATE bills SET journal_entry_id = $1 WHERE id = $2 AND organization_id = $3`,
-          [posting.entryId, billId, orgId]
-        );
-        const vendorBalance = await client.query(
-          `UPDATE vendors SET payables_balance = payables_balance + $1
-            WHERE organization_id = $2 AND id = $3`,
-          [parsedTotal, orgId, vendorId]
-        );
-        if (vendorBalance.rowCount !== 1) throw new Error('Bill vendor balance could not be updated');
+        if (requiresApproval) {
+          await ApprovalWorkflowService.submitForApproval(orgId, 'VENDOR_BILL', billId, req.auth!.userId, parsedTotal, client);
+        } else {
+          const posting = await ServerPostingEngine.postEntry({
+            organizationId: orgId,
+            entryNumber: `JRN-BILL-${billId}`,
+            date: billDate,
+            reference: finalBillNumber,
+            description: `Bill ${finalBillNumber} received from ${resolvedVendorName}`,
+            lines: [
+              ...(parsedSubtotal > 0 ? [{ accountId: finalExpenseAccountId, debit: parsedSubtotal, credit: 0 }] : []),
+              ...(parsedTax > 0 ? [{ accountId: inputTaxAccountId, debit: parsedTax, credit: 0 }] : []),
+              { accountId: finalPayableAccountId, debit: 0, credit: parsedTotal },
+            ],
+          }, client);
+          postingEntryId = posting.entryId;
+
+          await client.query(
+            `UPDATE bills SET journal_entry_id = $1 WHERE id = $2 AND organization_id = $3`,
+            [posting.entryId, billId, orgId]
+          );
+          const vendorBalance = await client.query(
+            `UPDATE vendors SET payables_balance = payables_balance + $1
+              WHERE organization_id = $2 AND id = $3`,
+            [parsedTotal, orgId, vendorId]
+          );
+          if (vendorBalance.rowCount !== 1) throw new Error('Bill vendor balance could not be updated');
+        }
 
         await client.query(
           `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state)
            VALUES ($1, $2, $3, 'BILL_CREATED', 'Bill', $4, $5)`,
-          [newId('aud'), orgId, req.auth!.userId, billId, JSON.stringify({ billNumber: finalBillNumber, totalAmount: parsedTotal, journalEntryId: posting.entryId })]
+          [newId('aud'), orgId, req.auth!.userId, billId, JSON.stringify({ billNumber: finalBillNumber, totalAmount: parsedTotal, journalEntryId: postingEntryId, status: initialStatus })]
         );
-        return posting;
+        return { entryId: postingEntryId, status: initialStatus };
       });
-      res.status(201).json({ id: billId, billNumber: finalBillNumber, totalAmount: parsedTotal, status: 'Unpaid', journalEntryId: result.entryId });
+      res.status(201).json({ id: billId, billNumber: finalBillNumber, totalAmount: parsedTotal, status: result.status, journalEntryId: result.entryId });
     } catch (error: any) {
       res.status(422).json({ error: error.message || 'Bill could not be posted' });
     }
@@ -1590,14 +1630,89 @@ export class FinanceController {
   // --- SALES ORDERS ---
   public static async getSalesOrders(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
-    const result = await db.query('SELECT * FROM sales_orders WHERE organization_id = $1 ORDER BY created_at DESC', [orgId]);
-    res.json(result.rows);
+    const filter = {
+      customerId: req.query.customerId as string | undefined,
+      status: req.query.status as string | undefined,
+      search: req.query.search as string | undefined,
+    };
+    const orders = await SalesEngine.listSalesOrders(orgId, filter);
+    res.json(orders);
+  }
+
+  public static async getSalesOrder(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const so = await SalesEngine.getSalesOrder(orgId, req.params.id);
+    if (!so) {
+      res.status(404).json({ error: `Sales order ${req.params.id} not found` });
+      return;
+    }
+    res.json(so);
   }
 
   public static async createSalesOrder(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
-    const so = await SalesEngine.createSalesOrder(orgId, req.body, undefined, req.auth!.userId);
-    res.status(201).json(so);
+    try {
+      const so = await SalesEngine.createSalesOrder(orgId, req.body, undefined, req.auth!.userId);
+      res.status(201).json(so);
+    } catch (error: any) {
+      res.status(422).json({ error: error?.message || 'Sales order could not be created' });
+    }
+  }
+
+  public static async updateSalesOrder(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    try {
+      const updated = await SalesEngine.updateSalesOrder(orgId, req.params.id, req.body, req.auth!.userId);
+      res.json(updated);
+    } catch (error: any) {
+      const message = error?.message || 'Sales order could not be updated';
+      res.status(message.includes('not found') ? 404 : 422).json({ error: message });
+    }
+  }
+
+  public static async convertSalesOrderToInvoice(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    try {
+      const invoice = await SalesEngine.convertSalesOrderToInvoice(
+        orgId,
+        req.params.id,
+        req.auth!.userId,
+        req.body?.partialAmount,
+        req.body?.lineItems
+      );
+      res.status(201).json(invoice);
+    } catch (error: any) {
+      const message = error?.message || 'Sales order conversion failed';
+      res.status(message.includes('not found') ? 404 : message.includes('already fully invoiced') || message.includes('cannot be converted') ? 409 : 422).json({ error: message });
+    }
+  }
+
+  public static async fulfillSalesOrder(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    try {
+      const result = await SalesEngine.fulfillSalesOrder(
+        orgId,
+        req.params.id,
+        req.auth!.userId,
+        req.body
+      );
+      res.status(201).json(result);
+    } catch (error: any) {
+      const message = error?.message || 'Sales order fulfillment failed';
+      res.status(message.includes('not found') ? 404 : message.includes('already fully fulfilled') ? 409 : 422).json({ error: message });
+    }
+  }
+
+  public static async cancelSalesOrder(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    try {
+      const reason = req.body?.reason || 'Cancelled by user';
+      const cancelled = await SalesEngine.cancelSalesOrder(orgId, req.params.id, req.auth!.userId, reason);
+      res.json(cancelled);
+    } catch (error: any) {
+      const message = error?.message || 'Sales order cancellation failed';
+      res.status(message.includes('not found') ? 404 : message.includes('Cannot cancel') ? 409 : 422).json({ error: message });
+    }
   }
 
   // --- DELIVERY CHALLANS ---
@@ -1632,12 +1747,25 @@ export class FinanceController {
 
         if (req.body.salesOrderId) {
           const soRes = await client.query(
-            `SELECT id FROM sales_orders WHERE organization_id = $1 AND id = $2`,
+            `SELECT id, total_amount, fulfilled_amount, status FROM sales_orders WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
             [orgId, req.body.salesOrderId]
           );
           if (soRes.rows.length === 0) {
             throw new Error('SALES_ORDER_NOT_FOUND: Sales order does not belong to this organization');
           }
+          const so = soRes.rows[0];
+          if (so.status === 'CANCELLED') {
+            throw new Error('Cannot create delivery challan for a cancelled sales order');
+          }
+          const totalAmount = Number(so.total_amount || 0);
+          const currentFulfilled = Number(so.fulfilled_amount || 0);
+          const challanAmount = Number(req.body.fulfilledAmount || req.body.totalAmount || (totalAmount - currentFulfilled));
+          const newFulfilled = Math.min(totalAmount, Math.round((currentFulfilled + challanAmount) * 100) / 100);
+          const newStatus = newFulfilled >= totalAmount - 0.009 ? 'FULFILLED' : 'PARTIALLY_FULFILLED';
+          await client.query(
+            `UPDATE sales_orders SET fulfilled_amount = $1, status = $2 WHERE organization_id = $3 AND id = $4`,
+            [newFulfilled, newStatus, orgId, req.body.salesOrderId]
+          );
         }
 
         const id = newId('dc');
@@ -1672,6 +1800,120 @@ export class FinanceController {
       const message = error?.message || 'Delivery challan could not be created';
       const statusCode = message.startsWith('CUSTOMER_NOT_FOUND') || message.startsWith('SALES_ORDER_NOT_FOUND') ? 400 : 422;
       res.status(statusCode).json({ error: message.replace(/^[A-Z_]+: /, '') });
+    }
+  }
+
+  // --- PURCHASE ORDERS ---
+  public static async getPurchaseOrders(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const filter = {
+      vendorId: req.query.vendorId as string | undefined,
+      status: req.query.status as string | undefined,
+      search: req.query.search as string | undefined,
+    };
+    const orders = await PurchasesEngine.listPurchaseOrders(orgId, filter);
+    res.json(orders);
+  }
+
+  public static async getPurchaseOrder(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const po = await PurchasesEngine.getPurchaseOrder(orgId, req.params.id);
+    if (!po) {
+      res.status(404).json({ error: `Purchase order ${req.params.id} not found` });
+      return;
+    }
+    res.json(po);
+  }
+
+  public static async createPurchaseOrder(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    try {
+      const po = await PurchasesEngine.createPurchaseOrder(orgId, req.body);
+      res.status(201).json(po);
+    } catch (error: any) {
+      res.status(422).json({ error: error?.message || 'Purchase order could not be created' });
+    }
+  }
+
+  public static async updatePurchaseOrder(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    try {
+      const updated = await PurchasesEngine.updatePurchaseOrder(orgId, req.params.id, req.body, req.auth!.userId);
+      res.json(updated);
+    } catch (error: any) {
+      const message = error?.message || 'Purchase order could not be updated';
+      res.status(message.includes('not found') ? 404 : 422).json({ error: message });
+    }
+  }
+
+  public static async approvePurchaseOrder(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    try {
+      const approved = await PurchasesEngine.approvePurchaseOrder(orgId, req.params.id, req.auth!.userId, req.auth!.role);
+      res.json(approved);
+    } catch (error: any) {
+      res.status(422).json({ error: error?.message || 'Purchase order could not be approved' });
+    }
+  }
+
+  public static async convertPurchaseOrderToBill(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    try {
+      const bill = await PurchasesEngine.convertPurchaseOrderToBill(
+        orgId,
+        req.params.id,
+        req.auth!.userId,
+        req.body?.partialAmount
+      );
+      res.status(201).json(bill);
+    } catch (error: any) {
+      const message = error?.message || 'Purchase order conversion to bill failed';
+      res.status(message.includes('not found') ? 404 : message.includes('already fully billed') || message.includes('cannot be converted') ? 409 : 422).json({ error: message });
+    }
+  }
+
+  public static async receivePurchaseOrder(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    try {
+      const receipt = await PurchasesEngine.receivePurchaseOrder(
+        orgId,
+        req.params.id,
+        req.auth!.userId,
+        req.body
+      );
+      res.status(201).json(receipt);
+    } catch (error: any) {
+      const message = error?.message || 'Purchase order receipt failed';
+      res.status(message.includes('not found') ? 404 : 422).json({ error: message });
+    }
+  }
+
+  public static async cancelPurchaseOrder(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    try {
+      const reason = req.body?.reason || 'Cancelled by user';
+      const cancelled = await PurchasesEngine.cancelPurchaseOrder(orgId, req.params.id, req.auth!.userId, reason);
+      res.json(cancelled);
+    } catch (error: any) {
+      const message = error?.message || 'Purchase order cancellation failed';
+      res.status(message.includes('not found') ? 404 : message.includes('Cannot cancel') ? 409 : 422).json({ error: message });
+    }
+  }
+
+  // --- GOODS RECEIPTS ---
+  public static async getGoodsReceipts(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const receipts = await PurchasesEngine.listGoodsReceipts(orgId, req.query.purchaseOrderId as string | undefined);
+    res.json(receipts);
+  }
+
+  public static async createGoodsReceipt(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    try {
+      const receipt = await PurchasesEngine.createReceipt(orgId, req.body);
+      res.status(201).json(receipt);
+    } catch (error: any) {
+      res.status(422).json({ error: error?.message || 'Goods receipt could not be created' });
     }
   }
 
@@ -1879,6 +2121,28 @@ export class FinanceController {
     res.json(result);
   }
 
+  public static async recordVendorRefund(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const result = await db.transaction(async (client) => {
+      const refund = await PurchasesEngine.recordVendorRefund(orgId, req.body, client);
+      await FinanceController.logAudit(orgId, req.auth!.userId, 'VENDOR_REFUND_RECORDED', 'VendorRefund', refund.refundId, refund, client);
+      return refund;
+    });
+    res.status(201).json(result);
+  }
+
+  public static async getVendorRefunds(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const result = await PurchasesEngine.getVendorRefunds(req.auth!.organizationId);
+    res.json(result);
+  }
+
+  public static async reverseVendorRefund(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const result = await FinancialDestructiveActionsService.reverseVendorRefund(
+      req.auth!.organizationId, req.params.id, req.auth!.userId, req.body?.reason
+    );
+    res.json(result);
+  }
+
   public static async reverseReceivableWriteOff(req: AuthenticatedRequest, res: Response): Promise<void> {
     const result = await FinancialDestructiveActionsService.reverseReceivableWriteOff(
       req.auth!.organizationId, req.params.id, req.auth!.userId, req.body?.reason
@@ -2025,6 +2289,122 @@ export class FinanceController {
     const toDate = (req.query.toDate as string) || new Date().toISOString().split('T')[0];
     const statement = await VendorStatementService.getVendorStatement(orgId, vendorId, fromDate, toDate);
     res.json(statement);
+  }
+
+  public static async getComparativeProfitLoss(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const currentFromDate = (req.query.currentFromDate as string) || (req.query.fromDate as string);
+    const currentToDate = (req.query.currentToDate as string) || (req.query.toDate as string);
+    const priorFromDate = req.query.priorFromDate as string;
+    const priorToDate = req.query.priorToDate as string;
+    if (!currentFromDate || !currentToDate || !priorFromDate || !priorToDate) {
+      res.status(400).json({ error: 'currentFromDate, currentToDate, priorFromDate, and priorToDate are required' });
+      return;
+    }
+    const report = await ProfitAndLossReportService.getComparativeProfitAndLoss(orgId, {
+      currentFromDate,
+      currentToDate,
+      priorFromDate,
+      priorToDate,
+      projectId: req.query.projectId as string,
+    });
+    res.json(report);
+  }
+
+  public static async getComparativeBalanceSheet(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const currentAsOfDate = (req.query.currentAsOfDate as string) || (req.query.asOfDate as string) || (req.query.toDate as string);
+    const priorAsOfDate = req.query.priorAsOfDate as string;
+    if (!currentAsOfDate || !priorAsOfDate) {
+      res.status(400).json({ error: 'currentAsOfDate and priorAsOfDate are required' });
+      return;
+    }
+    const report = await BalanceSheetReportService.getComparativeBalanceSheet(orgId, {
+      currentAsOfDate,
+      priorAsOfDate,
+    });
+    res.json(report);
+  }
+
+  public static async getDrillDown(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const journalEntryId = req.params.journalEntryId;
+    try {
+      const drillDown = await DrillDownService.getDrillDown(orgId, journalEntryId);
+      res.json(drillDown);
+    } catch (err: any) {
+      res.status(404).json({ error: err.message });
+    }
+  }
+
+  public static async exportReport(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const reportType = req.params.reportType;
+    try {
+      let rows: any[] = [];
+      const filename = `${reportType}_${new Date().toISOString().slice(0, 10)}.csv`;
+
+      if (reportType === 'general-ledger') {
+        const gl = await LedgerQueryService.getGeneralLedgerReport(orgId, {
+          fromDate: req.query.fromDate as string,
+          toDate: req.query.toDate as string,
+          projectId: req.query.projectId as string,
+          customerId: req.query.customerId as string,
+          vendorId: req.query.vendorId as string,
+          search: req.query.search as string,
+        });
+        rows = gl.accounts.flatMap((acc: any) =>
+          acc.transactions.map((t: any) => ({
+            accountCode: acc.code,
+            accountName: acc.name,
+            date: t.entryDate,
+            entryNumber: t.entryNumber,
+            reference: t.reference || '',
+            narration: t.narration || '',
+            debit: t.debit,
+            credit: t.credit,
+          }))
+        );
+      } else if (reportType === 'ar-aging') {
+        const ar = await ARAgingReportService.getARAgingReport(orgId, (req.query.asOfDate as string) || (req.query.toDate as string));
+        rows = ar.rows;
+      } else if (reportType === 'ap-aging') {
+        const ap = await APAgingReportService.getAPAgingReport(orgId, (req.query.asOfDate as string) || (req.query.toDate as string));
+        rows = ap.rows;
+      } else if (reportType === 'trial-balance') {
+        const tb = await TrialBalanceReportService.getTrialBalance(orgId, {
+          fromDate: req.query.fromDate as string,
+          toDate: req.query.toDate as string,
+        });
+        rows = tb.rows;
+      } else if (reportType === 'customer-statement' && req.query.customerId) {
+        const cs = await CustomerStatementService.getCustomerStatement(
+          orgId,
+          req.query.customerId as string,
+          (req.query.fromDate as string) || '2026-04-01',
+          (req.query.toDate as string) || new Date().toISOString().split('T')[0]
+        );
+        rows = cs.transactions;
+      } else if (reportType === 'vendor-statement' && req.query.vendorId) {
+        const vs = await VendorStatementService.getVendorStatement(
+          orgId,
+          req.query.vendorId as string,
+          (req.query.fromDate as string) || '2026-04-01',
+          (req.query.toDate as string) || new Date().toISOString().split('T')[0]
+        );
+        rows = vs.transactions;
+      } else {
+        res.status(400).json({ error: `Unsupported or invalid export report type: ${reportType}` });
+        return;
+      }
+
+      const csv = ReportExportService.convertToCSV(rows);
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.send(csv);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   }
 
   // --- MANUAL & RECURRING JOURNALS ---

@@ -46,6 +46,10 @@ export class BankingService {
     return this.apiCall<BankAccount>('/accounts', 'POST', data);
   }
 
+  public static deleteAccount(bankAccountId: string): Promise<{ deleted: boolean; id: string; ledgerAccountId?: string }> {
+    return this.apiCall<{ deleted: boolean; id: string; ledgerAccountId?: string }>(`/accounts/${bankAccountId}`, 'DELETE');
+  }
+
   public static importStatement(
     bankAccountId: string,
     filename: string,

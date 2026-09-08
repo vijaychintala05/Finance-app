@@ -17,7 +17,7 @@ export class LedgerQueryService {
       search?: string;
     } = {}
   ) {
-    if (options.projectId || options.customerId || options.vendorId || options.businessLine || options.locationId || options.costCenterId || options.search) {
+    if (options.businessLine || options.locationId || options.costCenterId) {
       throw new Error('The requested general-ledger dimension is not implemented');
     }
     if (options.fromDate && !/^\d{4}-\d{2}-\d{2}$/.test(options.fromDate)) throw new Error('Invalid general ledger start date');
@@ -28,7 +28,7 @@ export class LedgerQueryService {
       SELECT 
         a.id as account_id, a.code as account_code, a.name as account_name, a.type as account_type,
         je.id as journal_entry_id, je.entry_number, je.date as entry_date, je.reference, je.description as narration,
-        jl.debit, jl.credit
+        jl.id as line_id, jl.debit, jl.credit, jl.project_id, jl.customer_id, jl.vendor_id
       FROM accounts a
       JOIN journal_lines jl ON a.id = jl.account_id
       JOIN journal_entries je ON jl.journal_entry_id = je.id AND je.organization_id = a.organization_id
@@ -47,6 +47,22 @@ export class LedgerQueryService {
     if (options.toDate) {
       params.push(options.toDate);
       sql += ` AND je.date <= $${params.length}`;
+    }
+    if (options.projectId) {
+      params.push(options.projectId);
+      sql += ` AND jl.project_id = $${params.length}`;
+    }
+    if (options.customerId) {
+      params.push(options.customerId);
+      sql += ` AND (jl.customer_id = $${params.length} OR je.reference ILIKE '%' || $${params.length} || '%')`;
+    }
+    if (options.vendorId) {
+      params.push(options.vendorId);
+      sql += ` AND (jl.vendor_id = $${params.length} OR je.reference ILIKE '%' || $${params.length} || '%')`;
+    }
+    if (options.search && options.search.trim()) {
+      params.push(`%${options.search.trim()}%`);
+      sql += ` AND (je.entry_number ILIKE $${params.length} OR je.reference ILIKE $${params.length} OR je.description ILIKE $${params.length} OR jl.description ILIKE $${params.length})`;
     }
 
     sql += ` ORDER BY a.code ASC, je.date ASC, je.created_at ASC`;
@@ -75,11 +91,14 @@ export class LedgerQueryService {
       acc.transactions.push({
         journalEntryId: row.journal_entry_id,
         entryNumber: row.entry_number,
-        entryDate: row.entry_date,
+        entryDate: typeof row.entry_date === 'string' ? row.entry_date : new Date(row.entry_date).toISOString().slice(0, 10),
         reference: row.reference,
         narration: row.narration,
         debit: deb,
         credit: cred,
+        projectId: row.project_id || undefined,
+        customerId: row.customer_id || undefined,
+        vendorId: row.vendor_id || undefined,
       });
       acc.totalDebitCents = (acc.totalDebitCents || 0n) + debitCents;
       acc.totalCreditCents = (acc.totalCreditCents || 0n) + creditCents;

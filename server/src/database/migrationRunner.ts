@@ -3,6 +3,7 @@ import { OrganizationProvisioningService } from '../services/OrganizationProvisi
 import { applyPoint1Schema } from './point1Schema';
 import { applyIdentitySchema } from './identitySchema';
 import { applyEnterpriseHardeningSchema } from './enterpriseHardeningSchema';
+import { applyUsabilitySchema } from './usabilitySchema';
 import type { DbQueryResult } from './db';
 
 export const CURRENT_SCHEMA_VERSION = '2026.08.31-v7-expense-receipts';
@@ -776,6 +777,136 @@ export class MigrationRunner {
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       )`,
 
+      `CREATE TABLE IF NOT EXISTS vendor_refunds (
+        id VARCHAR(64) PRIMARY KEY,
+        organization_id VARCHAR(64) NOT NULL,
+        refund_number VARCHAR(64) NOT NULL,
+        vendor_id VARCHAR(64) NOT NULL,
+        debit_note_id VARCHAR(64),
+        payment_id VARCHAR(64),
+        refund_date DATE NOT NULL,
+        amount NUMERIC(15, 2) NOT NULL,
+        deposit_to_account_id VARCHAR(64) NOT NULL,
+        reference VARCHAR(255),
+        notes TEXT,
+        status VARCHAR(20) NOT NULL DEFAULT 'POSTED',
+        journal_entry_id VARCHAR(64),
+        reversal_journal_id VARCHAR(64),
+        reversed_at TIMESTAMP WITH TIME ZONE,
+        reversed_by VARCHAR(64),
+        reversal_reason TEXT,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT uk_org_vendor_refund_num UNIQUE (organization_id, refund_number)
+      )`,
+
+      `CREATE TABLE IF NOT EXISTS background_jobs (
+        id VARCHAR(64) PRIMARY KEY,
+        organization_id VARCHAR(64) NOT NULL,
+        job_type VARCHAR(64) NOT NULL,
+        payload JSONB NOT NULL,
+        status VARCHAR(30) NOT NULL DEFAULT 'PENDING',
+        attempt_count INT NOT NULL DEFAULT 0,
+        max_retries INT NOT NULL DEFAULT 5,
+        backoff_seconds INT NOT NULL DEFAULT 60,
+        next_attempt_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        lease_owner VARCHAR(128),
+        lease_expires_at TIMESTAMP WITH TIME ZONE,
+        idempotency_key VARCHAR(160),
+        started_at TIMESTAMP WITH TIME ZONE,
+        completed_at TIMESTAMP WITH TIME ZONE,
+        last_error TEXT,
+        result JSONB,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT uq_bg_jobs_idemp UNIQUE (organization_id, idempotency_key)
+      )`,
+
+      `CREATE TABLE IF NOT EXISTS background_job_runs (
+        id VARCHAR(64) PRIMARY KEY,
+        job_id VARCHAR(64) NOT NULL,
+        organization_id VARCHAR(64) NOT NULL,
+        attempt_number INT NOT NULL,
+        worker_id VARCHAR(128) NOT NULL,
+        status VARCHAR(30) NOT NULL,
+        error_message TEXT,
+        duration_ms INT,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      )`,
+
+      `CREATE TABLE IF NOT EXISTS payment_gateway_events (
+        id VARCHAR(64) PRIMARY KEY,
+        organization_id VARCHAR(64) NOT NULL,
+        gateway VARCHAR(32) NOT NULL,
+        event_id VARCHAR(128) NOT NULL,
+        event_type VARCHAR(64) NOT NULL,
+        payload JSONB NOT NULL,
+        status VARCHAR(30) NOT NULL DEFAULT 'PROCESSED',
+        payment_id VARCHAR(64),
+        invoice_id VARCHAR(64),
+        settlement_reference VARCHAR(255),
+        processed_at TIMESTAMP WITH TIME ZONE,
+        error_message TEXT,
+        error TEXT,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT uq_gateway_event UNIQUE (organization_id, gateway, event_id)
+      )`,
+
+      `CREATE TABLE IF NOT EXISTS bank_feed_connections (
+        id VARCHAR(64) PRIMARY KEY,
+        organization_id VARCHAR(64) NOT NULL,
+        bank_account_id VARCHAR(64) NOT NULL,
+        provider VARCHAR(32) NOT NULL,
+        external_account_id VARCHAR(128),
+        connection_status VARCHAR(30) NOT NULL DEFAULT 'ACTIVE',
+        status VARCHAR(30) NOT NULL DEFAULT 'ACTIVE',
+        last_synced_at TIMESTAMP WITH TIME ZONE,
+        last_sync_at TIMESTAMP WITH TIME ZONE,
+        sync_cursor VARCHAR(255),
+        last_sync_cursor VARCHAR(255),
+        credentials_encrypted TEXT,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT uq_bank_feed UNIQUE (organization_id, bank_account_id, provider)
+      )`,
+
+      `CREATE TABLE IF NOT EXISTS document_inbox (
+        id VARCHAR(64) PRIMARY KEY,
+        organization_id VARCHAR(64) NOT NULL,
+        filename VARCHAR(255) NOT NULL,
+        file_url TEXT,
+        mime_type VARCHAR(64),
+        file_size INT,
+        status VARCHAR(32) NOT NULL DEFAULT 'UPLOADED',
+        ocr_data JSONB,
+        linked_document_type VARCHAR(32),
+        linked_document_id VARCHAR(64),
+        uploaded_by VARCHAR(64),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      )`,
+
+      `CREATE TABLE IF NOT EXISTS customer_portal_tokens (
+        id VARCHAR(64) PRIMARY KEY,
+        organization_id VARCHAR(64) NOT NULL,
+        customer_id VARCHAR(64) NOT NULL,
+        token VARCHAR(128) NOT NULL UNIQUE,
+        token_hash VARCHAR(128),
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        expires_at TIMESTAMP WITH TIME ZONE,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      )`,
+
+      `CREATE TABLE IF NOT EXISTS saved_views (
+        id VARCHAR(64) PRIMARY KEY,
+        organization_id VARCHAR(64) NOT NULL,
+        user_id VARCHAR(64) NOT NULL,
+        entity_type VARCHAR(32) NOT NULL,
+        name VARCHAR(128) NOT NULL,
+        filters JSONB NOT NULL,
+        is_default BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      )`,
+
       `ALTER TABLE invoices ADD COLUMN IF NOT EXISTS sales_order_id VARCHAR(64)`,
       `ALTER TABLE invoices ADD COLUMN IF NOT EXISTS estimate_id VARCHAR(64)`,
       `ALTER TABLE invoices ADD COLUMN IF NOT EXISTS customer_id VARCHAR(64)`,
@@ -788,11 +919,11 @@ export class MigrationRunner {
       `ALTER TABLE period_locks ADD COLUMN IF NOT EXISTS period_name VARCHAR(50)`,
       `ALTER TABLE period_locks ADD COLUMN IF NOT EXISTS is_locked BOOLEAN DEFAULT FALSE`,
       `ALTER TABLE journal_lines ADD COLUMN IF NOT EXISTS organization_id VARCHAR(64)`,
-      `UPDATE journal_lines AS line
-         SET organization_id = entry.organization_id
-        FROM journal_entries AS entry
-       WHERE line.journal_entry_id = entry.id
-         AND line.organization_id IS NULL`,
+      `UPDATE journal_lines
+          SET organization_id = journal_entries.organization_id
+         FROM journal_entries
+        WHERE journal_lines.journal_entry_id = journal_entries.id
+          AND journal_lines.organization_id IS NULL`,
       `CREATE INDEX IF NOT EXISTS idx_journal_lines_org_entry ON journal_lines (organization_id, journal_entry_id)`,
       `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS revision_number INT DEFAULT 0`,
       `ALTER TABLE payments_received ADD COLUMN IF NOT EXISTS unallocated_amount NUMERIC(15, 2) DEFAULT 0.00`,
@@ -1204,6 +1335,7 @@ export class MigrationRunner {
       `CREATE UNIQUE INDEX IF NOT EXISTS uk_org_payment_made_number ON payments_made (organization_id, payment_number)`,
       `CREATE UNIQUE INDEX IF NOT EXISTS uk_org_credit_note_number ON credit_notes (organization_id, credit_note_number)`,
       `CREATE UNIQUE INDEX IF NOT EXISTS uk_org_vendor_credit_number ON vendor_credits (organization_id, credit_number)`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS uk_org_customer_refund_number ON customer_refunds (organization_id, refund_number)`,
       `CREATE UNIQUE INDEX IF NOT EXISTS uk_estimate_public_token ON estimates (public_token) WHERE public_token IS NOT NULL`,
       `CREATE UNIQUE INDEX IF NOT EXISTS uk_invoice_source_estimate ON invoices (organization_id, estimate_id) WHERE estimate_id IS NOT NULL`,
       `CREATE UNIQUE INDEX IF NOT EXISTS uk_sales_order_source_estimate ON sales_orders (organization_id, estimate_id) WHERE estimate_id IS NOT NULL`,
@@ -1354,6 +1486,17 @@ export class MigrationRunner {
       `DROP TRIGGER IF EXISTS audit_logs_immutable ON audit_logs`,
       `CREATE TRIGGER audit_logs_immutable BEFORE UPDATE OR DELETE ON audit_logs
         FOR EACH ROW EXECUTE FUNCTION prevent_audit_log_mutation()`,
+      `CREATE OR REPLACE FUNCTION prevent_posted_journal_mutation() RETURNS trigger AS $$
+        BEGIN
+          IF OLD.status = 'Posted' THEN
+            RAISE EXCEPTION 'Posted journal entries are immutable. Adjustments require reversal entries.';
+          END IF;
+          RETURN NEW;
+        END;
+      $$ LANGUAGE plpgsql`,
+      `DROP TRIGGER IF EXISTS journal_entries_posted_immutable ON journal_entries`,
+      `CREATE TRIGGER journal_entries_posted_immutable BEFORE UPDATE OR DELETE ON journal_entries
+        FOR EACH ROW EXECUTE FUNCTION prevent_posted_journal_mutation()`,
       `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS parent_account_id VARCHAR(64)`,
       `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS description VARCHAR(500)`,
       `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS reporting_group VARCHAR(100)`,
@@ -1425,6 +1568,9 @@ export class MigrationRunner {
         pma_corrupt_count INT;
         cna_corrupt_count INT;
         dna_corrupt_count INT;
+        inv_corrupt_count INT;
+        bill_corrupt_count INT;
+        jl_corrupt_count INT;
       BEGIN
         SELECT COUNT(*) INTO pra_corrupt_count
           FROM payment_received_allocations pra
@@ -1464,6 +1610,33 @@ export class MigrationRunner {
 
         IF dna_corrupt_count > 0 THEN
           RAISE EXCEPTION 'Migration preflight check failed: % orphaned or cross-tenant debit_note_applications detected. Foreign key migration aborted without data loss.', dna_corrupt_count;
+        END IF;
+
+        SELECT COUNT(*) INTO inv_corrupt_count
+          FROM invoices i
+          LEFT JOIN customers c ON c.organization_id = i.organization_id AND c.id = i.customer_id
+         WHERE i.customer_id IS NOT NULL AND c.id IS NULL;
+
+        IF inv_corrupt_count > 0 THEN
+          RAISE EXCEPTION 'Migration preflight check failed: % orphaned or cross-tenant customers on invoices detected. Foreign key migration aborted without data loss.', inv_corrupt_count;
+        END IF;
+
+        SELECT COUNT(*) INTO bill_corrupt_count
+          FROM bills b
+          LEFT JOIN vendors v ON v.organization_id = b.organization_id AND v.id = b.vendor_id
+         WHERE b.vendor_id IS NOT NULL AND v.id IS NULL;
+
+        IF bill_corrupt_count > 0 THEN
+          RAISE EXCEPTION 'Migration preflight check failed: % orphaned or cross-tenant vendors on bills detected. Foreign key migration aborted without data loss.', bill_corrupt_count;
+        END IF;
+
+        SELECT COUNT(*) INTO jl_corrupt_count
+          FROM journal_lines jl
+          LEFT JOIN accounts a ON a.organization_id = jl.organization_id AND a.id = jl.account_id
+         WHERE jl.organization_id IS NOT NULL AND a.id IS NULL;
+
+        IF jl_corrupt_count > 0 THEN
+          RAISE EXCEPTION 'Migration preflight check failed: % orphaned or cross-tenant accounts on journal_lines detected. Foreign key migration aborted without data loss.', jl_corrupt_count;
         END IF;
       END $$`,
       `DO $$ BEGIN
@@ -1535,6 +1708,58 @@ export class MigrationRunner {
           ALTER TABLE accounts ADD CONSTRAINT fk_accounts_parent_org
           FOREIGN KEY (organization_id, parent_account_id) REFERENCES accounts(organization_id, id) ON DELETE RESTRICT;
         END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_payments_made_journal_entry') THEN
+          ALTER TABLE payments_made ADD CONSTRAINT fk_payments_made_journal_entry
+          FOREIGN KEY (journal_entry_id) REFERENCES journal_entries(id) ON DELETE RESTRICT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_customer_refunds_journal_entry') THEN
+          ALTER TABLE customer_refunds ADD CONSTRAINT fk_customer_refunds_journal_entry
+          FOREIGN KEY (journal_entry_id) REFERENCES journal_entries(id) ON DELETE RESTRICT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_customer_advances_journal_entry') THEN
+          ALTER TABLE customer_advances ADD CONSTRAINT fk_customer_advances_journal_entry
+          FOREIGN KEY (journal_entry_id) REFERENCES journal_entries(id) ON DELETE RESTRICT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_vendor_advances_journal_entry') THEN
+          ALTER TABLE vendor_advances ADD CONSTRAINT fk_vendor_advances_journal_entry
+          FOREIGN KEY (journal_entry_id) REFERENCES journal_entries(id) ON DELETE RESTRICT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_vendor_refunds_journal_entry') THEN
+          ALTER TABLE vendor_refunds ADD CONSTRAINT fk_vendor_refunds_journal_entry
+          FOREIGN KEY (journal_entry_id) REFERENCES journal_entries(id) ON DELETE RESTRICT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_vendor_refunds_vendor_org') THEN
+          ALTER TABLE vendor_refunds ADD CONSTRAINT fk_vendor_refunds_vendor_org
+          FOREIGN KEY (organization_id, vendor_id) REFERENCES vendors(organization_id, id) ON DELETE RESTRICT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_vendor_refunds_account_org') THEN
+          ALTER TABLE vendor_refunds ADD CONSTRAINT fk_vendor_refunds_account_org
+          FOREIGN KEY (organization_id, deposit_to_account_id) REFERENCES accounts(organization_id, id) ON DELETE RESTRICT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_invoices_customer_org') THEN
+          ALTER TABLE invoices ADD CONSTRAINT fk_invoices_customer_org
+          FOREIGN KEY (organization_id, customer_id) REFERENCES customers(organization_id, id) ON DELETE RESTRICT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_bills_vendor_org') THEN
+          ALTER TABLE bills ADD CONSTRAINT fk_bills_vendor_org
+          FOREIGN KEY (organization_id, vendor_id) REFERENCES vendors(organization_id, id) ON DELETE RESTRICT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_journal_lines_account_org') THEN
+          ALTER TABLE journal_lines ADD CONSTRAINT fk_journal_lines_account_org
+          FOREIGN KEY (organization_id, account_id) REFERENCES accounts(organization_id, id) ON DELETE RESTRICT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_bills_amounts_nonnegative') THEN
+          ALTER TABLE bills ADD CONSTRAINT ck_bills_amounts_nonnegative
+          CHECK (subtotal >= 0 AND tax_total >= 0 AND total_amount >= 0 AND paid_amount >= 0 AND balance_due >= 0);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_payments_made_positive') THEN
+          ALTER TABLE payments_made ADD CONSTRAINT ck_payments_made_positive
+          CHECK (amount > 0 AND unallocated_amount >= 0);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_expenses_positive') THEN
+          ALTER TABLE expenses ADD CONSTRAINT ck_expenses_positive
+          CHECK (amount > 0);
+        END IF;
       END $$`,
     ];
 
@@ -1546,6 +1771,8 @@ export class MigrationRunner {
           sql.trimStart().startsWith('DO $$') ||
           sql.includes('prevent_audit_log_mutation') ||
           sql.includes('audit_logs_immutable') ||
+          sql.includes('prevent_posted_journal_mutation') ||
+          sql.includes('journal_entries_posted_immutable') ||
           sql.includes('idx_quotation_templates_one_default_per_org')
         )) continue;
         await queryClient.query(sql);
@@ -1569,6 +1796,7 @@ export class MigrationRunner {
     await applyPoint1Schema(queryClient);
     await applyIdentitySchema(queryClient);
     await applyEnterpriseHardeningSchema(queryClient);
+    await applyUsabilitySchema(queryClient);
 
     await queryClient.query(
       `INSERT INTO schema_migrations (version, description)

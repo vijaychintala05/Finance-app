@@ -25,7 +25,16 @@ export const PurchaseOrdersView: React.FC<PurchaseOrdersViewProps> = ({
   selectedEntityId,
   onSelectedEntityClosed,
 }) => {
-  const { purchaseOrders, addPurchaseOrder, updatePurchaseOrder, vendors, settings } = useBooks();
+  const {
+    purchaseOrders,
+    addPurchaseOrder,
+    updatePurchaseOrder,
+    deletePurchaseOrder,
+    convertPurchaseOrderToBill,
+    receivePurchaseOrder,
+    vendors,
+    settings,
+  } = useBooks();
 
   const [search, setSearch] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -71,36 +80,62 @@ export const PurchaseOrdersView: React.FC<PurchaseOrdersViewProps> = ({
     if (onSelectedEntityClosed) onSelectedEntityClosed();
   };
 
-  const handleCreatePO = (e: React.FormEvent) => {
+  const handleCreatePO = async (e: React.FormEvent) => {
     e.preventDefault();
-    const targetVendor = vendorName || vendors[0]?.name || 'Unassigned Vendor';
+    if (vendors.length === 0) {
+      alert('Create a vendor before issuing a purchase order');
+      return;
+    }
+    const matchedVendor = vendors.find((v) => v.name === vendorName);
+    const targetVendor = vendorName || vendors[0]?.name;
+    if (!targetVendor) {
+      alert('Please select a valid vendor');
+      return;
+    }
 
-    const created = addPurchaseOrder({
-      poNumber: `PO-2026-00${purchaseOrders.length + 1}`,
-      vendorName: targetVendor,
-      orderDate: new Date().toISOString().split('T')[0],
-      expectedDate: new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0],
-      totalAmount: Number(amount) || 0,
-      status: 'Issued',
-      notes: notes || 'Official purchase order',
-    });
-    if (!created) return;
+    try {
+      const created = await addPurchaseOrder({
+        poNumber: `PO-2026-00${purchaseOrders.length + 1}`,
+        vendorId: matchedVendor?.id || vendors[0]?.id,
+        vendorName: targetVendor,
+        orderDate: new Date().toISOString().split('T')[0],
+        expectedDate: new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0],
+        totalAmount: Number(amount) || 0,
+        status: 'Issued',
+        notes: notes || 'Official purchase order',
+      });
+      if (!created) return;
 
-    setIsModalOpen(false);
-    setNotes('');
-    if (onSelectedEntityClosed) onSelectedEntityClosed();
+      setIsModalOpen(false);
+      setNotes('');
+      if (onSelectedEntityClosed) onSelectedEntityClosed();
+    } catch (err: any) {
+      alert(err.message || 'Failed to create purchase order');
+    }
   };
 
   const getStatusBadge = (status: PurchaseOrder['status']) => {
     switch (status) {
+      case 'Draft':
+        return 'bg-slate-100 text-slate-700 border-slate-200';
       case 'Issued':
         return 'bg-blue-100 text-blue-800 border-blue-200';
+      case 'Approved':
+        return 'bg-indigo-100 text-indigo-800 border-indigo-200';
+      case 'Partially Received':
+        return 'bg-cyan-100 text-cyan-800 border-cyan-200';
+      case 'Received':
+        return 'bg-teal-100 text-teal-800 border-teal-200';
       case 'Pending Receipt':
         return 'bg-amber-100 text-amber-800 border-amber-200';
+      case 'Partially Billed':
+        return 'bg-purple-100 text-purple-800 border-purple-200';
       case 'Billed':
         return 'bg-emerald-100 text-emerald-800 border-emerald-200';
       case 'Cancelled':
         return 'bg-rose-100 text-rose-800 border-rose-200';
+      default:
+        return 'bg-slate-100 text-slate-800 border-slate-200';
     }
   };
 
@@ -120,7 +155,13 @@ export const PurchaseOrdersView: React.FC<PurchaseOrdersViewProps> = ({
 
         <button
           onClick={() => setIsModalOpen(true)}
-          className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-2xs cursor-pointer transition-colors"
+          disabled={vendors.length === 0}
+          title={vendors.length === 0 ? "Create a vendor before issuing a purchase order" : "Create Purchase Order"}
+          className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-2xs transition-colors ${
+            vendors.length === 0
+              ? 'bg-slate-300 dark:bg-slate-700 text-slate-500 cursor-not-allowed'
+              : 'bg-blue-600 hover:bg-blue-700 text-white cursor-pointer'
+          }`}
         >
           <Plus className="w-4 h-4" />
           <span>New Purchase Order</span>
@@ -184,10 +225,15 @@ export const PurchaseOrdersView: React.FC<PurchaseOrdersViewProps> = ({
                       <Eye className="w-3.5 h-3.5 inline mr-1" />
                       View
                     </button>
-                    {po.status !== 'Billed' && (
+                    {po.status !== 'Billed' && po.status !== 'Cancelled' && (
                       <button
-                        onClick={() => {
-                          updatePurchaseOrder(po.id, { status: 'Billed' });
+                        onClick={async () => {
+                          try {
+                            const bill = await convertPurchaseOrderToBill(po.id);
+                            if (bill) alert(`Created Bill ${bill.billNumber} from PO ${po.poNumber}`);
+                          } catch (err: any) {
+                            alert(err.message || 'Conversion to bill failed');
+                          }
                         }}
                         className="text-xs font-bold text-sky-600 hover:underline cursor-pointer"
                       >
@@ -247,7 +293,56 @@ export const PurchaseOrdersView: React.FC<PurchaseOrdersViewProps> = ({
               <p className="text-xs text-slate-700 dark:text-slate-300">{viewingPO.notes || 'No additional notes specified.'}</p>
             </div>
 
-            <div className="flex justify-end gap-2 pt-2">
+            <div className="flex flex-wrap justify-between items-center gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-2">
+                {viewingPO.status !== 'Cancelled' && viewingPO.status !== 'Billed' && (
+                  <button
+                    onClick={async () => {
+                      try {
+                        await deletePurchaseOrder(viewingPO.id);
+                        handleCloseDetailModal();
+                      } catch (err: any) {
+                        alert(err.message || 'Cancellation failed');
+                      }
+                    }}
+                    className="px-3 py-1.5 bg-rose-50 text-rose-600 hover:bg-rose-100 dark:bg-rose-950/40 dark:text-rose-400 rounded-lg text-xs font-bold cursor-pointer"
+                  >
+                    Cancel PO
+                  </button>
+                )}
+                {viewingPO.status !== 'Received' && viewingPO.status !== 'Cancelled' && (
+                  <button
+                    onClick={async () => {
+                      try {
+                        await receivePurchaseOrder(viewingPO.id);
+                        alert(`PO ${viewingPO.poNumber} goods received`);
+                        handleCloseDetailModal();
+                      } catch (err: any) {
+                        alert(err.message || 'Receipt recording failed');
+                      }
+                    }}
+                    className="px-3 py-1.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-400 rounded-lg text-xs font-bold cursor-pointer"
+                  >
+                    Mark Received
+                  </button>
+                )}
+                {viewingPO.status !== 'Billed' && viewingPO.status !== 'Cancelled' && (
+                  <button
+                    onClick={async () => {
+                      try {
+                        const bill = await convertPurchaseOrderToBill(viewingPO.id);
+                        if (bill) alert(`Created Bill ${bill.billNumber} from PO ${viewingPO.poNumber}`);
+                        handleCloseDetailModal();
+                      } catch (err: any) {
+                        alert(err.message || 'Conversion failed');
+                      }
+                    }}
+                    className="px-3 py-1.5 bg-sky-600 text-white hover:bg-sky-700 rounded-lg text-xs font-bold cursor-pointer"
+                  >
+                    Convert to Bill
+                  </button>
+                )}
+              </div>
               <button
                 onClick={handleCloseDetailModal}
                 className="px-4 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-xl text-xs font-bold cursor-pointer"
@@ -270,18 +365,26 @@ export const PurchaseOrdersView: React.FC<PurchaseOrdersViewProps> = ({
 
             <form onSubmit={handleCreatePO} className="space-y-3">
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Vendor / Supplier</label>
-                <select
-                  value={vendorName}
-                  onChange={(e) => setVendorName(e.target.value)}
-                  className="w-full border border-slate-300 rounded-lg p-2 text-xs font-medium"
-                >
-                  {vendors.map((v) => (
-                    <option key={v.id} value={v.name}>
-                      {v.name}
-                    </option>
-                  ))}
-                </select>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Vendor / Supplier</label>
+                {vendors.length === 0 ? (
+                  <p className="text-xs text-rose-500 font-medium p-2 bg-rose-50 dark:bg-rose-950/30 rounded-lg">
+                    No vendors found. Please add a vendor in Contacts before creating a purchase order.
+                  </p>
+                ) : (
+                  <select
+                    value={vendorName}
+                    onChange={(e) => setVendorName(e.target.value)}
+                    className="w-full border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white rounded-lg p-2 text-xs font-medium"
+                    required
+                  >
+                    <option value="">Select a vendor...</option>
+                    {vendors.map((v) => (
+                      <option key={v.id} value={v.name}>
+                        {v.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
 
               <div>

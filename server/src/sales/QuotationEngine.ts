@@ -37,6 +37,7 @@ export interface DetailedQuotationModel extends EstimateModel {
   templateSnapshot?: any;
   validityDays?: number;
   customerResponseNotes?: string;
+  validUntil?: string;
   projectId?: string;
   customerSnapshot?: any;
 }
@@ -169,7 +170,7 @@ export class QuotationEngine {
 
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
-      const name = item.name || item.itemName;
+      const name = item.name || item.itemName || (item as any).description;
       if (!name || typeof name !== 'string' || !name.trim()) {
         throw new Error(`Line ${i + 1}: Line item name or title is required`);
       }
@@ -184,7 +185,7 @@ export class QuotationEngine {
         throw new Error(`Line ${i + 1}: Quantity must be greater than 0`);
       }
 
-      const rate = Number(item.rate);
+      const rate = Number(item.rate !== undefined ? item.rate : (item as any).unitPrice);
       if (isNaN(rate) || rate < 0) {
         throw new Error(`Line ${i + 1}: Rate must be a non-negative number`);
       }
@@ -246,7 +247,7 @@ export class QuotationEngine {
 
     for (const item of items) {
       const qty = Number(item.quantity);
-      const rate = Number(item.rate);
+      const rate = Number(item.rate !== undefined ? item.rate : (item as any).unitPrice || 0);
       const gross = this.roundMoney(qty * rate);
 
       let discAmt = Number(item.discountAmount || 0);
@@ -386,7 +387,13 @@ export class QuotationEngine {
     data: Partial<DetailedQuotationModel>,
     createdBy: string = 'User'
   ): Promise<DetailedQuotationModel> {
-    const items: QuotationLineItem[] = data.items || data.lineItems || [];
+    const rawItems: any[] = data.items || data.lineItems || [];
+    const items: QuotationLineItem[] = rawItems.map((item) => ({
+      ...item,
+      name: item.name || item.itemName || item.description || 'Line Item',
+      rate: Number(item.rate !== undefined ? item.rate : (item.unitPrice !== undefined ? item.unitPrice : 0)),
+      quantity: Number(item.quantity || 1),
+    }));
     this.validateQuotationLines(items);
     await this.validateItemReferences(orgId, items, true);
 
@@ -1473,6 +1480,47 @@ export class QuotationEngine {
     if (converted.rowCount !== 1) throw new Error(`Quotation ${quotationId} conversion state changed concurrently`);
 
     return invoice;
+    });
+  }
+
+  /**
+   * Cancel quotation with state validation and audit logging
+   */
+  public static async cancelQuotation(orgId: string, quotationId: string, actorId: string, reason: string = 'User cancelled'): Promise<DetailedQuotationModel> {
+    return db.transaction(async (client) => {
+      const qRes = await client.query(
+        `SELECT id, status, estimate_number, total_amount FROM estimates WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, quotationId]
+      );
+      if (qRes.rows.length === 0) throw new Error(`Quotation ${quotationId} not found`);
+      const q = qRes.rows[0];
+      const currentStatus = String(q.status).toUpperCase();
+      if (currentStatus === 'CANCELLED' || currentStatus === 'DECLINED') {
+        return this.getQuotation(orgId, quotationId);
+      }
+      if (currentStatus === 'CONVERTED') {
+        throw new Error(`Quotation ${q.estimate_number || quotationId} has already been converted and cannot be cancelled`);
+      }
+
+      await client.query(
+        `UPDATE estimates SET status = 'DECLINED' WHERE organization_id = $1 AND id = $2`,
+        [orgId, quotationId]
+      );
+
+      await client.query(
+        `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state, after_state)
+         VALUES ($1, $2, $3, 'QUOTATION_CANCELLED', 'Quotation', $4, $5, $6)`,
+        [
+          `aud-${crypto.randomUUID()}`,
+          orgId,
+          actorId,
+          quotationId,
+          JSON.stringify({ status: currentStatus, totalAmount: q.total_amount }),
+          JSON.stringify({ status: 'CANCELLED', reason }),
+        ]
+      );
+
+      return this.getQuotation(orgId, quotationId);
     });
   }
 }

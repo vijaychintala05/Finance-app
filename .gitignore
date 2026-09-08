@@ -15,3 +15,5 @@ compose.nas.resolved.yaml
 compose.nas.miniscloud.resolved.yaml
 compose.nas.ghcr.resolved.yaml
 firmbooks-nas-upload.zip
+*.patch
+.gstack/qa-reports/2026-09-08/

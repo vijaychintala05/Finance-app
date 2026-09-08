@@ -201,15 +201,27 @@ export const BillsView: React.FC<BillsViewProps> = ({
           </p>
         </div>
 
-        <button
-          onClick={openCreateModal}
-          disabled={vendors.length === 0 || expenseAccounts.length === 0}
-          title={vendors.length === 0 || expenseAccounts.length === 0 ? 'Create a vendor and expense account before recording a bill' : 'Record a vendor bill'}
-          className="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-2xs cursor-pointer transition-colors"
-        >
-          <Plus className="w-4 h-4" />
-          <span>New Bill</span>
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => {
+              window.location.hash = '#document_inbox';
+            }}
+            className="border border-indigo-200 bg-indigo-50/70 hover:bg-indigo-100 text-indigo-700 dark:border-indigo-800/60 dark:bg-indigo-950/40 dark:text-indigo-300 px-3.5 py-2 rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-2xs cursor-pointer transition-colors"
+          >
+            <Receipt className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+            <span>Scan / Upload (OCR)</span>
+          </button>
+
+          <button
+            onClick={openCreateModal}
+            disabled={vendors.length === 0 || expenseAccounts.length === 0}
+            title={vendors.length === 0 || expenseAccounts.length === 0 ? 'Create a vendor and expense account before recording a bill' : 'Record a vendor bill'}
+            className="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-2xs cursor-pointer transition-colors"
+          >
+            <Plus className="w-4 h-4" />
+            <span>New Bill</span>
+          </button>
+        </div>
       </div>
 
       {/* Search */}
@@ -272,7 +284,17 @@ export const BillsView: React.FC<BillsViewProps> = ({
                     onClick={() => setViewingBill(b)}
                     className="hover:bg-slate-50/60 dark:hover:bg-slate-800/40 transition-colors cursor-pointer"
                   >
-                    <td className="p-3 pl-4 font-mono font-bold text-amber-600">{b.billNumber}</td>
+                    <td className="p-3 pl-4 font-mono font-bold text-amber-600 dark:text-amber-400 flex items-center space-x-1.5 flex-wrap">
+                      <span>{b.billNumber}</span>
+                      {b.purchaseOrderId && (
+                        <span
+                          className="inline-flex items-center text-[9px] bg-sky-50 text-sky-700 dark:bg-sky-950/80 dark:text-sky-300 font-bold px-1.5 py-0.5 rounded border border-sky-200 dark:border-sky-800"
+                          title="Generated from Purchase Order"
+                        >
+                          PO
+                        </span>
+                      )}
+                    </td>
                     <td className="p-3 font-bold text-slate-800 dark:text-slate-200">{b.vendorName}</td>
                     <td className="p-3 text-slate-500 dark:text-slate-400">{formatDate(b.billDate)}</td>
                     <td className="p-3 text-slate-500 dark:text-slate-400">{formatDate(b.dueDate)}</td>

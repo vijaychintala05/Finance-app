@@ -45,7 +45,12 @@ router.post('/estimates/:id/revise', requirePermission(['estimates.edit', 'invoi
 
 // Sales Orders
 router.get('/sales-orders', requirePermission(['sales_orders.view', 'invoices.view']), FinanceController.getSalesOrders);
+router.get('/sales-orders/:id', requirePermission(['sales_orders.view', 'invoices.view']), FinanceController.getSalesOrder);
 router.post('/sales-orders', requirePermission(['sales_orders.create', 'invoices.create']), FinanceController.createSalesOrder);
+router.put('/sales-orders/:id', requirePermission(['sales_orders.edit', 'invoices.edit', 'sales_orders.create']), FinanceController.updateSalesOrder);
+router.post('/sales-orders/:id/convert-inv', requirePermission(['invoices.create', 'sales_orders.create']), FinanceController.convertSalesOrderToInvoice);
+router.post('/sales-orders/:id/fulfill', requirePermission(['delivery_challans.create', 'sales_orders.create', 'invoices.create']), FinanceController.fulfillSalesOrder);
+router.post('/sales-orders/:id/cancel', requirePermission(['sales_orders.delete', 'sales_orders.edit', 'invoices.edit']), FinanceController.cancelSalesOrder);
 
 // Delivery Challans
 router.get('/delivery-challans', requirePermission(['delivery_challans.view', 'invoices.view']), FinanceController.getDeliveryChallans);
@@ -97,6 +102,9 @@ router.post('/debit-notes/:id/reverse', requirePermission(['vendor_credits.void'
 router.post('/ap-write-offs', requirePermission(['bills.void', 'purchases.create']), requireTrustedFinanceFeature('payable-write-offs'), FinanceController.recordAPWriteOff);
 router.get('/ap-write-offs', requirePermission(['bills.view', 'purchases.view']), requireTrustedFinanceFeature('payable-write-offs'), FinanceController.getPayableWriteOffs);
 router.post('/ap-write-offs/:id/reverse', requirePermission(['bills.void', 'purchases.create']), requireTrustedFinanceFeature('payable-write-offs'), FinanceController.reversePayableWriteOff);
+router.get('/vendor-refunds', requirePermission(['vendor_credits.view', 'purchases.view']), FinanceController.getVendorRefunds);
+router.post('/vendor-refunds', requirePermission(['vendor_credits.create', 'purchases.pay']), FinanceController.recordVendorRefund);
+router.post('/vendor-refunds/:id/reverse', requirePermission(['vendor_credits.void', 'purchases.pay']), FinanceController.reverseVendorRefund);
 
 // AR Aging & Integrity Verifier
 router.get('/ar-aging', requirePermission(['reports.receivables', 'reports.view']), FinanceController.getARAging);
@@ -107,7 +115,11 @@ router.get('/integrity', requirePermission(['reports.audit', 'audit.view']), Fin
 router.get('/reports/general-ledger', requirePermission(['reports.financial_statements', 'reports.view']), FinanceController.getGeneralLedgerReport);
 router.get('/reports/trial-balance', requirePermission(['reports.financial_statements', 'reports.view']), FinanceController.getTrialBalance);
 router.get('/reports/profit-loss', requirePermission(['reports.financial_statements', 'reports.view']), FinanceController.getProfitLoss);
+router.get('/reports/profit-loss/comparative', requirePermission(['reports.financial_statements', 'reports.view']), FinanceController.getComparativeProfitLoss);
 router.get('/reports/balance-sheet', requirePermission(['reports.financial_statements', 'reports.view']), FinanceController.getBalanceSheet);
+router.get('/reports/balance-sheet/comparative', requirePermission(['reports.financial_statements', 'reports.view']), FinanceController.getComparativeBalanceSheet);
+router.get('/reports/drill-down/:journalEntryId', requirePermission(['reports.financial_statements', 'reports.view']), FinanceController.getDrillDown);
+router.get('/reports/export/:reportType', requirePermission(['reports.financial_statements', 'reports.view']), FinanceController.exportReport);
 router.get('/reports/cash-flow', requirePermission(['reports.financial_statements', 'reports.view']), requireTrustedFinanceFeature('cash-flow-classification'), FinanceController.getCashFlow);
 router.get('/reports/customer-statement/:customerId', requirePermission(['reports.receivables', 'reports.view']), requireTrustedFinanceFeature('customer-statements'), FinanceController.getCustomerStatement);
 router.get('/reports/vendor-statement/:vendorId', requirePermission(['reports.payables', 'reports.view']), requireTrustedFinanceFeature('vendor-statements'), FinanceController.getVendorStatement);
@@ -156,6 +168,18 @@ router.post('/expenses', requirePermission(['expenses.create']), FinanceControll
 router.get('/expenses/:id/receipts/:receiptId', requirePermission(['expenses.view', 'expenses.attach_receipt']), FinanceController.getExpenseReceipt);
 router.get('/expenses/:id/pdf', requirePermission(['expenses.view']), FinanceController.getExpensePdf);
 router.post('/expenses/:id/void', requirePermission(['expenses.void', 'expenses.create']), FinanceController.voidExpense);
+
+// Purchase Orders & Goods Receipts
+router.get('/purchase-orders', requirePermission(['purchases.view', 'bills.view']), FinanceController.getPurchaseOrders);
+router.get('/purchase-orders/:id', requirePermission(['purchases.view', 'bills.view']), FinanceController.getPurchaseOrder);
+router.post('/purchase-orders', requirePermission(['purchases.create', 'bills.create']), FinanceController.createPurchaseOrder);
+router.put('/purchase-orders/:id', requirePermission(['purchases.edit', 'purchases.create', 'bills.edit']), FinanceController.updatePurchaseOrder);
+router.post('/purchase-orders/:id/approve', requirePermission(['purchases.create', 'bills.create']), FinanceController.approvePurchaseOrder);
+router.post('/purchase-orders/:id/convert-bill', requirePermission(['bills.create', 'purchases.create']), FinanceController.convertPurchaseOrderToBill);
+router.post('/purchase-orders/:id/receive', requirePermission(['purchases.create', 'bills.create']), FinanceController.receivePurchaseOrder);
+router.post('/purchase-orders/:id/cancel', requirePermission(['purchases.delete', 'purchases.edit', 'bills.edit']), FinanceController.cancelPurchaseOrder);
+router.get('/goods-receipts', requirePermission(['purchases.view', 'bills.view']), FinanceController.getGoodsReceipts);
+router.post('/goods-receipts', requirePermission(['purchases.create', 'bills.create']), FinanceController.createGoodsReceipt);
 
 // Bills
 router.get('/bills', requirePermission(['bills.view', 'purchases.view']), FinanceController.getBills);

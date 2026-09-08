@@ -15,9 +15,33 @@ function roundMoney(amount: number): number {
 
 function classifyCounterpart(account: { type?: string; sub_type?: string; name?: string }): CashFlowCategory {
   const type = (account.type || '').toUpperCase();
+  const subType = (account.sub_type || '').toUpperCase();
   const text = `${account.sub_type || ''} ${account.name || ''}`.toUpperCase();
-  if (type === 'EQUITY' || type === 'LIABILITY' || type === 'LONG TERM LIABILITY') return 'financing';
-  if (type === 'ASSET' && /(FIXED|PROPERTY|PLANT|EQUIPMENT|VEHICLE|INVESTMENT|INTANGIBLE)/.test(text)) return 'investing';
+
+  // Equity is financing
+  if (type === 'EQUITY' || /(SHARE CAPITAL|RETAINED EARNINGS|DRAWING|DIVIDEND)/.test(text)) {
+    return 'financing';
+  }
+
+  // Long term debt / borrowings are financing
+  if (
+    type === 'LONG TERM LIABILITY' ||
+    subType === 'LONG_TERM_LIABILITY' ||
+    /(LONG TERM|BORROWING|BANK LOAN|DEBENTURE|NOTES PAYABLE)/.test(text)
+  ) {
+    return 'financing';
+  }
+
+  // Fixed Assets, Capital Investments, Property, Plant, Equipment are investing
+  if (
+    type === 'ASSET' &&
+    (subType === 'FIXED_ASSET' || /(FIXED|PROPERTY|PLANT|EQUIPMENT|VEHICLE|INVESTMENT|INTANGIBLE)/.test(text))
+  ) {
+    return 'investing';
+  }
+
+  // All other current operating liabilities (AP, taxes, customer advances, accrued expenses)
+  // and current operating assets (AR, inventory, prepayments) are operating working capital
   return 'operating';
 }
 
@@ -101,6 +125,9 @@ export class CashFlowStatementService {
       operatingActivities: { total: operatingTotal, lines: operatingLines },
       investingActivities: { total: investingTotal, lines: investingLines },
       financingActivities: { total: financingTotal, lines: financingLines },
+      operating: { total: operatingTotal, lines: operatingLines },
+      investing: { total: investingTotal, lines: investingLines },
+      financing: { total: financingTotal, lines: financingLines },
       netCashFlow: roundMoney(netCashFlow), closingCashBalance, closingCashBankBalance: closingCashBalance,
       isReconciled: Math.abs(difference) < 0.01, isBalanced: Math.abs(difference) < 0.01, reconciledWithGL: Math.abs(difference) < 0.01, difference,
     };
@@ -110,6 +137,7 @@ export class CashFlowStatementService {
     return {
       organizationId: orgId, fromDate, toDate, openingCashBalance: 0,
       operatingActivities: { total: 0, lines: [] }, investingActivities: { total: 0, lines: [] }, financingActivities: { total: 0, lines: [] },
+      operating: { total: 0, lines: [] }, investing: { total: 0, lines: [] }, financing: { total: 0, lines: [] },
       netCashFlow: 0, closingCashBalance: 0, closingCashBankBalance: 0,
       isReconciled: true, isBalanced: true, reconciledWithGL: true, difference: 0,
     };

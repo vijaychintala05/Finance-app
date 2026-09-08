@@ -958,7 +958,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
               </div>
 
               <div className="mt-3 border-t border-slate-100 pt-2.5 text-xs text-slate-400 dark:border-slate-800">
-                <span>{dashboard.overview?.outstandingInvoicesCount || 2} total outstanding invoices</span>
+                <span>{dashboard.overview?.outstandingInvoicesCount ?? 0} total outstanding invoices</span>
               </div>
             </div>
 
@@ -1381,73 +1381,55 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
               </button>
             </div>
 
-            <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
-              {/* Activity Item 1: Bank Reconciliation */}
-              <div
-                onClick={() => onNavigate('bank_reconciliation')}
-                className="flex items-center justify-between rounded-xl border border-slate-200/80 p-3.5 hover:bg-slate-50/80 transition-all cursor-pointer dark:border-slate-800 dark:hover:bg-slate-800/40"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600 dark:bg-emerald-950/60 dark:text-emerald-400">
-                    <Landmark className="h-4.5 w-4.5" />
-                  </div>
-                  <div>
-                    <p className="text-xs font-bold text-slate-900 dark:text-white">Bank Reconciliation</p>
-                    <p className="text-[11px] text-slate-400">HDFC Bank • 8934</p>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <p className="text-[11px] text-slate-400">Sep 2, 2026</p>
-                  <span className="mt-0.5 inline-block rounded-md bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700 border border-emerald-200/60">
-                    Reconciled
-                  </span>
-                </div>
+            {(!dashboard.overview?.recentTransactions || dashboard.overview.recentTransactions.length === 0) ? (
+              <div className="mt-4 flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-200 p-8 text-center dark:border-slate-800">
+                <Clock className="h-8 w-8 text-slate-300 dark:text-slate-600 mb-2" />
+                <p className="text-xs font-medium text-slate-600 dark:text-slate-400">No recent activity</p>
+                <p className="text-[11px] text-slate-400 dark:text-slate-500">Transactions and reconciliations will appear here as they occur</p>
               </div>
-
-              {/* Activity Item 2: Invoice INV-1002 */}
-              <div
-                onClick={() => onNavigate('invoices')}
-                className="flex items-center justify-between rounded-xl border border-slate-200/80 p-3.5 hover:bg-slate-50/80 transition-all cursor-pointer dark:border-slate-800 dark:hover:bg-slate-800/40"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-purple-50 text-purple-600 dark:bg-purple-950/60 dark:text-purple-400">
-                    <FileText className="h-4.5 w-4.5" />
+            ) : (
+              <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+                {dashboard.overview.recentTransactions.slice(0, 6).map((tx, idx) => (
+                  <div
+                    key={`${tx.documentNumber || 'tx'}-${idx}`}
+                    onClick={() => {
+                      const lower = (tx.type || '').toLowerCase();
+                      if (lower.includes('invoice')) onNavigate('invoices');
+                      else if (lower.includes('bill')) onNavigate('bills');
+                      else if (lower.includes('bank')) onNavigate('bank_reconciliation');
+                      else onNavigate('journal_entries');
+                    }}
+                    className="flex items-center justify-between rounded-xl border border-slate-200/80 p-3.5 hover:bg-slate-50/80 transition-all cursor-pointer dark:border-slate-800 dark:hover:bg-slate-800/40"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                        {(tx.type || '').toLowerCase().includes('bank') ? (
+                          <Landmark className="h-4.5 w-4.5 text-emerald-600 dark:text-emerald-400" />
+                        ) : (tx.type || '').toLowerCase().includes('invoice') ? (
+                          <FileText className="h-4.5 w-4.5 text-purple-600 dark:text-purple-400" />
+                        ) : (
+                          <Receipt className="h-4.5 w-4.5 text-amber-600 dark:text-amber-400" />
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-bold text-slate-900 truncate dark:text-white">
+                          {tx.documentNumber || tx.type || 'Transaction'}
+                        </p>
+                        <p className="text-[11px] text-slate-400 truncate">{tx.partyName || 'Direct entry'}</p>
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0 ml-3">
+                      <p className="text-[11px] font-semibold text-slate-700 dark:text-slate-300">
+                        {tx.amount ? formatCurrency(tx.amount) : (tx.date ? formatDate(tx.date) : '—')}
+                      </p>
+                      <span className="mt-0.5 inline-block rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-700 border border-slate-200/60 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700">
+                        {tx.status || 'Posted'}
+                      </span>
+                    </div>
                   </div>
-                  <div>
-                    <p className="text-xs font-bold text-slate-900 dark:text-white">Invoice INV-1002</p>
-                    <p className="text-[11px] text-slate-400">Acme Pvt. Ltd.</p>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <p className="text-[11px] text-slate-400">Sep 2, 2026</p>
-                  <span className="mt-0.5 inline-block rounded-md bg-blue-50 px-2 py-0.5 text-[10px] font-bold text-blue-700 border border-blue-200/60">
-                    Posted
-                  </span>
-                </div>
+                ))}
               </div>
-
-              {/* Activity Item 3: Bill BIL-2007 */}
-              <div
-                onClick={() => onNavigate('bills')}
-                className="flex items-center justify-between rounded-xl border border-slate-200/80 p-3.5 hover:bg-slate-50/80 transition-all cursor-pointer dark:border-slate-800 dark:hover:bg-slate-800/40"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-amber-50 text-amber-600 dark:bg-amber-950/60 dark:text-amber-400">
-                    <Receipt className="h-4.5 w-4.5" />
-                  </div>
-                  <div>
-                    <p className="text-xs font-bold text-slate-900 dark:text-white">Bill BIL-2007</p>
-                    <p className="text-[11px] text-slate-400">Office Solutions</p>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <p className="text-[11px] text-slate-400">Sep 1, 2026</p>
-                  <span className="mt-0.5 inline-block rounded-md bg-rose-50 px-2 py-0.5 text-[10px] font-bold text-rose-700 border border-rose-200/60">
-                    Overdue
-                  </span>
-                </div>
-              </div>
-            </div>
+            )}
           </section>
         </div>
       )}

@@ -6,6 +6,7 @@ import { BankTransactionDetailsModal, BankTransactionItem } from './BankTransact
 import { RecordBankTransactionModal } from './RecordBankTransactionModal';
 import { ReconcileBankModal } from './ReconcileBankModal';
 import { ImportStatementModal } from './ImportStatementModal';
+import { DeleteBankAccountModal } from './DeleteBankAccountModal';
 import { BankAccountsSummaryCards } from './BankAccountsSummaryCards';
 import { BankAccountsListSidebar } from './BankAccountsListSidebar';
 import { BankTransactionsFeed } from './BankTransactionsFeed';
@@ -56,6 +57,7 @@ export const BankingView: React.FC<BankingViewProps> = ({
   const [recordTxDefaultType, setRecordTxDefaultType] = useState<'DEBIT' | 'CREDIT'>('DEBIT');
   const [isReconcileOpen, setIsReconcileOpen] = useState<boolean>(false);
   const [isImportStatementOpen, setIsImportStatementOpen] = useState<boolean>(false);
+  const [isDeleteOpen, setIsDeleteOpen] = useState<boolean>(false);
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
 
   const refreshBankAccounts = React.useCallback(() => {
@@ -380,6 +382,7 @@ export const BankingView: React.FC<BankingViewProps> = ({
               setRecordTxDefaultType('DEBIT');
               setIsRecordTxOpen(true);
             }}
+            onOpenDeleteAccount={() => setIsDeleteOpen(true)}
             onSelectTx={setSelectedTx}
           />
         </div>
@@ -422,6 +425,20 @@ export const BankingView: React.FC<BankingViewProps> = ({
           bankAccount={activeBankAccount}
           onClose={() => setIsImportStatementOpen(false)}
           onImported={refreshBankAccounts}
+        />
+      )}
+
+      {isDeleteOpen && activeAccount && (
+        <DeleteBankAccountModal
+          isOpen={isDeleteOpen}
+          account={activeAccount}
+          bankAccount={activeBankAccount}
+          currencySymbol={settings.currencySymbol}
+          onClose={() => setIsDeleteOpen(false)}
+          onDeleted={() => {
+            setSelectedAccountId(null);
+            refreshBankAccounts();
+          }}
         />
       )}
 

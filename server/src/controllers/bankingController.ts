@@ -36,6 +36,25 @@ export class BankingController {
     }
   }
 
+  // DELETE /api/banking/accounts/:accountId
+  public static async deleteAccount(req: Request, res: Response) {
+    try {
+      const orgId = getOrgId(req);
+      const bankAccountId = req.params.accountId || req.params.id;
+      const actorId = (req as any).auth?.userId || 'system';
+      const deleted = await BankReconciliationService.deleteBankAccount(orgId, bankAccountId, actorId);
+      res.json({ success: true, data: { deleted: true, ...deleted } });
+    } catch (e: any) {
+      const message = e instanceof Error && e.message ? e.message : 'Bank account could not be deleted';
+      const statusCode = message.includes('NOT_FOUND')
+        ? 404
+        : message.includes('DELETE_IN_USE') || message.includes('DELETE_BALANCE') || message.includes('DELETE_PROTECTED')
+          ? 409
+          : 400;
+      res.status(statusCode).json({ success: false, error: message.replace(/^[A-Z_]+: /, '') });
+    }
+  }
+
   // POST /api/banking/imports or /api/banking/accounts/:accountId/statements/import
   public static async importStatement(req: Request, res: Response) {
     try {

@@ -104,6 +104,134 @@ export class BankReconciliationService {
     return account;
   }
 
+  public static async deleteBankAccount(
+    orgId: string,
+    bankAccountIdOrLedgerId: string,
+    actorId: string = 'system'
+  ): Promise<{ id: string; ledgerAccountId: string | null; accountName: string }> {
+    const targetId = String(bankAccountIdOrLedgerId || '').trim();
+    if (!targetId) {
+      throw new Error('BANK_ACCOUNT_ID_REQUIRED: A bank account identifier is required');
+    }
+
+    return await db.transaction(async (client) => {
+      const bankResult = await client.query(
+        `SELECT * FROM bank_accounts
+          WHERE organization_id = $1 AND (id = $2 OR ledger_account_id = $2)
+          FOR UPDATE`,
+        [orgId, targetId]
+      );
+      if (bankResult.rows.length === 0) {
+        throw new Error('BANK_ACCOUNT_NOT_FOUND: Bank account does not exist');
+      }
+      const bankAccount = bankResult.rows[0];
+
+      // 1. Balance check on bank account
+      if (Math.abs(Number(bankAccount.current_balance || 0)) > 0.0001) {
+        throw new Error('BANK_ACCOUNT_DELETE_BALANCE: Bank accounts with a non-zero balance cannot be deleted. Please transfer or adjust the balance first.');
+      }
+
+      // 2. Statement import check
+      const importCheck = await client.query(
+        `SELECT 1 FROM bank_statement_imports WHERE organization_id = $1 AND bank_account_id = $2 LIMIT 1`,
+        [orgId, bankAccount.id]
+      );
+      if (importCheck.rows.length > 0) {
+        throw new Error('BANK_ACCOUNT_DELETE_IN_USE: This bank account has statement import history and cannot be deleted. Archive the account instead.');
+      }
+
+      // 3. Statement transactions check
+      const txCheck = await client.query(
+        `SELECT 1 FROM bank_statement_transactions WHERE organization_id = $1 AND bank_account_id = $2 LIMIT 1`,
+        [orgId, bankAccount.id]
+      );
+      if (txCheck.rows.length > 0) {
+        throw new Error('BANK_ACCOUNT_DELETE_IN_USE: This bank account has imported transactions and cannot be deleted. Archive the account instead.');
+      }
+
+      // 4. Reconciliation sessions check
+      const reconCheck = await client.query(
+        `SELECT 1 FROM bank_reconciliation_sessions WHERE organization_id = $1 AND bank_account_id = $2 LIMIT 1`,
+        [orgId, bankAccount.id]
+      );
+      if (reconCheck.rows.length > 0) {
+        throw new Error('BANK_ACCOUNT_DELETE_IN_USE: This bank account has reconciliation sessions and cannot be deleted.');
+      }
+
+      // 5. Linked ledger account check
+      const ledgerAccountId = bankAccount.ledger_account_id;
+      if (ledgerAccountId) {
+        const ledgerResult = await client.query(
+          `SELECT * FROM accounts WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+          [orgId, ledgerAccountId]
+        );
+        if (ledgerResult.rows.length > 0) {
+          const ledgerAccount = ledgerResult.rows[0];
+          if (ledgerAccount.is_system_account || ledgerAccount.is_locked) {
+            throw new Error('ACCOUNT_DELETE_PROTECTED: System and locked accounts cannot be deleted.');
+          }
+          if (Math.abs(Number(ledgerAccount.balance || 0)) > 0.0001) {
+            throw new Error('BANK_ACCOUNT_DELETE_BALANCE: The linked ledger account has a non-zero balance and cannot be deleted.');
+          }
+
+          // Check if used in journals, expenses, payments, etc.
+          const usageChecks: Array<{ label: string; sql: string }> = [
+            { label: 'customer payment', sql: `SELECT 1 FROM payments_received WHERE organization_id = $1 AND deposit_to_account_id = $2 LIMIT 1` },
+            { label: 'vendor payment', sql: `SELECT 1 FROM payments_made WHERE organization_id = $1 AND paid_from_account_id = $2 LIMIT 1` },
+            { label: 'customer refund', sql: `SELECT 1 FROM customer_refunds WHERE organization_id = $1 AND refund_account_id = $2 LIMIT 1` },
+            { label: 'vendor refund', sql: `SELECT 1 FROM vendor_refunds WHERE organization_id = $1 AND deposit_to_account_id = $2 LIMIT 1` },
+            { label: 'expense', sql: `SELECT 1 FROM expenses WHERE organization_id = $1 AND (expense_account_id = $2 OR paid_from_account_id = $2) LIMIT 1` },
+            { label: 'journal entry', sql: `SELECT 1 FROM journal_lines jl LEFT JOIN journal_entries je ON je.id = jl.journal_entry_id WHERE jl.account_id = $2 AND COALESCE(jl.organization_id, je.organization_id) = $1 LIMIT 1` },
+            { label: 'accounting default', sql: `SELECT 1 FROM accounting_defaults WHERE organization_id = $1 AND account_id = $2 LIMIT 1` },
+            { label: 'bank rule', sql: `SELECT 1 FROM bank_reconciliation_rules WHERE organization_id = $1 AND suggested_account_id = $2 LIMIT 1` },
+            { label: 'child account', sql: `SELECT 1 FROM accounts WHERE organization_id = $1 AND parent_account_id = $2 LIMIT 1` },
+          ];
+
+          for (const check of usageChecks) {
+            const ref = await client.query(check.sql, [orgId, ledgerAccountId]);
+            if (ref.rows.length > 0) {
+              throw new Error(`BANK_ACCOUNT_DELETE_IN_USE: The linked ledger account is used by a ${check.label}. Remove that reference or archive the account instead.`);
+            }
+          }
+
+          // Delete ledger account
+          await client.query(`DELETE FROM accounts WHERE organization_id = $1 AND id = $2`, [orgId, ledgerAccountId]);
+        }
+      }
+
+      // 6. Delete bank_accounts record
+      await client.query(
+        `DELETE FROM bank_accounts WHERE organization_id = $1 AND id = $2`,
+        [orgId, bankAccount.id]
+      );
+
+      // 7. Audit log
+      await client.query(
+        `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state)
+         VALUES ($1, $2, $3, 'BANK_ACCOUNT_DELETED', 'BankAccount', $4, $5)`,
+        [
+          newId('aud'),
+          orgId,
+          actorId,
+          bankAccount.id,
+          JSON.stringify({
+            id: bankAccount.id,
+            accountName: bankAccount.account_name,
+            bankName: bankAccount.bank_name,
+            maskedAccountNumber: bankAccount.masked_account_number,
+            ledgerAccountId: bankAccount.ledger_account_id,
+          }),
+        ]
+      );
+
+      return {
+        id: bankAccount.id,
+        ledgerAccountId: bankAccount.ledger_account_id,
+        accountName: bankAccount.account_name,
+      };
+    }, { organizationId: orgId });
+  }
+
   /**
    * REBUILD BANK BALANCES FROM GENERAL LEDGER
    * 
@@ -155,7 +283,122 @@ export class BankReconciliationService {
     return results;
   }
 
-  // --- 2. STATEMENT IMPORT ---
+  // --- 2. STATEMENT PREVIEW & IMPORT ---
+  public static async previewStatement(
+    orgId: string,
+    bankAccountId: string,
+    filename: string,
+    content: string,
+    sourceFormat?: BankStatementSourceFormat,
+    mapping?: CSVColumnMapping
+  ): Promise<{
+    detectedFormat: BankStatementSourceFormat;
+    isValid: boolean;
+    validationErrors: string[];
+    fileHash: string;
+    totalTransactions: number;
+    duplicateCount: number;
+    newTransactionsCount: number;
+    statementFrom?: string;
+    statementTo?: string;
+    openingBalance?: number;
+    closingBalance?: number;
+    previewTransactions: Array<{
+      transactionDate: string;
+      valueDate?: string;
+      amount: number;
+      direction: 'CREDIT' | 'DEBIT';
+      narration: string;
+      reference?: string;
+      runningBalance?: number;
+      isDuplicate: boolean;
+      ruleMatch?: any;
+    }>;
+  }> {
+    const validationErrors: string[] = [];
+    const detectedFormat = sourceFormat || BankStatementParserFactory.detectFormat(content);
+    const fileHash = crypto.createHash('sha256').update(content).digest('hex');
+
+    // 1. Validate bank account existence & currency
+    const accountResult = await db.query(
+      `SELECT currency FROM bank_accounts WHERE organization_id = $1 AND id = $2 AND is_active = TRUE`,
+      [orgId, bankAccountId]
+    );
+    if (accountResult.rows.length === 0) {
+      validationErrors.push('Bank account does not exist or is inactive');
+    }
+    const accountCurrency = String(accountResult.rows[0]?.currency || '');
+
+    // 2. Parse statement
+    let parsed: any;
+    try {
+      parsed = BankStatementParserFactory.parseStatement(content, bankAccountId, detectedFormat, mapping);
+    } catch (err: any) {
+      validationErrors.push(`Failed to parse statement format ${detectedFormat}: ${err?.message || err}`);
+      return {
+        detectedFormat,
+        isValid: false,
+        validationErrors,
+        fileHash,
+        totalTransactions: 0,
+        duplicateCount: 0,
+        newTransactionsCount: 0,
+        previewTransactions: [],
+      };
+    }
+
+    // 3. Currency validation
+    const statementCurrency = String(parsed.currency || accountCurrency).toUpperCase();
+    if (accountCurrency && statementCurrency !== accountCurrency) {
+      validationErrors.push(`Statement currency (${statementCurrency}) does not match bank account currency (${accountCurrency})`);
+    }
+
+    // 4. Duplicate checks
+    const existingTxs = await this.getTransactions(orgId, { bankAccountId, limit: 100000 });
+    const existingFingerprints = new Set(existingTxs.map((t) => t.fingerprint));
+
+    const rules = await this.getRules(orgId);
+    let duplicateCount = 0;
+    const previewTransactions = parsed.transactions.map((tx: any) => {
+      const isDuplicate = existingFingerprints.has(tx.fingerprint);
+      if (isDuplicate) duplicateCount++;
+
+      const ruleMatch = BankRulesEngine.evaluateRules(
+        { ...tx, organizationId: orgId, bankAccountId, reconciliationStatus: 'UNMATCHED', currency: statementCurrency } as any,
+        rules as any
+      );
+
+      return {
+        transactionDate: tx.transactionDate,
+        valueDate: tx.valueDate,
+        amount: tx.amount,
+        direction: tx.direction,
+        narration: tx.narration,
+        reference: tx.reference,
+        runningBalance: tx.runningBalance,
+        isDuplicate,
+        ruleMatch: ruleMatch || undefined,
+      };
+    });
+
+    const newTransactionsCount = previewTransactions.length - duplicateCount;
+
+    return {
+      detectedFormat,
+      isValid: validationErrors.length === 0,
+      validationErrors,
+      fileHash,
+      totalTransactions: previewTransactions.length,
+      duplicateCount,
+      newTransactionsCount,
+      statementFrom: parsed.statementFrom,
+      statementTo: parsed.statementTo,
+      openingBalance: parsed.openingBalance,
+      closingBalance: parsed.closingBalance,
+      previewTransactions: previewTransactions.slice(0, 100),
+    };
+  }
+
   public static async importStatement(
     orgId: string,
     bankAccountId: string,
@@ -457,7 +700,7 @@ export class BankReconciliationService {
     matchedBy: string = 'System',
     validateAccountingDocument: boolean = false
   ): Promise<BankReconciliationMatch> {
-    const validTypes = new Set(['invoice', 'payment_received', 'bill', 'payment_made', 'expense', 'transfer', 'journal']);
+    const validTypes = new Set(['invoice', 'payment_received', 'bill', 'payment_made', 'expense', 'transfer', 'journal', 'customer_refund', 'vendor_refund']);
     if (!validTypes.has(accountingType)) throw new Error('Unsupported accounting transaction type');
     if (!Number.isFinite(matchedAmount) || matchedAmount <= 0 || Math.abs(matchedAmount * 100 - Math.round(matchedAmount * 100)) > 1e-7) throw new Error('Matched amount must be positive with at most two decimals');
     return db.transaction(async (client) => {
@@ -465,7 +708,17 @@ export class BankReconciliationService {
     if (txResult.rows.length !== 1) throw new Error('Statement transaction was not found in this organization');
     const statementTx = this.formatTransaction(txResult.rows[0]);
     if (statementTx.reconciliationStatus === 'RECONCILED') throw new Error('A completed reconciliation must be reopened before its matches can change');
-    const accountingTableByType: Record<string, string> = { invoice: 'invoices', payment_received: 'payments_received', bill: 'bills', payment_made: 'payments_made', expense: 'expenses', journal: 'journal_entries', transfer: 'journal_entries' };
+    const accountingTableByType: Record<string, string> = {
+      invoice: 'invoices',
+      payment_received: 'payments_received',
+      bill: 'bills',
+      payment_made: 'payments_made',
+      expense: 'expenses',
+      journal: 'journal_entries',
+      transfer: 'journal_entries',
+      customer_refund: 'customer_refunds',
+      vendor_refund: 'vendor_refunds',
+    };
     if (validateAccountingDocument) {
       const accountingDocument = await client.query(`SELECT id FROM ${accountingTableByType[accountingType]} WHERE organization_id = $1 AND id = $2`, [orgId, accountingId]);
       if (accountingDocument.rows.length !== 1) throw new Error('Accounting document was not found in this organization');
@@ -567,9 +820,14 @@ export class BankReconciliationService {
     description?: string,
     createdBy: string = 'System'
   ): Promise<{ journalEntryId: string; match: BankReconciliationMatch }> {
-    const txs = await this.getTransactions(orgId, { limit: 100000 });
-    const statementTx = txs.find((t) => t.id === statementTxId);
-    if (!statementTx) throw new Error(`Statement transaction ${statementTxId} not found`);
+    const txResult = await db.query<BankStatementTransaction>(
+      `SELECT * FROM bank_statement_transactions WHERE organization_id = $1 AND id = $2`,
+      [orgId, statementTxId]
+    );
+    if (!txResult.rows || txResult.rows.length === 0) {
+      throw new Error(`Statement transaction ${statementTxId} not found`);
+    }
+    const statementTx = this.formatTransaction(txResult.rows[0]);
 
     const bankAccs = await this.getBankAccounts(orgId);
     const bankAcc = bankAccs.find((b) => b.id === statementTx.bankAccountId);
@@ -683,17 +941,36 @@ export class BankReconciliationService {
     description?: string,
     createdBy: string = 'System'
   ): Promise<{ journalEntryId: string }> {
+    if (fromBankAccountId === toBankAccountId) {
+      throw new Error('INVALID_TRANSFER: Source and destination bank accounts must be different');
+    }
+
+    if (!Number.isFinite(amount) || amount <= 0 || Math.abs(amount * 100 - Math.round(amount * 100)) > 1e-7) {
+      throw new Error('INVALID_AMOUNT: Transfer amount must be positive with at most two decimals');
+    }
+
     const bankAccs = await this.getBankAccounts(orgId);
     const fromBank = bankAccs.find((b) => b.id === fromBankAccountId);
     const toBank = bankAccs.find((b) => b.id === toBankAccountId);
 
-    const fromLedgerId = fromBank?.ledgerAccountId || `acc-bank-${fromBankAccountId}`;
-    const toLedgerId = toBank?.ledgerAccountId || `acc-bank-${toBankAccountId}`;
+    if (!fromBank) {
+      throw new Error(`BANK_ACCOUNT_NOT_FOUND: Source bank account ${fromBankAccountId} was not found in this organization`);
+    }
+    if (!toBank) {
+      throw new Error(`BANK_ACCOUNT_NOT_FOUND: Destination bank account ${toBankAccountId} was not found in this organization`);
+    }
+
+    const fromLedgerId = fromBank.ledgerAccountId || `acc-bank-${fromBankAccountId}`;
+    const toLedgerId = toBank.ledgerAccountId || `acc-bank-${toBankAccountId}`;
+
+    if (fromLedgerId === toLedgerId) {
+      throw new Error('INVALID_TRANSFER: Source and destination ledger accounts must be different');
+    }
 
     const journalId = newId('entry-transfer');
-    const entryNum = `TR-${Date.now().toString().slice(-6)}`;
+    const entryNum = `TR-${Date.now().toString().slice(-6)}-${Math.floor(1000 + Math.random() * 9000)}`;
     const ref = reference || 'Internal Transfer';
-    const desc = description || `Internal Transfer from ${fromBank?.bankName || 'HDFC'} to ${toBank?.bankName || 'ICICI'}`;
+    const desc = description || `Internal Transfer from ${fromBank.bankName || 'Source Bank'} to ${toBank.bankName || 'Destination Bank'}`;
 
     await db.transaction(async (client) => {
       await client.query(
@@ -702,7 +979,7 @@ export class BankReconciliationService {
         [journalId, orgId, entryNum, transferDate, ref, desc, 'Posted']
       );
 
-      // Dr To-Bank Account (ICICI), Cr From-Bank Account (HDFC)
+      // Dr To-Bank Account, Cr From-Bank Account
       await client.query(
         `INSERT INTO journal_lines (id, journal_entry_id, organization_id, account_id, debit, credit, description)
          VALUES ($1, $2, $3, $4, $5, $6, $7)`,
@@ -714,6 +991,36 @@ export class BankReconciliationService {
          VALUES ($1, $2, $3, $4, $5, $6, $7)`,
         [`jln-${journalId}-2`, journalId, orgId, fromLedgerId, 0, amount, desc]
       );
+
+      // Lock and synchronize General Ledger accounts in deterministic lexicographical order to prevent deadlocks
+      const sortedLedgerUpdates = [
+        { accountId: toLedgerId, delta: amount },
+        { accountId: fromLedgerId, delta: -amount },
+      ].sort((a, b) => a.accountId.localeCompare(b.accountId));
+
+      for (const update of sortedLedgerUpdates) {
+        await client.query(
+          'SELECT balance FROM accounts WHERE id = $1 AND organization_id = $2 FOR UPDATE',
+          [update.accountId, orgId]
+        );
+        await client.query(
+          'UPDATE accounts SET balance = balance + $1 WHERE id = $2 AND organization_id = $3',
+          [update.delta, update.accountId, orgId]
+        );
+      }
+
+      // Synchronize bank_accounts table current balances in deterministic order
+      const sortedBankUpdates = [
+        { bankAccountId: toBankAccountId, ledgerAccountId: toLedgerId, delta: amount },
+        { bankAccountId: fromBankAccountId, ledgerAccountId: fromLedgerId, delta: -amount },
+      ].sort((a, b) => a.bankAccountId.localeCompare(b.bankAccountId));
+
+      for (const update of sortedBankUpdates) {
+        await client.query(
+          'UPDATE bank_accounts SET current_balance = current_balance + $1, updated_at = CURRENT_TIMESTAMP WHERE (id = $2 OR ledger_account_id = $3) AND organization_id = $4',
+          [update.delta, update.bankAccountId, update.ledgerAccountId, orgId]
+        );
+      }
 
       await client.query(
         `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, metadata)

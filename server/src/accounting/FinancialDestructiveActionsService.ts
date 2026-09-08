@@ -197,6 +197,19 @@ export class FinancialDestructiveActionsService {
       if (String(payment.status).toUpperCase() === 'REVERSED') throw new Error('Payment is already reversed');
       if (!payment.journal_entry_id) throw new Error('Payment has no certified posting journal to reverse');
 
+      // Reject reversal if payment is actively matched in a bank reconciliation
+      const matchedCheck = await client.query(
+        `SELECT id FROM bank_reconciliation_matches 
+          WHERE organization_id = $1 
+            AND accounting_transaction_id = $2 
+            AND status = 'MATCHED'
+          LIMIT 1`,
+        [organizationId, paymentId]
+      );
+      if (matchedCheck.rows.length > 0) {
+        throw new Error('PAYMENT_RECONCILED: This payment is matched in bank reconciliation. Unmatch or reopen the reconciliation before reversing.');
+      }
+
       const advances = await client.query(
         `SELECT * FROM customer_advances WHERE organization_id = $1 AND payment_id = $2 FOR UPDATE`,
         [organizationId, paymentId]
@@ -280,6 +293,19 @@ export class FinancialDestructiveActionsService {
       const payment = result.rows[0];
       if (String(payment.status).toUpperCase() === 'REVERSED') throw new Error('Vendor payment is already reversed');
       if (!payment.journal_entry_id) throw new Error('Vendor payment has no certified posting journal to reverse');
+
+      // Reject reversal if vendor payment is actively matched in a bank reconciliation
+      const matchedCheck = await client.query(
+        `SELECT id FROM bank_reconciliation_matches 
+          WHERE organization_id = $1 
+            AND accounting_transaction_id = $2 
+            AND status = 'MATCHED'
+          LIMIT 1`,
+        [organizationId, paymentId]
+      );
+      if (matchedCheck.rows.length > 0) {
+        throw new Error('PAYMENT_RECONCILED: This vendor payment is matched in bank reconciliation. Unmatch or reopen the reconciliation before reversing.');
+      }
 
       const advances = await client.query(
         `SELECT * FROM vendor_advances
@@ -491,6 +517,65 @@ export class FinancialDestructiveActionsService {
       await this.audit(client, organizationId, userId, 'CUSTOMER_REFUND_REVERSED', 'CustomerRefund', refundId,
         { status: refund.status || 'POSTED', amount: refund.amount },
         { status: 'REVERSED', reversalJournalId, reason: normalizedReason });
+      return { success: true, refundId, journalEntryId: reversalJournalId };
+    });
+  }
+
+  public static async reverseVendorRefund(
+    organizationId: string,
+    refundId: string,
+    userId: string,
+    reason: string
+  ): Promise<ReversalResult & { refundId: string }> {
+    const normalizedReason = validReason(reason);
+    return db.transaction(async (client) => {
+      const result = await client.query(
+        `SELECT * FROM vendor_refunds WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [organizationId, refundId]
+      );
+      if (result.rows.length !== 1) throw new Error('Vendor refund was not found in this organization');
+      const refund = result.rows[0];
+      if (String(refund.status).toUpperCase() === 'REVERSED') throw new Error('Vendor refund is already reversed');
+      if (!refund.journal_entry_id) throw new Error('Vendor refund has no certified posting journal to reverse');
+
+      if (refund.debit_note_id) {
+        const note = await client.query(
+          `SELECT * FROM vendor_credits WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+          [organizationId, refund.debit_note_id]
+        );
+        if (note.rows.length === 1 && String(note.rows[0].status).toUpperCase() !== 'REVERSED') {
+          const restored = databaseMoneyToCents(note.rows[0].remaining_credit, 'Remaining credit')
+            + databaseMoneyToCents(refund.amount, 'Refund amount');
+          const total = databaseMoneyToCents(note.rows[0].total_amount, 'Credit note total');
+          await client.query(
+            `UPDATE vendor_credits SET remaining_credit = $1, status = $2 WHERE organization_id = $3 AND id = $4`,
+            [Number(restored) / 100, restored === total ? 'Open' : 'Partially Applied', organizationId, refund.debit_note_id]
+          );
+        }
+      }
+
+      await client.query(
+        `UPDATE vendors SET payables_balance = payables_balance - $1 WHERE organization_id = $2 AND id = $3`,
+        [refund.amount, organizationId, refund.vendor_id]
+      );
+
+      const reversalJournalId = await this.reversePostedJournal(
+        client, organizationId, refund.journal_entry_id, userId, normalizedReason,
+        `vendor refund ${refund.refund_number}`
+      );
+
+      const updated = await client.query(
+        `UPDATE vendor_refunds SET status = 'REVERSED', reversal_journal_id = $1,
+            reversed_at = CURRENT_TIMESTAMP, reversed_by = $2, reversal_reason = $3
+          WHERE organization_id = $4 AND id = $5 AND UPPER(COALESCE(status, 'POSTED')) <> 'REVERSED'`,
+        [reversalJournalId, userId, normalizedReason, organizationId, refundId]
+      );
+      if (updated.rowCount !== 1) throw new Error('Vendor refund state changed concurrently');
+
+      await this.audit(client, organizationId, userId, 'VENDOR_REFUND_REVERSED', 'VendorRefund', refundId,
+        { status: refund.status || 'POSTED', amount: refund.amount },
+        { status: 'REVERSED', reversalJournalId, reason: normalizedReason });
+
       return { success: true, refundId, journalEntryId: reversalJournalId };
     });
   }

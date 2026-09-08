@@ -64,37 +64,53 @@ export const SalesOrdersView: React.FC<SalesOrdersViewProps> = ({
     return matchesSearch && matchesStatus;
   });
 
-  const handleCreateOrder = (e: React.FormEvent) => {
+  const handleCreateOrder = async (e: React.FormEvent) => {
     e.preventDefault();
+    const matchedClient = clients.find((c) => c.name === clientName);
     const targetClient = clientName || clients[0]?.name || 'Unassigned Customer';
 
-    const created = addSalesOrder({
-      orderNumber: `SO-2026-0${salesOrders.length + 1}`,
-      clientName: targetClient,
-      orderDate: new Date().toISOString().split('T')[0],
-      expectedDeliveryDate: new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0],
-      totalAmount: Number(amount) || 0,
-      status: 'Confirmed',
-      notes: notes || 'Confirmed sales order',
-    });
-    if (!created) return;
+    try {
+      const created = await addSalesOrder({
+        orderNumber: `SO-2026-0${salesOrders.length + 1}`,
+        clientId: matchedClient?.id || clients[0]?.id,
+        clientName: targetClient,
+        orderDate: new Date().toISOString().split('T')[0],
+        expectedDeliveryDate: new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0],
+        totalAmount: Number(amount) || 0,
+        status: 'Confirmed',
+        notes: notes || 'Confirmed sales order',
+      });
+      if (!created) return;
 
-    setIsModalOpen(false);
-    setNotes('');
+      setIsModalOpen(false);
+      setNotes('');
+    } catch (err: any) {
+      alert(err.message || 'Failed to create sales order');
+    }
   };
 
   const getStatusBadge = (status: SalesOrder['status']) => {
     switch (status) {
+      case 'Draft':
+        return 'bg-slate-100 text-slate-700 border-slate-200';
       case 'Confirmed':
         return 'bg-blue-100 text-blue-800 border-blue-200';
       case 'In Production':
         return 'bg-amber-100 text-amber-800 border-amber-200';
       case 'Shipped':
         return 'bg-purple-100 text-purple-800 border-purple-200';
+      case 'Partially Fulfilled':
+        return 'bg-teal-100 text-teal-800 border-teal-200';
+      case 'Fulfilled':
+        return 'bg-cyan-100 text-cyan-800 border-cyan-200';
+      case 'Partially Invoiced':
+        return 'bg-indigo-100 text-indigo-800 border-indigo-200';
       case 'Invoiced':
         return 'bg-emerald-100 text-emerald-800 border-emerald-200';
       case 'Cancelled':
         return 'bg-rose-100 text-rose-800 border-rose-200';
+      default:
+        return 'bg-slate-100 text-slate-800 border-slate-200';
     }
   };
 

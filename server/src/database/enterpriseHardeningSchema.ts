@@ -39,6 +39,7 @@ export const TENANT_SCOPED_TABLES = [
   'vendor_advances',
   'vendor_advance_applications',
   'ap_write_offs',
+  'vendor_refunds',
   'expenses',
   'expense_receipt_attachments',
   'journal_entries',

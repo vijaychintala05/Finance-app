@@ -115,4 +115,79 @@ export class BalanceSheetReportService {
       isBalanced: diff === 0,
     };
   }
+
+  public static async getComparativeBalanceSheet(
+    orgId: string,
+    options: {
+      currentAsOfDate: string;
+      priorAsOfDate: string;
+    }
+  ) {
+    const [currentBs, priorBs] = await Promise.all([
+      this.getBalanceSheet(orgId, { asOfDate: options.currentAsOfDate }),
+      this.getBalanceSheet(orgId, { asOfDate: options.priorAsOfDate }),
+    ]);
+
+    const alignAccounts = (currentList: any[], priorList: any[]) => {
+      const map = new Map<string, { accountId: string; accountCode: string; accountName: string; subType: string; currentBalance: number; priorBalance: number }>();
+      for (const r of priorList) {
+        map.set(r.accountCode, { accountId: r.accountId, accountCode: r.accountCode, accountName: r.accountName, subType: r.subType, currentBalance: 0, priorBalance: Number(r.balance || 0) });
+      }
+      for (const r of currentList) {
+        const existing = map.get(r.accountCode);
+        if (existing) {
+          existing.currentBalance = Number(r.balance || 0);
+        } else {
+          map.set(r.accountCode, { accountId: r.accountId, accountCode: r.accountCode, accountName: r.accountName, subType: r.subType, currentBalance: Number(r.balance || 0), priorBalance: 0 });
+        }
+      }
+      return Array.from(map.values())
+        .sort((a, b) => a.accountCode.localeCompare(b.accountCode))
+        .map((item) => {
+          const varianceAmount = Math.round((item.currentBalance - item.priorBalance) * 100) / 100;
+          const variancePercentage = item.priorBalance !== 0
+            ? Math.round(((item.currentBalance - item.priorBalance) / Math.abs(item.priorBalance)) * 10000) / 100
+            : null;
+          return {
+            ...item,
+            varianceAmount,
+            variancePercentage,
+          };
+        });
+    };
+
+    const calcMetricVariance = (currentVal: number, priorVal: number) => {
+      const varianceAmount = Math.round((currentVal - priorVal) * 100) / 100;
+      const variancePercentage = priorVal !== 0
+        ? Math.round(((currentVal - priorVal) / Math.abs(priorVal)) * 10000) / 100
+        : null;
+      return { current: currentVal, prior: priorVal, varianceAmount, variancePercentage };
+    };
+
+    return {
+      organizationId: orgId,
+      currentAsOfDate: options.currentAsOfDate,
+      priorAsOfDate: options.priorAsOfDate,
+      assets: {
+        accounts: alignAccounts(currentBs.assets.accounts, priorBs.assets.accounts),
+        totalAssets: calcMetricVariance(currentBs.totalAssets, priorBs.totalAssets),
+      },
+      liabilities: {
+        accounts: alignAccounts(currentBs.liabilities.accounts, priorBs.liabilities.accounts),
+        totalLiabilities: calcMetricVariance(currentBs.totalLiabilities, priorBs.totalLiabilities),
+      },
+      equity: {
+        accounts: alignAccounts(currentBs.equity.accounts, priorBs.equity.accounts),
+        totalEquityBeforeEarnings: calcMetricVariance(currentBs.equity.totalEquityBeforeEarnings, priorBs.equity.totalEquityBeforeEarnings),
+        currentYearEarnings: calcMetricVariance(currentBs.equity.currentYearEarnings, priorBs.equity.currentYearEarnings),
+        totalEquity: calcMetricVariance(currentBs.totalEquity, priorBs.totalEquity),
+      },
+      totalAssets: calcMetricVariance(currentBs.totalAssets, priorBs.totalAssets),
+      totalLiabilities: calcMetricVariance(currentBs.totalLiabilities, priorBs.totalLiabilities),
+      totalEquity: calcMetricVariance(currentBs.totalEquity, priorBs.totalEquity),
+      totalLiabilitiesAndEquity: calcMetricVariance(currentBs.totalLiabilitiesAndEquity, priorBs.totalLiabilitiesAndEquity),
+      isBalancedCurrent: currentBs.isBalanced,
+      isBalancedPrior: priorBs.isBalanced,
+    };
+  }
 }

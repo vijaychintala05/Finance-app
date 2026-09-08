@@ -83,6 +83,7 @@ export const MobileNav: React.FC<MobileNavProps> = ({
         { id: 'clients', label: 'Customers' },
         { id: 'invoices', label: 'Invoices' },
         { id: 'payments_received', label: 'Payments Received' },
+        { id: 'customer_portal' as NavigationTab, label: 'Customer Portal', badge: 'Portal' },
         ...(enabledCapabilities.has('receivables-corrections')
           ? [{ id: 'credit_notes' as NavigationTab, label: 'Credit Notes' }]
           : []),
@@ -100,6 +101,7 @@ export const MobileNav: React.FC<MobileNavProps> = ({
         { id: 'vendors', label: 'Vendors' },
         { id: 'expenses', label: 'Expenses' },
         { id: 'bills', label: 'Bills' },
+        { id: 'document_inbox' as NavigationTab, label: 'Document Inbox & OCR', badge: 'OCR' },
         ...(enabledCapabilities.has('payables-settlement')
           ? [
               { id: 'payments_made' as NavigationTab, label: 'Payments Made' },
@@ -122,6 +124,7 @@ export const MobileNav: React.FC<MobileNavProps> = ({
       subItems: [
         { id: 'journals', label: 'Manual Journals' },
         { id: 'coa', label: 'Chart of Accounts' },
+        { id: 'data_migration' as NavigationTab, label: 'Data Migration & Balances' },
         { id: 'transaction_locking', label: 'Period Locks' },
         { id: 'gst_compliance', label: 'GST Compliance' },
         ...(enabledCapabilities.has('fixed-assets') ? [{ id: 'fixed_assets' as NavigationTab, label: 'Fixed Assets' }] : []),

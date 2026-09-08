@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
   BookOpen,
   Calculator,
+  Database,
   Edit3,
   Layers,
   Lock,
@@ -12,6 +13,7 @@ import { JournalEntriesView } from '../journals/JournalEntriesView';
 import { BulkUpdatesView } from './BulkUpdatesView';
 import { ChartOfAccountsView } from '../coa/ChartOfAccountsView';
 import { TransactionLockingView } from './TransactionLockingView';
+import { DataMigrationModal } from '../migration/DataMigrationModal';
 
 export type AccountingSubTab = 'journals' | 'bulk_updates' | 'coa' | 'transaction_locking';
 
@@ -33,6 +35,7 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
   onSelectedEntityClosed,
 }) => {
   const [subTab, setSubTab] = useState<AccountingSubTab>(initialSubTab);
+  const [isMigrationOpen, setIsMigrationOpen] = useState(false);
 
   useEffect(() => {
     if (initialSubTab) {
@@ -103,6 +106,14 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
             <Lock className="w-4 h-4 shrink-0" />
             <span>Transaction Locking</span>
           </button>
+
+          <button
+            onClick={() => setIsMigrationOpen(true)}
+            className="min-h-[40px] px-3.5 py-2 rounded-xl font-bold text-xs flex items-center space-x-2 transition-all cursor-pointer whitespace-nowrap active:scale-98 border border-indigo-200 bg-indigo-50/70 text-indigo-700 hover:bg-indigo-100 dark:border-indigo-800/60 dark:bg-indigo-950/40 dark:text-indigo-300"
+          >
+            <Database className="w-4 h-4 shrink-0 text-indigo-600 dark:text-indigo-400" />
+            <span>Data Migration</span>
+          </button>
           </div>
           <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-white to-transparent dark:from-slate-900 md:hidden" />
         </div>
@@ -130,6 +141,12 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
         )}
         {subTab === 'transaction_locking' && <TransactionLockingView />}
       </div>
+
+      {/* Data Migration Modal */}
+      <DataMigrationModal
+        isOpen={isMigrationOpen}
+        onClose={() => setIsMigrationOpen(false)}
+      />
     </div>
   );
 };

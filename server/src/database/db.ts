@@ -146,7 +146,7 @@ class DatabaseService {
           connectionString,
           max: Number(process.env.DB_POOL_MAX || Math.max(20, (os.cpus()?.length || 2) * 4)),
           idleTimeoutMillis: 30000,
-          connectionTimeoutMillis: 5000,
+          connectionTimeoutMillis: Number(process.env.DB_CONNECT_TIMEOUT_MS || 10000),
           query_timeout: Number(process.env.DB_QUERY_TIMEOUT_MS || 15000),
           statement_timeout: Number(process.env.DB_STATEMENT_TIMEOUT_MS || 15000),
           application_name: 'firmbooks-api',
@@ -257,6 +257,7 @@ class DatabaseService {
       try {
         const client = await this.pool.connect();
         const memoryBackup = this.memDbInstance.backup();
+        let committed = false;
         try {
           await client.query('BEGIN');
           const transactionClient: DbQueryClient = {
@@ -267,6 +268,7 @@ class DatabaseService {
           };
           const res = await this.transactionContext.run(transactionClient, () => callback(transactionClient));
           await client.query('COMMIT');
+          committed = true;
           return res;
         } catch (err) {
           try {
@@ -275,8 +277,9 @@ class DatabaseService {
             // Rollback failure is ignored
           }
           memoryBackup.restore();
-          client.release(true);
           throw err;
+        } finally {
+          client.release(!committed);
         }
       } finally {
         unlock();
@@ -286,6 +289,7 @@ class DatabaseService {
     if (this.pool && !this.isUsingMemoryFallback) {
       try {
         const client = await this.pool.connect();
+        let committed = false;
         try {
           await client.query('BEGIN');
           if (orgId && !this.isMemoryMode()) {
@@ -303,6 +307,7 @@ class DatabaseService {
           };
           const res = await this.transactionContext.run(transactionClient, () => callback(transactionClient));
           await client.query('COMMIT');
+          committed = true;
           return res;
         } catch (err) {
           try {
@@ -310,8 +315,9 @@ class DatabaseService {
           } catch {
             // Rollback failure is ignored
           }
-          client.release(true);
           throw err;
+        } finally {
+          client.release(!committed);
         }
       } catch (err: any) {
         if ((err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND' || err.code === 'ETIMEDOUT' || err.code === 'EHOSTUNREACH' || err.code === 'ECONNRESET') && this.isMemoryAllowed()) {

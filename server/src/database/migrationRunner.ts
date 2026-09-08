@@ -923,7 +923,12 @@ export class MigrationRunner {
           SET organization_id = journal_entries.organization_id
          FROM journal_entries
         WHERE journal_lines.journal_entry_id = journal_entries.id
-          AND journal_lines.organization_id IS NULL`,
+          AND journal_lines.organization_id IS NULL
+          AND EXISTS (
+            SELECT 1 FROM accounts
+            WHERE accounts.organization_id = journal_entries.organization_id
+              AND accounts.id = journal_lines.account_id
+          )`,
       `CREATE INDEX IF NOT EXISTS idx_journal_lines_org_entry ON journal_lines (organization_id, journal_entry_id)`,
       `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS revision_number INT DEFAULT 0`,
       `ALTER TABLE payments_received ADD COLUMN IF NOT EXISTS unallocated_amount NUMERIC(15, 2) DEFAULT 0.00`,
@@ -1777,7 +1782,8 @@ export class MigrationRunner {
           sql.includes('audit_logs_immutable') ||
           sql.includes('prevent_posted_journal_mutation') ||
           sql.includes('journal_entries_posted_immutable') ||
-          sql.includes('idx_quotation_templates_one_default_per_org')
+          sql.includes('idx_quotation_templates_one_default_per_org') ||
+          sql.includes('UPDATE journal_lines')
         )) continue;
         await queryClient.query(sql);
       } catch (err) {

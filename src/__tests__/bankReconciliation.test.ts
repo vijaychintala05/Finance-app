@@ -25,7 +25,8 @@ describe('Phase 3B: Bank Statement Import, Matching & Reconciliation Engine', ()
     );
     await db.query(
       `INSERT INTO accounts (id, organization_id, code, name, type, sub_type, balance, status)
-       VALUES ($1, $2, $3, $4, 'Asset', 'Bank', 0, 'Active') ON CONFLICT DO NOTHING`,
+       VALUES ($1, $2, $3, $4, 'Asset', 'Bank', 0, 'Active')
+       ON CONFLICT (id) DO UPDATE SET organization_id = EXCLUDED.organization_id`,
       [ledgerAccountId, organizationId, `10${String(bankSequence).padStart(2, '0')}`, `${accountName} Ledger`]
     );
     return BankReconciliationService.createBankAccount(organizationId, {
@@ -465,9 +466,9 @@ DATA:OFXSGML
       );
 
       await db.query(
-        `INSERT INTO journal_lines (id, journal_entry_id, account_id, debit, credit, description)
-         VALUES ($1, $2, 'ACC-BANK-1010', 50000.00, 0, 'Capital Injection')`,
-        [`jln-${journalId}-1`, journalId]
+        `INSERT INTO journal_lines (id, journal_entry_id, organization_id, account_id, debit, credit, description)
+         VALUES ($1, $2, $3, 'ACC-BANK-1010', 50000.00, 0, 'Capital Injection')`,
+        [`jln-${journalId}-1`, journalId, orgId]
       );
 
       // Rebuild bank balance from GL

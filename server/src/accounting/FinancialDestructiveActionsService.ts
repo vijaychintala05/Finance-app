@@ -251,6 +251,25 @@ export class FinancialDestructiveActionsService {
         );
       }
 
+      const allocatedAmount = allocations.rows.reduce(
+        (sum: number, allocation: any) => sum + Number(allocation.amount || 0),
+        0
+      );
+      const advanceAmount = advances.rows.reduce(
+        (sum: number, advance: any) => sum + Number(advance.amount || 0),
+        0
+      );
+      const customerId = payment.client_id || payment.customer_id;
+      if (customerId) {
+        await client.query(
+          `UPDATE customers
+              SET receivables_balance = receivables_balance + $1,
+                  advance_balance = CASE WHEN advance_balance - $2 < 0 THEN 0 ELSE advance_balance - $2 END
+            WHERE organization_id = $3 AND id = $4`,
+          [allocatedAmount, advanceAmount, organizationId, customerId]
+        );
+      }
+
       const reversalJournalId = await this.reversePostedJournal(
         client, organizationId, payment.journal_entry_id, userId, normalizedReason,
         `payment ${payment.payment_number}`

@@ -278,6 +278,14 @@ describe('Phase 7 — Security, Roles, Audit Trail, Backup & Production Hardenin
     });
 
     it('keeps the uncertified legacy journal reversal disabled', async () => {
+      await db.query(
+        `INSERT INTO accounts (id, organization_id, code, name, type, sub_type, balance, status)
+         VALUES ('acc-cash', $1, '1010-CASH-TEST', 'Cash', 'Asset', 'Cash', 0, 'Active'),
+                ('acc-rev', $1, '4010-REV-TEST', 'Sales Revenue', 'Revenue', 'Operating Revenue', 0, 'Active')
+         ON CONFLICT (id) DO NOTHING`,
+        [ORG_A]
+      );
+
       const jeId = `je-test-rev-${Date.now()}`;
       await db.query(
         `INSERT INTO journal_entries (id, organization_id, entry_number, date, reference, description, status)
@@ -286,15 +294,15 @@ describe('Phase 7 — Security, Roles, Audit Trail, Backup & Production Hardenin
       );
 
       await db.query(
-        `INSERT INTO journal_lines (id, journal_entry_id, account_id, account_code, account_name, debit, credit)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [`jl-1-${jeId}`, jeId, 'acc-cash', '1010', 'Cash', 500.00, 0.00]
+        `INSERT INTO journal_lines (id, journal_entry_id, organization_id, account_id, account_code, account_name, debit, credit)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [`jl-1-${jeId}`, jeId, ORG_A, 'acc-cash', '1010-CASH-TEST', 'Cash', 500.00, 0.00]
       );
 
       await db.query(
-        `INSERT INTO journal_lines (id, journal_entry_id, account_id, account_code, account_name, debit, credit)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [`jl-2-${jeId}`, jeId, 'acc-rev', '4010', 'Sales Revenue', 0.00, 500.00]
+        `INSERT INTO journal_lines (id, journal_entry_id, organization_id, account_id, account_code, account_name, debit, credit)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [`jl-2-${jeId}`, jeId, ORG_A, 'acc-rev', '4010-REV-TEST', 'Sales Revenue', 0.00, 500.00]
       );
 
       await expect(FinancialDestructiveActionsService.reverseJournalEntry(

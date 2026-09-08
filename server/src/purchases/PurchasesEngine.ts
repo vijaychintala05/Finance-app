@@ -6,6 +6,7 @@ import { newId } from '../utils/ids';
 import { DocumentNumberingEngine } from '../services/DocumentNumberingEngine';
 import { OrganizationProvisioningService } from '../services/OrganizationProvisioningService';
 import { ApprovalWorkflowService } from '../approvals/ApprovalWorkflowService';
+import { MonetaryAccountPolicy } from '../accounting/monetaryAccountPolicy';
 
 export interface VendorMaster {
   id: string;
@@ -1468,6 +1469,14 @@ export class PurchasesEngine {
         throw new Error('Payment amount must be greater than zero.');
       }
 
+      const paymentAccount = await MonetaryAccountPolicy.resolve(
+        client,
+        orgId,
+        data.paidFromAccountId,
+        'OUTFLOW',
+        'paid_from_account'
+      );
+
       const requiresPaymentApproval = await ApprovalWorkflowService.requiresApproval(orgId, 'PAYMENT', amount);
       if (requiresPaymentApproval) {
         const id = newId('pmt');
@@ -1475,7 +1484,7 @@ export class PurchasesEngine {
         await client.query(
           `INSERT INTO payments_made (id, organization_id, payment_number, vendor_id, vendor_name, payment_date, amount, payment_mode, paid_from_account_id, reference, notes, unallocated_amount, status, created_at)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'SUBMITTED', NOW())`,
-          [id, orgId, pmtNum, data.vendorId, data.vendorName || 'Vendor', paymentDate, amount, data.paymentMode || 'Bank Wire / NEFT / RTGS', data.paidFromAccountId, data.reference || null, data.notes || null, amount]
+          [id, orgId, pmtNum, data.vendorId, data.vendorName || 'Vendor', paymentDate, amount, data.paymentMode || 'Bank Wire / NEFT / RTGS', paymentAccount.id, data.reference || null, data.notes || null, amount]
         );
         for (const alloc of data.allocations || []) {
           if (alloc.billId && alloc.amount > 0) {
@@ -1496,7 +1505,7 @@ export class PurchasesEngine {
           paymentDate,
           amount,
           paymentMode: data.paymentMode || 'Bank Wire / NEFT / RTGS',
-          paidFromAccountId: data.paidFromAccountId!,
+          paidFromAccountId: paymentAccount.id,
           reference: data.reference,
           status: 'SUBMITTED',
           allocations: data.allocations || [],
@@ -1577,9 +1586,9 @@ export class PurchasesEngine {
             description: `Unallocated vendor advance for ${data.vendorName}`,
           }] : []),
           {
-            accountId: data.paidFromAccountId || 'acc-bank-1',
-            accountCode: '1010',
-            accountName: 'Bank Account',
+            accountId: paymentAccount.id,
+            accountCode: paymentAccount.code,
+            accountName: paymentAccount.name,
             debit: 0,
             credit: amount,
             description: `Outflow via ${data.paymentMode || 'Bank Transfer'}`,
@@ -1606,7 +1615,7 @@ export class PurchasesEngine {
           paymentDate,
           amount,
           data.paymentMode || 'Bank Transfer',
-          data.paidFromAccountId || 'acc-bank-1',
+          paymentAccount.id,
           data.reference || '',
           data.notes || '',
           unallocatedAmount,
@@ -1674,7 +1683,7 @@ export class PurchasesEngine {
         paymentDate,
         amount,
         paymentMode: data.paymentMode || 'Bank Transfer',
-        paidFromAccountId: data.paidFromAccountId || 'acc-bank-1',
+        paidFromAccountId: paymentAccount.id,
         reference: data.reference,
         notes: data.notes,
         unallocatedAmount,
@@ -1716,6 +1725,13 @@ export class PurchasesEngine {
       await this.checkPeriodLock(orgId, paymentDate, client);
 
       const amount = Number(pmt.amount || 0);
+      const paymentAccount = await MonetaryAccountPolicy.resolve(
+        client,
+        orgId,
+        pmt.paid_from_account_id,
+        'OUTFLOW',
+        'paid_from_account'
+      );
 
       // Query saved allocations
       const allocRes = await client.query(
@@ -1768,9 +1784,9 @@ export class PurchasesEngine {
             description: `Unallocated vendor advance for ${pmt.vendor_name}`,
           }] : []),
           {
-            accountId: pmt.paid_from_account_id || 'acc-bank-1',
-            accountCode: '1010',
-            accountName: 'Bank Account',
+            accountId: paymentAccount.id,
+            accountCode: paymentAccount.code,
+            accountName: paymentAccount.name,
             debit: 0,
             credit: amount,
             description: `Outflow via ${pmt.payment_mode || 'Bank Transfer'}`,
@@ -1860,6 +1876,14 @@ export class PurchasesEngine {
       const amount = Number(data.amount) || 0;
       if (amount <= 0) throw new Error('Advance amount must be greater than zero.');
 
+      const paymentAccount = await MonetaryAccountPolicy.resolve(
+        client,
+        orgId,
+        data.paidFromAccountId,
+        'OUTFLOW',
+        'paid_from_account'
+      );
+
       const advId = newId('vadv');
       const now = new Date().toISOString();
 
@@ -1883,9 +1907,9 @@ export class PurchasesEngine {
             description: `Prepayment / Advance to vendor`,
           },
           {
-            accountId: data.paidFromAccountId,
-            accountCode: '1010',
-            accountName: 'Bank Account',
+            accountId: paymentAccount.id,
+            accountCode: paymentAccount.code,
+            accountName: paymentAccount.name,
             debit: 0,
             credit: amount,
             description: `Bank outflow for Vendor Advance`,
@@ -2452,6 +2476,14 @@ export class PurchasesEngine {
       if (!payload.amount || Number(payload.amount) <= 0) throw new Error('Refund amount must be greater than zero');
       if (!payload.depositToAccountId) throw new Error('Deposit to account ID is required');
 
+      const depositAccount = await MonetaryAccountPolicy.resolve(
+        client,
+        orgId,
+        payload.depositToAccountId,
+        'INFLOW',
+        'deposit_account'
+      );
+
       const refundId = newId('vrf');
       const refundNum = await DocumentNumberingEngine.getNextNumber(orgId, 'PAYMENT', payload.refundDate, undefined, client);
 
@@ -2480,9 +2512,9 @@ export class PurchasesEngine {
       // GL Entry: Dr Bank/Cash (depositToAccountId), Cr Accounts Payable (2000)
       const journalLines = [
         {
-          accountId: payload.depositToAccountId,
-          accountCode: '1010',
-          accountName: 'Bank Account',
+          accountId: depositAccount.id,
+          accountCode: depositAccount.code,
+          accountName: depositAccount.name,
           debit: payload.amount,
           credit: 0,
           description: `Vendor Refund ${refundNum} deposit`,
@@ -2524,7 +2556,7 @@ export class PurchasesEngine {
           payload.paymentId || null,
           payload.refundDate,
           payload.amount,
-          payload.depositToAccountId,
+          depositAccount.id,
           payload.reference || null,
           payload.notes || null,
           journalEntryId,

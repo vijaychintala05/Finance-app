@@ -11,6 +11,7 @@ import { OrganizationProvisioningService } from '../services/OrganizationProvisi
 import { AccountingIntegrityService } from '../services/AccountingIntegrityService';
 import { ApprovalWorkflowService } from '../approvals/ApprovalWorkflowService';
 import { FinancialDestructiveActionsService } from '../accounting/FinancialDestructiveActionsService';
+import { MonetaryAccountPolicy } from '../accounting/monetaryAccountPolicy';
 
 const roundMoney = (value: number): number => Math.round((value + Number.EPSILON) * 100) / 100;
 
@@ -2147,7 +2148,14 @@ export class SalesEngine {
       let customerId = payload.customerId || payload.clientId || '';
       let customerName = payload.customerName || payload.clientName || '';
       const paymentMode = payload.paymentMode || 'Bank Transfer';
-      const depositToAccountId = payload.depositToAccountId || payload.depositAccountId || '1010';
+      const depositAccount = await MonetaryAccountPolicy.resolve(
+        client,
+        orgId,
+        payload.depositToAccountId || payload.depositAccountId,
+        'INFLOW',
+        'deposit_account'
+      );
+      const depositToAccountId = depositAccount.id;
 
       if (!customerName && customerId) {
         const custRes = await client.query(
@@ -2255,8 +2263,8 @@ export class SalesEngine {
       const journalLines: any[] = [
         {
           accountId: depositToAccountId,
-          accountCode: '1010',
-          accountName: 'Bank / Cash Account',
+          accountCode: depositAccount.code,
+          accountName: depositAccount.name,
           debit: payload.amount,
           credit: 0,
           description: `Payment ${paymentNum} received from ${customerName}`,
@@ -2358,9 +2366,19 @@ export class SalesEngine {
       // Save Customer Advance record if unallocated
       if (unallocatedAmount > 0) {
         await client.query(
-          `INSERT INTO customer_advances (id, organization_id, customer_id, payment_id, amount, unapplied_amount, received_date, status, created_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-          [newId('adv'), orgId, customerId, paymentId, unallocatedAmount, unallocatedAmount, payload.paymentDate, 'UNAPPLIED', now]
+          `INSERT INTO customer_advances (id, organization_id, customer_id, payment_id, amount, unapplied_amount, received_date, status, journal_entry_id, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+          [newId('adv'), orgId, customerId, paymentId, unallocatedAmount, unallocatedAmount, payload.paymentDate, 'UNAPPLIED', journalEntryId, now]
+        );
+      }
+
+      if (customerId) {
+        await client.query(
+          `UPDATE customers
+              SET receivables_balance = CASE WHEN receivables_balance - $1 < 0 THEN 0 ELSE receivables_balance - $1 END,
+                  advance_balance = advance_balance + $2
+            WHERE organization_id = $3 AND id = $4`,
+          [totalAllocated, unallocatedAmount, orgId, customerId]
         );
       }
 
@@ -2400,7 +2418,14 @@ export class SalesEngine {
       const amount = Number(pmt.amount || 0);
       const customerId = pmt.client_id || pmt.customer_id;
       const customerName = pmt.client_name || 'Customer';
-      const depositToAccountId = pmt.deposit_to_account_id || '1010';
+      const depositAccount = await MonetaryAccountPolicy.resolve(
+        client,
+        orgId,
+        pmt.deposit_to_account_id,
+        'INFLOW',
+        'deposit_account'
+      );
+      const depositToAccountId = depositAccount.id;
 
       const allocRes = await client.query(
         `SELECT * FROM payment_received_allocations WHERE payment_id = $1`,
@@ -2440,8 +2465,8 @@ export class SalesEngine {
       const journalLines: any[] = [
         {
           accountId: depositToAccountId,
-          accountCode: '1010',
-          accountName: 'Bank / Cash Account',
+          accountCode: depositAccount.code,
+          accountName: depositAccount.name,
           debit: amount,
           credit: 0,
           description: `Payment ${pmt.payment_number} received from ${customerName}`,
@@ -2497,6 +2522,15 @@ export class SalesEngine {
                   advance_balance = advance_balance + $2
             WHERE organization_id = $3 AND id = $4`,
           [totalAllocated, unallocatedAmount, orgId, customerId]
+        );
+      }
+
+      if (unallocatedAmount > 0) {
+        await client.query(
+          `INSERT INTO customer_advances
+            (id, organization_id, customer_id, payment_id, amount, unapplied_amount, received_date, status, journal_entry_id, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, 'UNAPPLIED', $8, CURRENT_TIMESTAMP)`,
+          [newId('adv'), orgId, customerId, paymentId, unallocatedAmount, unallocatedAmount, paymentDate, journalEntryId]
         );
       }
 
@@ -2713,13 +2747,21 @@ export class SalesEngine {
       const amount = roundMoney(payload.amount);
       if (amount <= 0) throw new Error('Advance amount must be greater than zero');
 
+      const depositAccount = await MonetaryAccountPolicy.resolve(
+        client,
+        orgId,
+        payload.depositAccountId,
+        'INFLOW',
+        'deposit_account'
+      );
+
       const advNum = await DocumentNumberingEngine.getNextNumber(orgId, 'PAYMENT', payload.paymentDate, undefined, client);
 
       const journalLines = [
         {
-          accountId: payload.depositAccountId,
-          accountCode: '1010',
-          accountName: 'Bank / Deposit Account',
+          accountId: depositAccount.id,
+          accountCode: depositAccount.code,
+          accountName: depositAccount.name,
           debit: amount,
           credit: 0,
           description: `Customer Advance ${advNum} Receipt`,
@@ -3229,6 +3271,14 @@ export class SalesEngine {
     const execute = async (client: QueryClient) => {
       await SalesEngine.checkPeriodLock(orgId, payload.refundDate, client);
 
+      const refundAccount = await MonetaryAccountPolicy.resolve(
+        client,
+        orgId,
+        payload.refundAccountId,
+        'OUTFLOW',
+        'refund_account'
+      );
+
       const refundId = newId('ref');
       const refundNum = await DocumentNumberingEngine.getNextNumber(orgId, 'PAYMENT', payload.refundDate, undefined, client);
       const now = new Date().toISOString();
@@ -3257,9 +3307,9 @@ export class SalesEngine {
           description: `Customer Refund ${refundNum}`,
         },
         {
-          accountId: payload.refundAccountId,
-          accountCode: '1010',
-          accountName: 'Bank Account',
+          accountId: refundAccount.id,
+          accountCode: refundAccount.code,
+          accountName: refundAccount.name,
           debit: 0,
           credit: payload.amount,
           description: `Customer Refund ${refundNum}`,
@@ -3279,7 +3329,7 @@ export class SalesEngine {
       await client.query(
         `INSERT INTO customer_refunds (id, organization_id, refund_number, customer_id, credit_note_id, refund_date, amount, refund_account_id, reference, notes, journal_entry_id, created_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-        [refundId, orgId, refundNum, payload.customerId, payload.creditNoteId || null, payload.refundDate, payload.amount, payload.refundAccountId, payload.reference || '', payload.notes || '', journalEntryId, now]
+        [refundId, orgId, refundNum, payload.customerId, payload.creditNoteId || null, payload.refundDate, payload.amount, refundAccount.id, payload.reference || '', payload.notes || '', journalEntryId, now]
       );
 
       return { refundId };

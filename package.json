@@ -1,12 +1,13 @@
 {
   "name": "firmbooks",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.1.0-GA",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build --configLoader native && node scripts/build-server.mjs",
     "start": "tsx server.ts",
+    "start:prod": "node dist/server.cjs",
     "preview": "vite preview",
     "clean": "node -e \"const fs=require('node:fs'); for (const p of ['dist','server.js']) fs.rmSync(p,{recursive:true,force:true})\"",
     "test": "vitest run --configLoader native",

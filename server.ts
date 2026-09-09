@@ -11,15 +11,24 @@ import { db } from "./server/src/database/db";
 async function startServer() {
   const PORT = Number(process.env.PORT) || 3000;
 
-  // Initialize Database before accepting requests
-  try {
-    console.log('[Server] Initializing database migrations...');
-    await initDatabase();
-  } catch (err) {
-    console.error('[Server Fatal] Database migration initialization failed:', err);
-    if (process.env.NODE_ENV === 'production' || !db.isMemoryAllowed()) {
-      console.error('[Server Fatal] Terminating production startup due to database initialization failure.');
-      process.exit(1);
+  // Initialize Database before accepting requests (with retry loop for container cold-start)
+  const maxAttempts = process.env.NODE_ENV === 'production' ? 10 : 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      console.log(`[Server] Initializing database migrations (attempt ${attempt}/${maxAttempts})...`);
+      await initDatabase();
+      console.log('[Server] Database initialization succeeded.');
+      break;
+    } catch (err) {
+      console.error(`[Server] Database migration initialization attempt ${attempt} failed:`, err);
+      if (attempt === maxAttempts) {
+        if (process.env.NODE_ENV === 'production' || !db.isMemoryAllowed()) {
+          console.error('[Server Fatal] Terminating production startup due to database initialization failure.');
+          process.exit(1);
+        }
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
     }
   }
 

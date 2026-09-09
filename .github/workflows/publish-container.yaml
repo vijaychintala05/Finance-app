@@ -62,7 +62,8 @@ jobs:
             -e POSTGRES_USER=firmbooks \
             -e POSTGRES_PASSWORD=firmbooks-ci-password \
             postgres:16-alpine
-          until docker exec firmbooks-postgres pg_isready -U firmbooks -d firmbooks; do sleep 1; done
+          until docker exec firmbooks-postgres psql -U firmbooks -d firmbooks -c "SELECT 1" >/dev/null 2>&1; do sleep 1; done
+          sleep 2
           docker run -d --name firmbooks-app --network firmbooks-ci -p 3000:3000 \
             -e NODE_ENV=production \
             -e PORT=3000 \

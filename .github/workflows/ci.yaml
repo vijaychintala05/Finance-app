@@ -69,6 +69,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Build Production Assets
+        run: npm run build
+
       - name: Run isolated real PostgreSQL qualification
         env:
           DATABASE_URL: postgres://firmbooks_test:firmbooks_test_password@127.0.0.1:5432/firmbooks_test

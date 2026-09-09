@@ -1,9 +1,16 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execSync } from 'node:child_process';
 
 describe('Non-Functional Batch 3: Client Bundle Optimization & Asset Delivery', () => {
   const distAssetsPath = path.resolve(process.cwd(), 'dist/assets');
+
+  beforeAll(() => {
+    if (!fs.existsSync(distAssetsPath)) {
+      execSync('npm run build', { stdio: 'pipe' });
+    }
+  });
 
   it('1. Generates isolated vendor chunks in production build output', () => {
     expect(fs.existsSync(distAssetsPath)).toBe(true);

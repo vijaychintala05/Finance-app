@@ -39,6 +39,7 @@ import { GSTComplianceService } from '../services/GSTComplianceService';
 import { DrillDownService } from '../services/DrillDownService';
 import { ReportExportService } from '../services/ReportExportService';
 import { ApprovalWorkflowService } from '../approvals/ApprovalWorkflowService';
+import { TreasuryTransactionService } from '../services/TreasuryTransactionService';
 
 export class FinanceController {
   // --- AUDIT LOG UTILITY ---
@@ -1934,6 +1935,16 @@ export class FinanceController {
     res.json(result.rows);
   }
 
+  public static async recordCustomerAdvance(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const result = await db.transaction(async (client) => {
+      const advance = await SalesEngine.recordCustomerAdvance(orgId, req.body, req.auth!.userId, client);
+      await FinanceController.logAudit(orgId, req.auth!.userId, 'CUSTOMER_ADVANCE_RECORDED', 'CustomerAdvance', advance.id, advance, client);
+      return advance;
+    });
+    res.status(201).json(result);
+  }
+
   public static async getCustomerAdvanceApplications(req: AuthenticatedRequest, res: Response): Promise<void> {
     const result = await db.query('SELECT * FROM customer_advance_applications WHERE organization_id = $1 ORDER BY created_at DESC', [req.auth!.organizationId]);
     res.json(result.rows);
@@ -2166,6 +2177,29 @@ export class FinanceController {
 
   public static async reverseVendorAdvance(req: AuthenticatedRequest, res: Response): Promise<void> {
     const result = await FinancialDestructiveActionsService.reverseVendorAdvance(
+      req.auth!.organizationId, req.params.id, req.auth!.userId, req.body?.reason
+    );
+    res.json(result);
+  }
+
+  public static async getTreasuryTransactions(req: AuthenticatedRequest, res: Response): Promise<void> {
+    res.json(await TreasuryTransactionService.list(req.auth!.organizationId));
+  }
+
+  public static async createTreasuryTransaction(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const result = await TreasuryTransactionService.create(req.auth!.organizationId, req.auth!.userId, req.body);
+    res.status(201).json(result);
+  }
+
+  public static async reverseTreasuryTransaction(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const result = await TreasuryTransactionService.reverse(
+      req.auth!.organizationId, req.params.id, req.auth!.userId, req.body?.reason
+    );
+    res.json(result);
+  }
+
+  public static async reverseCustomerAdvance(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const result = await FinancialDestructiveActionsService.reverseCustomerAdvance(
       req.auth!.organizationId, req.params.id, req.auth!.userId, req.body?.reason
     );
     res.json(result);

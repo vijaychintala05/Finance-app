@@ -55,6 +55,47 @@ export class BankingController {
     }
   }
 
+  public static async createTransfer(req: Request, res: Response) {
+    try {
+      const orgId = getOrgId(req);
+      const { fromBankAccountId, toBankAccountId, amount, transferDate, reference, description } = req.body || {};
+      if (!fromBankAccountId || !toBankAccountId || !transferDate) {
+        return res.status(400).json({ success: false, error: 'fromBankAccountId, toBankAccountId, and transferDate are required' });
+      }
+      const result = await BankReconciliationService.createInternalTransfer(
+        orgId, fromBankAccountId, toBankAccountId, Number(amount), transferDate,
+        reference, description, (req as any).auth.userId
+      );
+      res.status(201).json({ success: true, data: result });
+    } catch (e: any) {
+      const message = e instanceof Error && e.message ? e.message : 'Bank transfer could not be created';
+      res.status(message.includes('NOT_FOUND') ? 404 : 400).json({ success: false, error: message.replace(/^[A-Z_]+: /, '') });
+    }
+  }
+
+  public static async reverseTransfer(req: Request, res: Response) {
+    try {
+      const result = await BankReconciliationService.reverseInternalTransfer(
+        getOrgId(req), req.params.transferId, (req as any).auth.userId, req.body?.reason
+      );
+      res.json({ success: true, data: result });
+    } catch (e: any) {
+      const message = e instanceof Error && e.message ? e.message : 'Bank transfer could not be reversed';
+      const status = message.includes('NOT_FOUND') ? 404 : message.includes('RECONCILED') || message.includes('ALREADY_REVERSED') ? 409 : 400;
+      res.status(status).json({ success: false, error: message.replace(/^[A-Z_]+: /, '') });
+    }
+  }
+
+  public static async getTransfers(req: Request, res: Response) {
+    try {
+      const limit = Number(req.query.limit || 50);
+      const transfers = await BankReconciliationService.getInternalTransfers(getOrgId(req), limit);
+      res.json({ success: true, data: transfers });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: sanitizeError(e) });
+    }
+  }
+
   // POST /api/banking/imports or /api/banking/accounts/:accountId/statements/import
   public static async importStatement(req: Request, res: Response) {
     try {
@@ -118,6 +159,32 @@ export class BankingController {
       res.json({ success: true, data: txs, transactions: txs });
     } catch (e: any) {
       res.status(500).json({ success: false, error: sanitizeError(e) });
+    }
+  }
+
+  public static async createTransactionFromStatement(req: Request, res: Response) {
+    try {
+      const { targetAccountId, description } = req.body || {};
+      if (!targetAccountId) return res.status(400).json({ success: false, error: 'targetAccountId is required' });
+      const result = await BankReconciliationService.createTransactionFromStatement(
+        getOrgId(req), req.params.transactionId, targetAccountId, description, (req as any).auth.userId
+      );
+      res.status(201).json({ success: true, data: result });
+    } catch (e: any) {
+      const message = e instanceof Error && e.message ? e.message : 'Accounting transaction could not be created';
+      res.status(message.includes('not found') ? 404 : 400).json({ success: false, error: message });
+    }
+  }
+
+  public static async reverseTransactionCreatedFromStatement(req: Request, res: Response) {
+    try {
+      const result = await BankReconciliationService.reverseTransactionCreatedFromStatement(
+        getOrgId(req), req.params.transactionId, (req as any).auth.userId, req.body?.reason
+      );
+      res.json({ success: true, data: result });
+    } catch (e: any) {
+      const message = e instanceof Error && e.message ? e.message : 'Accounting transaction could not be reversed';
+      res.status(message.includes('NOT_FOUND') ? 404 : 400).json({ success: false, error: message.replace(/^[A-Z_]+: /, '') });
     }
   }
 

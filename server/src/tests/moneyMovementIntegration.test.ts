@@ -539,7 +539,7 @@ describe('Money-Movement Workflow Integration Tests', () => {
     // 6. Verify audit trail
     const auditRes = await db.query(
       `SELECT * FROM audit_logs WHERE organization_id = $1 AND entity_id = $2`,
-      [ORG_A, transfer.journalEntryId]
+      [ORG_A, transfer.transferId]
     );
     expect(auditRes.rows.length).toBeGreaterThanOrEqual(1);
     expect(auditRes.rows[0].action).toBe('INTERNAL_TRANSFER_CREATED');

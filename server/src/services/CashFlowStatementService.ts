@@ -55,7 +55,7 @@ export class CashFlowStatementService {
 
     const bankAccountsRes = await db.query(
       `SELECT id FROM accounts WHERE organization_id = $1
-       AND (UPPER(sub_type) = 'BANK' OR UPPER(name) LIKE '%CASH%' OR UPPER(name) LIKE '%BANK%')`,
+       AND (UPPER(COALESCE(sub_type, '')) IN ('BANK', 'CASH', 'CASH & BANK', 'CASH AND CASH EQUIVALENTS') OR UPPER(name) LIKE '%CASH%' OR UPPER(name) LIKE '%BANK%')`,
       [orgId]
     );
     const bankAccountIds = bankAccountsRes.rows.map((row: any) => row.id);

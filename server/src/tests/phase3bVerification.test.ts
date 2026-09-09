@@ -496,6 +496,22 @@ describe('Phase 3B Final Production Verification - PostgreSQL Engine (pg-mem)', 
     const matches = await BankReconciliationService.getMatchesForTransaction(ORG_ID, tx.id);
     expect(matches.length).toBe(1);
     expect(matches[0].accountingTransactionId).toBe(result.journalEntryId);
+
+    await expect(
+      BankReconciliationService.unmatchTransaction(ORG_ID, matches[0].id, 'test-user')
+    ).rejects.toThrow('CREATED_BANK_TRANSACTION_REQUIRES_REVERSAL');
+
+    const reversal = await BankReconciliationService.reverseTransactionCreatedFromStatement(
+      ORG_ID, tx.id, 'test-user', 'Statement transaction was categorized incorrectly'
+    );
+    const reversalLines = await db.query<any>(
+      `SELECT debit, credit, account_id FROM journal_lines WHERE journal_entry_id = $1`,
+      [reversal.reversalJournalEntryId]
+    );
+    expect(reversalLines.rows.find((line) => line.account_id === BANK_CHARGE_ACC_ID).credit).toBe(1200);
+    expect(reversalLines.rows.find((line) => line.account_id === HDFC_LEDGER_ACC_ID).debit).toBe(1200);
+    const afterReversal = await BankReconciliationService.getTransactions(ORG_ID, { search: 'SOFT-001' });
+    expect(afterReversal[0].reconciliationStatus).toBe('UNMATCHED');
   });
 
   // -------------------------------------------------------------

@@ -118,4 +118,19 @@ describe('Production Hardening: Batch 1 - Schema Constraints & Tenant Relational
       )
     ).resolves.not.toThrow();
   });
+
+  it('6. Tenant RLS policy fails closed and payment sources define organization-matching journal links', async () => {
+    const fs = await import('fs');
+    const path = await import('path');
+    const enterprise = fs.readFileSync(path.resolve(__dirname, '../database/enterpriseHardeningSchema.ts'), 'utf-8');
+    const paymentSchema = fs.readFileSync(path.resolve(__dirname, '../database/paymentAccountingSchema.ts'), 'utf-8');
+
+    expect(enterprise).toContain("USING (organization_id = NULLIF(current_setting(''app.current_org_id'', true), ''''))");
+    expect(enterprise).not.toContain("OR NULLIF(current_setting(''app.current_org_id'', true), '''') IS NULL");
+    expect(paymentSchema).toContain('fk_payment_received_journal_org');
+    expect(paymentSchema).toContain('fk_payment_made_journal_org');
+    expect(paymentSchema).toContain('fk_gateway_journal_org');
+    expect(paymentSchema).toContain('ck_customer_refund_one_source');
+    expect(paymentSchema).toContain('ck_vendor_refund_one_source');
+  });
 });

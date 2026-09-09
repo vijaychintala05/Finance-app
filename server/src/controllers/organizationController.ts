@@ -6,6 +6,7 @@ import { newId } from '../utils/ids';
 import { OrganizationProvisioningService } from '../services/OrganizationProvisioningService';
 import { RbacService, UserRole } from '../auth/RbacService';
 import { normalizeSupportedBaseCurrency } from '../utils/currency';
+import { StaticMetadataCache } from '../cache/StaticMetadataCache';
 
 export class OrganizationController {
   public static async getCurrent(req: AuthenticatedRequest, res: Response): Promise<void> {
@@ -13,6 +14,12 @@ export class OrganizationController {
       const orgId = req.organizationId || req.auth?.organizationId;
       if (!orgId) {
         res.status(401).json({ error: 'Unauthorized: No active organization context' });
+        return;
+      }
+
+      const cached = StaticMetadataCache.get<any>(orgId, 'current_org_profile');
+      if (cached) {
+        res.json(cached);
         return;
       }
 
@@ -47,7 +54,7 @@ export class OrganizationController {
       const org = orgRes.rows[0];
       const profile = profileRes.rows[0] || {};
 
-      res.json({
+      const responseData = {
         ...org,
         profile: {
           legalName: profile.legalName || org.name,
@@ -77,7 +84,10 @@ export class OrganizationController {
           bankIfscSwift: profile.bankIfscSwift || '',
           updatedAt: profile.updatedAt || org.createdAt,
         },
-      });
+      };
+
+      StaticMetadataCache.set(orgId, 'current_org_profile', responseData);
+      res.json(responseData);
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to fetch current organization details' });
     }
@@ -268,6 +278,8 @@ export class OrganizationController {
           ]
         );
       });
+
+      StaticMetadataCache.invalidate(orgId, 'current_org_profile');
 
       // Return updated record
       await OrganizationController.getCurrent(req, res);

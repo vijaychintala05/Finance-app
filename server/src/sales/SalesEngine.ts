@@ -1333,16 +1333,20 @@ export class SalesEngine {
           if (item.itemId && !verifiedItemId) throw new Error(`Invoice item ${item.itemId} does not belong to this organization or is inactive`);
         }
         let lineAccountId = defaultRevenueId;
-        if (item.accountId) {
+        if (item.accountId && item.accountId.trim() !== '') {
+          const reqAcc = item.accountId.trim();
           const lineAccount = await client.query(
-            `SELECT id, code, type FROM accounts WHERE organization_id = $1 AND id = $2 AND status = 'Active'`,
-            [orgId, item.accountId]
+            `SELECT id, code, type FROM accounts WHERE organization_id = $1 AND (id = $2 OR code = $2) AND status = 'Active'`,
+            [orgId, reqAcc]
           );
-          if (lineAccount.rows.length !== 1) throw new Error(`Invoice line account ${item.accountId} does not belong to this organization or is inactive`);
-          if (lineAccount.rows[0].id !== defaultRevenueId || !['Income', 'Revenue'].includes(lineAccount.rows[0].type)) {
-            throw new Error('Certified invoice posting currently requires the configured sales revenue account on every line');
+          if (lineAccount.rows.length === 1) {
+            if (!['Income', 'Revenue'].includes(lineAccount.rows[0].type)) {
+              throw new Error(`Invoice line account ${item.accountId} must be an Income or Revenue account`);
+            }
+            lineAccountId = lineAccount.rows[0].id;
+          } else {
+            lineAccountId = defaultRevenueId;
           }
-          lineAccountId = lineAccount.rows[0].id;
         }
         validatedLines.push({ item, quantity, unitPrice, taxRate, lineAmount, verifiedItemId, lineAccountId });
       }
@@ -2093,6 +2097,7 @@ export class SalesEngine {
       reference?: string;
       notes?: string;
       allocations?: { invoiceId: string; amount: number }[];
+      _verifiedExternalSettlement?: boolean;
     },
     actorId?: string,
     transactionClient?: QueryClient
@@ -2130,6 +2135,7 @@ export class SalesEngine {
       notes?: string;
       allocations?: { invoiceId: string; amount: number }[];
       _debugFailPoint?: 'after_journal' | 'after_payment' | 'after_first_allocation';
+      _verifiedExternalSettlement?: boolean;
     },
     actorIdOrClient?: string | QueryClient,
     maybeClient?: QueryClient
@@ -2177,7 +2183,8 @@ export class SalesEngine {
         throw new Error('APPROVED_DRAFT_ID_FORBIDDEN: approvedDraftId is deprecated and forbidden. Use the dedicated postApprovedPayment endpoint.');
       }
 
-      const requiresPaymentApproval = await ApprovalWorkflowService.requiresApproval(orgId, 'CUSTOMER_PAYMENT', payload.amount, client);
+      const requiresPaymentApproval = !payload._verifiedExternalSettlement
+        && await ApprovalWorkflowService.requiresApproval(orgId, 'CUSTOMER_PAYMENT', payload.amount, client);
       if (requiresPaymentApproval) {
         await client.query(
           `INSERT INTO payments_received (id, organization_id, payment_number, client_id, client_name, payment_date, amount, payment_mode, deposit_to_account_id, reference, notes, unallocated_amount, status, created_at)
@@ -2747,6 +2754,12 @@ export class SalesEngine {
       const amount = roundMoney(payload.amount);
       if (amount <= 0) throw new Error('Advance amount must be greater than zero');
 
+      const customer = await client.query(
+        `SELECT id FROM customers WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, payload.customerId]
+      );
+      if (customer.rows.length !== 1) throw new Error('Customer was not found in this organization');
+
       const depositAccount = await MonetaryAccountPolicy.resolve(
         client,
         orgId,
@@ -2790,6 +2803,12 @@ export class SalesEngine {
         `INSERT INTO customer_advances (id, organization_id, customer_id, amount, unapplied_amount, received_date, status, journal_entry_id, created_at)
          VALUES ($1, $2, $3, $4, $5, $6, 'UNAPPLIED', $7, $8)`,
         [id, orgId, payload.customerId, amount, amount, payload.paymentDate, journalEntryId, now]
+      );
+
+      await client.query(
+        `UPDATE customers SET advance_balance = advance_balance + $1
+          WHERE organization_id = $2 AND id = $3`,
+        [amount, orgId, payload.customerId]
       );
 
       return { id, advanceId: id, amount, unappliedAmount: amount, status: 'UNAPPLIED' };
@@ -3260,9 +3279,11 @@ export class SalesEngine {
     payload: {
       customerId: string;
       creditNoteId?: string;
+      paymentId?: string;
+      advanceId?: string;
       refundDate: string;
       amount: number;
-      refundAccountId: string;
+      refundAccountId?: string;
       reference?: string;
       notes?: string;
     },
@@ -3282,27 +3303,68 @@ export class SalesEngine {
       const refundId = newId('ref');
       const refundNum = await DocumentNumberingEngine.getNextNumber(orgId, 'PAYMENT', payload.refundDate, undefined, client);
       const now = new Date().toISOString();
+      const amount = roundMoney(Number(payload.amount));
+      if (!Number.isFinite(amount) || amount <= 0) throw new Error('Refund amount must be greater than zero');
+      const sourceCount = [payload.creditNoteId, payload.paymentId, payload.advanceId].filter(Boolean).length;
+      if (sourceCount > 1) throw new Error('Customer refund must reference exactly one credit note, payment, or advance');
+
+      let debitAccountId = await OrganizationProvisioningService.resolveSystemAccountId(client, orgId, 'AR_CONTROL', ['Asset']);
+      let debitAccountCode = '1100';
+      let debitAccountName = 'Accounts Receivable';
 
       if (payload.creditNoteId) {
         const cnRes = await client.query(`SELECT * FROM credit_notes WHERE organization_id = $1 AND id = $2 FOR UPDATE`, [orgId, payload.creditNoteId]);
         if (cnRes.rows.length === 0) throw new Error('Credit note not found for refund');
+        const noteCustomerId = cnRes.rows[0].customer_id || cnRes.rows[0].client_id;
+        if (noteCustomerId && noteCustomerId !== payload.customerId) throw new Error('Credit note does not belong to this customer');
         const remCredit = Number(cnRes.rows[0].remaining_credit || 0);
-        if (payload.amount > remCredit) {
-          throw new Error(`Refund amount ${payload.amount} exceeds remaining credit note balance ${remCredit}`);
+        if (amount > remCredit) {
+          throw new Error(`Refund amount ${amount} exceeds remaining credit note balance ${remCredit}`);
         }
         await client.query(
           `UPDATE credit_notes SET remaining_credit = remaining_credit - $1, status = CASE WHEN remaining_credit - $1 = 0 THEN 'Closed' ELSE status END WHERE organization_id = $2 AND id = $3`,
-          [payload.amount, orgId, payload.creditNoteId]
+          [amount, orgId, payload.creditNoteId]
         );
+      } else if (payload.paymentId || payload.advanceId) {
+        const advanceRes = await client.query(
+          `SELECT * FROM customer_advances
+            WHERE organization_id = $1
+              AND (($2 IS NOT NULL AND payment_id = $2) OR ($3 IS NOT NULL AND id = $3))
+              AND customer_id = $4
+              AND UPPER(status) <> 'REVERSED'
+            FOR UPDATE`,
+          [orgId, payload.paymentId || null, payload.advanceId || null, payload.customerId]
+        );
+        if (advanceRes.rows.length !== 1) throw new Error('Refundable customer advance was not found for this payment');
+        const advance = advanceRes.rows[0];
+        if (amount > Number(advance.unapplied_amount || 0) + 0.001) throw new Error('Refund exceeds the unapplied customer advance');
+        debitAccountId = await OrganizationProvisioningService.resolveSystemAccountId(client, orgId, 'CUSTOMER_ADVANCE', ['Liability']);
+        debitAccountCode = '2100';
+        debitAccountName = 'Customer Advances';
+        await client.query(
+          `UPDATE customer_advances
+              SET unapplied_amount = unapplied_amount - $1,
+                  status = CASE WHEN unapplied_amount - $1 <= 0.001 THEN 'REFUNDED' ELSE 'PARTIALLY_REFUNDED' END
+            WHERE organization_id = $2 AND id = $3`,
+          [amount, orgId, advance.id]
+        );
+        const customerUpdate = await client.query(
+          `UPDATE customers SET advance_balance = advance_balance - $1
+            WHERE organization_id = $2 AND id = $3 AND advance_balance >= $1`,
+          [amount, orgId, payload.customerId]
+        );
+        if (customerUpdate.rowCount !== 1) throw new Error('Customer advance balance does not reconcile');
+      } else {
+        throw new Error('CUSTOMER_REFUND_SOURCE_REQUIRED: Reference a credit note or an unapplied customer payment');
       }
 
       // GL Entry: Dr Accounts Receivable (1100), Cr Bank Account
       const journalLines = [
         {
-          accountId: '1100',
-          accountCode: '1100',
-          accountName: 'Accounts Receivable',
-          debit: payload.amount,
+          accountId: debitAccountId,
+          accountCode: debitAccountCode,
+          accountName: debitAccountName,
+          debit: amount,
           credit: 0,
           description: `Customer Refund ${refundNum}`,
         },
@@ -3311,7 +3373,7 @@ export class SalesEngine {
           accountCode: refundAccount.code,
           accountName: refundAccount.name,
           debit: 0,
-          credit: payload.amount,
+          credit: amount,
           description: `Customer Refund ${refundNum}`,
         },
       ];
@@ -3327,9 +3389,9 @@ export class SalesEngine {
       );
 
       await client.query(
-        `INSERT INTO customer_refunds (id, organization_id, refund_number, customer_id, credit_note_id, refund_date, amount, refund_account_id, reference, notes, journal_entry_id, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-        [refundId, orgId, refundNum, payload.customerId, payload.creditNoteId || null, payload.refundDate, payload.amount, refundAccount.id, payload.reference || '', payload.notes || '', journalEntryId, now]
+        `INSERT INTO customer_refunds (id, organization_id, refund_number, customer_id, credit_note_id, payment_id, advance_id, refund_date, amount, refund_account_id, reference, notes, journal_entry_id, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+        [refundId, orgId, refundNum, payload.customerId, payload.creditNoteId || null, payload.paymentId || null, payload.advanceId || null, payload.refundDate, amount, refundAccount.id, payload.reference || '', payload.notes || '', journalEntryId, now]
       );
 
       return { refundId };
@@ -3344,6 +3406,8 @@ export class SalesEngine {
     payload: {
       customerId?: string;
       creditNoteId?: string;
+      paymentId?: string;
+      advanceId?: string;
       refundDate?: string;
       amount: number;
       paymentAccountId?: string;
@@ -3368,7 +3432,7 @@ export class SalesEngine {
         );
         customerId = cnRes.rows[0]?.customer_id || cnRes.rows[0]?.client_id;
       }
-      const refundAccountId = payload.paymentAccountId || payload.refundAccountId || `${orgId}-1010`;
+      const refundAccountId = payload.paymentAccountId || payload.refundAccountId;
       const refundDate = payload.refundDate || new Date().toISOString().split('T')[0];
 
       const res = await SalesEngine.recordRefund(
@@ -3376,6 +3440,8 @@ export class SalesEngine {
         {
           customerId: customerId || '',
           creditNoteId: payload.creditNoteId,
+          paymentId: payload.paymentId,
+          advanceId: payload.advanceId,
           refundDate,
           amount: payload.amount,
           refundAccountId,

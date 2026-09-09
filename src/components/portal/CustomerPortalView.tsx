@@ -676,9 +676,11 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                                   {!isPaid ? (
                                     <button
                                       onClick={() => handleOpenPayModal(inv)}
+                                      disabled
+                                      title="Online payment requires a configured payment provider"
                                       className="inline-flex items-center gap-1 px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg shadow transition-colors"
                                     >
-                                      <CreditCard className="w-3 h-3" /> Pay Now
+                                      <CreditCard className="w-3 h-3" /> Online payment unavailable
                                     </button>
                                   ) : (
                                     <span className="text-slate-400 text-xs">Settled</span>

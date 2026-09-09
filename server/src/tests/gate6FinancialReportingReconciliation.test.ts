@@ -246,7 +246,7 @@ describe('Gate 6: Master Financial Reporting & Cross-System Reconciliation Suite
         {
           vendorId: vendor2Id,
           paidDate: '2026-05-25',
-          paidFromAccountId: 'acc-1010',
+          paidFromAccountId: `acc-${ORG_ID}-1010`,
           amount: 10000.00,
           reference: 'ADV-VEND-002',
         }

@@ -31,9 +31,12 @@ import { EmailOutboxService } from './services/EmailOutboxService';
 import { JobSchedulerService } from './jobs/JobSchedulerService';
 import { PaymentGatewayService } from './services/PaymentGatewayService';
 import { OperationalMonitoringService } from './services/OperationalMonitoringService';
+import { requestCorrelationMiddleware } from './middleware/requestCorrelation.middleware';
+import { MetricsController } from './controllers/MetricsController';
 
 const app = express();
 app.disable('x-powered-by');
+app.use(requestCorrelationMiddleware);
 app.set('trust proxy', process.env.TRUST_PROXY === 'true' ? 1 : false);
 app.use('/api', requestSecurityMiddleware);
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '4mb', strict: true }));
@@ -56,6 +59,9 @@ app.get('/api/readyz', async (_req, res) => {
     res.status(503).json({ status: 'unavailable' });
   }
 });
+
+app.get('/api/readyz/metrics', MetricsController.getMetrics);
+app.get('/api/v1/metrics', MetricsController.getMetrics);
 
 export async function initDatabase(): Promise<void> {
   try {

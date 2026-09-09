@@ -1,5 +1,5 @@
 import pg from 'pg';
-import { newDb, IMemoryDb } from 'pg-mem';
+import { newDb, IMemoryDb, DataType } from 'pg-mem';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import os from 'node:os';
 
@@ -10,8 +10,12 @@ export interface DbQueryResult<T = any> {
   rowCount: number;
 }
 
+export interface QueryOptions {
+  timeoutMs?: number;
+}
+
 export interface DbQueryClient {
-  query: <T = any>(text: string, params?: any[]) => Promise<DbQueryResult<T>>;
+  query: <T = any>(text: string, params?: any[], options?: QueryOptions) => Promise<DbQueryResult<T>>;
 }
 
 class DatabaseService {
@@ -123,6 +127,12 @@ class DatabaseService {
         returns: memDb.public.getType('timestamp' as any),
         implementation: () => new Date(),
       });
+      memDb.public.registerFunction({
+        name: 'trim',
+        args: [DataType.text],
+        returns: DataType.text,
+        implementation: (s: any) => (s == null ? '' : String(s).trim()),
+      });
       const { Pool: MemPool } = memDb.adapters.createPg();
       this.pool = new MemPool() as any;
       this.memDbInstance = memDb;
@@ -174,46 +184,82 @@ class DatabaseService {
     }
   }
 
-  public async query<T = any>(text: string, params: any[] = []): Promise<DbQueryResult<T>> {
+  public async query<T = any>(
+    text: string,
+    params: any[] = [],
+    options?: QueryOptions
+  ): Promise<DbQueryResult<T>> {
     const ambientClient = this.transactionContext.getStore();
-    if (ambientClient) return ambientClient.query<T>(text, params);
+    if (ambientClient) return ambientClient.query<T>(text, params, options);
 
-    if (this.pool && !this.isUsingMemoryFallback) {
-      try {
-        const res = await this.pool.query(text, params);
-        return { rows: res.rows, rowCount: res.rowCount || 0 };
-      } catch (err: any) {
-        if (err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND' || err.code === 'ETIMEDOUT' || err.code === 'EHOSTUNREACH' || err.code === 'ECONNRESET') {
-          console.error('PostgreSQL connection unavailable:', err.message);
-          if (this.isMemoryAllowed()) {
-            console.warn('Operating with in-memory database store (memory mode enabled).');
-            this.initPgMem();
-            if (this.pool) {
-              const res = await this.pool.query(text, params);
-              return { rows: res.rows, rowCount: res.rowCount || 0 };
+    const executeCore = async (): Promise<DbQueryResult<T>> => {
+      if (this.pool && !this.isUsingMemoryFallback) {
+        try {
+          const queryConfig = {
+            text,
+            values: params,
+            ...(options?.timeoutMs && options.timeoutMs > 0 ? { timeout: options.timeoutMs } : {}),
+          };
+          const res = await this.pool.query(queryConfig);
+          return { rows: res.rows, rowCount: res.rowCount || 0 };
+        } catch (err: any) {
+          if (err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND' || err.code === 'ETIMEDOUT' || err.code === 'EHOSTUNREACH' || err.code === 'ECONNRESET') {
+            console.error('PostgreSQL connection unavailable:', err.message);
+            if (this.isMemoryAllowed()) {
+              console.warn('Operating with in-memory database store (memory mode enabled).');
+              this.initPgMem();
+              if (this.pool) {
+                const res = await this.pool.query(text, params);
+                return { rows: res.rows, rowCount: res.rowCount || 0 };
+              }
+              this.isUsingMemoryFallback = true;
+            } else {
+              throw new Error(`Database connection unavailable: ${err.message}`);
             }
-            this.isUsingMemoryFallback = true;
           } else {
-            throw new Error(`Database connection unavailable: ${err.message}`);
+            throw err;
           }
-        } else {
-          throw err;
         }
       }
+
+      if (!this.pool) {
+        if (!this.isMemoryAllowed()) {
+          throw new Error('Database connection unavailable: PostgreSQL pool is not initialized and memory mode is disabled.');
+        }
+        this.initPgMem();
+        if (this.pool) {
+          const res = await this.pool.query(text, params);
+          return { rows: res.rows, rowCount: res.rowCount || 0 };
+        }
+      }
+
+      return Promise.resolve(this.executeInMemoryQuery<T>(text, params));
+    };
+
+    if (options?.timeoutMs && options.timeoutMs > 0) {
+      return this.executeWithTimeout(options.timeoutMs, () => executeCore());
     }
 
-    if (!this.pool) {
-      if (!this.isMemoryAllowed()) {
-        throw new Error('Database connection unavailable: PostgreSQL pool is not initialized and memory mode is disabled.');
-      }
-      this.initPgMem();
-      if (this.pool) {
-        const res = await this.pool.query(text, params);
-        return { rows: res.rows, rowCount: res.rowCount || 0 };
-      }
-    }
+    return executeCore();
+  }
 
-    return Promise.resolve(this.executeInMemoryQuery<T>(text, params));
+  public async executeWithTimeout<T>(
+    timeoutMs: number,
+    operation: (client: DbQueryClient) => Promise<T>
+  ): Promise<T> {
+    let timer: NodeJS.Timeout | null = null;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error(`QUERY_TIMEOUT: Operation timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      if (typeof timer.unref === 'function') timer.unref();
+    });
+
+    try {
+      return await Promise.race([operation(this), timeoutPromise]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   public async transaction<T>(
@@ -261,8 +307,13 @@ class DatabaseService {
         try {
           await client.query('BEGIN');
           const transactionClient: DbQueryClient = {
-            query: async (text, params) => {
-              const r = await client.query(text, params);
+            query: async (text, params, options) => {
+              const queryConfig = {
+                text,
+                values: params,
+                ...(options?.timeoutMs && options.timeoutMs > 0 ? { timeout: options.timeoutMs } : {}),
+              };
+              const r = await client.query(queryConfig);
               return { rows: r.rows, rowCount: r.rowCount || 0 };
             },
           };
@@ -300,8 +351,13 @@ class DatabaseService {
             }
           }
           const transactionClient: DbQueryClient = {
-            query: async (text, params) => {
-              const r = await client.query(text, params);
+            query: async (text, params, options) => {
+              const queryConfig = {
+                text,
+                values: params,
+                ...(options?.timeoutMs && options.timeoutMs > 0 ? { timeout: options.timeoutMs } : {}),
+              };
+              const r = await client.query(queryConfig);
               return { rows: r.rows, rowCount: r.rowCount || 0 };
             },
           };
@@ -336,7 +392,14 @@ class DatabaseService {
       );
       try {
         const transactionClient: DbQueryClient = {
-          query: (text, params) => Promise.resolve(this.executeInMemoryQuery(text, params || [])),
+          query: (text, params, options) => {
+            if (options?.timeoutMs && options.timeoutMs > 0) {
+              return this.executeWithTimeout(options.timeoutMs, () =>
+                Promise.resolve(this.executeInMemoryQuery(text, params || []))
+              );
+            }
+            return Promise.resolve(this.executeInMemoryQuery(text, params || []));
+          },
         };
         return await this.transactionContext.run(transactionClient, () => callback(transactionClient));
       } catch (error) {

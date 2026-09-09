@@ -4,6 +4,7 @@ import { applyPoint1Schema } from './point1Schema';
 import { applyIdentitySchema } from './identitySchema';
 import { applyEnterpriseHardeningSchema } from './enterpriseHardeningSchema';
 import { applyUsabilitySchema } from './usabilitySchema';
+import { applyPaymentAccountingSchema } from './paymentAccountingSchema';
 import type { DbQueryResult } from './db';
 
 export const CURRENT_SCHEMA_VERSION = '2026.08.31-v7-expense-receipts';
@@ -1270,9 +1271,9 @@ export class MigrationRunner {
         financial_year VARCHAR(20) NOT NULL,
         next_number INT NOT NULL DEFAULT 1,
         padding_length INT DEFAULT 4,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-        CONSTRAINT uk_org_doc_seq UNIQUE (organization_id, document_type, financial_year)
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       )`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS uk_org_doc_seq ON document_sequences (organization_id, document_type, financial_year)`,
 
       `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS customer_id VARCHAR(64)`,
       `ALTER TABLE journal_entries ADD COLUMN IF NOT EXISTS reversal_of_journal_id VARCHAR(64)`,
@@ -1805,6 +1806,7 @@ export class MigrationRunner {
 
     await applyPoint1Schema(queryClient);
     await applyIdentitySchema(queryClient);
+    await applyPaymentAccountingSchema(queryClient);
     await applyEnterpriseHardeningSchema(queryClient);
     await applyUsabilitySchema(queryClient);
 

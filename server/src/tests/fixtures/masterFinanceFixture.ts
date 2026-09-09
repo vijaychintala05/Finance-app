@@ -57,6 +57,7 @@ export const MASTER_FIXTURE_CONSTANTS = {
     { code: '1100', idSuffix: '1100', name: 'Accounts Receivable', type: 'Asset', subType: 'Accounts Receivable', normalBalance: 'Debit' },
     { code: '1150', idSuffix: '1150', name: 'Customer and Vendor Advances', type: 'Asset', subType: 'Current Asset', normalBalance: 'Debit' },
     { code: '1200', idSuffix: '1200', name: 'Input GST Tax Credit', type: 'Asset', subType: 'Current Asset', normalBalance: 'Debit' },
+    { code: '1600', idSuffix: '1600', name: 'Payment Gateway Clearing', type: 'Asset', subType: 'Payment Clearing', normalBalance: 'Debit' },
     { code: '2000', idSuffix: '2000', name: 'Accounts Payable', type: 'Liability', subType: 'Accounts Payable', normalBalance: 'Credit' },
     { code: '2100', idSuffix: '2100', name: 'Output GST Tax Payable', type: 'Liability', subType: 'Taxes Payable', normalBalance: 'Credit' },
     { code: '2110', idSuffix: '2110', name: 'GST Input Tax Control', type: 'Liability', subType: 'Taxes Payable', normalBalance: 'Credit' },
@@ -170,12 +171,12 @@ export class MasterFinanceFixture {
   private static async seedChartOfAccounts(): Promise<void> {
     const orgs = [MASTER_FIXTURE_CONSTANTS.ORG_A.id, MASTER_FIXTURE_CONSTANTS.ORG_B.id];
     const roleMap: Record<string, string> = {
-      '1000': 'BANK_OPERATING',
+      '1000': 'CASH',
       '1010': 'BANK_OPERATING',
-      '1020': 'BANK_OPERATING',
       '1100': 'AR_CONTROL',
       '1150': 'VENDOR_ADVANCE',
       '1200': 'GST_INPUT',
+      '1600': 'PAYMENT_CLEARING',
       '2000': 'AP_CONTROL',
       '2100': 'CUSTOMER_ADVANCE',
       '2110': 'GST_OUTPUT',

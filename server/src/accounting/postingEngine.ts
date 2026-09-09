@@ -53,6 +53,108 @@ export function resolveAccountNormalBalance(account: {
 }
 
 export class ServerPostingEngine {
+  public static async postExistingDraft(
+    organizationId: string,
+    journalEntryId: string,
+    transactionClient?: QueryClient
+  ): Promise<{ entryId: string }> {
+    const execute = async (client: QueryClient): Promise<{ entryId: string }> => {
+      await TenantRecoveryLockService.assertNotLocked(organizationId, client);
+      const headerResult = await client.query(
+        `SELECT id, date, status
+           FROM journal_entries
+          WHERE organization_id = $1 AND id = $2
+          FOR UPDATE`,
+        [organizationId, journalEntryId]
+      );
+      if (headerResult.rows.length !== 1) throw new Error('JOURNAL_DRAFT_NOT_FOUND: Journal draft does not exist');
+      if (String(headerResult.rows[0].status).toUpperCase() === 'POSTED') {
+        throw new Error('JOURNAL_ALREADY_POSTED: This journal is already posted');
+      }
+      const date = headerResult.rows[0].date instanceof Date
+        ? headerResult.rows[0].date.toISOString().slice(0, 10)
+        : String(headerResult.rows[0].date).slice(0, 10);
+      if (!isIsoCalendarDate(date)) throw new Error('Journal date must use YYYY-MM-DD format');
+
+      const periodLock = await client.query(
+        `SELECT id FROM period_locks
+          WHERE organization_id = $1 AND status = 'Active' AND lock_date >= $2
+          LIMIT 1`,
+        [organizationId, date]
+      );
+      if (periodLock.rows.length > 0) throw new Error(`Accounting period is locked for ${date}`);
+
+      const lineResult = await client.query(
+        `SELECT id, account_id, debit, credit, project_id, customer_id, vendor_id
+           FROM journal_lines
+          WHERE organization_id = $1 AND journal_entry_id = $2
+          ORDER BY id`,
+        [organizationId, journalEntryId]
+      );
+      if (lineResult.rows.length < 2) throw new Error('A journal requires at least two lines');
+
+      let debitCents = 0n;
+      let creditCents = 0n;
+      const verified: Array<{ accountId: string; debit: number; credit: number; normalBalance: 'Debit' | 'Credit'; code: string; name: string }> = [];
+      for (const [index, line] of lineResult.rows.entries()) {
+        const debit = asMoney(line.debit, `lines[${index}].debit`);
+        const credit = asMoney(line.credit, `lines[${index}].credit`);
+        if ((debit.cents === 0n) === (credit.cents === 0n)) {
+          throw new Error(`Journal line ${index + 1} must have exactly one positive debit or credit`);
+        }
+        debitCents += debit.cents;
+        creditCents += credit.cents;
+        const accountResult = await client.query(
+          `SELECT id, code, name, type, normal_balance, normal_balance_is_explicit, is_locked, status, allow_direct_posting
+             FROM accounts
+            WHERE organization_id = $1 AND id = $2`,
+          [organizationId, line.account_id]
+        );
+        if (accountResult.rows.length !== 1) throw new Error(`Account ${line.account_id} does not belong to this organization`);
+        const account = accountResult.rows[0];
+        if (account.is_locked || account.status !== 'Active' || account.allow_direct_posting === false) {
+          throw new Error(`Account ${line.account_id} is locked or inactive`);
+        }
+        verified.push({
+          accountId: account.id,
+          debit: debit.amount,
+          credit: credit.amount,
+          normalBalance: resolveAccountNormalBalance(account),
+          code: account.code,
+          name: account.name,
+        });
+      }
+      if (debitCents !== creditCents || debitCents === 0n) {
+        throw new Error(`Journal is unbalanced: debit=${formatCents(debitCents)}, credit=${formatCents(creditCents)}`);
+      }
+
+      for (const line of verified) {
+        const balanceDelta = line.normalBalance === 'Debit' ? line.debit - line.credit : line.credit - line.debit;
+        await client.query(
+          `UPDATE journal_lines SET account_code = $1, account_name = $2
+            WHERE organization_id = $3 AND journal_entry_id = $4 AND account_id = $5`,
+          [line.code, line.name, organizationId, journalEntryId, line.accountId]
+        );
+        await client.query(
+          'UPDATE accounts SET balance = balance + $1 WHERE id = $2 AND organization_id = $3',
+          [balanceDelta, line.accountId, organizationId]
+        );
+        await client.query(
+          'UPDATE bank_accounts SET current_balance = current_balance + $1, updated_at = CURRENT_TIMESTAMP WHERE (ledger_account_id = $2 OR id = $2) AND organization_id = $3',
+          [balanceDelta, line.accountId, organizationId]
+        );
+      }
+      const updated = await client.query(
+        `UPDATE journal_entries SET status = 'Posted'
+          WHERE organization_id = $1 AND id = $2 AND UPPER(status) <> 'POSTED'`,
+        [organizationId, journalEntryId]
+      );
+      if (updated.rowCount !== 1) throw new Error('Journal state changed concurrently');
+      return { entryId: journalEntryId };
+    };
+    return transactionClient ? execute(transactionClient) : db.transaction(execute);
+  }
+
   public static async postEntry(payload: PostJournalPayload, transactionClient?: QueryClient): Promise<{ entryId: string }> {
     const execute = async (client: QueryClient): Promise<{ entryId: string }> => {
       await TenantRecoveryLockService.assertNotLocked(payload.organizationId, client);

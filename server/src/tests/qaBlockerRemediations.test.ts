@@ -21,8 +21,8 @@ describe('QA Blocker Remediations (QA-01 to QA-10)', () => {
     await MasterFinanceFixture.setup();
   });
 
-  // QA-01 & QA-10: Public Portal Payment Ledger Authority & Token Hashing
-  it('QA-01 & QA-10: Portal payment creates balanced GL journal, records journal_entry_id, and hashes token at rest', async () => {
+  // QA-01 & QA-10: Public Portal Payment Authenticity & Token Hashing
+  it('QA-01 & QA-10: Portal cannot self-post money without a verified gateway event and hashes token at rest', async () => {
     // 1. Create a 100 posted invoice
     const invoice = await SalesEngine.createAndPostInvoice(ORG, {
       customerId: CUSTOMER_ID,
@@ -46,48 +46,18 @@ describe('QA Blocker Remediations (QA-01 to QA-10)', () => {
     expect(tokenDbRow.rows[0].token).not.toBe(tokenResult.token);
     expect(tokenDbRow.rows[0].token_hash).toBe(CustomerPortalService.hashToken(tokenResult.token));
 
-    // 3. Process payment via portal
-    const payResult = await CustomerPortalService.processPortalPayment(tokenResult.token, {
+    await expect(CustomerPortalService.processPortalPayment(tokenResult.token, {
       invoiceId: invoice.id,
       amount: 100,
-      paymentMethod: 'ONLINE_CARD',
-      reference: 'REF-PORTAL-TEST',
-    });
-    expect(payResult.success).toBe(true);
-    expect(payResult.remainingBalance).toBe(0);
+    })).rejects.toThrow(/PORTAL_PAYMENT_PROCESSOR_REQUIRED/);
 
-    // Verify QA-01: Payment must have a non-null journal_entry_id and balanced GL entry
     const pmtDb = await db.query(
-      `SELECT * FROM payments_received WHERE organization_id = $1 AND id = $2`,
-      [ORG, payResult.paymentId]
-    );
-    expect(pmtDb.rows.length).toBe(1);
-    const pmt = pmtDb.rows[0];
-    expect(pmt.status).toBe('ALLOCATED');
-    expect(pmt.journal_entry_id).toBeTruthy();
-
-    // Verify GL entry is balanced
-    const jeRes = await db.query(
-      `SELECT * FROM journal_entries WHERE id = $1`,
-      [pmt.journal_entry_id]
-    );
-    expect(jeRes.rows.length).toBe(1);
-
-    const jlRes = await db.query(
-      `SELECT * FROM journal_lines WHERE journal_entry_id = $1`,
-      [pmt.journal_entry_id]
-    );
-    const totalDebits = jlRes.rows.reduce((sum: number, l: any) => sum + Number(l.debit || 0), 0);
-    const totalCredits = jlRes.rows.reduce((sum: number, l: any) => sum + Number(l.credit || 0), 0);
-    expect(totalDebits).toBe(100);
-    expect(totalCredits).toBe(100);
-
-    // Verify AR account balance reflects the payment
-    const arRes = await db.query(
-      `SELECT balance FROM accounts WHERE organization_id = $1 AND code = '1100'`,
+      `SELECT id FROM payments_received WHERE organization_id = $1 AND reference = 'REF-PORTAL-TEST'`,
       [ORG]
     );
-    expect(Number(arRes.rows[0].balance)).toBe(0);
+    expect(pmtDb.rows).toHaveLength(0);
+    const unchangedInvoice = await SalesEngine.getInvoice(ORG, invoice.id);
+    expect(unchangedInvoice?.balanceDue).toBe(100);
   });
 
   // QA-02: Partial SO then invoice remaining without explicit amount

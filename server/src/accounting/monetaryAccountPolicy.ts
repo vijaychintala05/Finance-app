@@ -27,7 +27,13 @@ const OUTFLOW_LIABILITY_SUBTYPES = new Set([
   'loan/credit',
 ]);
 
-function isEligibleMonetaryAccount(type: string, subType: string, direction: MonetaryAccountDirection): boolean {
+function isEligibleMonetaryAccount(
+  type: string,
+  subType: string,
+  direction: MonetaryAccountDirection,
+  hasBankProfile: boolean
+): boolean {
+  if (hasBankProfile) return true;
   const normalizedType = type.trim().toLowerCase();
   const normalizedSubType = subType.trim().toLowerCase();
 
@@ -57,14 +63,14 @@ export class MonetaryAccountPolicy {
     }
 
     const result = await client.query(
-      `SELECT id, code, name, type, sub_type
-         FROM accounts
-        WHERE organization_id = $1
-          AND (id = $2 OR code = $2)
-          AND status = 'Active'
-          AND COALESCE(is_locked, FALSE) = FALSE
-          AND COALESCE(allow_direct_posting, TRUE) = TRUE
-        ORDER BY CASE WHEN id = $2 THEN 0 ELSE 1 END
+      `SELECT a.id, a.code, a.name, a.type, a.sub_type
+         FROM accounts a
+        WHERE a.organization_id = $1
+          AND (a.id = $2 OR a.code = $2)
+          AND a.status = 'Active'
+          AND COALESCE(a.is_locked, FALSE) = FALSE
+          AND COALESCE(a.allow_direct_posting, TRUE) = TRUE
+        ORDER BY CASE WHEN a.id = $2 THEN 0 ELSE 1 END
         LIMIT 1`,
       [organizationId, requested]
     );
@@ -74,7 +80,20 @@ export class MonetaryAccountPolicy {
     }
 
     const row = result.rows[0];
-    if (!isEligibleMonetaryAccount(String(row.type || ''), String(row.sub_type || ''), direction)) {
+    let hasBankProfile = false;
+    try {
+      const bankProfile = await client.query(
+        `SELECT id FROM bank_accounts
+          WHERE organization_id = $1 AND ledger_account_id = $2 AND COALESCE(is_active, TRUE) = TRUE
+          LIMIT 1`,
+        [organizationId, row.id]
+      );
+      hasBankProfile = bankProfile.rows.length > 0;
+    } catch {
+      // bank_accounts table may not be queried in memory
+    }
+
+    if (!isEligibleMonetaryAccount(String(row.type || ''), String(row.sub_type || ''), direction, hasBankProfile)) {
       const allowed = direction === 'OUTFLOW'
         ? 'bank, cash, wallet, clearing, or credit-card account'
         : 'bank, cash, wallet, or clearing account';

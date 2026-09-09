@@ -17,26 +17,28 @@ import { protectAsyncRoutes } from './asyncRouter';
 
 const router = Router();
 let api: RecoveryApi | null = null;
-try {
-  api = new RecoveryApi(new RecoveryArtifactService({
-    repository: new SqlRecoveryRepository(),
-    keyring: recoveryKeyringFromEnvironment(),
-    stager: new SqlRecoveryStager(),
-    reconcilers: [new RecoveryRowCountReconciler(), new RecoveryAccountingReconciler()],
-    promoter: new SqlRecoveryPromoter(),
-    ownerAuthorizer: new SqlOwnerAuthorizer(),
-    schemaVersion: CURRENT_SCHEMA_VERSION,
-  }));
-} catch {
-  // Production may deliberately leave recovery disabled. Routes fail closed
-  // until both the deployment feature flag and encryption keys are present.
+function getApi(): RecoveryApi {
+  if (!api) {
+    api = new RecoveryApi(new RecoveryArtifactService({
+      repository: new SqlRecoveryRepository(),
+      keyring: recoveryKeyringFromEnvironment(),
+      stager: new SqlRecoveryStager(),
+      reconcilers: [new RecoveryRowCountReconciler(), new RecoveryAccountingReconciler()],
+      promoter: new SqlRecoveryPromoter(),
+      ownerAuthorizer: new SqlOwnerAuthorizer(),
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+    }));
+  }
+  return api;
 }
 const configured = (handler: keyof RecoveryApi): RequestHandler => (req, res, next) => {
-  if (!api) {
+  try {
+    const recoveryApi = getApi();
+    void Promise.resolve(recoveryApi[handler](req, res)).catch(next);
+  } catch (err: any) {
+    console.error('[RecoveryApi] Failed to initialize RecoveryApi:', err?.message || err);
     res.status(503).json({ error: 'Recovery encryption keys are not configured.' });
-    return;
   }
-  void Promise.resolve(api[handler](req, res)).catch(next);
 };
 const ownerRecovery = [requireOwnerOrSuperAdmin, requirePermission('settings.backup'), requireTrustedFinanceFeature('recovery-center')];
 

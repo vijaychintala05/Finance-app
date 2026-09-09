@@ -3,7 +3,6 @@ import { db } from '../database/db';
 import { newId } from '../utils/ids';
 import { CustomerStatementService, CustomerStatementResponse } from './CustomerStatementService';
 import { databaseMoney } from '../utils/money';
-import { SalesEngine } from '../sales/SalesEngine';
 
 export interface CustomerPortalInvoice {
   id: string;
@@ -282,7 +281,7 @@ export class CustomerPortalService {
    */
   public static async processPortalPayment(
     token: string,
-    payload: { invoiceId: string; amount: number; paymentMethod?: string; reference?: string; depositToAccountId?: string }
+    payload: { invoiceId: string; amount: number; gatewayEventId?: string }
   ): Promise<{ success: boolean; paymentId: string; paymentNumber: string; remainingBalance: number }> {
     const tokenHash = CustomerPortalService.hashToken(token);
     let tokenRes;
@@ -323,66 +322,42 @@ export class CustomerPortalService {
     }
 
     const invoice = invRes.rows[0];
-    const currentBalance = databaseMoney(invoice.balance_due, 'Current balance');
     const payAmount = databaseMoney(payload.amount, 'Payment amount');
 
     if (payAmount <= 0) {
       throw new Error('Payment amount must be greater than zero');
     }
-    if (payAmount > currentBalance + 0.001) {
-      throw new Error(`Payment amount cannot exceed invoice balance due of ${currentBalance}`);
+    if (!payload.gatewayEventId) {
+      throw new Error('PORTAL_PAYMENT_PROCESSOR_REQUIRED: Online payment is unavailable until a verified payment provider confirms the charge');
     }
 
-    const custRes = await db.query(
-      `SELECT id, display_name as name FROM customers WHERE organization_id = $1 AND (id = $2 OR customer_id = $2)
-       UNION
-       SELECT id, name FROM clients WHERE organization_id = $1 AND id = $2
-       LIMIT 1`,
-      [orgId, customerId]
+    const confirmed = await db.query(
+      `SELECT p.id AS payment_id, p.payment_number, p.amount, i.balance_due
+         FROM payment_gateway_events e
+         JOIN payments_received p
+           ON p.organization_id = e.organization_id AND p.id = e.payment_id
+         JOIN journal_entries je
+           ON je.organization_id = p.organization_id AND je.id = p.journal_entry_id AND UPPER(je.status) = 'POSTED'
+         JOIN invoices i
+           ON i.organization_id = e.organization_id AND i.id = e.invoice_id
+        WHERE e.organization_id = $1
+          AND e.event_id = $2
+          AND e.invoice_id = $3
+          AND e.status = 'PROCESSED'
+          AND p.status IN ('ALLOCATED', 'PARTIALLY_ALLOCATED', 'UNALLOCATED')
+        LIMIT 1`,
+      [orgId, payload.gatewayEventId, payload.invoiceId]
     );
-    const clientName = custRes.rows[0]?.name || 'Customer';
 
-    let depositAccountId = payload.depositToAccountId;
-    if (!depositAccountId) {
-      const accRes = await db.query(
-        `SELECT id FROM accounts WHERE organization_id = $1 AND (type IN ('Asset', 'Bank', 'Cash') OR sub_type IN ('Bank', 'Cash')) ORDER BY id ASC LIMIT 1`,
-        [orgId]
-      );
-      depositAccountId = accRes.rows[0]?.id || '1010';
+    if (confirmed.rows.length !== 1 || Math.abs(Number(confirmed.rows[0].amount) - payAmount) > 0.001) {
+      throw new Error('PORTAL_PAYMENT_NOT_CONFIRMED: No matching verified and posted gateway payment was found');
     }
-
-    const today = new Date().toISOString().split('T')[0];
-    const payment = await SalesEngine.recordPayment(orgId, {
-      customerId,
-      customerName: clientName,
-      invoiceId: payload.invoiceId,
-      amount: payAmount,
-      paymentDate: today,
-      paymentMode: payload.paymentMethod || 'ONLINE',
-      depositToAccountId: depositAccountId,
-      reference: payload.reference || 'Online Portal Payment',
-      notes: `Paid via Customer Portal for Invoice ${invoice.invoice_number}`,
-      allocations: [
-        {
-          invoiceId: payload.invoiceId,
-          amount: payAmount,
-        },
-      ],
-    });
-
-    const updatedInvRes = await db.query(
-      `SELECT balance_due FROM invoices WHERE organization_id = $1 AND id = $2`,
-      [orgId, payload.invoiceId]
-    );
-    const remainingBalance = updatedInvRes.rows[0]?.balance_due !== undefined
-      ? Number(updatedInvRes.rows[0].balance_due)
-      : Math.max(0, Math.round((currentBalance - payAmount) * 100) / 100);
 
     return {
       success: true,
-      paymentId: payment.paymentId || payment.id,
-      paymentNumber: payment.paymentNumber,
-      remainingBalance,
+      paymentId: confirmed.rows[0].payment_id,
+      paymentNumber: confirmed.rows[0].payment_number,
+      remainingBalance: Number(confirmed.rows[0].balance_due),
     };
   }
 

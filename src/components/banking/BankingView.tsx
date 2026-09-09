@@ -10,6 +10,8 @@ import { DeleteBankAccountModal } from './DeleteBankAccountModal';
 import { BankAccountsSummaryCards } from './BankAccountsSummaryCards';
 import { BankAccountsListSidebar } from './BankAccountsListSidebar';
 import { BankTransactionsFeed } from './BankTransactionsFeed';
+import { TransferFundsModal } from './TransferFundsModal';
+import { TreasuryTransactionModal } from './TreasuryTransactionModal';
 import { BankingService } from '../../services/bankingService';
 import { BankAccount } from '../../types/banking';
 
@@ -24,7 +26,7 @@ export const BankingView: React.FC<BankingViewProps> = ({
   selectedEntityId,
   onSelectedEntityClosed,
 }) => {
-  const { accounts, journalEntries, expenses, settings } = useBooks();
+  const { accounts, journalEntries, expenses, settings, refreshAccounts } = useBooks();
 
   // Screen 2 visibility toggle ("More Details" button)
   const [showMoreDetails, setShowMoreDetails] = useState<boolean>(true);
@@ -58,6 +60,8 @@ export const BankingView: React.FC<BankingViewProps> = ({
   const [isReconcileOpen, setIsReconcileOpen] = useState<boolean>(false);
   const [isImportStatementOpen, setIsImportStatementOpen] = useState<boolean>(false);
   const [isDeleteOpen, setIsDeleteOpen] = useState<boolean>(false);
+  const [isTransferOpen, setIsTransferOpen] = useState<boolean>(false);
+  const [isTreasuryOpen, setIsTreasuryOpen] = useState<boolean>(false);
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
 
   const refreshBankAccounts = React.useCallback(() => {
@@ -382,6 +386,8 @@ export const BankingView: React.FC<BankingViewProps> = ({
               setRecordTxDefaultType('DEBIT');
               setIsRecordTxOpen(true);
             }}
+            onOpenTransfer={() => setIsTransferOpen(true)}
+            onOpenTreasury={() => setIsTreasuryOpen(true)}
             onOpenDeleteAccount={() => setIsDeleteOpen(true)}
             onSelectTx={setSelectedTx}
           />
@@ -400,8 +406,7 @@ export const BankingView: React.FC<BankingViewProps> = ({
       {isRecordTxOpen && activeAccount && (
         <RecordBankTransactionModal
           isOpen={isRecordTxOpen}
-          accountId={activeAccount.id}
-          accountName={activeAccount.name}
+          defaultAccountId={activeAccount.id}
           defaultType={recordTxDefaultType}
           onClose={() => setIsRecordTxOpen(false)}
         />
@@ -412,9 +417,41 @@ export const BankingView: React.FC<BankingViewProps> = ({
           isOpen={isReconcileOpen}
           account={activeAccount}
           bankAccount={activeBankAccount}
+          accounts={accounts}
           settings={settings}
           onClose={() => setIsReconcileOpen(false)}
           onReconcileComplete={refreshBankAccounts}
+          onStatementMutation={async () => {
+            await refreshAccounts();
+            refreshBankAccounts();
+          }}
+        />
+      )}
+
+      {isTransferOpen && (
+        <TransferFundsModal
+          isOpen={isTransferOpen}
+          onClose={() => setIsTransferOpen(false)}
+          bankAccounts={bankAccounts}
+          defaultFromBankAccountId={activeBankAccount?.id}
+          onChanged={async () => {
+            await refreshAccounts();
+            refreshBankAccounts();
+          }}
+        />
+      )}
+
+      {isTreasuryOpen && (
+        <TreasuryTransactionModal
+          isOpen={isTreasuryOpen}
+          onClose={() => setIsTreasuryOpen(false)}
+          accounts={accounts}
+          settings={settings}
+          defaultMonetaryAccountId={activeAccount?.id}
+          onChanged={async () => {
+            await refreshAccounts();
+            refreshBankAccounts();
+          }}
         />
       )}
 

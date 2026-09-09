@@ -60,7 +60,7 @@ async function startServer() {
     apiApp.use(express.static(distPath, {
       index: false,
       setHeaders: (res, filePath) => {
-        if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+        if (filePath.includes('/assets/') || filePath.includes('\\assets\\') || filePath.includes(`${path.sep}assets${path.sep}`)) {
           res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
         } else {
           res.setHeader('Cache-Control', 'public, max-age=0, must-revalidate');

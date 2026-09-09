@@ -1876,6 +1876,12 @@ export class PurchasesEngine {
       const amount = Number(data.amount) || 0;
       if (amount <= 0) throw new Error('Advance amount must be greater than zero.');
 
+      const vendor = await client.query(
+        `SELECT id FROM vendors WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, data.vendorId]
+      );
+      if (vendor.rows.length !== 1) throw new Error('Vendor was not found in this organization');
+
       const paymentAccount = await MonetaryAccountPolicy.resolve(
         client,
         orgId,
@@ -2461,6 +2467,8 @@ export class PurchasesEngine {
       vendorId: string;
       debitNoteId?: string;
       paymentId?: string;
+      advanceId?: string;
+      expenseId?: string;
       refundDate: string;
       amount: number;
       depositToAccountId: string;
@@ -2475,6 +2483,14 @@ export class PurchasesEngine {
       if (!payload.vendorId) throw new Error('Vendor ID is required for vendor refund');
       if (!payload.amount || Number(payload.amount) <= 0) throw new Error('Refund amount must be greater than zero');
       if (!payload.depositToAccountId) throw new Error('Deposit to account ID is required');
+      const sourceCount = [payload.debitNoteId, payload.paymentId, payload.advanceId, payload.expenseId].filter(Boolean).length;
+      if (sourceCount > 1) throw new Error('Vendor refund must reference exactly one debit note, payment, advance, or direct expense');
+
+      const vendorRes = await client.query(
+        `SELECT id, name FROM vendors WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, payload.vendorId]
+      );
+      if (vendorRes.rows.length !== 1) throw new Error('Vendor was not found in this organization');
 
       const depositAccount = await MonetaryAccountPolicy.resolve(
         client,
@@ -2486,6 +2502,9 @@ export class PurchasesEngine {
 
       const refundId = newId('vrf');
       const refundNum = await DocumentNumberingEngine.getNextNumber(orgId, 'PAYMENT', payload.refundDate, undefined, client);
+      let creditAccountId = await OrganizationProvisioningService.resolveSystemAccountId(client, orgId, 'AP_CONTROL', ['Liability']);
+      let creditAccountCode = '2000';
+      let creditAccountName = 'Accounts Payable';
 
       if (payload.debitNoteId) {
         const dnRes = await client.query(
@@ -2493,6 +2512,7 @@ export class PurchasesEngine {
           [orgId, payload.debitNoteId]
         );
         if (dnRes.rows.length === 0) throw new Error('Debit note not found for vendor refund');
+        if (dnRes.rows[0].vendor_id !== payload.vendorId) throw new Error('Debit note does not belong to this vendor');
         const remCredit = Number(dnRes.rows[0].remaining_credit || 0);
         if (payload.amount > remCredit + 0.001) {
           throw new Error(`Refund amount ${payload.amount} exceeds remaining debit note balance ${remCredit}`);
@@ -2501,15 +2521,74 @@ export class PurchasesEngine {
           `UPDATE vendor_credits SET remaining_credit = remaining_credit - $1, status = CASE WHEN remaining_credit - $1 <= 0.001 THEN 'Closed' ELSE status END WHERE organization_id = $2 AND id = $3`,
           [payload.amount, orgId, payload.debitNoteId]
         );
+        await client.query(
+          `UPDATE vendors SET payables_balance = payables_balance + $1 WHERE organization_id = $2 AND id = $3`,
+          [payload.amount, orgId, payload.vendorId]
+        );
+      } else if (payload.paymentId || payload.advanceId) {
+        const advanceRes = await client.query(
+          `SELECT * FROM vendor_advances
+            WHERE organization_id = $1
+              AND (($2 IS NOT NULL AND payment_id = $2) OR ($3 IS NOT NULL AND id = $3))
+              AND vendor_id = $4
+              AND UPPER(status) <> 'REVERSED'
+            FOR UPDATE`,
+          [orgId, payload.paymentId || null, payload.advanceId || null, payload.vendorId]
+        );
+        if (advanceRes.rows.length !== 1) throw new Error('Refundable vendor advance was not found for this payment');
+        const advance = advanceRes.rows[0];
+        if (Number(payload.amount) > Number(advance.unapplied_amount || 0) + 0.001) throw new Error('Refund exceeds the unapplied vendor advance');
+        creditAccountId = await OrganizationProvisioningService.resolveSystemAccountId(client, orgId, 'VENDOR_ADVANCE', ['Asset']);
+        creditAccountCode = '1150';
+        creditAccountName = 'Vendor Advances';
+        await client.query(
+          `UPDATE vendor_advances
+              SET unapplied_amount = unapplied_amount - $1,
+                  status = CASE WHEN unapplied_amount - $1 <= 0.001 THEN 'REFUNDED' ELSE 'PARTIALLY_REFUNDED' END
+            WHERE organization_id = $2 AND id = $3`,
+          [payload.amount, orgId, advance.id]
+        );
+        const vendorUpdate = await client.query(
+          `UPDATE vendors SET advance_balance = advance_balance - $1
+            WHERE organization_id = $2 AND id = $3 AND advance_balance >= $1`,
+          [payload.amount, orgId, payload.vendorId]
+        );
+        if (vendorUpdate.rowCount !== 1) throw new Error('Vendor advance balance does not reconcile');
+      } else if (payload.expenseId) {
+        const expenseResult = await client.query(
+          `SELECT * FROM expenses WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+          [orgId, payload.expenseId]
+        );
+        if (expenseResult.rows.length !== 1 || ['VOID', 'VOIDED'].includes(String(expenseResult.rows[0].status || '').toUpperCase())) {
+          throw new Error('Direct expense is unavailable for vendor refund');
+        }
+        const expense = expenseResult.rows[0];
+        if (!String(expense.vendor_name || '').trim() || String(expense.vendor_name).trim().toLowerCase() !== String(vendorRes.rows[0].name || '').trim().toLowerCase()) {
+          throw new Error('Direct expense does not belong to this vendor');
+        }
+        const previousRefunds = await client.query(
+          `SELECT COALESCE(SUM(amount), 0) AS total FROM vendor_refunds
+            WHERE organization_id = $1 AND expense_id = $2 AND UPPER(COALESCE(status, 'POSTED')) <> 'REVERSED'`,
+          [orgId, payload.expenseId]
+        );
+        if (Number(payload.amount) > Number(expense.amount || 0) - Number(previousRefunds.rows[0]?.total || 0) + 0.001) {
+          throw new Error('Refund exceeds the unrecovered direct expense amount');
+        }
+        const expenseAccount = await client.query(
+          `SELECT id, code, name, type FROM accounts WHERE organization_id = $1 AND id = $2 AND status = 'Active'`,
+          [orgId, expense.expense_account_id]
+        );
+        if (expenseAccount.rows.length !== 1 || !['Expense', 'Cost of Goods Sold', 'Other Expense'].includes(String(expenseAccount.rows[0].type))) {
+          throw new Error('Direct expense has no active expense account to recover');
+        }
+        creditAccountId = expenseAccount.rows[0].id;
+        creditAccountCode = expenseAccount.rows[0].code;
+        creditAccountName = expenseAccount.rows[0].name;
+      } else {
+        throw new Error('VENDOR_REFUND_SOURCE_REQUIRED: Reference a debit note, unapplied vendor payment, or direct expense');
       }
 
-      // Update vendor payables balance: money returned to company reduces outstanding vendor credit / increases net payables back
-      await client.query(
-        `UPDATE vendors SET payables_balance = payables_balance + $1 WHERE organization_id = $2 AND id = $3`,
-        [payload.amount, orgId, payload.vendorId]
-      );
-
-      // GL Entry: Dr Bank/Cash (depositToAccountId), Cr Accounts Payable (2000)
+      // GL Entry: Dr selected monetary account; credit the source control, advance, or recovered expense account.
       const journalLines = [
         {
           accountId: depositAccount.id,
@@ -2521,9 +2600,9 @@ export class PurchasesEngine {
           vendorId: payload.vendorId,
         },
         {
-          accountId: '2000',
-          accountCode: '2000',
-          accountName: 'Accounts Payable',
+          accountId: creditAccountId,
+          accountCode: creditAccountCode,
+          accountName: creditAccountName,
           debit: 0,
           credit: payload.amount,
           description: `Vendor Refund ${refundNum}`,
@@ -2543,10 +2622,10 @@ export class PurchasesEngine {
 
       await client.query(
         `INSERT INTO vendor_refunds (
-          id, organization_id, refund_number, vendor_id, debit_note_id, payment_id,
+          id, organization_id, refund_number, vendor_id, debit_note_id, payment_id, advance_id, expense_id,
           refund_date, amount, deposit_to_account_id, reference, notes,
           status, journal_entry_id, created_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'POSTED', $12, CURRENT_TIMESTAMP)`,
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'POSTED', $14, CURRENT_TIMESTAMP)`,
         [
           refundId,
           orgId,
@@ -2554,6 +2633,8 @@ export class PurchasesEngine {
           payload.vendorId,
           payload.debitNoteId || null,
           payload.paymentId || null,
+          payload.advanceId || null,
+          payload.expenseId || null,
           payload.refundDate,
           payload.amount,
           depositAccount.id,

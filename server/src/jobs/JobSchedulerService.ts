@@ -372,6 +372,9 @@ export class JobSchedulerService {
       await this.recoverExpiredLeases(workerId);
       const jobs = await this.claimJobs(workerId, 5, 120);
       for (const job of jobs) {
+        // Cooperatively yield to Node.js event loop to avoid starving interactive HTTP requests
+        await new Promise((resolve) => setImmediate(resolve));
+
         try {
           if (job.jobType === 'RECURRING_DOCUMENT_EXECUTION') {
             const { RecurringDocumentJobHandler } = await import('./RecurringDocumentJobHandler');

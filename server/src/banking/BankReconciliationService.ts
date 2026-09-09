@@ -17,6 +17,9 @@ import { BankRulesEngine } from './BankRulesEngine';
 import { BankStatementParserFactory } from './parsers/BankStatementParserFactory';
 import { newId } from '../utils/ids';
 import { AccountingPeriodService } from '../accounting/AccountingPeriodService';
+import { ServerPostingEngine } from '../accounting/postingEngine';
+import { MonetaryAccountPolicy } from '../accounting/monetaryAccountPolicy';
+import { FinancialDestructiveActionsService } from '../accounting/FinancialDestructiveActionsService';
 
 /**
  * BANK RECONCILIATION SERVICE
@@ -834,45 +837,39 @@ export class BankReconciliationService {
     const bankLedgerAccId = bankAcc?.ledgerAccountId || `acc-bank-${statementTx.bankAccountId}`;
 
     return db.transaction(async (client) => {
-      const journalId = newId('entry');
       const entryNum = `JE-${Date.now().toString().slice(-6)}`;
-      const date = statementTx.transactionDate;
+      const date = (statementTx.transactionDate as any) instanceof Date
+        ? (statementTx.transactionDate as any as Date).toISOString().slice(0, 10)
+        : String(statementTx.transactionDate).slice(0, 10);
       const ref = statementTx.reference || statementTx.utr || 'Create-from-Bank';
       const desc = description || statementTx.narration;
 
       const isDebit = statementTx.direction === 'DEBIT';
 
-      await client.query(
-        `INSERT INTO journal_entries (id, organization_id, entry_number, date, reference, description, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [journalId, orgId, entryNum, date, ref, desc, 'Posted']
+      const bankAccount = await MonetaryAccountPolicy.resolve(
+        client,
+        orgId,
+        bankLedgerAccId,
+        isDebit ? 'OUTFLOW' : 'INFLOW',
+        'statement_bank_account'
       );
-
-      if (isDebit) {
-        // Dr Expense, Cr Bank
-        await client.query(
-          `INSERT INTO journal_lines (id, journal_entry_id, organization_id, account_id, debit, credit, description)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-          [`jln-${journalId}-1`, journalId, orgId, targetAccountId, statementTx.amount, 0, desc]
-        );
-        await client.query(
-          `INSERT INTO journal_lines (id, journal_entry_id, organization_id, account_id, debit, credit, description)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-          [`jln-${journalId}-2`, journalId, orgId, bankLedgerAccId, 0, statementTx.amount, desc]
-        );
-      } else {
-        // Dr Bank, Cr Revenue
-        await client.query(
-          `INSERT INTO journal_lines (id, journal_entry_id, organization_id, account_id, debit, credit, description)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-          [`jln-${journalId}-1`, journalId, orgId, bankLedgerAccId, statementTx.amount, 0, desc]
-        );
-        await client.query(
-          `INSERT INTO journal_lines (id, journal_entry_id, organization_id, account_id, debit, credit, description)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-          [`jln-${journalId}-2`, journalId, orgId, targetAccountId, 0, statementTx.amount, desc]
-        );
-      }
+      const posting = await ServerPostingEngine.postEntry({
+        organizationId: orgId,
+        entryNumber: entryNum,
+        date,
+        reference: ref,
+        description: desc,
+        lines: isDebit
+          ? [
+              { accountId: targetAccountId, debit: statementTx.amount, credit: 0, description: desc },
+              { accountId: bankAccount.id, debit: 0, credit: statementTx.amount, description: desc },
+            ]
+          : [
+              { accountId: bankAccount.id, debit: statementTx.amount, credit: 0, description: desc },
+              { accountId: targetAccountId, debit: 0, credit: statementTx.amount, description: desc },
+            ],
+      }, client);
+      const journalId = posting.entryId;
 
       const matchId = newId('match');
       await client.query(
@@ -940,7 +937,7 @@ export class BankReconciliationService {
     reference?: string,
     description?: string,
     createdBy: string = 'System'
-  ): Promise<{ journalEntryId: string }> {
+  ): Promise<{ transferId: string; journalEntryId: string }> {
     if (fromBankAccountId === toBankAccountId) {
       throw new Error('INVALID_TRANSFER: Source and destination bank accounts must be different');
     }
@@ -967,60 +964,37 @@ export class BankReconciliationService {
       throw new Error('INVALID_TRANSFER: Source and destination ledger accounts must be different');
     }
 
-    const journalId = newId('entry-transfer');
     const entryNum = `TR-${Date.now().toString().slice(-6)}-${Math.floor(1000 + Math.random() * 9000)}`;
     const ref = reference || 'Internal Transfer';
     const desc = description || `Internal Transfer from ${fromBank.bankName || 'Source Bank'} to ${toBank.bankName || 'Destination Bank'}`;
+    const transferId = newId('bank-transfer');
+    let journalId: string | undefined;
 
     await db.transaction(async (client) => {
+      const fromAccount = await MonetaryAccountPolicy.resolve(client, orgId, fromLedgerId, 'TRANSFER', 'source_bank_account');
+      const toAccount = await MonetaryAccountPolicy.resolve(client, orgId, toLedgerId, 'TRANSFER', 'destination_bank_account');
+      const posting = await ServerPostingEngine.postEntry({
+        organizationId: orgId,
+        entryNumber: entryNum,
+        date: transferDate,
+        reference: ref,
+        description: desc,
+        lines: [
+          { accountId: toAccount.id, debit: amount, credit: 0, description: desc },
+          { accountId: fromAccount.id, debit: 0, credit: amount, description: desc },
+        ],
+      }, client);
+      journalId = posting.entryId;
+
       await client.query(
-        `INSERT INTO journal_entries (id, organization_id, entry_number, date, reference, description, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [journalId, orgId, entryNum, transferDate, ref, desc, 'Posted']
+        `INSERT INTO bank_transfers
+          (id, organization_id, transfer_number, transfer_date, from_bank_account_id, to_bank_account_id,
+           from_ledger_account_id, to_ledger_account_id, amount, reference, description, status,
+           journal_entry_id, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'POSTED', $12, $13)`,
+        [transferId, orgId, entryNum, transferDate, fromBankAccountId, toBankAccountId,
+          fromAccount.id, toAccount.id, amount, ref, desc, journalId, createdBy]
       );
-
-      // Dr To-Bank Account, Cr From-Bank Account
-      await client.query(
-        `INSERT INTO journal_lines (id, journal_entry_id, organization_id, account_id, debit, credit, description)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [`jln-${journalId}-1`, journalId, orgId, toLedgerId, amount, 0, desc]
-      );
-
-      await client.query(
-        `INSERT INTO journal_lines (id, journal_entry_id, organization_id, account_id, debit, credit, description)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [`jln-${journalId}-2`, journalId, orgId, fromLedgerId, 0, amount, desc]
-      );
-
-      // Lock and synchronize General Ledger accounts in deterministic lexicographical order to prevent deadlocks
-      const sortedLedgerUpdates = [
-        { accountId: toLedgerId, delta: amount },
-        { accountId: fromLedgerId, delta: -amount },
-      ].sort((a, b) => a.accountId.localeCompare(b.accountId));
-
-      for (const update of sortedLedgerUpdates) {
-        await client.query(
-          'SELECT balance FROM accounts WHERE id = $1 AND organization_id = $2 FOR UPDATE',
-          [update.accountId, orgId]
-        );
-        await client.query(
-          'UPDATE accounts SET balance = balance + $1 WHERE id = $2 AND organization_id = $3',
-          [update.delta, update.accountId, orgId]
-        );
-      }
-
-      // Synchronize bank_accounts table current balances in deterministic order
-      const sortedBankUpdates = [
-        { bankAccountId: toBankAccountId, ledgerAccountId: toLedgerId, delta: amount },
-        { bankAccountId: fromBankAccountId, ledgerAccountId: fromLedgerId, delta: -amount },
-      ].sort((a, b) => a.bankAccountId.localeCompare(b.bankAccountId));
-
-      for (const update of sortedBankUpdates) {
-        await client.query(
-          'UPDATE bank_accounts SET current_balance = current_balance + $1, updated_at = CURRENT_TIMESTAMP WHERE (id = $2 OR ledger_account_id = $3) AND organization_id = $4',
-          [update.delta, update.bankAccountId, update.ledgerAccountId, orgId]
-        );
-      }
 
       await client.query(
         `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, metadata)
@@ -1030,14 +1004,88 @@ export class BankReconciliationService {
           orgId,
           createdBy,
           'INTERNAL_TRANSFER_CREATED',
-          'JournalEntry',
-          journalId,
-          JSON.stringify({ fromBankAccountId, toBankAccountId, amount, transferDate }),
+          'BankTransfer',
+          transferId,
+          JSON.stringify({ fromBankAccountId, toBankAccountId, amount, transferDate, journalEntryId: journalId }),
         ]
       );
+
     });
 
-    return { journalEntryId: journalId };
+    return { transferId, journalEntryId: journalId! };
+  }
+
+  public static async getInternalTransfers(orgId: string, limit: number = 50): Promise<any[]> {
+    const result = await db.query(
+      `SELECT * FROM bank_transfers
+        WHERE organization_id = $1
+        ORDER BY transfer_date DESC, created_at DESC
+        LIMIT $2`,
+      [orgId, Math.max(1, Math.min(100, Number(limit) || 50))]
+    );
+    return result.rows;
+  }
+
+  public static async reverseInternalTransfer(
+    orgId: string,
+    transferId: string,
+    reversedBy: string,
+    reason: string
+  ): Promise<{ transferId: string; reversalJournalEntryId: string }> {
+    const normalizedReason = String(reason || '').trim();
+    if (normalizedReason.length < 3 || normalizedReason.length > 1000) {
+      throw new Error('REVERSAL_REASON_INVALID: A reversal reason containing 3-1000 characters is required');
+    }
+
+    return db.transaction(async (client) => {
+      const transferResult = await client.query(
+        `SELECT * FROM bank_transfers
+          WHERE organization_id = $1 AND id = $2
+          FOR UPDATE`,
+        [orgId, transferId]
+      );
+      if (transferResult.rows.length !== 1) throw new Error('BANK_TRANSFER_NOT_FOUND: Transfer was not found in this organization');
+      const transfer = transferResult.rows[0];
+      if (String(transfer.status).toUpperCase() !== 'POSTED' || transfer.reversal_journal_id) {
+        throw new Error('BANK_TRANSFER_ALREADY_REVERSED: Transfer has already been reversed');
+      }
+
+      const reconciled = await client.query(
+        `SELECT id FROM bank_reconciliation_matches
+          WHERE organization_id = $1
+            AND accounting_transaction_id = $2
+            AND status = 'MATCHED'
+          LIMIT 1`,
+        [orgId, transfer.journal_entry_id]
+      );
+      if (reconciled.rows.length > 0) {
+        throw new Error('BANK_TRANSFER_RECONCILED: Unmatch the reconciled statement transaction before reversing this transfer');
+      }
+
+      const reversalJournalEntryId = await FinancialDestructiveActionsService.reversePostedJournal(
+        client,
+        orgId,
+        transfer.journal_entry_id,
+        reversedBy,
+        normalizedReason,
+        `bank transfer ${transfer.transfer_number}`
+      );
+      const updated = await client.query(
+        `UPDATE bank_transfers
+            SET status = 'REVERSED', reversal_journal_id = $1, reversed_at = CURRENT_TIMESTAMP,
+                reversed_by = $2, reversal_reason = $3
+          WHERE organization_id = $4 AND id = $5 AND status = 'POSTED' AND reversal_journal_id IS NULL`,
+        [reversalJournalEntryId, reversedBy, normalizedReason, orgId, transferId]
+      );
+      if (updated.rowCount !== 1) throw new Error('BANK_TRANSFER_CONFLICT: Transfer state changed concurrently');
+
+      await client.query(
+        `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state, after_state)
+         VALUES ($1, $2, $3, 'INTERNAL_TRANSFER_REVERSED', 'BankTransfer', $4, $5, $6)`,
+        [newId('aud'), orgId, reversedBy, transferId, JSON.stringify(transfer), JSON.stringify({ status: 'REVERSED', reversalJournalEntryId })]
+      );
+      return { transferId, reversalJournalEntryId };
+    });
   }
 
   public static async unmatchTransaction(
@@ -1047,12 +1095,20 @@ export class BankReconciliationService {
   ): Promise<boolean> {
     return db.transaction(async (client) => {
       const matchResult = await client.query(
-        `SELECT statement_transaction_id FROM bank_reconciliation_matches
+        `SELECT statement_transaction_id, accounting_transaction_type, accounting_transaction_id, match_reasons
+           FROM bank_reconciliation_matches
           WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
         [orgId, matchId]
       );
       if (matchResult.rows.length !== 1) return false;
-      const statementTransactionId = matchResult.rows[0].statement_transaction_id;
+      const matchRow = matchResult.rows[0];
+      const reasons = typeof matchRow.match_reasons === 'string'
+        ? JSON.parse(matchRow.match_reasons || '[]')
+        : (matchRow.match_reasons || []);
+      if (matchRow.accounting_transaction_type === 'journal' && reasons.some((item: any) => item?.code === 'CREATE_FROM_BANK')) {
+        throw new Error('CREATED_BANK_TRANSACTION_REQUIRES_REVERSAL: Reverse the created accounting transaction instead of only removing its match');
+      }
+      const statementTransactionId = matchRow.statement_transaction_id;
       await client.query(`DELETE FROM bank_reconciliation_matches WHERE organization_id = $1 AND id = $2`, [orgId, matchId]);
       const remaining = await client.query(
         `SELECT id FROM bank_reconciliation_matches
@@ -1069,6 +1125,54 @@ export class BankReconciliationService {
         [newId('aud'), orgId, unmatchedBy, 'BANK_TRANSACTION_UNMATCHED', 'BankReconciliationMatch', matchId, JSON.stringify({ statementTransactionId })]
       );
       return true;
+    });
+  }
+
+  public static async reverseTransactionCreatedFromStatement(
+    orgId: string,
+    statementTransactionId: string,
+    reversedBy: string,
+    reason: string
+  ): Promise<{ statementTransactionId: string; reversalJournalEntryId: string }> {
+    const normalizedReason = String(reason || '').trim();
+    if (normalizedReason.length < 3 || normalizedReason.length > 1000) {
+      throw new Error('REVERSAL_REASON_INVALID: A reversal reason containing 3-1000 characters is required');
+    }
+    return db.transaction(async (client) => {
+      const matchResult = await client.query(
+        `SELECT * FROM bank_reconciliation_matches
+          WHERE organization_id = $1 AND statement_transaction_id = $2 AND status = 'MATCHED'
+          FOR UPDATE`,
+        [orgId, statementTransactionId]
+      );
+      const createdMatch = matchResult.rows.find((row) => {
+        const reasons = typeof row.match_reasons === 'string' ? JSON.parse(row.match_reasons || '[]') : (row.match_reasons || []);
+        return row.accounting_transaction_type === 'journal' && reasons.some((item: any) => item?.code === 'CREATE_FROM_BANK');
+      });
+      if (!createdMatch) throw new Error('CREATED_BANK_TRANSACTION_NOT_FOUND: No posted transaction created from this statement line was found');
+
+      const reversalJournalEntryId = await FinancialDestructiveActionsService.reversePostedJournal(
+        client, orgId, createdMatch.accounting_transaction_id, reversedBy, normalizedReason,
+        `statement-created transaction ${statementTransactionId}`
+      );
+      await client.query(
+        `UPDATE bank_reconciliation_matches SET status = 'REVERSED'
+          WHERE organization_id = $1 AND id = $2 AND status = 'MATCHED'`,
+        [orgId, createdMatch.id]
+      );
+      await client.query(
+        `UPDATE bank_statement_transactions SET reconciliation_status = 'UNMATCHED'
+          WHERE organization_id = $1 AND id = $2`,
+        [orgId, statementTransactionId]
+      );
+      await client.query(
+        `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state, after_state)
+         VALUES ($1, $2, $3, 'BANK_CREATED_TRANSACTION_REVERSED', 'BankStatementTransaction', $4, $5, $6)`,
+        [newId('aud'), orgId, reversedBy, statementTransactionId,
+          JSON.stringify({ matchId: createdMatch.id, journalEntryId: createdMatch.accounting_transaction_id }),
+          JSON.stringify({ matchStatus: 'REVERSED', reversalJournalEntryId, reason: normalizedReason })]
+      );
+      return { statementTransactionId, reversalJournalEntryId };
     });
   }
 

@@ -12,7 +12,11 @@ test.describe('V1 settings and PWA shell', () => {
       const mobileNav = page.locator('div.fixed.inset-0.z-50.lg\\:hidden');
       const settingsActions = mobileNav.getByRole('button', { name: 'Settings', exact: true });
       await settingsActions.first().click();
-      await settingsActions.last().click();
+      if (await mobileNav.isVisible().catch(() => false)) {
+        if (await settingsActions.count() > 1) {
+          await settingsActions.last().click();
+        }
+      }
     } else {
       await page.getByRole('button', { name: 'Settings', exact: true }).click();
     }

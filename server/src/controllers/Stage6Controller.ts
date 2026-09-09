@@ -157,12 +157,11 @@ export class Stage6Controller {
   public static async processPublicPortalPayment(req: Request, res: Response): Promise<void> {
     try {
       const { token } = req.params;
-      const { invoiceId, amount, paymentMethod, reference } = req.body;
+      const { invoiceId, amount, gatewayEventId } = req.body;
       const result = await CustomerPortalService.processPortalPayment(token, {
         invoiceId,
         amount: Number(amount),
-        paymentMethod,
-        reference,
+        gatewayEventId,
       });
       res.json(result);
     } catch (err: any) {

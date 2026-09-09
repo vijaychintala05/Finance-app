@@ -12,6 +12,11 @@ router.get('/accounts', requirePermission('banking.view'), BankingController.get
 router.post('/accounts', requirePermission('settings.manage_accounts'), BankingController.createAccount);
 router.delete('/accounts/:accountId', requirePermission(['settings.manage_accounts', 'accounts.delete']), BankingController.deleteAccount);
 
+// Internal Transfers
+router.get('/transfers', requirePermission('banking.view'), BankingController.getTransfers);
+router.post('/transfers', requirePermission('banking.reconcile'), BankingController.createTransfer);
+router.post('/transfers/:transferId/reverse', requirePermission('banking.unreconcile'), BankingController.reverseTransfer);
+
 // Statement Imports
 router.post('/accounts/:accountId/statements/import', requirePermission('banking.import'), requireTrustedFinanceFeature('bank-statement-import'), BankingController.importStatement);
 router.post('/imports', requirePermission('banking.import'), requireTrustedFinanceFeature('bank-statement-import'), BankingController.importStatement);
@@ -20,6 +25,8 @@ router.get('/imports', requirePermission('banking.view'), BankingController.getI
 // Statement Transactions
 router.get('/accounts/:accountId/transactions', requirePermission('banking.view'), BankingController.getTransactions);
 router.get('/transactions', requirePermission('banking.view'), BankingController.getTransactions);
+router.post('/transactions/:transactionId/create-accounting-transaction', requirePermission('banking.reconcile'), requireTrustedFinanceFeature('bank-reconciliation'), BankingController.createTransactionFromStatement);
+router.post('/transactions/:transactionId/reverse-created-transaction', requirePermission('banking.unreconcile'), requireTrustedFinanceFeature('bank-reconciliation'), BankingController.reverseTransactionCreatedFromStatement);
 
 // Matching Engine & Suggestions
 router.post('/reconciliation/match', requirePermission('banking.reconcile'), requireTrustedFinanceFeature('bank-reconciliation'), BankingController.matchTransaction);

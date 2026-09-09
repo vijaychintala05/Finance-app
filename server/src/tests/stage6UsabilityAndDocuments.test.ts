@@ -204,25 +204,18 @@ describe('Stage 6 — Usability, Onboarding, and Document Handling Services', ()
       expect(stmt.closingBalance).toBe(1200.00);
     });
 
-    it('processes online payment from portal and updates invoice balance', async () => {
+    it('rejects portal self-posting until a verified gateway event exists', async () => {
       const ctx = await CustomerPortalService.getPortalContext(portalToken);
       const inv = ctx.invoices.find(i => i.invoiceNumber === 'INV-2026-001')!;
 
-      const payResult = await CustomerPortalService.processPortalPayment(portalToken, {
+      await expect(CustomerPortalService.processPortalPayment(portalToken, {
         invoiceId: inv.id,
         amount: 500,
-        paymentMethod: 'ONLINE_CARD',
-        reference: 'TXN-PORTAL-TEST',
-      });
+      })).rejects.toThrow(/PORTAL_PAYMENT_PROCESSOR_REQUIRED/);
 
-      expect(payResult.success).toBe(true);
-      expect(payResult.paymentNumber).toBeDefined();
-      expect(payResult.remainingBalance).toBe(700);
-
-      // Verify updated context
       const updatedCtx = await CustomerPortalService.getPortalContext(portalToken);
-      expect(updatedCtx.summary.totalOutstanding).toBe(700);
-      expect(updatedCtx.recentPayments.length).toBeGreaterThanOrEqual(1);
+      expect(updatedCtx.summary.totalOutstanding).toBe(1200);
+      expect(updatedCtx.recentPayments).toHaveLength(0);
     });
 
     it('rejects invalid or expired portal token', async () => {

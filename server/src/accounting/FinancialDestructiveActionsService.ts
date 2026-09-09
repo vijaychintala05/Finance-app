@@ -521,6 +521,31 @@ export class FinancialDestructiveActionsService {
           `UPDATE credit_notes SET remaining_credit = $1, status = $2 WHERE organization_id = $3 AND id = $4`,
           [Number(restored) / 100, restored === total ? 'Open' : 'Partially Applied', organizationId, refund.credit_note_id]
         );
+      } else if (refund.payment_id || refund.advance_id) {
+        const advance = await client.query(
+          `SELECT * FROM customer_advances
+            WHERE organization_id = $1
+              AND (($2 IS NOT NULL AND payment_id = $2) OR ($3 IS NOT NULL AND id = $3))
+              AND customer_id = $4
+            FOR UPDATE`,
+          [organizationId, refund.payment_id || null, refund.advance_id || null, refund.customer_id]
+        );
+        if (advance.rows.length !== 1) throw new Error('Linked customer advance is unavailable for refund reversal');
+        const restored = databaseMoneyToCents(advance.rows[0].unapplied_amount, 'Customer advance unapplied amount')
+          + databaseMoneyToCents(refund.amount, 'Refund amount');
+        const total = databaseMoneyToCents(advance.rows[0].amount, 'Customer advance amount');
+        if (restored > total) throw new Error('Refund reversal would overstate the customer advance');
+        await client.query(
+          `UPDATE customer_advances SET unapplied_amount = $1, status = $2
+            WHERE organization_id = $3 AND id = $4`,
+          [Number(restored) / 100, restored === total ? 'UNAPPLIED' : 'PARTIALLY_APPLIED', organizationId, advance.rows[0].id]
+        );
+        await client.query(
+          `UPDATE customers SET advance_balance = advance_balance + $1 WHERE organization_id = $2 AND id = $3`,
+          [refund.amount, organizationId, refund.customer_id]
+        );
+      } else {
+        throw new Error('Customer refund has no certified source to restore');
       }
       const reversalJournalId = await this.reversePostedJournal(
         client, organizationId, refund.journal_entry_id, userId, normalizedReason,
@@ -562,21 +587,58 @@ export class FinancialDestructiveActionsService {
           `SELECT * FROM vendor_credits WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
           [organizationId, refund.debit_note_id]
         );
-        if (note.rows.length === 1 && String(note.rows[0].status).toUpperCase() !== 'REVERSED') {
-          const restored = databaseMoneyToCents(note.rows[0].remaining_credit, 'Remaining credit')
-            + databaseMoneyToCents(refund.amount, 'Refund amount');
-          const total = databaseMoneyToCents(note.rows[0].total_amount, 'Credit note total');
-          await client.query(
-            `UPDATE vendor_credits SET remaining_credit = $1, status = $2 WHERE organization_id = $3 AND id = $4`,
-            [Number(restored) / 100, restored === total ? 'Open' : 'Partially Applied', organizationId, refund.debit_note_id]
-          );
+        if (note.rows.length !== 1 || String(note.rows[0].status).toUpperCase() === 'REVERSED') {
+          throw new Error('Linked debit note is unavailable for refund reversal');
         }
+        const restored = databaseMoneyToCents(note.rows[0].remaining_credit, 'Remaining credit')
+          + databaseMoneyToCents(refund.amount, 'Refund amount');
+        const total = databaseMoneyToCents(note.rows[0].total_amount, 'Credit note total');
+        if (restored > total) throw new Error('Refund reversal would overstate the debit note balance');
+        await client.query(
+          `UPDATE vendor_credits SET remaining_credit = $1, status = $2 WHERE organization_id = $3 AND id = $4`,
+          [Number(restored) / 100, restored === total ? 'Open' : 'Partially Applied', organizationId, refund.debit_note_id]
+        );
       }
 
-      await client.query(
-        `UPDATE vendors SET payables_balance = payables_balance - $1 WHERE organization_id = $2 AND id = $3`,
-        [refund.amount, organizationId, refund.vendor_id]
-      );
+      if (refund.payment_id || refund.advance_id) {
+        const advance = await client.query(
+          `SELECT * FROM vendor_advances
+            WHERE organization_id = $1
+              AND (($2 IS NOT NULL AND payment_id = $2) OR ($3 IS NOT NULL AND id = $3))
+              AND vendor_id = $4
+            FOR UPDATE`,
+          [organizationId, refund.payment_id || null, refund.advance_id || null, refund.vendor_id]
+        );
+        if (advance.rows.length !== 1) throw new Error('Linked vendor advance is unavailable for refund reversal');
+        const restored = databaseMoneyToCents(advance.rows[0].unapplied_amount, 'Vendor advance unapplied amount')
+          + databaseMoneyToCents(refund.amount, 'Refund amount');
+        const total = databaseMoneyToCents(advance.rows[0].amount, 'Vendor advance amount');
+        if (restored > total) throw new Error('Refund reversal would overstate the vendor advance');
+        await client.query(
+          `UPDATE vendor_advances SET unapplied_amount = $1, status = $2
+            WHERE organization_id = $3 AND id = $4`,
+          [Number(restored) / 100, restored === total ? 'UNAPPLIED' : 'PARTIALLY_APPLIED', organizationId, advance.rows[0].id]
+        );
+        await client.query(
+          `UPDATE vendors SET advance_balance = advance_balance + $1 WHERE organization_id = $2 AND id = $3`,
+          [refund.amount, organizationId, refund.vendor_id]
+        );
+      } else if (refund.expense_id) {
+        const expense = await client.query(
+          `SELECT id, status FROM expenses WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+          [organizationId, refund.expense_id]
+        );
+        if (expense.rows.length !== 1 || ['VOID', 'VOIDED'].includes(String(expense.rows[0].status || '').toUpperCase())) {
+          throw new Error('Linked direct expense is unavailable for refund reversal');
+        }
+      } else {
+        const vendor = await client.query(
+          `UPDATE vendors SET payables_balance = payables_balance - $1
+            WHERE organization_id = $2 AND id = $3 AND payables_balance >= $1`,
+          [refund.amount, organizationId, refund.vendor_id]
+        );
+        if (vendor.rowCount !== 1) throw new Error('Vendor payable balance does not reconcile');
+      }
 
       const reversalJournalId = await this.reversePostedJournal(
         client, organizationId, refund.journal_entry_id, userId, normalizedReason,
@@ -767,6 +829,50 @@ export class FinancialDestructiveActionsService {
         { status: credit.status, remainingCredit: credit.remaining_credit },
         { status: 'REVERSED', reversalJournalId, reason: normalizedReason });
       return { success: true, vendorCreditId, journalEntryId: reversalJournalId };
+    });
+  }
+
+  public static async reverseCustomerAdvance(
+    organizationId: string,
+    advanceId: string,
+    userId: string,
+    reason: string
+  ): Promise<ReversalResult & { advanceId: string }> {
+    const normalizedReason = validReason(reason);
+    return db.transaction(async (client) => {
+      const result = await client.query(
+        `SELECT * FROM customer_advances WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [organizationId, advanceId]
+      );
+      if (result.rows.length !== 1) throw new Error('Customer advance was not found in this organization');
+      const advance = result.rows[0];
+      if (String(advance.status).toUpperCase() === 'REVERSED') throw new Error('Customer advance is already reversed');
+      if (advance.payment_id) throw new Error('Reverse the source customer payment to reverse this linked advance');
+      if (!advance.journal_entry_id) throw new Error('Customer advance has no certified posting journal to reverse');
+      if (databaseMoneyToCents(advance.amount, 'Customer advance amount') !== databaseMoneyToCents(advance.unapplied_amount, 'Customer advance unapplied amount')) {
+        throw new Error('CUSTOMER_ADVANCE_APPLIED: Reverse every application before reversing this advance');
+      }
+      const reversalJournalId = await this.reversePostedJournal(
+        client, organizationId, advance.journal_entry_id, userId, normalizedReason,
+        `customer advance ${advanceId}`
+      );
+      const customer = await client.query(
+        `UPDATE customers SET advance_balance = advance_balance - $1
+          WHERE organization_id = $2 AND id = $3 AND advance_balance >= $1`,
+        [advance.amount, organizationId, advance.customer_id]
+      );
+      if (customer.rowCount !== 1) throw new Error('Customer advance balance does not reconcile');
+      const updated = await client.query(
+        `UPDATE customer_advances SET status = 'REVERSED', unapplied_amount = 0,
+            reversal_journal_id = $1, reversed_at = CURRENT_TIMESTAMP, reversed_by = $2, reversal_reason = $3
+          WHERE organization_id = $4 AND id = $5 AND UPPER(status) <> 'REVERSED'`,
+        [reversalJournalId, userId, normalizedReason, organizationId, advanceId]
+      );
+      if (updated.rowCount !== 1) throw new Error('Customer advance state changed concurrently');
+      await this.audit(client, organizationId, userId, 'CUSTOMER_ADVANCE_REVERSED', 'CustomerAdvance', advanceId,
+        { status: advance.status, amount: advance.amount },
+        { status: 'REVERSED', reversalJournalId, reason: normalizedReason });
+      return { success: true, advanceId, journalEntryId: reversalJournalId };
     });
   }
 

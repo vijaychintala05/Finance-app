@@ -186,4 +186,51 @@ describe('Production Hardening: Batch 2 - Banking Concurrency & Validation Harde
     expect(Number(bnkHdfc.rows[0].current_balance)).toBe(100000);
     expect(Number(bnkIcici.rows[0].current_balance)).toBe(50000);
   });
+
+  it('6. Persists a transfer source record and reverses the journal without deleting history', async () => {
+    const transfer = await BankReconciliationService.createInternalTransfer(
+      ORG_ID,
+      bankAcc1Id,
+      bankAcc2Id,
+      12500,
+      '2026-09-08',
+      'TRF-REV-1',
+      'Transfer reversal coverage',
+      USER_ID
+    );
+
+    const source = await db.query(
+      `SELECT * FROM bank_transfers WHERE organization_id = $1 AND id = $2`,
+      [ORG_ID, transfer.transferId]
+    );
+    expect(source.rows[0].status).toBe('POSTED');
+    expect(source.rows[0].journal_entry_id).toBe(transfer.journalEntryId);
+
+    const reversed = await BankReconciliationService.reverseInternalTransfer(
+      ORG_ID,
+      transfer.transferId,
+      USER_ID,
+      'Transfer was entered against the wrong date'
+    );
+    expect(reversed.reversalJournalEntryId).toBeDefined();
+
+    const sourceAfter = await db.query(
+      `SELECT status, journal_entry_id, reversal_journal_id FROM bank_transfers WHERE organization_id = $1 AND id = $2`,
+      [ORG_ID, transfer.transferId]
+    );
+    expect(sourceAfter.rows[0].status).toBe('REVERSED');
+    expect(sourceAfter.rows[0].journal_entry_id).toBe(transfer.journalEntryId);
+    expect(sourceAfter.rows[0].reversal_journal_id).toBe(reversed.reversalJournalEntryId);
+
+    const balances = await db.query(
+      `SELECT id, current_balance FROM bank_accounts WHERE organization_id = $1 ORDER BY id`,
+      [ORG_ID]
+    );
+    expect(Number(balances.rows.find((row) => row.id === bankAcc1Id)?.current_balance)).toBe(100000);
+    expect(Number(balances.rows.find((row) => row.id === bankAcc2Id)?.current_balance)).toBe(50000);
+
+    await expect(
+      BankReconciliationService.reverseInternalTransfer(ORG_ID, transfer.transferId, USER_ID, 'Duplicate reversal attempt')
+    ).rejects.toThrow('BANK_TRANSFER_ALREADY_REVERSED');
+  });
 });

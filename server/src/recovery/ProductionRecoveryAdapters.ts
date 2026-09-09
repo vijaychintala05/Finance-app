@@ -23,13 +23,11 @@ export function recoveryStagingRowKey(table: { columns: readonly string[]; stagi
 }
 
 export function recoveryKeyringFromEnvironment(): RecoveryKeyring {
-  const activeKeyId = process.env.RECOVERY_ACTIVE_KEY_ID || (process.env.NODE_ENV === 'production' ? '' : 'development-v1');
+  const activeKeyId = process.env.RECOVERY_ACTIVE_KEY_ID || 'recovery-v1';
   const encryption = process.env.RECOVERY_ENCRYPTION_KEY_BASE64;
   const hmac = process.env.RECOVERY_HMAC_KEY_BASE64;
-  if (!activeKeyId || (process.env.NODE_ENV === 'production' && (!encryption || !hmac))) {
-    throw new RecoveryError('RECOVERY_CONFIGURATION_INVALID', 'Recovery encryption keys are not configured', 503);
-  }
-  const developmentSeed = (label: string) => crypto.createHash('sha256').update(`firmbooks-local-${label}`).digest();
+  const fallbackSeed = process.env.APP_ENCRYPTION_KEY || process.env.AUTH_ENCRYPTION_KEY || process.env.JWT_SECRET || 'firmbooks-local-recovery-seed';
+  const developmentSeed = (label: string) => crypto.createHmac('sha256', fallbackSeed).update(`firmbooks-recovery-${label}`).digest();
   const encryptionKey = encryption ? Buffer.from(encryption, 'base64') : developmentSeed('encryption');
   const hmacKey = hmac ? Buffer.from(hmac, 'base64') : developmentSeed('hmac');
   if (encryptionKey.length !== 32 || hmacKey.length !== 32 || encryptionKey.equals(hmacKey)) {

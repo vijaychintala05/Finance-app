@@ -9,6 +9,7 @@ import { ApprovalWorkflowService } from '../approvals/ApprovalWorkflowService';
 import { ManualJournalService } from '../services/ManualJournalService';
 import { PurchasesEngine } from '../purchases/PurchasesEngine';
 import { SalesEngine } from '../sales/SalesEngine';
+import { FinancialDestructiveActionsService } from '../accounting/FinancialDestructiveActionsService';
 import financeRoutes from '../routes/finance.routes';
 import securityRoutes from '../routes/security.routes';
 import { authMiddleware, organizationIsolationMiddleware } from '../middleware/organizationIsolation.middleware';
@@ -219,7 +220,7 @@ describe('Financial Posting & Approval Mutation Integrity Tests (T3/T4 Hardening
       vendorName: vendor.name,
       amount: 10000,
       paymentDate: '2026-08-22',
-      paidFromAccountId: 'acc-bank-1',
+      paidFromAccountId: `acc-${orgId}-1010`,
       allocations: [{ billId: targetBill.id, amount: 10000 }],
       createdBy: accountantUserId,
     });
@@ -316,6 +317,10 @@ describe('Financial Posting & Approval Mutation Integrity Tests (T3/T4 Hardening
       lineItems: [{ description: 'Monthly Retainer', quantity: 1, unitPrice: 15000, taxRate: 0, amount: 15000 }],
       status: 'POSTED',
     });
+    const cacheBeforePayment = (await db.query(
+      `SELECT receivables_balance, advance_balance FROM customers WHERE organization_id = $1 AND id = $2`,
+      [orgId, customer.id]
+    )).rows[0];
 
     await ApprovalWorkflowService.configureApprovalRule(orgId, {
       entityType: 'CUSTOMER_PAYMENT',
@@ -326,11 +331,11 @@ describe('Financial Posting & Approval Mutation Integrity Tests (T3/T4 Hardening
       userId: ownerUserId,
     });
 
-    // Record customer payment of ₹15,000 allocating to targetInvoice
+    // Record customer payment of ₹16,000, allocating ₹15,000 and retaining ₹1,000 as an advance
     const pmt = await SalesEngine.recordPayment(orgId, {
       customerId: customer.id,
       customerName: customer.name,
-      amount: 15000,
+      amount: 16000,
       paymentDate: '2026-08-27',
       depositToAccountId: `acc-${orgId}-1010`,
       allocations: [{ invoiceId: targetInvoice.id, amount: 15000 }],
@@ -357,10 +362,39 @@ describe('Financial Posting & Approval Mutation Integrity Tests (T3/T4 Hardening
     expect(Number(invCheckAfter.rows[0].balance_due)).toBe(0);
     expect(invCheckAfter.rows[0].status).toBe('PAID');
 
+    const advance = await db.query(
+      `SELECT amount, unapplied_amount, journal_entry_id FROM customer_advances
+        WHERE organization_id = $1 AND payment_id = $2`,
+      [orgId, pmt.id]
+    );
+    expect(advance.rows).toHaveLength(1);
+    expect(Number(advance.rows[0].amount)).toBe(1000);
+    expect(advance.rows[0].journal_entry_id).toBe(postedPmt.journalEntryId);
+
+    const customerAfterPosting = await db.query(
+      `SELECT receivables_balance, advance_balance FROM customers WHERE organization_id = $1 AND id = $2`,
+      [orgId, customer.id]
+    );
+    expect(Number(customerAfterPosting.rows[0].receivables_balance)).toBe(Number(cacheBeforePayment.receivables_balance) - 15000);
+    expect(Number(customerAfterPosting.rows[0].advance_balance)).toBe(Number(cacheBeforePayment.advance_balance) + 1000);
+
     // Double post rejected
     await expect(
       SalesEngine.postApprovedPayment(orgId, accountantUserId, pmt.id)
     ).rejects.toThrow(/PAYMENT_ALREADY_POSTED/);
+
+    await FinancialDestructiveActionsService.reversePaymentReceived(
+      orgId,
+      pmt.id,
+      accountantUserId,
+      'Approved payment was recalled by the bank'
+    );
+    const customerAfterReversal = await db.query(
+      `SELECT receivables_balance, advance_balance FROM customers WHERE organization_id = $1 AND id = $2`,
+      [orgId, customer.id]
+    );
+    expect(Number(customerAfterReversal.rows[0].receivables_balance)).toBe(Number(cacheBeforePayment.receivables_balance));
+    expect(Number(customerAfterReversal.rows[0].advance_balance)).toBe(Number(cacheBeforePayment.advance_balance));
   });
 
   // ---------------------------------------------------------------------------

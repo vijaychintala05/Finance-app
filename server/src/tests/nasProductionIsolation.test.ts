@@ -236,11 +236,12 @@ describe('NAS Server & Production RLS Hardening Suite', () => {
     expect(setConfigRegex.test(dbSource)).toBe(true);
   });
 
-  it('9. Schema Guardian: Guarantees enterpriseHardeningSchema RLS policy includes null fallback safeguard', () => {
+  it('9. Schema Guardian: Guarantees enterpriseHardeningSchema RLS policy fails closed without an organization context', () => {
     const schemaSource = fs.readFileSync(path.join(__dirname, '../database/enterpriseHardeningSchema.ts'), 'utf-8');
 
-    // Ensure policy has the null-safe check so unconfigured administrative tasks do not explode
-    expect(schemaSource).toContain("OR NULLIF(current_setting(''app.current_org_id'', true), '''') IS NULL");
+    // An unconfigured session must not see or write every tenant's rows.
+    expect(schemaSource).toContain("USING (organization_id = NULLIF(current_setting(''app.current_org_id'', true), ''''))");
+    expect(schemaSource).not.toContain("OR NULLIF(current_setting(''app.current_org_id'', true), '''') IS NULL");
 
     // Ensure all critical tables are registered
     expect(TENANT_SCOPED_TABLES).toContain('accounts');
@@ -249,6 +250,9 @@ describe('NAS Server & Production RLS Hardening Suite', () => {
     expect(TENANT_SCOPED_TABLES).toContain('expenses');
     expect(TENANT_SCOPED_TABLES).toContain('audit_logs');
     expect(TENANT_SCOPED_TABLES).toContain('document_sequences');
+    expect(TENANT_SCOPED_TABLES).toContain('journal_lines');
+    expect(TENANT_SCOPED_TABLES).toContain('payment_gateway_events');
+    expect(TENANT_SCOPED_TABLES).toContain('treasury_transactions');
   });
 
   it('10. Organization Context Guardian: Retains store across asynchronous microtasks and timer ticks', async () => {

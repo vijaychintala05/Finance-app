@@ -306,10 +306,16 @@ describe('QA Remediation Integration Test Suite', () => {
   describe('6. Bank Account Deletion Protection against Vendor Refunds', () => {
     it('rejects bank account deletion when referenced by vendor refund', async () => {
       const bankAccount = await createCustomBankLedgerAndAccount(ORG, 'del1');
+      const debitNote = await PurchasesEngine.createDebitNote(ORG, {
+        vendorId: VENDOR_ID,
+        date: '2026-03-14',
+        items: [{ description: 'Refund source', quantity: 1, unitPrice: 500, taxRate: 0 }],
+      });
 
       // Record a vendor refund depositing into this ledger account
       const refund = await PurchasesEngine.recordVendorRefund(ORG, {
         vendorId: VENDOR_ID,
+        debitNoteId: debitNote.id,
         refundDate: '2026-03-15',
         amount: 500,
         depositToAccountId: bankAccount.ledgerAccountId,
@@ -337,9 +343,15 @@ describe('QA Remediation Integration Test Suite', () => {
   describe('7. PurchasesEngine Vendor Refund Audit Logging', () => {
     it('creates an audit log record on vendor refund creation', async () => {
       const bankAccount = await createCustomBankLedgerAndAccount(ORG, 'aud1');
+      const debitNote = await PurchasesEngine.createDebitNote(ORG, {
+        vendorId: VENDOR_ID,
+        date: '2026-03-19',
+        items: [{ description: 'Refund source', quantity: 1, unitPrice: 1200, taxRate: 0 }],
+      });
 
       const refund = await PurchasesEngine.recordVendorRefund(ORG, {
         vendorId: VENDOR_ID,
+        debitNoteId: debitNote.id,
         refundDate: '2026-03-20',
         amount: 1200,
         depositToAccountId: bankAccount.ledgerAccountId,

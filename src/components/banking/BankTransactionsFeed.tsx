@@ -28,6 +28,8 @@ interface BankTransactionsFeedProps {
   onOpenReconcile: () => void;
   onOpenImportStatement: () => void;
   onOpenRecordTx: () => void;
+  onOpenTransfer: () => void;
+  onOpenTreasury: () => void;
   onOpenDeleteAccount?: () => void;
   onSelectTx: (tx: BankTransactionItem) => void;
 }
@@ -43,6 +45,8 @@ export const BankTransactionsFeed: React.FC<BankTransactionsFeedProps> = ({
   onOpenReconcile,
   onOpenImportStatement,
   onOpenRecordTx,
+  onOpenTransfer,
+  onOpenTreasury,
   onOpenDeleteAccount,
   onSelectTx,
 }) => {
@@ -113,6 +117,24 @@ export const BankTransactionsFeed: React.FC<BankTransactionsFeedProps> = ({
               >
                 <Upload className="w-4 h-4 text-slate-500" />
                 <span>Import Statement</span>
+              </button>
+
+              {activeAccount.type === 'Asset' && (
+                <button
+                  onClick={onOpenTransfer}
+                  className="px-3.5 py-2 bg-violet-50 dark:bg-violet-950/50 hover:bg-violet-100 text-violet-700 dark:text-violet-300 text-xs font-bold border border-violet-200 dark:border-violet-800 rounded-xl flex items-center space-x-1.5 cursor-pointer transition-colors"
+                >
+                  <ArrowDownLeft className="w-4 h-4 rotate-[-90deg]" />
+                  <span>Transfer funds</span>
+                </button>
+              )}
+
+              <button
+                onClick={onOpenTreasury}
+                className="px-3.5 py-2 bg-amber-50 dark:bg-amber-950/50 hover:bg-amber-100 text-amber-800 dark:text-amber-300 text-xs font-bold border border-amber-200 dark:border-amber-800 rounded-xl flex items-center space-x-1.5 cursor-pointer transition-colors"
+              >
+                <Building2 className="w-4 h-4" />
+                <span>Treasury payment</span>
               </button>
 
               {activeAccount.type === 'Asset' && (

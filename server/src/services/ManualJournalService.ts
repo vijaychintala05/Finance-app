@@ -160,15 +160,7 @@ export class ManualJournalService {
         if (draftRes.rows.length === 0) throw new Error('JOURNAL_DRAFT_NOT_FOUND: Submitted journal draft does not exist');
         if (draftRes.rows[0].status === 'Posted') throw new Error('JOURNAL_ALREADY_POSTED: This journal is already posted');
 
-        // Post lines to accounts
-        for (const line of input.lines) {
-          const accRes = await tx.query(`SELECT normal_balance FROM accounts WHERE id = $1 AND organization_id = $2`, [line.accountId, orgId]);
-          const normalDebit = (accRes.rows[0]?.normal_balance || 'Debit') === 'Debit';
-          const balanceDelta = normalDebit ? line.debit - line.credit : line.credit - line.debit;
-          await tx.query('UPDATE accounts SET balance = balance + $1 WHERE id = $2 AND organization_id = $3', [balanceDelta, line.accountId, orgId]);
-        }
-
-        await tx.query(`UPDATE journal_entries SET status = 'Posted' WHERE id = $1 AND organization_id = $2`, [input.draftId, orgId]);
+        await ServerPostingEngine.postExistingDraft(orgId, input.draftId, tx);
 
         await tx.query(
           `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state)
@@ -229,14 +221,7 @@ export class ManualJournalService {
 
       await ApprovalWorkflowService.consumeApproval(orgId, 'MANUAL_JOURNAL', draftId, tx);
 
-      for (const line of lines) {
-        const accRes = await tx.query(`SELECT normal_balance FROM accounts WHERE id = $1 AND organization_id = $2`, [line.accountId, orgId]);
-        const normalDebit = (accRes.rows[0]?.normal_balance || 'Debit') === 'Debit';
-        const balanceDelta = normalDebit ? line.debit - line.credit : line.credit - line.debit;
-        await tx.query('UPDATE accounts SET balance = balance + $1 WHERE id = $2 AND organization_id = $3', [balanceDelta, line.accountId, orgId]);
-      }
-
-      await tx.query(`UPDATE journal_entries SET status = 'Posted' WHERE id = $1 AND organization_id = $2`, [draftId, orgId]);
+      await ServerPostingEngine.postExistingDraft(orgId, draftId, tx);
 
       await tx.query(
         `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state)

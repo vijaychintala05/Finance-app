@@ -69,6 +69,8 @@ router.post('/payments-received', requirePermission(['customer_payments.create',
 router.post('/payments-received/:id/post-approved', requirePermission(['customer_payments.create', 'invoices.receive_payment', 'accounting.post']), FinanceController.postApprovedPaymentReceived);
 router.post('/payments-received/:id/reverse', requirePermission(['customer_payments.reverse', 'invoices.receive_payment']), FinanceController.reversePaymentReceived);
 router.get('/customer-advances', requirePermission(['customer_payments.view', 'invoices.view']), requireTrustedFinanceFeature('customer-advance-application'), FinanceController.getCustomerAdvances);
+router.post('/customer-advances', requirePermission(['customer_payments.create', 'invoices.receive_payment']), requireTrustedFinanceFeature('customer-advance-application'), FinanceController.recordCustomerAdvance);
+router.post('/customer-advances/:id/reverse', requirePermission(['customer_payments.reverse', 'invoices.receive_payment']), requireTrustedFinanceFeature('customer-advance-application'), FinanceController.reverseCustomerAdvance);
 router.get('/customer-advance-applications', requirePermission(['customer_payments.view', 'invoices.view']), requireTrustedFinanceFeature('customer-advance-application'), FinanceController.getCustomerAdvanceApplications);
 router.post('/customer-advances/apply', requirePermission(['customer_payments.allocate', 'invoices.receive_payment']), requireTrustedFinanceFeature('customer-advance-application'), FinanceController.applyCustomerAdvance);
 router.post('/customer-advance-applications/:id/reverse', requirePermission(['customer_payments.reverse', 'invoices.receive_payment']), requireTrustedFinanceFeature('customer-advance-application'), FinanceController.reverseCustomerAdvanceApplication);
@@ -105,6 +107,11 @@ router.post('/ap-write-offs/:id/reverse', requirePermission(['bills.void', 'purc
 router.get('/vendor-refunds', requirePermission(['vendor_credits.view', 'purchases.view']), FinanceController.getVendorRefunds);
 router.post('/vendor-refunds', requirePermission(['vendor_credits.create', 'purchases.pay']), FinanceController.recordVendorRefund);
 router.post('/vendor-refunds/:id/reverse', requirePermission(['vendor_credits.void', 'purchases.pay']), FinanceController.reverseVendorRefund);
+
+// Payroll, reimbursements, capital, loan, and tax cash movements. These create durable source rows and posted journals.
+router.get('/treasury-transactions', requirePermission(['accounting.view', 'banking.view']), FinanceController.getTreasuryTransactions);
+router.post('/treasury-transactions', requirePermission(['accounting.post', 'banking.reconcile']), FinanceController.createTreasuryTransaction);
+router.post('/treasury-transactions/:id/reverse', requirePermission(['accounting.post', 'banking.reconcile']), FinanceController.reverseTreasuryTransaction);
 
 // AR Aging & Integrity Verifier
 router.get('/ar-aging', requirePermission(['reports.receivables', 'reports.view']), FinanceController.getARAging);

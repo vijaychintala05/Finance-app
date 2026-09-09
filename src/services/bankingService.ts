@@ -163,4 +163,44 @@ export class BankingService {
       glBankBalance,
     });
   }
+
+  /** Posts a durable, two-sided bank transfer source document. */
+  public static createTransfer(input: {
+    fromBankAccountId: string;
+    toBankAccountId: string;
+    amount: number;
+    transferDate: string;
+    reference?: string;
+    description?: string;
+  }): Promise<{ transferId: string; journalEntryId: string }> {
+    return this.apiCall('/transfers', 'POST', input);
+  }
+
+  public static getTransfers(limit = 50): Promise<Array<{
+    id: string; transfer_number: string; transfer_date: string; amount: number; status: string;
+    from_bank_account_id: string; to_bank_account_id: string; reference?: string; description?: string;
+  }>> {
+    return this.apiCall(`/transfers?limit=${encodeURIComponent(String(limit))}`, 'GET');
+  }
+
+  public static reverseTransfer(transferId: string, reason: string): Promise<{ transferId: string; reversalJournalEntryId: string }> {
+    return this.apiCall(`/transfers/${encodeURIComponent(transferId)}/reverse`, 'POST', { reason });
+  }
+
+  /** Creates and matches a posted journal directly from a single unmatched statement line. */
+  public static createTransactionFromStatement(
+    statementTransactionId: string,
+    targetAccountId: string,
+    description?: string
+  ): Promise<{ journalEntryId: string; match: BankReconciliationMatch }> {
+    return this.apiCall(`/transactions/${encodeURIComponent(statementTransactionId)}/create-accounting-transaction`, 'POST', { targetAccountId, description });
+  }
+
+  /** Reverses the created journal and restores the statement line to UNMATCHED. */
+  public static reverseTransactionCreatedFromStatement(
+    statementTransactionId: string,
+    reason: string
+  ): Promise<{ statementTransactionId: string; reversalJournalEntryId: string }> {
+    return this.apiCall(`/transactions/${encodeURIComponent(statementTransactionId)}/reverse-created-transaction`, 'POST', { reason });
+  }
 }

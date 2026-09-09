@@ -118,7 +118,7 @@ describe('Stage 2 — Complete document lifecycles and everyday workflows', () =
         amount: 5000,
         paymentDate: '2026-03-12',
         paymentMode: 'Bank Transfer',
-        depositAccountId: `${ORG}-1010`,
+        depositAccountId: `acc-${ORG}-1010`,
       }, ACTOR);
       expect(payment.id).toBeDefined();
 
@@ -266,7 +266,7 @@ describe('Stage 2 — Complete document lifecycles and everyday workflows', () =
         vendorName: 'Vendor A1',
         paymentDate: '2026-03-10',
         amount: 4000,
-        paidFromAccountId: `${ORG}-1010`,
+        paidFromAccountId: `acc-${ORG}-1010`,
         allocations: [{ billId: bill1.id, amount: 4000 }],
         paymentMode: 'NEFT',
       }, ACTOR);
@@ -326,7 +326,7 @@ describe('Stage 2 — Complete document lifecycles and everyday workflows', () =
         customerId: CUST,
         amount: 5000,
         paymentDate: '2026-03-01',
-        depositAccountId: `${ORG}-1010`,
+        depositAccountId: `acc-${ORG}-1010`,
         paymentMode: 'Bank Transfer',
         notes: 'Upfront project retainer',
       }, ACTOR);
@@ -405,7 +405,7 @@ describe('Stage 2 — Complete document lifecycles and everyday workflows', () =
         customerId: CUST,
         amount: 1000,
         refundDate: '2026-03-07',
-        paymentAccountId: `${ORG}-1010`,
+        paymentAccountId: `acc-${ORG}-1010`,
         paymentMode: 'Bank Wire',
         reason: 'Direct refund of remaining credit',
       }, ACTOR);
@@ -417,7 +417,7 @@ describe('Stage 2 — Complete document lifecycles and everyday workflows', () =
         amount: 1000,
         writeOffDate: '2026-03-08',
         reason: 'Bad debt write off',
-        badDebtAccountId: `${ORG}-6000`,
+        badDebtAccountId: `acc-${ORG}-6000`,
       }, ACTOR);
       expect(writeOff.id).toBeDefined();
 

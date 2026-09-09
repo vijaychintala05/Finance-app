@@ -56,6 +56,7 @@ async function run() {
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
+      'Idempotency-Key': `ci-org-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`,
     },
     body: JSON.stringify({
       name: 'CI Smoke Enterprises',

@@ -1,6 +1,6 @@
 {
-  "date": "2026-08-23",
-  "url": "http://127.0.0.1:3000",
+  "date": "2026-09-09",
+  "url": "http://localhost:3100",
   "healthScore": 100,
   "issues": [],
   "categoryScores": {
@@ -12,5 +12,17 @@
     "performance": 100,
     "content": 100,
     "accessibility": 100
+  },
+  "e2e": {
+    "total": 20,
+    "passed": 20,
+    "failed": 0,
+    "projects": ["chromium-desktop", "mobile-chrome"]
+  },
+  "unitAndComponent": {
+    "total": 268,
+    "passed": 268,
+    "failed": 0,
+    "suites": 31
   }
 }

@@ -5,6 +5,7 @@ import { DocumentNumberingEngine } from './DocumentNumberingEngine';
 import { centsToSafeNumber, moneyInputToCents } from '../utils/money';
 import { isIsoCalendarDate } from '../utils/date';
 import { ApprovalWorkflowService } from '../approvals/ApprovalWorkflowService';
+import { DocumentLifecycleHelper } from '../approvals/DocumentLifecycleHelper';
 
 export interface ManualJournalLineInput {
   accountId: string;
@@ -151,12 +152,12 @@ export class ManualJournalService {
     // Posting branch: If approval was required, strictly verify and consume the approved request in PostgreSQL!
     return db.transaction(async (tx) => {
       if (requiresApproval && input.draftId) {
-        await ApprovalWorkflowService.consumeApproval(orgId, 'MANUAL_JOURNAL', input.draftId, tx);
-
         const draftRes = await tx.query(
           `SELECT * FROM journal_entries WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
           [orgId, input.draftId]
         );
+        if (draftRes.rows.length === 0) throw new Error('JOURNAL_DRAFT_NOT_FOUND: Submitted journal draft does not exist');
+        await ApprovalWorkflowService.consumeApproval(orgId, 'MANUAL_JOURNAL', input.draftId, tx, draftRes.rows[0]);
         if (draftRes.rows.length === 0) throw new Error('JOURNAL_DRAFT_NOT_FOUND: Submitted journal draft does not exist');
         if (draftRes.rows[0].status === 'Posted') throw new Error('JOURNAL_ALREADY_POSTED: This journal is already posted');
 
@@ -317,9 +318,48 @@ export class ManualJournalService {
          VALUES ($1, $2, $3, 'MANUAL_JOURNAL_REVERSED', 'JournalEntry', $4, $5, $6)`,
         [newId('aud'), orgId, userId, journalId, JSON.stringify({ status: originalJournal.status }), JSON.stringify({ status: originalJournal.status, reversalJournalId: posting.entryId, reversalReason: normalizedReason })]
       );
+      await DocumentLifecycleHelper.onDocumentReversed(orgId, 'MANUAL_JOURNAL', journalId, tx, normalizedReason);
       return posting.entryId;
     });
 
     return { reversalJournalId, reversalEntryNumber: revEntryNumber };
+  }
+  public static async updateDraft(
+    orgId: string,
+    userId: string,
+    draftId: string,
+    input: {
+      date?: string;
+      reference?: string;
+      narration?: string;
+      lines?: any[];
+    }
+  ): Promise<any> {
+    return db.transaction(async (tx) => {
+      const draftRes = await tx.query(
+        `SELECT * FROM journal_entries WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, draftId]
+      );
+      if (draftRes.rows.length === 0) throw new Error('JOURNAL_DRAFT_NOT_FOUND');
+      if (draftRes.rows[0].status === 'Posted') throw new Error('JOURNAL_ALREADY_POSTED');
+
+      // Invalidate approval
+      await DocumentLifecycleHelper.onDocumentModified(orgId, 'MANUAL_JOURNAL', draftId, tx, 'Draft modified after submission/approval');
+
+      if (input.date) {
+        await tx.query(`UPDATE journal_entries SET date = $1 WHERE organization_id = $2 AND id = $3`, [input.date, orgId, draftId]);
+      }
+      if (input.lines && input.lines.length > 0) {
+        await tx.query(`DELETE FROM journal_lines WHERE journal_entry_id = $1`, [draftId]);
+        for (const line of input.lines) {
+          await tx.query(
+            `INSERT INTO journal_lines (id, journal_entry_id, organization_id, account_id, debit, credit, description)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            ['jln-' + Date.now() + Math.random().toString(36).substring(2, 6), draftId, orgId, line.accountId, line.debit, line.credit, line.description || '']
+          );
+        }
+      }
+      return { id: draftId, status: 'Draft' };
+    });
   }
 }

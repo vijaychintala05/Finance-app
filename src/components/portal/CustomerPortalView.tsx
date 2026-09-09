@@ -139,6 +139,15 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
   const [paymentMethod, setPaymentMethod] = useState<'CARD' | 'ACH' | 'UPI'>('CARD');
   const [paymentReference, setPaymentReference] = useState<string>('');
   const [isProcessingPayment, setIsProcessingPayment] = useState<boolean>(false);
+  const [checkoutSession, setCheckoutSession] = useState<{
+    sessionId: string;
+    checkoutUrl: string;
+    providerReference: string;
+    expiresAt: string;
+  } | null>(null);
+  const [isInitiatingSession, setIsInitiatingSession] = useState<boolean>(false);
+  const [isCheckingStatus, setIsCheckingStatus] = useState<boolean>(false);
+  const [sessionStatusNotice, setSessionStatusNotice] = useState<string | null>(null);
   const [paymentSuccessReceipt, setPaymentSuccessReceipt] = useState<{
     paymentNumber: string;
     paidAmount: number;
@@ -279,46 +288,74 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
     setPayingInvoice(inv);
     setPayAmount(inv.balanceDue);
     setPaymentReference(`ONLINE-${Date.now().toString().slice(-4)}`);
+    setCheckoutSession(null);
+    setSessionStatusNotice(null);
     setPaymentSuccessReceipt(null);
   };
 
-  // Submit Payment
-  const handleProcessPayment = async () => {
+  // Initiate Hosted Processor Checkout
+  const handleInitiateCheckout = async () => {
     if (!activeToken || !payingInvoice) return;
     if (payAmount <= 0 || payAmount > payingInvoice.balanceDue) {
       alert('Please enter a valid payment amount up to the balance due.');
       return;
     }
 
-    setIsProcessingPayment(true);
+    setIsInitiatingSession(true);
+    setSessionStatusNotice(null);
     try {
-      const res = await fetch(`/api/v1/public/portal/${encodeURIComponent(activeToken)}/pay`, {
+      const res = await fetch(`/api/v1/public/portal/${encodeURIComponent(activeToken)}/checkout-session`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           invoiceId: payingInvoice.id,
           amount: payAmount,
-          paymentMethod,
-          reference: paymentReference,
         }),
       });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || 'Payment transaction failed');
+        throw new Error(data.error || 'Failed to initiate secure checkout');
       }
-
-      setPaymentSuccessReceipt({
-        paymentNumber: data.paymentNumber,
-        paidAmount: payAmount,
-        remainingBalance: data.remainingBalance,
-      });
-
-      // Refresh portal context
-      fetchPortalContext(activeToken);
+      setCheckoutSession(data.session);
     } catch (err: any) {
-      alert(err.message || 'Payment processing failed');
+      alert(err.message || 'Unable to initiate checkout session');
     } finally {
-      setIsProcessingPayment(false);
+      setIsInitiatingSession(false);
+    }
+  };
+
+  // Poll / Check Payment Confirmation Status (Read-Only)
+  const handleCheckPaymentStatus = async () => {
+    if (!activeToken || !checkoutSession) return;
+    setIsCheckingStatus(true);
+    try {
+      const res = await fetch(
+        `/api/v1/public/portal/${encodeURIComponent(activeToken)}/payment-status/${encodeURIComponent(checkoutSession.providerReference)}`
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to check status');
+
+      const st = data.paymentStatus;
+      if (st.status === 'SUCCEEDED' && st.isConfirmed) {
+        setPaymentSuccessReceipt({
+          paymentNumber: st.paymentNumber || 'PMT-CONFIRMED',
+          paidAmount: st.amount,
+          remainingBalance: st.remainingBalance ?? 0,
+        });
+        fetchPortalContext(activeToken);
+      } else if (st.status === 'PENDING') {
+        setSessionStatusNotice('Payment session is active. Complete checkout on the payment gateway, then click refresh.');
+      } else if (st.status === 'CANCELLED') {
+        setSessionStatusNotice('Checkout session was cancelled.');
+      } else if (st.status === 'EXPIRED') {
+        setSessionStatusNotice('Checkout session has expired. Please initiate a new session.');
+      } else {
+        setSessionStatusNotice(`Payment status: ${st.status}`);
+      }
+    } catch (err: any) {
+      setSessionStatusNotice(err.message || 'Failed to check payment status');
+    } finally {
+      setIsCheckingStatus(false);
     }
   };
 
@@ -676,11 +713,10 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                                   {!isPaid ? (
                                     <button
                                       onClick={() => handleOpenPayModal(inv)}
-                                      disabled
-                                      title="Online payment requires a configured payment provider"
-                                      className="inline-flex items-center gap-1 px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg shadow transition-colors"
+                                      title="Click to initiate secure payment via hosted processor checkout"
+                                      className="inline-flex items-center gap-1.5 px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg shadow-sm text-xs transition-colors"
                                     >
-                                      <CreditCard className="w-3 h-3" /> Online payment unavailable
+                                      <CreditCard className="w-3.5 h-3.5" /> Pay Now
                                     </button>
                                   ) : (
                                     <span className="text-slate-400 text-xs">Settled</span>
@@ -936,111 +972,94 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                   </div>
                 </div>
 
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                    Payment Method
-                  </label>
-                  <div className="grid grid-cols-3 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setPaymentMethod('CARD')}
-                      className={`p-2 rounded-lg border text-xs font-semibold flex flex-col items-center gap-1 transition-all ${
-                        paymentMethod === 'CARD'
-                          ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-300'
-                          : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
-                      }`}
-                    >
-                      <CreditCard className="w-4 h-4" /> Card
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPaymentMethod('ACH')}
-                      className={`p-2 rounded-lg border text-xs font-semibold flex flex-col items-center gap-1 transition-all ${
-                        paymentMethod === 'ACH'
-                          ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-300'
-                          : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
-                      }`}
-                    >
-                      <Building className="w-4 h-4" /> ACH / Wire
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPaymentMethod('UPI')}
-                      className={`p-2 rounded-lg border text-xs font-semibold flex flex-col items-center gap-1 transition-all ${
-                        paymentMethod === 'UPI'
-                          ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-300'
-                          : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
-                      }`}
-                    >
-                      <Sparkles className="w-4 h-4" /> Instant / UPI
-                    </button>
-                  </div>
-                </div>
-
-                {/* Simulated payment fields */}
-                <div className="space-y-2 pt-1">
-                  {paymentMethod === 'CARD' && (
-                    <>
-                      <input
-                        type="text"
-                        placeholder="Card Number (e.g. 4242 4242 4242 4242)"
-                        defaultValue="4242 4242 4242 4242"
-                        className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100"
-                      />
-                      <div className="grid grid-cols-2 gap-2">
-                        <input
-                          type="text"
-                          placeholder="MM/YY"
-                          defaultValue="12/28"
-                          className="px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100"
-                        />
-                        <input
-                          type="password"
-                          placeholder="CVC"
-                          defaultValue="123"
-                          className="px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100"
-                        />
+                {!checkoutSession ? (
+                  <>
+                    <div className="p-3.5 rounded-xl bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-200/80 dark:border-indigo-800/60 text-xs space-y-2">
+                      <div className="flex items-center gap-2 font-semibold text-indigo-900 dark:text-indigo-300">
+                        <ShieldCheck className="w-4 h-4 text-indigo-600 dark:text-indigo-400 flex-shrink-0" />
+                        PCI-DSS Hosted Checkout
                       </div>
-                    </>
-                  )}
+                      <p className="text-slate-600 dark:text-slate-400 text-[11px] leading-relaxed">
+                        Payment will be processed securely on the certified payment gateway. FirmBooks never receives, handles, or stores raw cardholder data (PAN) or security codes (CVC).
+                      </p>
+                    </div>
 
-                  {paymentMethod === 'ACH' && (
-                    <input
-                      type="text"
-                      placeholder="Bank Routing / Account #"
-                      defaultValue="Routing: 121000358, Acct: ****8812"
-                      className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100"
-                    />
-                  )}
+                    <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-200 dark:border-slate-800">
+                      <button
+                        type="button"
+                        onClick={() => setPayingInvoice(null)}
+                        className="px-4 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleInitiateCheckout}
+                        disabled={isInitiatingSession || payAmount <= 0}
+                        className="px-4 py-2 text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg shadow transition-colors flex items-center gap-1.5 disabled:opacity-50"
+                      >
+                        {isInitiatingSession ? (
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Lock className="w-3.5 h-3.5" />
+                        )}
+                        Proceed to Secure Checkout
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  /* Active Hosted Checkout Session Card */
+                  <div className="space-y-4">
+                    <div className="p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 text-xs space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-emerald-800 dark:text-emerald-300 flex items-center gap-1.5">
+                          <CheckCircle2 className="w-4 h-4 text-emerald-600" /> Checkout Session Active
+                        </span>
+                        <span className="text-[10px] text-emerald-700 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-900/60 px-2 py-0.5 rounded-full font-semibold">
+                          Session Ref: {checkoutSession.providerReference.slice(0, 16)}...
+                        </span>
+                      </div>
+                      <p className="text-slate-600 dark:text-slate-400 text-[11px]">
+                        Please launch the processor checkout session to complete your payment of <strong>{currencySymbol}{payAmount.toFixed(2)}</strong>.
+                      </p>
+                      <div className="pt-2">
+                        <a
+                          href={checkoutSession.checkoutUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl shadow transition-colors text-xs"
+                        >
+                          Launch Hosted Checkout <ExternalLink className="w-3.5 h-3.5" />
+                        </a>
+                      </div>
+                    </div>
 
-                  {paymentMethod === 'UPI' && (
-                    <input
-                      type="text"
-                      placeholder="VPA / UPI ID (e.g. user@okhdfcbank)"
-                      defaultValue="customer@okbank"
-                      className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100"
-                    />
-                  )}
-                </div>
+                    {sessionStatusNotice && (
+                      <div className="p-2.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs text-center font-medium">
+                        {sessionStatusNotice}
+                      </div>
+                    )}
 
-                <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-200 dark:border-slate-800">
-                  <button
-                    type="button"
-                    onClick={() => setPayingInvoice(null)}
-                    className="px-4 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleProcessPayment}
-                    disabled={isProcessingPayment || payAmount <= 0}
-                    className="px-4 py-2 text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg shadow transition-colors flex items-center gap-1.5 disabled:opacity-50"
-                  >
-                    {isProcessingPayment ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Lock className="w-3.5 h-3.5" />}
-                    Authorize & Pay {currencySymbol}{payAmount.toFixed(2)}
-                  </button>
-                </div>
+                    <div className="flex items-center justify-between pt-3 border-t border-slate-200 dark:border-slate-800">
+                      <button
+                        type="button"
+                        onClick={() => setPayingInvoice(null)}
+                        className="px-3 py-1.5 text-xs text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition-colors"
+                      >
+                        Close
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleCheckPaymentStatus}
+                        disabled={isCheckingStatus}
+                        className="px-4 py-2 text-xs font-semibold bg-slate-900 hover:bg-slate-800 dark:bg-slate-100 dark:hover:bg-white text-white dark:text-slate-900 rounded-lg shadow transition-colors flex items-center gap-1.5 disabled:opacity-50"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${isCheckingStatus ? 'animate-spin' : ''}`} />
+                        Check Payment Status
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             ) : (
               /* Payment Success Receipt */

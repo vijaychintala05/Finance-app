@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { db } from './db';
 import { AuditTrailService } from '../security/AuditTrailService';
 import { newId } from '../utils/ids';
+import { isProduction } from '../config/environment';
 
 export interface BackupMetadata {
   id: string;
@@ -84,7 +85,6 @@ export class BackupRestoreService {
     'fixed_asset_events',
     'fixed_asset_depreciation_entries',
     'financial_reversals',
-    'audit_logs',
   ];
 
   public static async createBackup(organizationId: string, createdBy: string): Promise<BackupPayload> {
@@ -222,6 +222,12 @@ export class BackupRestoreService {
     payload: BackupPayload,
     restoredBy: string
   ): Promise<{ success: boolean; restoredRecords: number }> {
+    if (isProduction()) {
+      throw new Error(
+        'LEGACY_RESTORE_DISABLED: BackupRestoreService.restoreBackup is permanently retired in production. Use Recovery Center artifact promotion instead.'
+      );
+    }
+
     const verification = this.verifyBackup(payload);
     if (!verification.isValid) {
       throw new Error(`Backup verification failed: ${verification.error}`);

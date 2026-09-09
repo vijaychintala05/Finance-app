@@ -1,3 +1,5 @@
+import { ApprovalWorkflowService } from '../approvals/ApprovalWorkflowService';
+import { DocumentLifecycleHelper } from '../approvals/DocumentLifecycleHelper';
 import { db, type DbQueryClient } from '../database/db';
 import { ServerPostingEngine } from '../accounting/postingEngine';
 import { DocumentNumberingEngine } from './DocumentNumberingEngine';
@@ -202,5 +204,47 @@ export class ExpensePostingService {
       return { id, expenseNumber, amount, journalEntryId: posting.entryId, receiptAttachments };
     };
     return transactionClient ? execute(transactionClient) : db.transaction(execute);
+  }
+
+  public static async updateExpense(
+    organizationId: string,
+    expenseId: string,
+    data: { description?: string; vendorName?: string; isBillable?: boolean; date?: string; amount?: number },
+    transactionClient?: DbQueryClient
+  ): Promise<any> {
+    const execute = async (client: DbQueryClient) => {
+      const res = await client.query(
+        `SELECT * FROM expenses WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [organizationId, expenseId]
+      );
+      if (res.rows.length === 0) throw new Error('EXPENSE_NOT_FOUND: Expense not found');
+      const exp = res.rows[0];
+      if (String(exp.status).toUpperCase() === 'VOIDED') throw new Error('Cannot edit a voided expense');
+
+      // Automatically invalidate active approval requests
+      await DocumentLifecycleHelper.onDocumentModified(
+        organizationId,
+        'EXPENSE',
+        expenseId,
+        client,
+        'Document modified after submission'
+      );
+
+      const desc = data.description !== undefined ? data.description : exp.description;
+      const vendor = data.vendorName !== undefined ? data.vendorName : exp.vendor_name;
+      const billable = data.isBillable !== undefined ? Boolean(data.isBillable) : Boolean(exp.is_billable);
+      const date = data.date || exp.date;
+      const amt = data.amount !== undefined ? Number(data.amount) : Number(exp.amount);
+
+      await client.query(
+        `UPDATE expenses SET description = $1, vendor_name = $2, is_billable = $3, date = $4, amount = $5
+          WHERE organization_id = $6 AND id = $7`,
+        [desc, vendor, billable, date, amt, organizationId, expenseId]
+      );
+
+      return { ...exp, description: desc, vendorName: vendor, isBillable: billable, date, amount: amt };
+    };
+
+    return transactionClient ? await execute(transactionClient) : await db.transaction(execute);
   }
 }

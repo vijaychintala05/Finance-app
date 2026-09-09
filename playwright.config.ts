@@ -1,5 +1,9 @@
 import { defineConfig, devices } from '@playwright/test';
 
+// Local browser work remains zero-setup, while CI supplies DATABASE_URL and
+// exercises the same PostgreSQL-backed server used by the release image.
+const useMemoryDatabase = !process.env.DATABASE_URL || process.env.USE_PG_MEM === 'true';
+
 export default defineConfig({
   testDir: './e2e',
   timeout: 60 * 1000,
@@ -37,8 +41,9 @@ export default defineConfig({
       ...process.env,
       PORT: '3100',
       NODE_ENV: 'test',
-      DATABASE_MODE: 'memory',
-      USE_PG_MEM: 'true',
+      ...(useMemoryDatabase
+        ? { DATABASE_MODE: 'memory', USE_PG_MEM: 'true' }
+        : { DATABASE_MODE: 'postgres', USE_PG_MEM: 'false' }),
       DISABLE_HMR: 'true',
       JWT_SECRET: 'e2e-isolated-test-jwt-secret-do-not-use-in-production-12345',
     },

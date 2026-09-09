@@ -26,11 +26,17 @@ router.get('/approvals/requests', requirePermission(['approvals.manage', 'settin
 router.post('/approvals/request', requirePermission(['accounting.post', 'purchase_orders.submit', 'expenses.submit', 'invoices.create', 'purchases.create']), SecurityController.submitApprovalRequest);
 router.post('/approvals/approve', requirePermission(['approvals.manage', 'settings.approvals', 'purchase_orders.approve', 'expenses.approve']), SecurityController.approveRequest);
 router.post('/approvals/reject', requirePermission(['approvals.manage', 'settings.approvals', 'purchase_orders.approve', 'expenses.approve']), SecurityController.rejectRequest);
+router.post('/approvals/:approvalRequestId/approve', requirePermission(['approvals.manage', 'settings.approvals', 'purchase_orders.approve', 'expenses.approve']), SecurityController.approveRequest);
+router.post('/approvals/:approvalRequestId/reject', requirePermission(['approvals.manage', 'settings.approvals', 'purchase_orders.approve', 'expenses.approve']), SecurityController.rejectRequest);
+
+// Backups & Restores
+router.post('/backup', requirePermission(['backup.create', 'settings.backup']), requireTrustedFinanceFeature('application-backup'), SecurityController.createBackup);
+router.post('/approvals/:approvalRequestId/reject', requirePermission(['approvals.manage', 'settings.approvals', 'purchase_orders.approve', 'expenses.approve']), SecurityController.rejectRequest);
 
 // Backups & Restores
 router.post('/backup', requirePermission(['backup.create', 'settings.backup']), requireTrustedFinanceFeature('application-backup'), SecurityController.createBackup);
 router.get('/backups', requirePermission(['backup.view', 'settings.backup']), requireTrustedFinanceFeature('application-backup'), SecurityController.listBackups);
-router.post('/restore', requirePermission('backup.restore'), requireTrustedFinanceFeature('backup-restore'), SecurityController.restoreBackup);
+router.post('/restore', requirePermission('backup.restore'), SecurityController.restoreBackup);
 
 // Data Export Bundle
 router.get('/export', requirePermission('reports.export'), requireTrustedFinanceFeature('data-export'), SecurityController.exportBundle);
@@ -38,6 +44,5 @@ router.get('/export', requirePermission('reports.export'), requireTrustedFinance
 // Safe Destructive Financial Actions
 router.post('/void-invoice', requirePermission(['invoices.void', 'invoices.delete']), SecurityController.voidInvoice);
 router.post('/reverse-payment', requirePermission(['customer_payments.reverse', 'invoices.receive_payment']), SecurityController.reversePayment);
-router.post('/reverse-journal', requirePermission(['journals.reverse', 'accounting.post']), requireTrustedFinanceFeature('legacy-journal-reversal'), SecurityController.reverseJournal);
 
 export default protectAsyncRoutes(router);

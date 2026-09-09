@@ -50,3 +50,10 @@ export function assertProductionConfiguration(): void {
     throw new Error('DATABASE_URL is required in production');
   }
 }
+
+export function assertProductionPostgresHealth(health: { isConnected: boolean; isMemoryMode: boolean }): void {
+  if (!isProduction()) return;
+  if (!health.isConnected || health.isMemoryMode) {
+    throw new Error('RELEASE_CHECK_FAILED: PostgreSQL is unavailable or running in in-memory fallback mode in production.');
+  }
+}

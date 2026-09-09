@@ -11,6 +11,7 @@
     "preview": "vite preview",
     "clean": "node -e \"const fs=require('node:fs'); for (const p of ['dist','server.js']) fs.rmSync(p,{recursive:true,force:true})\"",
     "test": "vitest run --configLoader native",
+    "test:postgres": "node scripts/run-postgres-qualification.mjs",
     "test:e2e": "playwright test",
     "lint": "tsc --noEmit -p tsconfig.build.json"
   },

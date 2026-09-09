@@ -228,22 +228,21 @@ export class SecurityController {
 
   public static async approveRequest(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
-      const orgId = req.organizationId!;
-      const { entityType, entityId } = req.body;
+      const orgId = req.organizationId || (req as any).user?.organizationId;
+      const approvalRequestId = req.params?.approvalRequestId || req.body?.approvalRequestId;
 
-      if (!entityType || !entityId) {
-        res.status(400).json({ error: 'Missing entityType or entityId' });
+      if (!approvalRequestId) {
+        res.status(400).json({ error: 'MISSING_APPROVAL_REQUEST_ID: approvalRequestId is required' });
         return;
       }
 
-      const result = await ApprovalWorkflowService.approveRequest(
-        orgId,
-        entityType,
-        entityId,
-        req.auth!.userId,
-        req.auth!.role
-      );
+      const actor = {
+        userId: req.auth?.userId || (req as any).user?.id || (req as any).userId || 'system',
+        role: req.auth?.role || (req as any).user?.role || (req as any).role || 'Admin',
+        organizationId: orgId,
+      };
 
+      const result = await ApprovalWorkflowService.approveRequestById(orgId, approvalRequestId, actor);
       res.json({ request: result });
     } catch (err: any) {
       res.status(400).json({ error: err.message });
@@ -252,25 +251,30 @@ export class SecurityController {
 
   public static async rejectRequest(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
-      const orgId = req.organizationId!;
-      const { entityType, entityId, reason } = req.body;
+      const orgId = req.organizationId || (req as any).user?.organizationId;
+      const approvalRequestId = req.params?.approvalRequestId || req.body?.approvalRequestId;
+      const { reason } = req.body || {};
 
-      if (!entityType || !entityId || !reason) {
-        res.status(400).json({ error: 'Missing entityType, entityId or reason' });
+      if (!approvalRequestId) {
+        res.status(400).json({ error: 'MISSING_APPROVAL_REQUEST_ID: approvalRequestId is required' });
         return;
       }
 
-      await ApprovalWorkflowService.rejectRequest(
-        orgId,
-        entityType,
-        entityId,
-        req.auth!.userId,
-        reason
-      );
+      if (!reason) {
+        res.status(400).json({ error: 'Missing rejection reason' });
+        return;
+      }
 
+      const actor = {
+        userId: req.auth?.userId || (req as any).user?.id || (req as any).userId || 'system',
+        role: req.auth?.role || (req as any).user?.role || (req as any).role || 'Admin',
+        organizationId: orgId,
+      };
+
+      await ApprovalWorkflowService.rejectRequestById(orgId, approvalRequestId, actor, reason);
       res.json({ message: 'Request rejected successfully' });
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      res.status(400).json({ error: err.message });
     }
   }
 
@@ -327,9 +331,12 @@ export class SecurityController {
         return;
       }
 
-      const backupPayload = await BackupRestoreService.getStoredBackup(orgId, backupId);
-      const result = await BackupRestoreService.restoreBackup(orgId, backupPayload, req.auth!.userId);
-      res.json({ result });
+      res.status(410).json({
+        error: 'The legacy destructive restore endpoint has been decommissioned. Please use the Recovery Center workflow (/api/v1/recovery) with atomic staging and balance reconciliation.',
+        code: 'LEGACY_RESTORE_DISABLED',
+        recoveryCenterPath: '/api/v1/recovery',
+      });
+      return;
     } catch (err: any) {
       res.status(400).json({ error: err.message });
     }
@@ -384,29 +391,6 @@ export class SecurityController {
       const result = await FinancialDestructiveActionsService.reversePaymentReceived(
         orgId,
         paymentId,
-        req.auth!.userId,
-        reason
-      );
-
-      res.json({ result });
-    } catch (err: any) {
-      res.status(400).json({ error: err.message });
-    }
-  }
-
-  public static async reverseJournal(req: AuthenticatedRequest, res: Response): Promise<void> {
-    try {
-      const orgId = req.organizationId!;
-      const { journalEntryId, reason } = req.body;
-
-      if (!journalEntryId || !reason) {
-        res.status(400).json({ error: 'Missing journalEntryId or reason' });
-        return;
-      }
-
-      const result = await FinancialDestructiveActionsService.reverseJournalEntry(
-        orgId,
-        journalEntryId,
         req.auth!.userId,
         reason
       );

@@ -1850,10 +1850,19 @@ export class FinanceController {
   public static async approvePurchaseOrder(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
     try {
-      const approved = await PurchasesEngine.approvePurchaseOrder(orgId, req.params.id, req.auth!.userId, req.auth!.role);
+      const approvalRequestId = req.body?.approvalRequestId || (req.query?.approvalRequestId as string) || req.params?.approvalRequestId;
+      const approved = await PurchasesEngine.approvePurchaseOrder(
+        orgId,
+        req.params.id,
+        req.auth!.userId,
+        req.auth!.role,
+        approvalRequestId
+      );
       res.json(approved);
     } catch (error: any) {
-      res.status(422).json({ error: error?.message || 'Purchase order could not be approved' });
+      const message = error?.message || 'Purchase order could not be approved';
+      const status = message.includes('MISSING_APPROVAL_REQUEST_ID') ? 400 : 422;
+      res.status(status).json({ error: message });
     }
   }
 
@@ -2774,5 +2783,45 @@ export class FinanceController {
       return result;
     });
     res.status(200).json(postedJournal);
+  }
+
+  public static async updateBill(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const orgId = req.organizationId || req.auth?.organizationId!;
+      const bill = await PurchasesEngine.updateBill(orgId, req.params.id, req.body, req.auth?.userId);
+      res.json({ bill });
+    } catch (error: any) {
+      res.status(400).json({ error: error.message || 'Bill could not be updated' });
+    }
+  }
+
+  public static async updateVendorPayment(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const orgId = req.organizationId || req.auth?.organizationId!;
+      const payment = await PurchasesEngine.updateVendorPayment(orgId, req.params.id, req.body);
+      res.json({ payment });
+    } catch (error: any) {
+      res.status(400).json({ error: error.message || 'Vendor payment could not be updated' });
+    }
+  }
+
+  public static async updateExpense(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const orgId = req.organizationId || req.auth?.organizationId!;
+      const expense = await ExpensePostingService.updateExpense(orgId, req.params.id, req.body);
+      res.json({ expense });
+    } catch (error: any) {
+      res.status(400).json({ error: error.message || 'Expense could not be updated' });
+    }
+  }
+
+  public static async updateCustomerPayment(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const orgId = req.organizationId || req.auth?.organizationId!;
+      const payment = await SalesEngine.updateCustomerPayment(orgId, req.params.id, req.body);
+      res.json({ payment });
+    } catch (error: any) {
+      res.status(400).json({ error: error.message || 'Customer payment could not be updated' });
+    }
   }
 }

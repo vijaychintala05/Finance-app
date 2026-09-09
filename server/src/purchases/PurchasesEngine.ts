@@ -6,6 +6,7 @@ import { newId } from '../utils/ids';
 import { DocumentNumberingEngine } from '../services/DocumentNumberingEngine';
 import { OrganizationProvisioningService } from '../services/OrganizationProvisioningService';
 import { ApprovalWorkflowService } from '../approvals/ApprovalWorkflowService';
+import { DocumentLifecycleHelper } from '../approvals/DocumentLifecycleHelper';
 import { MonetaryAccountPolicy } from '../accounting/monetaryAccountPolicy';
 
 export interface VendorMaster {
@@ -503,7 +504,8 @@ export class PurchasesEngine {
     orgId: string,
     id: string,
     actorId?: string,
-    actorRole?: string
+    actorRole?: string,
+    approvalRequestId?: string
   ): Promise<PurchaseOrderModel> {
     const po = await this.getPurchaseOrder(orgId, id);
     if (!po) throw new Error('Purchase Order not found');
@@ -519,8 +521,11 @@ export class PurchasesEngine {
       if (!actorId) {
         throw new Error('Approval credentials required to approve this purchase order');
       }
+      if (!approvalRequestId) {
+        throw new Error('MISSING_APPROVAL_REQUEST_ID: approvalRequestId is required');
+      }
       const role = actorRole || 'Purchase';
-      await ApprovalWorkflowService.approveRequest(orgId, 'PURCHASE_ORDER', id, actorId, role);
+      await ApprovalWorkflowService.approveRequestById(orgId, approvalRequestId, { userId: actorId, role });
     }
 
     await db.query(
@@ -642,6 +647,8 @@ export class PurchasesEngine {
          VALUES ($1, $2, $3, 'PURCHASE_ORDER_UPDATED', 'PurchaseOrder', $4, $5, $6)`,
         [newId('aud'), orgId, actorId, purchaseOrderId, JSON.stringify({ status: po.status }), JSON.stringify({ status: newStatus, notes })]
       );
+
+      await DocumentLifecycleHelper.onDocumentModified(orgId, 'PURCHASE_ORDER', purchaseOrderId, client, 'Document modified after submission');
 
       const updated = await this.getPurchaseOrder(orgId, purchaseOrderId);
       return updated!;
@@ -2691,5 +2698,117 @@ export class PurchasesEngine {
       [orgId, id]
     );
     return res.rows[0] || null;
+  }
+
+  public static async updateBill(
+    orgId: string,
+    billId: string,
+    data: Partial<BillModel>,
+    actorIdOrClient?: string | QueryClient
+  ): Promise<BillModel> {
+    const isClient = typeof actorIdOrClient === 'object' && actorIdOrClient !== null && 'query' in actorIdOrClient;
+    const effectiveClient = isClient ? (actorIdOrClient as QueryClient) : undefined;
+    const execute = async (client: QueryClient) => {
+      const res = await client.query(
+        `SELECT * FROM bills WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, billId]
+      );
+      if (res.rows.length === 0) throw new Error('BILL_NOT_FOUND: Bill not found in this organization');
+      const bill = res.rows[0];
+      if (['VOID', 'VOIDED'].includes(String(bill.status).toUpperCase())) {
+        throw new Error('BILL_ALREADY_VOIDED: Cannot edit a voided bill');
+      }
+
+      if (data.billDate && data.billDate !== bill.bill_date) {
+        await this.checkPeriodLock(orgId, data.billDate, client);
+      }
+
+      // Automatically invalidate active approval requests
+      await DocumentLifecycleHelper.onDocumentModified(
+        orgId,
+        'VENDOR_BILL',
+        billId,
+        client,
+        'Document modified after submission'
+      );
+
+      const newDueDate = data.dueDate || bill.due_date;
+      const newBillDate = data.billDate || bill.bill_date;
+      const newNotes = data.notes !== undefined ? data.notes : bill.notes;
+      const newVendorInv = data.vendorInvoiceNumber !== undefined ? data.vendorInvoiceNumber : bill.vendor_invoice_number;
+
+      let newTotal = Number(bill.total_amount);
+      let newSubtotal = Number(bill.subtotal);
+      let newTaxTotal = Number(bill.tax_total);
+      if (data.totalAmount !== undefined) {
+        newTotal = Number(data.totalAmount);
+        newSubtotal = data.subtotal !== undefined ? Number(data.subtotal) : newTotal;
+        newTaxTotal = data.taxTotal !== undefined ? Number(data.taxTotal) : 0;
+      }
+
+      const balanceDue = Math.max(0, newTotal - Number(bill.amount_paid || 0) - Number(bill.amount_debited || 0) - Number(bill.amount_written_off || 0));
+
+      await client.query(
+        `UPDATE bills
+            SET due_date = $1, bill_date = $2, notes = $3, vendor_invoice_number = $4,
+                total_amount = $5, subtotal = $6, tax_total = $7, balance_due = $8
+          WHERE organization_id = $9 AND id = $10`,
+        [newDueDate, newBillDate, newNotes, newVendorInv, newTotal, newSubtotal, newTaxTotal, balanceDue, orgId, billId]
+      );
+
+      return {
+        ...bill,
+        dueDate: newDueDate,
+        billDate: newBillDate,
+        notes: newNotes,
+        vendorInvoiceNumber: newVendorInv,
+        totalAmount: newTotal,
+        subtotal: newSubtotal,
+        taxTotal: newTaxTotal,
+        balanceDue,
+      };
+    };
+
+    if (effectiveClient) return await execute(effectiveClient);
+    return await db.transaction(execute);
+  }
+
+  public static async updateVendorPayment(
+    orgId: string,
+    paymentId: string,
+    data: { reference?: string; notes?: string; paymentDate?: string },
+    transactionClient?: QueryClient
+  ): Promise<any> {
+    const execute = async (client: QueryClient) => {
+      const res = await client.query(
+        `SELECT * FROM payments_made WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, paymentId]
+      );
+      if (res.rows.length === 0) throw new Error('VENDOR_PAYMENT_NOT_FOUND: Vendor payment not found in this organization');
+      const pmt = res.rows[0];
+      if (String(pmt.status).toUpperCase() === 'REVERSED') throw new Error('Cannot update a reversed payment');
+
+      // Automatically invalidate active approval requests
+      await DocumentLifecycleHelper.onDocumentModified(
+        orgId,
+        'PAYMENT',
+        paymentId,
+        client,
+        'Document modified after submission'
+      );
+
+      const ref = data.reference !== undefined ? data.reference : pmt.reference;
+      const notes = data.notes !== undefined ? data.notes : pmt.notes;
+      const paymentDate = data.paymentDate || pmt.payment_date;
+
+      await client.query(
+        `UPDATE payments_made SET reference = $1, notes = $2, payment_date = $3 WHERE organization_id = $4 AND id = $5`,
+        [ref, notes, paymentDate, orgId, paymentId]
+      );
+
+      return { ...pmt, reference: ref, notes, paymentDate };
+    };
+
+    return transactionClient ? await execute(transactionClient) : await db.transaction(execute);
   }
 }

@@ -4,6 +4,7 @@ import { newId } from '../utils/ids';
 import { openRecoveryPayload, sealRecoveryPayload, sha256 } from './crypto';
 import { RecoveryError } from './errors';
 import { POINT1_RECOVERY_SCHEMA, type RecoveryTableSchema } from './schema';
+import { RecoveryMigrationPolicy } from './RecoveryMigrationPolicy';
 import { TenantRecoveryLockService, type TenantRecoveryLockInfo } from './TenantRecoveryLockService';
 import {
   RECOVERY_FORMAT,
@@ -285,7 +286,9 @@ export class RecoveryArtifactService {
           for (const preRow of rollbackPayload.tables[table.name]) {
             const row = table.tenantColumn
               ? { ...preRow, [table.tenantColumn]: job.targetOrganizationId }
-              : preRow;
+              : table.name === 'journal_lines'
+                ? { ...preRow, organization_id: job.targetOrganizationId }
+                : preRow;
             const placeholders = table.columns.map((_, index) => `$${index + 1}`).join(', ');
             await client.query(
               `INSERT INTO ${table.name} (${table.columns.join(', ')}) VALUES (${placeholders})`,
@@ -343,7 +346,7 @@ export class RecoveryArtifactService {
   }
 
   private validateAndOpen(envelope: RecoveryEnvelope, targetOrganizationId: string): RecoveryPayload {
-    const manifest = envelope.manifest;
+    let manifest = envelope.manifest;
     if (manifest.format !== RECOVERY_FORMAT || manifest.formatVersion !== RECOVERY_FORMAT_VERSION || manifest.cipher !== 'aes-256-gcm') {
       throw new RecoveryError('RECOVERY_MANIFEST_INVALID', 'Recovery artifact format is unsupported', 422);
     }
@@ -351,13 +354,28 @@ export class RecoveryArtifactService {
       throw new RecoveryError('RECOVERY_TENANT_MISMATCH', 'Recovery artifact belongs to a different organization', 403);
     }
     if (manifest.schemaVersion !== this.dependencies.schemaVersion) {
-      throw new RecoveryError('RECOVERY_SCHEMA_MISMATCH', 'Recovery artifact schema version is incompatible', 422);
+      if (!RecoveryMigrationPolicy.isSupported(manifest.schemaVersion)) {
+        throw new RecoveryError(
+          'RECOVERY_SCHEMA_INCOMPATIBLE',
+          `Recovery artifact schema version '${manifest.schemaVersion}' is incompatible with current engine '${this.dependencies.schemaVersion}'. Explicit schema upgrade required.`,
+          422,
+          {
+            artifactSchemaVersion: manifest.schemaVersion,
+            currentEngineVersion: this.dependencies.schemaVersion,
+          }
+        );
+      }
     }
     if (manifest.keyId !== this.dependencies.keyring.activeKeyId) {
       throw new RecoveryError('RECOVERY_MANIFEST_INVALID', 'Recovery artifact key is not active', 422);
     }
     this.assertManifestSchema(manifest);
-    const payload = openRecoveryPayload(envelope, this.dependencies.keyring);
+    let payload = openRecoveryPayload(envelope, this.dependencies.keyring);
+    if (manifest.schemaVersion !== this.dependencies.schemaVersion) {
+      const migrated = RecoveryMigrationPolicy.evaluateAndMigrate(manifest, payload);
+      payload = migrated.payload;
+      manifest = migrated.manifest;
+    }
     if (payload.organizationId !== manifest.organizationId || payload.schemaVersion !== manifest.schemaVersion) {
       throw new RecoveryError('RECOVERY_MANIFEST_INVALID', 'Recovery payload metadata does not match its manifest', 422);
     }

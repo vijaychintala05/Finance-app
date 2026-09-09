@@ -96,3 +96,37 @@ export function getFinanceCapabilities(): FinanceCapability[] {
 export function isSourceCertifiedCapability(key: string): boolean {
   return CORE_ENABLED.has(key) || CERTIFIED_OPTIONAL_FEATURES.has(key);
 }
+
+export const REQUIRED_PRODUCTION_CAPABILITY_KEYS: readonly string[] = Object.freeze([
+  'recovery-center',
+  'bank-account-management',
+  'period-locks',
+  'invoice-posting',
+  'bill-posting',
+  'expense-posting',
+  'customer-payments',
+  'manual-journals',
+  'period-close',
+]);
+
+export function assertProductionFinanceCapabilities(): void {
+  const capabilities = getFinanceCapabilities();
+  const capMap = new Map(capabilities.map((c) => [c.key, c]));
+
+  const missingOrDisabled: string[] = [];
+
+  for (const requiredKey of REQUIRED_PRODUCTION_CAPABILITY_KEYS) {
+    const cap = capMap.get(requiredKey);
+    if (!cap || cap.state !== 'enabled') {
+      const state = cap?.state || 'missing';
+      const reason = cap?.reason ? ` (${cap.reason})` : '';
+      missingOrDisabled.push(`${requiredKey} is ${state}${reason}`);
+    }
+  }
+
+  if (missingOrDisabled.length > 0) {
+    throw new Error(
+      `RELEASE_CHECK_FAILED: Required finance capabilities are disabled in production: ${missingOrDisabled.join('; ')}`
+    );
+  }
+}

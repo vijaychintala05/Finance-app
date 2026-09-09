@@ -78,30 +78,68 @@ export class RecoveryAccountingReconciler implements RecoveryReconciler {
   public readonly name = 'accounting-and-relations';
 
   public async reconcile({ payload }: { job: RecoveryJob; payload: RecoveryPayload; client: DbQueryClient }) {
-    const accountIds = new Set(payload.tables.accounts.map((row) => String(row.id)));
-    const journalIds = new Set(payload.tables.journal_entries.map((row) => String(row.id)));
+    const accountIds = new Set((payload.tables.accounts || []).map((row) => String(row.id)));
+    const journalIds = new Set((payload.tables.journal_entries || []).map((row) => String(row.id)));
     const totals = new Map<string, { debit: number; credit: number }>();
     const failures: string[] = [];
-    for (const line of payload.tables.journal_lines) {
+    let globalDebits = 0;
+    let globalCredits = 0;
+
+    for (const line of (payload.tables.journal_lines || [])) {
       const journalId = String(line.journal_entry_id);
       if (!journalIds.has(journalId)) failures.push(`Journal line ${line.id} has no journal entry`);
       if (!accountIds.has(String(line.account_id))) failures.push(`Journal line ${line.id} has no account`);
       const total = totals.get(journalId) || { debit: 0, credit: 0 };
-      total.debit += Number(line.debit || 0);
-      total.credit += Number(line.credit || 0);
+      const debit = Number(line.debit || 0);
+      const credit = Number(line.credit || 0);
+      total.debit += debit;
+      total.credit += credit;
+      globalDebits += debit;
+      globalCredits += credit;
       totals.set(journalId, total);
     }
     for (const [journalId, total] of totals) {
       if (Math.abs(total.debit - total.credit) > 0.009) failures.push(`Journal ${journalId} is unbalanced`);
     }
-    const invoiceIds = new Set(payload.tables.invoices.map((row) => String(row.id)));
-    for (const row of payload.tables.invoice_items) {
+    if (Math.abs(globalDebits - globalCredits) > 0.009) {
+      failures.push(`General Ledger is unbalanced: total debits (${globalDebits.toFixed(2)}) != total credits (${globalCredits.toFixed(2)})`);
+    }
+
+    const invoiceIds = new Set((payload.tables.invoices || []).map((row) => String(row.id)));
+    for (const row of (payload.tables.invoice_items || [])) {
       if (!invoiceIds.has(String(row.invoice_id))) failures.push(`Invoice item ${row.id} has no invoice`);
     }
-    const billIds = new Set(payload.tables.bills.map((row) => String(row.id)));
-    for (const row of payload.tables.payment_made_allocations) {
+
+    const paymentReceivedIds = new Set((payload.tables.payments_received || []).map((row) => String(row.id)));
+    for (const row of (payload.tables.payment_received_allocations || [])) {
+      if (!paymentReceivedIds.has(String(row.payment_id))) failures.push(`Payment allocation ${row.id} has no payment`);
+      if (!invoiceIds.has(String(row.invoice_id))) failures.push(`Payment allocation ${row.id} has no invoice`);
+    }
+
+    const billIds = new Set((payload.tables.bills || []).map((row) => String(row.id)));
+    const paymentMadeIds = new Set((payload.tables.payments_made || []).map((row) => String(row.id)));
+    for (const row of (payload.tables.payment_made_allocations || [])) {
+      if (!paymentMadeIds.has(String(row.payment_id))) failures.push(`Vendor allocation ${row.id} has no payment`);
       if (!billIds.has(String(row.bill_id))) failures.push(`Vendor allocation ${row.id} has no bill`);
     }
+
+    const bankAccountIds = new Set((payload.tables.bank_accounts || []).map((row) => String(row.id)));
+    for (const row of (payload.tables.bank_transfers || [])) {
+      if (!bankAccountIds.has(String(row.from_bank_account_id))) failures.push(`Bank transfer ${row.id} has unknown source bank account`);
+      if (!bankAccountIds.has(String(row.to_bank_account_id))) failures.push(`Bank transfer ${row.id} has unknown destination bank account`);
+      if (row.journal_entry_id && !journalIds.has(String(row.journal_entry_id))) {
+        failures.push(`Bank transfer ${row.id} has missing journal entry ${row.journal_entry_id}`);
+      }
+    }
+
+    for (const row of (payload.tables.treasury_transactions || [])) {
+      if (!accountIds.has(String(row.monetary_account_id))) failures.push(`Treasury transaction ${row.id} has unknown monetary account`);
+      if (!accountIds.has(String(row.counter_account_id))) failures.push(`Treasury transaction ${row.id} has unknown counter account`);
+      if (row.journal_entry_id && !journalIds.has(String(row.journal_entry_id))) {
+        failures.push(`Treasury transaction ${row.id} has missing journal entry ${row.journal_entry_id}`);
+      }
+    }
+
     return { name: this.name, passed: failures.length === 0, details: { failures: failures.slice(0, 100) } };
   }
 }

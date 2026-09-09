@@ -1,3 +1,5 @@
+import { ApprovalWorkflowService } from '../approvals/ApprovalWorkflowService';
+import { DocumentLifecycleHelper } from '../approvals/DocumentLifecycleHelper';
 import { ServerPostingEngine } from './postingEngine';
 import { db, DbQueryClient } from '../database/db';
 import { newId } from '../utils/ids';
@@ -176,6 +178,7 @@ export class FinancialDestructiveActionsService {
       await this.audit(client, organizationId, userId, 'INVOICE_VOIDED', 'Invoice', invoiceId,
         { status: invoice.status, balanceDue: invoice.balance_due },
         { status: 'VOIDED', balanceDue: 0, reversalJournalId, reason: normalizedReason });
+      await DocumentLifecycleHelper.onDocumentVoided(organizationId, 'INVOICE', invoiceId, client, normalizedReason);
       return { success: true, invoiceId, journalEntryId: reversalJournalId };
     });
   }
@@ -292,6 +295,7 @@ export class FinancialDestructiveActionsService {
       await this.audit(client, organizationId, userId, 'PAYMENT_RECEIVED_REVERSED', 'PaymentReceived', paymentId,
         { status: payment.status, amount: payment.amount },
         { status: 'REVERSED', reversalJournalId, reason: normalizedReason });
+      await DocumentLifecycleHelper.onDocumentReversed(organizationId, 'CUSTOMER_PAYMENT', paymentId, client, normalizedReason);
       return { success: true, paymentId, journalEntryId: reversalJournalId };
     });
   }
@@ -405,6 +409,7 @@ export class FinancialDestructiveActionsService {
       await this.audit(client, organizationId, userId, 'VENDOR_PAYMENT_REVERSED', 'VendorPayment', paymentId,
         { status: payment.status, amount: payment.amount },
         { status: 'REVERSED', reversalJournalId, reason: normalizedReason });
+      await DocumentLifecycleHelper.onDocumentReversed(organizationId, 'PAYMENT', paymentId, client, normalizedReason);
       return { success: true, paymentId, journalEntryId: reversalJournalId };
     });
   }
@@ -1025,6 +1030,7 @@ export class FinancialDestructiveActionsService {
       await this.audit(client, organizationId, userId, 'EXPENSE_VOIDED', 'Expense', expenseId,
         { status: expense.status, amount: expense.amount },
         { status: 'VOIDED', reversalJournalId, reason: normalizedReason });
+      await DocumentLifecycleHelper.onDocumentVoided(organizationId, 'EXPENSE', expenseId, client, normalizedReason);
       return { success: true, expenseId, journalEntryId: reversalJournalId };
     });
   }
@@ -1092,16 +1098,8 @@ export class FinancialDestructiveActionsService {
       await this.audit(client, organizationId, userId, 'BILL_VOIDED', 'Bill', billId,
         { status: bill.status, balanceDue: bill.balance_due },
         { status: 'VOIDED', balanceDue: 0, reversalJournalId, reason: normalizedReason });
+      await DocumentLifecycleHelper.onDocumentVoided(organizationId, 'VENDOR_BILL', billId, client, normalizedReason);
       return { success: true, billId, journalEntryId: reversalJournalId };
     });
-  }
-
-  public static async reverseJournalEntry(
-    _organizationId: string,
-    _journalEntryId: string,
-    _userId: string,
-    _reason: string
-  ): Promise<never> {
-    throw new Error('Legacy journal reversal is disabled. Use the certified manual-journal reversal endpoint.');
   }
 }

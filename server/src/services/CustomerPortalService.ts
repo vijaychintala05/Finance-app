@@ -1,3 +1,4 @@
+import { PaymentIntentService, PaymentIntentDto, PaymentIntentStatusDto } from './PaymentIntentService';
 import crypto from 'crypto';
 import { db } from '../database/db';
 import { newId } from '../utils/ids';
@@ -364,6 +365,88 @@ export class CustomerPortalService {
   /**
    * Revokes customer portal token.
    */
+  /**
+   * Initiates a provider checkout session for a customer portal session.
+   */
+  public static async createPortalCheckoutSession(
+    token: string,
+    payload: { invoiceId: string; amount: number; gateway?: string; idempotencyKey?: string }
+  ): Promise<PaymentIntentDto> {
+    const tokenHash = CustomerPortalService.hashToken(token);
+    let tokenRes;
+    try {
+      tokenRes = await db.query(
+        `SELECT organization_id, customer_id, expires_at, is_active
+         FROM customer_portal_tokens
+         WHERE (token_hash = $1 OR token = $1 OR token = $2) AND is_active = TRUE`,
+        [tokenHash, token]
+      );
+    } catch {
+      tokenRes = await db.query(
+        `SELECT organization_id, customer_id, expires_at, is_active
+         FROM customer_portal_tokens
+         WHERE (token = $1 OR token = $2) AND is_active = TRUE`,
+        [tokenHash, token]
+      );
+    }
+
+    if (tokenRes.rows.length === 0) {
+      throw new Error('Invalid or expired portal token');
+    }
+
+    const { organization_id: orgId, customer_id: customerId, expires_at: expiresAt } = tokenRes.rows[0];
+    if (expiresAt && new Date(expiresAt) < new Date()) {
+      throw new Error('Portal token has expired');
+    }
+
+    return await PaymentIntentService.createPaymentIntent({
+      organizationId: orgId,
+      customerId,
+      invoiceId: payload.invoiceId,
+      amount: payload.amount,
+      gateway: payload.gateway,
+      idempotencyKey: payload.idempotencyKey,
+    });
+  }
+
+  /**
+   * Queries payment confirmation status for customer portal.
+   * Strictly read-only; displays confirmation only after the gateway event is linked to its posted journal.
+   */
+  public static async getPortalPaymentStatus(
+    token: string,
+    referenceOrSessionId: string
+  ): Promise<PaymentIntentStatusDto> {
+    const tokenHash = CustomerPortalService.hashToken(token);
+    let tokenRes;
+    try {
+      tokenRes = await db.query(
+        `SELECT organization_id, customer_id, expires_at, is_active
+         FROM customer_portal_tokens
+         WHERE (token_hash = $1 OR token = $1 OR token = $2) AND is_active = TRUE`,
+        [tokenHash, token]
+      );
+    } catch {
+      tokenRes = await db.query(
+        `SELECT organization_id, customer_id, expires_at, is_active
+         FROM customer_portal_tokens
+         WHERE (token = $1 OR token = $2) AND is_active = TRUE`,
+        [tokenHash, token]
+      );
+    }
+
+    if (tokenRes.rows.length === 0) {
+      throw new Error('Invalid or expired portal token');
+    }
+
+    const { organization_id: orgId, expires_at: expiresAt } = tokenRes.rows[0];
+    if (expiresAt && new Date(expiresAt) < new Date()) {
+      throw new Error('Portal token has expired');
+    }
+
+    return await PaymentIntentService.getPaymentIntentStatus(orgId, referenceOrSessionId);
+  }
+
   public static async revokePortalTokens(orgId: string, customerId: string): Promise<{ success: boolean }> {
     await db.query(
       `UPDATE customer_portal_tokens

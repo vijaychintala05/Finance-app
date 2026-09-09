@@ -13,6 +13,7 @@ export type RecoveryErrorCode =
   | 'RECOVERY_JOB_NOT_READY'
   | 'RECOVERY_ROLLBACK_UNAVAILABLE'
   | 'RECOVERY_CONFIGURATION_INVALID'
+  | 'RECOVERY_SCHEMA_INCOMPATIBLE'
   | 'TENANT_RECOVERY_LOCKED';
 
 export class RecoveryError extends Error {

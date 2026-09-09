@@ -1,18 +1,17 @@
+import crypto from 'crypto';
 import { db } from '../database/db';
 import { AuditTrailService } from '../security/AuditTrailService';
-import { RbacService } from '../auth/RbacService';
 import { newId } from '../utils/ids';
 
-export type ApprovalEntityType =
-  | 'PURCHASE_ORDER'
-  | 'VENDOR_BILL'
-  | 'PAYMENT'
-  | 'CUSTOMER_PAYMENT'
-  | 'INVOICE'
-  | 'CREDIT_NOTE'
-  | 'MANUAL_JOURNAL'
-  | 'PERIOD_REOPENING'
-  | 'EXPENSE';
+import {
+  ApprovalEntityType,
+  ApprovalStatus,
+  APPROVAL_ENTITIES,
+  computeCanonicalHash,
+  isValidApprovalTransition,
+} from './ApprovalRegistry';
+
+export type { ApprovalEntityType, ApprovalStatus };
 
 export interface ApprovalRule {
   id: string;
@@ -36,9 +35,21 @@ export interface ApprovalRequest {
   approvedAt?: string;
   rejectionReason?: string;
   amount?: number;
+  documentHash?: string;
+  documentVersion?: number;
+}
+
+export interface ApproverActor {
+  userId: string;
+  role: string;
+  membership?: any;
 }
 
 export class ApprovalWorkflowService {
+  public static computeDocumentHash(entityType: ApprovalEntityType, data: any): string {
+    return computeCanonicalHash(entityType, data);
+  }
+
   public static async getApprovalRules(
     organizationId: string,
     transactionClient?: { query: (text: string, params?: any[]) => Promise<any> }
@@ -50,18 +61,15 @@ export class ApprovalWorkflowService {
     );
 
     if (res.rows.length === 0) {
-      // Default configurations (disabled by default for small businesses)
-      return [
-        { id: 'rule-po', organizationId, entityType: 'PURCHASE_ORDER', isRequired: false, thresholdAmount: 50000, approverRole: 'Finance Manager', allowSelfApproval: false },
-        { id: 'rule-inv', organizationId, entityType: 'INVOICE', isRequired: false, thresholdAmount: 100000, approverRole: 'Finance Manager', allowSelfApproval: false },
-        { id: 'rule-cust-pay', organizationId, entityType: 'CUSTOMER_PAYMENT', isRequired: false, thresholdAmount: 50000, approverRole: 'Finance Manager', allowSelfApproval: false },
-        { id: 'rule-bill', organizationId, entityType: 'VENDOR_BILL', isRequired: false, thresholdAmount: 100000, approverRole: 'Finance Manager', allowSelfApproval: false },
-        { id: 'rule-pay', organizationId, entityType: 'PAYMENT', isRequired: false, thresholdAmount: 50000, approverRole: 'Finance Manager', allowSelfApproval: false },
-        { id: 'rule-cn', organizationId, entityType: 'CREDIT_NOTE', isRequired: false, thresholdAmount: 25000, approverRole: 'Finance Manager', allowSelfApproval: false },
-        { id: 'rule-mj', organizationId, entityType: 'MANUAL_JOURNAL', isRequired: false, thresholdAmount: 100000, approverRole: 'Finance Manager', allowSelfApproval: false },
-        { id: 'rule-exp', organizationId, entityType: 'EXPENSE', isRequired: false, thresholdAmount: 10000, approverRole: 'Finance Manager', allowSelfApproval: false },
-        { id: 'rule-pr', organizationId, entityType: 'PERIOD_REOPENING', isRequired: true, approverRole: 'Owner', allowSelfApproval: false },
-      ];
+      return Object.values(APPROVAL_ENTITIES).map((def) => ({
+        id: def.defaultRuleId,
+        organizationId,
+        entityType: def.entityType,
+        isRequired: def.isRequiredByDefault,
+        thresholdAmount: def.defaultThreshold,
+        approverRole: def.defaultApproverRole,
+        allowSelfApproval: def.allowSelfApproval,
+      }));
     }
 
     return res.rows.map((r) => ({
@@ -150,28 +158,182 @@ export class ApprovalWorkflowService {
     return true;
   }
 
+  /**
+   * Resolves and locks the canonical document row inside an active transaction.
+   */
+  public static async lockAndResolveEntity(
+    client: { query: (text: string, params?: any[]) => Promise<any> },
+    organizationId: string,
+    entityType: ApprovalEntityType,
+    entityId: string
+  ): Promise<{ id: string; amount: number; createdBy?: string; status?: string; currentHash?: string } | null> {
+    switch (entityType) {
+      case 'INVOICE': {
+        const res = await client.query(
+          `SELECT id, organization_id, total_amount, status, client_id, issue_date, due_date
+             FROM invoices
+            WHERE organization_id = $1 AND id = $2
+            FOR UPDATE`,
+          [organizationId, entityId]
+        );
+        if (res.rows.length === 0) return null;
+        const row = res.rows[0];
+        const linesRes = await client.query(
+          `SELECT id, description, amount, quantity, unit_price, account_id FROM invoice_items WHERE organization_id = $1 AND invoice_id = $2`,
+          [organizationId, entityId]
+        ).catch(() => ({ rows: [] }));
+        const amount = Number(row.total_amount);
+        const currentHash = this.computeDocumentHash('INVOICE', {
+          ...row,
+          amount,
+          lineItems: linesRes.rows,
+        });
+        return { id: row.id, amount, status: row.status, currentHash };
+      }
+      case 'VENDOR_BILL': {
+        const res = await client.query(
+          `SELECT id, organization_id, total_amount, status, vendor_id, bill_date, due_date
+             FROM bills
+            WHERE organization_id = $1 AND id = $2
+            FOR UPDATE`,
+          [organizationId, entityId]
+        );
+        if (res.rows.length === 0) return null;
+        const row = res.rows[0];
+        const linesRes = await client.query(
+          `SELECT id, description, amount, quantity, unit_price, account_id FROM bill_items WHERE organization_id = $1 AND bill_id = $2`,
+          [organizationId, entityId]
+        ).catch(() => ({ rows: [] }));
+        const amount = Number(row.total_amount);
+        const currentHash = this.computeDocumentHash('VENDOR_BILL', {
+          ...row,
+          amount,
+          lineItems: linesRes.rows,
+        });
+        return { id: row.id, amount, status: row.status, currentHash };
+      }
+      case 'MANUAL_JOURNAL': {
+        const res = await client.query(
+          `SELECT id, organization_id, entry_number, date, status, description
+             FROM journal_entries
+            WHERE organization_id = $1 AND id = $2
+            FOR UPDATE`,
+          [organizationId, entityId]
+        );
+        if (res.rows.length === 0) return null;
+        const row = res.rows[0];
+        const linesRes = await client.query(
+          `SELECT id, description, debit, credit, account_id FROM journal_lines WHERE journal_entry_id = $1`,
+          [entityId]
+        ).catch(() => ({ rows: [] }));
+        const totalDebit = linesRes.rows.reduce((sum: number, l: any) => sum + Number(l.debit || 0), 0);
+        const currentHash = this.computeDocumentHash('MANUAL_JOURNAL', {
+          ...row,
+          totalDebit,
+          lines: linesRes.rows,
+        });
+        return { id: row.id, amount: totalDebit, status: row.status, currentHash };
+      }
+      case 'CUSTOMER_PAYMENT': {
+        const res = await client.query(
+          `SELECT id, organization_id, amount, status, client_id, payment_date, created_at
+             FROM payments_received
+            WHERE organization_id = $1 AND id = $2
+            FOR UPDATE`,
+          [organizationId, entityId]
+        );
+        if (res.rows.length === 0) return null;
+        const row = res.rows[0];
+        const amount = Number(row.amount);
+        const currentHash = this.computeDocumentHash('CUSTOMER_PAYMENT', { ...row, amount });
+        return { id: row.id, amount, status: row.status, currentHash };
+      }
+      case 'PAYMENT': {
+        const res = await client.query(
+          `SELECT id, organization_id, amount, status, vendor_id, payment_date, created_at
+             FROM payments_made
+            WHERE organization_id = $1 AND id = $2
+            FOR UPDATE`,
+          [organizationId, entityId]
+        );
+        if (res.rows.length === 0) return null;
+        const row = res.rows[0];
+        const amount = Number(row.amount);
+        const currentHash = this.computeDocumentHash('PAYMENT', { ...row, amount });
+        return { id: row.id, amount, status: row.status, currentHash };
+      }
+      case 'EXPENSE': {
+        const res = await client.query(
+          `SELECT id, organization_id, amount, status, expense_account_id, paid_from_account_id, date, created_at
+             FROM expenses
+            WHERE organization_id = $1 AND id = $2
+            FOR UPDATE`,
+          [organizationId, entityId]
+        );
+        if (res.rows.length === 0) return null;
+        const row = res.rows[0];
+        const amount = Number(row.amount);
+        const currentHash = this.computeDocumentHash('EXPENSE', { ...row, amount });
+        return { id: row.id, amount, status: row.status, currentHash };
+      }
+      case 'PURCHASE_ORDER': {
+        const res = await client.query(
+          `SELECT id, organization_id, total_amount, status, vendor_id, order_date
+             FROM purchase_orders
+            WHERE organization_id = $1 AND id = $2
+            FOR UPDATE`,
+          [organizationId, entityId]
+        );
+        if (res.rows.length === 0) return null;
+        const row = res.rows[0];
+        const amount = Number(row.total_amount);
+        const currentHash = this.computeDocumentHash('PURCHASE_ORDER', { ...row, amount });
+        return { id: row.id, amount, status: row.status, currentHash };
+      }
+      default: {
+        return { id: entityId, amount: 0 };
+      }
+    }
+  }
+
   public static async submitForApproval(
     organizationId: string,
     entityType: ApprovalEntityType,
     entityId: string,
     submittedBy: string,
     amount?: number,
-    transactionClient?: { query: (text: string, params?: any[]) => Promise<any> }
+    transactionClient?: { query: (text: string, params?: any[]) => Promise<any> },
+    documentPayloadOrHash?: any
   ): Promise<ApprovalRequest> {
     const q = transactionClient || db;
     const id = newId('req');
     const now = new Date().toISOString();
 
+    let docHash = '';
+    if (typeof documentPayloadOrHash === 'string' && documentPayloadOrHash.length === 64) {
+      docHash = documentPayloadOrHash;
+    } else if (documentPayloadOrHash && typeof documentPayloadOrHash === 'object') {
+      docHash = this.computeDocumentHash(entityType, documentPayloadOrHash);
+    } else {
+      try {
+        const ent = await this.lockAndResolveEntity(q, organizationId, entityType, entityId);
+        docHash = ent?.currentHash || '';
+      } catch {
+        docHash = '';
+      }
+    }
+
     await q.query(
-      `INSERT INTO approval_requests (id, organization_id, entity_type, entity_id, submitted_by, submitted_at, status, amount)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-      [id, organizationId, entityType, entityId, submittedBy, now, 'SUBMITTED', amount || null]
+      `INSERT INTO approval_requests (
+         id, organization_id, entity_type, entity_id, submitted_by, submitted_at, status, amount, document_hash, document_version
+       ) VALUES ($1, $2, $3, $4, $5, $6, 'SUBMITTED', $7, $8, 1)`,
+      [id, organizationId, entityType, entityId, submittedBy, now, amount || null, docHash || null]
     );
 
     await q.query(
       `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, timestamp, after_state)
        VALUES ($1, $2, $3, 'APPROVAL_REQUESTED', $4, $5, $6, $7)`,
-      [newId('aud'), organizationId, submittedBy, entityType, entityId, now, JSON.stringify({ requestId: id, status: 'SUBMITTED', amount })]
+      [newId('aud'), organizationId, submittedBy, entityType, entityId, now, JSON.stringify({ requestId: id, status: 'SUBMITTED', amount, documentHash: docHash })]
     );
 
     return {
@@ -183,47 +345,37 @@ export class ApprovalWorkflowService {
       submittedAt: now,
       status: 'SUBMITTED',
       amount,
+      documentHash: docHash || undefined,
+      documentVersion: 1,
     };
   }
 
-  public static async approveRequest(
+  /**
+   * Approves a request by its immutable approvalRequestId inside a single locked transaction.
+   * Resolves the request, entity, organization, amount, document revision, and approver role.
+   * Zero auto-creation of APPROVED requests. Strictly rejects unsubmitted requests.
+   */
+  public static async approveRequestById(
     organizationId: string,
-    entityType: ApprovalEntityType,
-    entityId: string,
-    approvedBy: string,
-    userRole: string
+    approvalRequestId: string,
+    actor: ApproverActor
   ): Promise<ApprovalRequest> {
-    const rules = await this.getApprovalRules(organizationId);
-    const rule = rules.find((r) => r.entityType === entityType);
-    const requiredRole = rule?.approverRole || 'Finance Manager';
-    const allowSelfApproval = rule?.allowSelfApproval ?? false;
-
-    // Verify role eligibility
-    const isOwner = userRole === 'Owner' || userRole === 'Super Admin';
-    const isAdmin = userRole === 'Admin';
-    const isAuthorizedRole = userRole === requiredRole;
-
-    if (!isOwner && !isAdmin && !isAuthorizedRole) {
-      throw new Error(
-        `User with role '${userRole}' is not authorized to approve ${entityType}. Required role: ${requiredRole}`
-      );
-    }
+    const { userId: approvedBy, role: userRole } = actor;
 
     return await db.transaction(async (client) => {
-      // Row lock to prevent concurrent double-approvals
+      // 1. Lock approval request
       const reqRes = await client.query(
         `SELECT * FROM approval_requests
-          WHERE organization_id = $1 AND entity_type = $2 AND entity_id = $3
-          ORDER BY submitted_at DESC
-          LIMIT 1
+          WHERE organization_id = $1 AND id = $2
           FOR UPDATE`,
-        [organizationId, entityType, entityId]
+        [organizationId, approvalRequestId]
       );
 
-      const now = new Date().toISOString();
-      let requestId = reqRes.rows.length > 0 ? reqRes.rows[0].id : newId('req-auto');
-      const submittedBy = reqRes.rows[0]?.submitted_by || approvedBy;
-      const currentStatus = reqRes.rows[0]?.status;
+      if (reqRes.rows.length === 0) {
+        throw new Error('APPROVAL_REQUEST_NOT_FOUND: A submitted approval request is required before approval.');
+      }
+      const req = reqRes.rows[0];
+      const currentStatus = req.status;
 
       if (currentStatus === 'APPROVED') {
         throw new Error('Approval request has already been approved.');
@@ -231,106 +383,162 @@ export class ApprovalWorkflowService {
       if (currentStatus === 'REJECTED') {
         throw new Error('Cannot approve a request that has already been rejected.');
       }
+      if (currentStatus !== 'SUBMITTED') {
+        throw new Error(`APPROVAL_REQUEST_NOT_SUBMITTED: Cannot approve request with status '${currentStatus}'.`);
+      }
 
-      // Self-Approval Prevention Check: Strict enforcement even for Organization Owner
-      if (!allowSelfApproval && submittedBy === approvedBy) {
+      // 2. Lock and inspect target entity (if present in document table)
+      const entity = await this.lockAndResolveEntity(client, organizationId, req.entity_type, req.entity_id);
+
+      // 3. Verify amount & document revision
+      if (entity && req.amount !== null && req.amount !== undefined && entity.amount !== undefined) {
+        if (Math.abs(Number(req.amount) - Number(entity.amount)) > 0.01) {
+          throw new Error(`DOCUMENT_AMOUNT_ALTERED: Entity amount (${entity.amount}) does not match submitted approval request amount (${req.amount})`);
+        }
+      }
+
+      // 4. Verify document payload hash
+      if (entity && req.document_hash && entity.currentHash) {
+        if (req.document_hash !== entity.currentHash) {
+          throw new Error('DOCUMENT_ALTERED_SINCE_SUBMISSION: Document has been modified since approval request submission.');
+        }
+      }
+
+      // 5. Lock and resolve configured approval rule
+      const rules = await this.getApprovalRules(organizationId, client);
+      const rule = rules.find((r) => r.entityType === req.entity_type);
+      const requiredRole = rule?.approverRole || 'Finance Manager';
+      const allowSelfApproval = rule?.allowSelfApproval ?? false;
+
+      // 6. Verify role eligibility: approver must strictly hold the configured approver role
+      if (userRole !== requiredRole) {
         throw new Error(
-          `Self-approval forbidden: Submitting user '${approvedBy}' cannot approve their own ${entityType}. Another qualified approver is required.`
+          `User with role '${userRole}' is not authorized to approve ${req.entity_type}. Required role: ${requiredRole}`
         );
       }
 
-      if (reqRes.rows.length > 0) {
-        await client.query(
-          `UPDATE approval_requests
-              SET status = 'APPROVED', approved_by = $1, approved_at = $2
-            WHERE id = $3 AND organization_id = $4`,
-          [approvedBy, now, requestId, organizationId]
-        );
-      } else {
-        await client.query(
-          `INSERT INTO approval_requests (id, organization_id, entity_type, entity_id, submitted_by, submitted_at, status, approved_by, approved_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-          [requestId, organizationId, entityType, entityId, submittedBy, now, 'APPROVED', approvedBy, now]
+      // 7. Separation of duties / self-approval forbidden
+      if (!allowSelfApproval && (req.submitted_by === approvedBy || (entity && entity.createdBy === approvedBy))) {
+        throw new Error(
+          `Self-approval forbidden: Submitting user '${approvedBy}' cannot approve their own ${req.entity_type}. Another qualified approver is required.`
         );
       }
+
+      const now = new Date().toISOString();
+      const finalHash = entity?.currentHash || req.document_hash || null;
+
+      await client.query(
+        `UPDATE approval_requests
+            SET status = 'APPROVED', approved_by = $1, approved_at = $2, document_hash = COALESCE($3, document_hash)
+          WHERE id = $4 AND organization_id = $5 AND status = 'SUBMITTED'`,
+        [approvedBy, now, finalHash, approvalRequestId, organizationId]
+      );
 
       await AuditTrailService.logAction({
         organizationId,
         userId: approvedBy,
         action: 'APPROVAL_GRANTED',
-        entityType,
-        entityId,
-        afterState: { requestId, status: 'APPROVED', approvedBy },
+        entityType: req.entity_type,
+        entityId: req.entity_id,
+        afterState: { requestId: approvalRequestId, status: 'APPROVED', approvedBy, documentHash: finalHash },
       });
 
       return {
-        id: requestId,
+        id: approvalRequestId,
         organizationId,
-        entityType,
-        entityId,
-        submittedBy,
-        submittedAt: reqRes.rows[0]?.submitted_at || now,
+        entityType: req.entity_type,
+        entityId: req.entity_id,
+        submittedBy: req.submitted_by,
+        submittedAt: req.submitted_at instanceof Date ? req.submitted_at.toISOString() : String(req.submitted_at),
         status: 'APPROVED',
         approvedBy,
         approvedAt: now,
+        amount: req.amount ? Number(req.amount) : undefined,
+        documentHash: finalHash || undefined,
       };
     });
   }
 
-  public static async rejectRequest(
+  /**
+   * Rejects a request by its immutable approvalRequestId inside a single locked transaction.
+   */
+  public static async rejectRequestById(
     organizationId: string,
-    entityType: ApprovalEntityType,
-    entityId: string,
-    rejectedBy: string,
-    reason: string,
-    userRole?: string
+    approvalRequestId: string,
+    actor: ApproverActor,
+    reason: string
   ): Promise<void> {
-    if (userRole) {
-      const rules = await this.getApprovalRules(organizationId);
-      const rule = rules.find((r) => r.entityType === entityType);
-      const requiredRole = rule?.approverRole || 'Finance Manager';
-      const isOwner = userRole === 'Owner' || userRole === 'Super Admin';
-      const isAdmin = userRole === 'Admin';
-      const isAuthorizedRole = userRole === requiredRole;
-      if (!isOwner && !isAdmin && !isAuthorizedRole) {
-        throw new Error(
-          `User with role '${userRole}' is not authorized to reject ${entityType}. Required role: ${requiredRole}`
-        );
-      }
-    }
-
-    const now = new Date().toISOString();
+    const { userId: rejectedBy, role: userRole } = actor;
 
     await db.transaction(async (client) => {
       const reqRes = await client.query(
         `SELECT * FROM approval_requests
-          WHERE organization_id = $1 AND entity_type = $2 AND entity_id = $3
-          ORDER BY submitted_at DESC
-          LIMIT 1
+          WHERE organization_id = $1 AND id = $2
           FOR UPDATE`,
-        [organizationId, entityType, entityId]
+        [organizationId, approvalRequestId]
       );
 
-      if (reqRes.rows.length > 0 && reqRes.rows[0].status === 'APPROVED') {
+      if (reqRes.rows.length === 0) {
+        throw new Error('APPROVAL_REQUEST_NOT_FOUND: A submitted approval request is required before rejection.');
+      }
+      const req = reqRes.rows[0];
+      if (req.status === 'APPROVED') {
         throw new Error('Cannot reject a request that has already been approved.');
+      }
+      if (req.status !== 'SUBMITTED') {
+        throw new Error(`APPROVAL_REQUEST_NOT_SUBMITTED: Cannot reject a request with status '${req.status}'.`);
+      }
+
+      const rules = await this.getApprovalRules(organizationId, client);
+      const rule = rules.find((r) => r.entityType === req.entity_type);
+      const requiredRole = rule?.approverRole || 'Finance Manager';
+      // Verify role eligibility: approver must strictly hold the configured approver role
+      if (userRole !== requiredRole) {
+        throw new Error(
+          `User with role '${userRole}' is not authorized to reject ${req.entity_type}. Required role: ${requiredRole}`
+        );
       }
 
       await client.query(
         `UPDATE approval_requests
             SET status = 'REJECTED', rejection_reason = $1
-          WHERE organization_id = $2 AND entity_type = $3 AND entity_id = $4 AND status = 'SUBMITTED'`,
-        [reason, organizationId, entityType, entityId]
+          WHERE id = $2 AND organization_id = $3 AND status = 'SUBMITTED'`,
+        [reason, approvalRequestId, organizationId]
       );
-    });
 
-    await AuditTrailService.logAction({
-      organizationId,
-      userId: rejectedBy,
-      action: 'APPROVAL_REJECTED',
-      entityType,
-      entityId,
-      afterState: { status: 'REJECTED', reason },
+      await AuditTrailService.logAction({
+        organizationId,
+        userId: rejectedBy,
+        action: 'APPROVAL_REJECTED',
+        entityType: req.entity_type,
+        entityId: req.entity_id,
+        afterState: { requestId: approvalRequestId, status: 'REJECTED', reason },
+      });
     });
+  }
+
+
+  /**
+   * Invalidates active approval requests when a document is edited after submission.
+   */
+  public static async invalidateApproval(
+    organizationId: string,
+    entityType: ApprovalEntityType,
+    entityId: string,
+    client?: { query: (text: string, params?: any[]) => Promise<any> },
+    reason: string = 'DOCUMENT_MODIFIED: Document modified after submission/approval'
+  ): Promise<void> {
+    const q = client || db;
+    await q.query(
+      `UPDATE approval_requests
+          SET status = 'REJECTED',
+              rejection_reason = $1
+        WHERE organization_id = $2
+          AND entity_type = $3
+          AND entity_id = $4
+          AND status IN ('SUBMITTED', 'APPROVED')`,
+      [reason, organizationId, entityType, entityId]
+    );
   }
 
   public static async getApprovalRequests(
@@ -353,12 +561,14 @@ export class ApprovalWorkflowService {
       entityType: r.entity_type,
       entityId: r.entity_id,
       submittedBy: r.submitted_by,
-      submittedAt: r.submitted_at,
+      submittedAt: r.submitted_at instanceof Date ? r.submitted_at.toISOString() : String(r.submitted_at),
       status: r.status,
       approvedBy: r.approved_by,
-      approvedAt: r.approved_at,
+      approvedAt: r.approved_at ? (r.approved_at instanceof Date ? r.approved_at.toISOString() : String(r.approved_at)) : undefined,
       rejectionReason: r.rejection_reason,
       amount: r.amount ? Number(r.amount) : undefined,
+      documentHash: r.document_hash,
+      documentVersion: r.document_version ? Number(r.document_version) : 1,
     }));
   }
 
@@ -384,20 +594,27 @@ export class ApprovalWorkflowService {
       entityType: r.entity_type,
       entityId: r.entity_id,
       submittedBy: r.submitted_by,
-      submittedAt: r.submitted_at,
+      submittedAt: r.submitted_at instanceof Date ? r.submitted_at.toISOString() : String(r.submitted_at),
       status: r.status,
       approvedBy: r.approved_by,
-      approvedAt: r.approved_at,
+      approvedAt: r.approved_at ? (r.approved_at instanceof Date ? r.approved_at.toISOString() : String(r.approved_at)) : undefined,
       rejectionReason: r.rejection_reason,
       amount: r.amount ? Number(r.amount) : undefined,
+      documentHash: r.document_hash,
+      documentVersion: r.document_version ? Number(r.document_version) : 1,
     };
   }
 
+  /**
+   * Consumes approval inside the canonical document posting transaction.
+   * If currentEntity is provided, re-verifies document hash against approved hash.
+   */
   public static async consumeApproval(
     organizationId: string,
     entityType: ApprovalEntityType,
     entityId: string,
-    client: { query: (text: string, params?: any[]) => Promise<any> }
+    client: { query: (text: string, params?: any[]) => Promise<any> },
+    currentEntity?: any
   ): Promise<ApprovalRequest> {
     const reqRes = await client.query(
       `SELECT * FROM approval_requests
@@ -412,26 +629,42 @@ export class ApprovalWorkflowService {
       throw new Error(`APPROVAL_REQUIRED: ${entityType} requires an approved authorization request before posting.`);
     }
 
+    const row = reqRes.rows[0];
+
+    // Verify document hash has not been altered after approval
+    if (row.document_hash) {
+      let currentHash: string | undefined;
+      if (typeof currentEntity === 'string') {
+        currentHash = currentEntity;
+      } else {
+        const ent = await this.lockAndResolveEntity(client, organizationId, entityType, entityId);
+        currentHash = ent?.currentHash || (currentEntity ? this.computeDocumentHash(entityType, currentEntity) : undefined);
+      }
+      if (currentHash && currentHash !== row.document_hash) {
+        throw new Error(`DOCUMENT_ALTERED_AFTER_APPROVAL: ${entityType} was modified after approval was granted; approval is invalid.`);
+      }
+    }
+
     await client.query(
       `UPDATE approval_requests
           SET status = 'CONSUMED'
         WHERE id = $1 AND organization_id = $2`,
-      [reqRes.rows[0].id, organizationId]
+      [row.id, organizationId]
     );
 
-    const r = reqRes.rows[0];
     return {
-      id: r.id,
-      organizationId: r.organization_id,
-      entityType: r.entity_type,
-      entityId: r.entity_id,
-      submittedBy: r.submitted_by,
-      submittedAt: r.submitted_at,
+      id: row.id,
+      organizationId: row.organization_id,
+      entityType: row.entity_type,
+      entityId: row.entity_id,
+      submittedBy: row.submitted_by,
+      submittedAt: row.submitted_at instanceof Date ? row.submitted_at.toISOString() : String(row.submitted_at),
       status: 'CONSUMED',
-      approvedBy: r.approved_by,
-      approvedAt: r.approved_at,
-      rejectionReason: r.rejection_reason,
-      amount: r.amount ? Number(r.amount) : undefined,
+      approvedBy: row.approved_by,
+      approvedAt: row.approved_at instanceof Date ? row.approved_at.toISOString() : String(row.approved_at),
+      rejectionReason: row.rejection_reason,
+      amount: row.amount ? Number(row.amount) : undefined,
+      documentHash: row.document_hash,
     };
   }
 }

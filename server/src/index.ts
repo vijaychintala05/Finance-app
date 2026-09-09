@@ -10,7 +10,8 @@ import financeRoutes from './routes/finance.routes';
 import bankingRoutes from './routes/banking.routes';
 import securityRoutes from './routes/security.routes';
 import { CURRENT_SCHEMA_VERSION, MigrationRunner } from './database/migrationRunner';
-import { assertProductionConfiguration, isProduction } from './config/environment';
+import { assertProductionConfiguration, assertProductionPostgresHealth, isProduction } from './config/environment';
+import { assertProductionFinanceCapabilities } from './capabilities/financeCapabilities';
 import { requestSecurityMiddleware } from './middleware/httpSecurity.middleware';
 import { idempotencyMiddleware } from './middleware/idempotency.middleware';
 import { persistentRateLimit } from './middleware/rateLimit.middleware';
@@ -67,6 +68,15 @@ export async function initDatabase(): Promise<void> {
   try {
     assertProductionConfiguration();
     if (isProduction()) {
+      const health = await db.checkHealth();
+      assertProductionPostgresHealth(health);
+      try {
+        await db.query('SELECT 1 AS release_health_check');
+      } catch (err: any) {
+        throw new Error(`RELEASE_CHECK_FAILED: PostgreSQL connectivity check failed: ${err.message}`);
+      }
+      assertProductionFinanceCapabilities();
+
       await db.transaction(async (client) => {
         await client.query("SELECT pg_advisory_xact_lock(hashtext('firmbooks-schema-migrations'))");
         await MigrationRunner.runMigrations(client);
@@ -93,6 +103,8 @@ app.post('/api/v1/public/quotation/:token/respond', persistentRateLimit('quotati
 
 // Public Customer Self-Service Portal
 app.get('/api/v1/public/portal/:token', persistentRateLimit('portal-view', 60, 60), Stage6Controller.getPublicPortalContext);
+app.post('/api/v1/public/portal/:token/checkout-session', persistentRateLimit('portal-checkout', 30, 60), Stage6Controller.createPublicPortalCheckoutSession);
+app.get('/api/v1/public/portal/:token/payment-status/:reference', persistentRateLimit('portal-payment-status', 60, 60), Stage6Controller.getPublicPortalPaymentStatus);
 app.get('/api/v1/public/portal/:token/statement', persistentRateLimit('portal-statement', 30, 60), Stage6Controller.getPublicPortalStatement);
 app.post('/api/v1/public/portal/:token/pay', persistentRateLimit('portal-payment', 20, 60), Stage6Controller.processPublicPortalPayment);
 

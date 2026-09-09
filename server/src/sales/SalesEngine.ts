@@ -10,6 +10,7 @@ import { DocumentNumberingEngine } from '../services/DocumentNumberingEngine';
 import { OrganizationProvisioningService } from '../services/OrganizationProvisioningService';
 import { AccountingIntegrityService } from '../services/AccountingIntegrityService';
 import { ApprovalWorkflowService } from '../approvals/ApprovalWorkflowService';
+import { DocumentLifecycleHelper } from '../approvals/DocumentLifecycleHelper';
 import { FinancialDestructiveActionsService } from '../accounting/FinancialDestructiveActionsService';
 import { MonetaryAccountPolicy } from '../accounting/monetaryAccountPolicy';
 
@@ -1609,6 +1610,8 @@ export class SalesEngine {
       if (newIssueDate !== originalIssueDate) {
         await SalesEngine.checkPeriodLock(orgId, newIssueDate, client);
       }
+      // Invalidate any active approval request if invoice is edited
+      await DocumentLifecycleHelper.onDocumentModified(orgId, 'INVOICE', invoiceId, client, 'Document modified after submission');
 
       const customerId = data.customerId || data.clientId || inv.customer_id || inv.client_id;
       let resolvedCustomerName = inv.client_name;
@@ -1922,7 +1925,7 @@ export class SalesEngine {
       }
 
       // Atomically consume approval
-      await ApprovalWorkflowService.consumeApproval(orgId, 'INVOICE', invoiceId, client);
+      await ApprovalWorkflowService.consumeApproval(orgId, 'INVOICE', invoiceId, client, inv);
 
       const issueDate = inv.issue_date instanceof Date ? inv.issue_date.toISOString().split('T')[0] : String(inv.issue_date).split('T')[0];
       await SalesEngine.checkPeriodLock(orgId, issueDate, client);
@@ -2417,7 +2420,7 @@ export class SalesEngine {
       }
 
       // Atomically consume approval
-      await ApprovalWorkflowService.consumeApproval(orgId, 'CUSTOMER_PAYMENT', paymentId, client);
+      await ApprovalWorkflowService.consumeApproval(orgId, 'CUSTOMER_PAYMENT', paymentId, client, pmt);
 
       const paymentDate = pmt.payment_date instanceof Date ? pmt.payment_date.toISOString().split('T')[0] : String(pmt.payment_date).split('T')[0];
       await SalesEngine.checkPeriodLock(orgId, paymentDate, client);
@@ -3638,5 +3641,44 @@ export class SalesEngine {
     }
 
     return Object.values(agingMap);
+  }
+
+  public static async updateCustomerPayment(
+    orgId: string,
+    paymentId: string,
+    data: { reference?: string; notes?: string; paymentDate?: string },
+    transactionClient?: any
+  ): Promise<any> {
+    const execute = async (client: any) => {
+      const res = await client.query(
+        `SELECT * FROM payments_received WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, paymentId]
+      );
+      if (res.rows.length === 0) throw new Error('CUSTOMER_PAYMENT_NOT_FOUND: Payment received not found');
+      const pmt = res.rows[0];
+      if (String(pmt.status).toUpperCase() === 'REVERSED') throw new Error('Cannot update a reversed payment');
+
+      // Automatically invalidate active approval requests
+      await DocumentLifecycleHelper.onDocumentModified(
+        orgId,
+        'CUSTOMER_PAYMENT',
+        paymentId,
+        client,
+        'Document modified after submission'
+      );
+
+      const ref = data.reference !== undefined ? data.reference : pmt.reference;
+      const notes = data.notes !== undefined ? data.notes : pmt.notes;
+      const paymentDate = data.paymentDate || pmt.payment_date;
+
+      await client.query(
+        `UPDATE payments_received SET reference = $1, notes = $2, payment_date = $3 WHERE organization_id = $4 AND id = $5`,
+        [ref, notes, paymentDate, orgId, paymentId]
+      );
+
+      return { ...pmt, reference: ref, notes, paymentDate };
+    };
+
+    return transactionClient ? await execute(transactionClient) : await db.transaction(execute);
   }
 }

@@ -278,7 +278,7 @@ describe('Gate 5B: Settings, Roles, Permissions & Approval Hardening Test Suite'
 
     it('enforces self-approval prevention: creator cannot approve their own submission', async () => {
       const poId = newId('po-test');
-      await ApprovalWorkflowService.submitForApproval(
+      const poReq = await ApprovalWorkflowService.submitForApproval(
         orgAId,
         'PURCHASE_ORDER',
         poId,
@@ -288,22 +288,18 @@ describe('Gate 5B: Settings, Roles, Permissions & Approval Hardening Test Suite'
 
       // Submitting user attempts approval (should fail)
       await expect(
-        ApprovalWorkflowService.approveRequest(
+        ApprovalWorkflowService.approveRequestById(
           orgAId,
-          'PURCHASE_ORDER',
-          poId,
-          adminUserA, // Same as submitter
-          'Admin'
+          poReq.id,
+          { userId: adminUserA, role: 'Finance Manager' }
         )
       ).rejects.toThrow(/Self-approval forbidden/);
 
-      // Another user with Owner role approves (succeeds)
-      const approved = await ApprovalWorkflowService.approveRequest(
+      // Another user with Finance Manager role approves (succeeds)
+      const approved = await ApprovalWorkflowService.approveRequestById(
         orgAId,
-        'PURCHASE_ORDER',
-        poId,
-        ownerUserA,
-        'Owner'
+        poReq.id,
+        { userId: ownerUserA, role: 'Finance Manager' }
       );
       expect(approved.status).toBe('APPROVED');
       expect(approved.approvedBy).toBe(ownerUserA);
@@ -311,7 +307,7 @@ describe('Gate 5B: Settings, Roles, Permissions & Approval Hardening Test Suite'
 
     it('handles concurrent double-approval race safely via state machine', async () => {
       const paymentId = newId('pay-race');
-      await ApprovalWorkflowService.submitForApproval(
+      const payReq = await ApprovalWorkflowService.submitForApproval(
         orgAId,
         'PAYMENT',
         paymentId,
@@ -320,12 +316,12 @@ describe('Gate 5B: Settings, Roles, Permissions & Approval Hardening Test Suite'
       );
 
       // First approval succeeds
-      const first = await ApprovalWorkflowService.approveRequest(orgAId, 'PAYMENT', paymentId, ownerUserA, 'Owner');
+      const first = await ApprovalWorkflowService.approveRequestById(orgAId, payReq.id, { userId: ownerUserA, role: 'Finance Manager' });
       expect(first.status).toBe('APPROVED');
 
       // Second approval attempt immediately fails
       await expect(
-        ApprovalWorkflowService.approveRequest(orgAId, 'PAYMENT', paymentId, ownerUserA, 'Owner')
+        ApprovalWorkflowService.approveRequestById(orgAId, payReq.id, { userId: ownerUserA, role: 'Finance Manager' })
       ).rejects.toThrow(/already been approved/);
     });
   });

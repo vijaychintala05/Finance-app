@@ -168,6 +168,15 @@ describe('Phase 7 — Security, Roles, Audit Trail, Backup & Production Hardenin
     });
 
     it('submits, rejects unauthorized approver, and completes approval with authorized role', async () => {
+      await ApprovalWorkflowService.configureApprovalRule(ORG_A, {
+        entityType: 'PAYMENT',
+        isRequired: true,
+        thresholdAmount: 10000,
+        approverRole: 'Owner',
+        allowSelfApproval: false,
+        userId: USER_OWNER,
+      });
+
       const reqSubmitted = await ApprovalWorkflowService.submitForApproval(
         ORG_A,
         'PAYMENT',
@@ -179,16 +188,14 @@ describe('Phase 7 — Security, Roles, Audit Trail, Backup & Production Hardenin
 
       // Viewer cannot approve
       await expect(
-        ApprovalWorkflowService.approveRequest(ORG_A, 'PAYMENT', 'pay-ref-999', USER_VIEWER, 'Viewer')
+        ApprovalWorkflowService.approveRequestById(ORG_A, reqSubmitted.id, { userId: USER_VIEWER, role: 'Viewer' })
       ).rejects.toThrow('is not authorized to approve');
 
       // Owner can approve
-      const approved = await ApprovalWorkflowService.approveRequest(
+      const approved = await ApprovalWorkflowService.approveRequestById(
         ORG_A,
-        'PAYMENT',
-        'pay-ref-999',
-        USER_OWNER,
-        'Owner'
+        reqSubmitted.id,
+        { userId: USER_OWNER, role: 'Owner' }
       );
       expect(approved.status).toBe('APPROVED');
     });
@@ -305,12 +312,14 @@ describe('Phase 7 — Security, Roles, Audit Trail, Backup & Production Hardenin
         [`jl-2-${jeId}`, jeId, ORG_A, 'acc-rev', '4010-REV-TEST', 'Sales Revenue', 0.00, 500.00]
       );
 
-      await expect(FinancialDestructiveActionsService.reverseJournalEntry(
-        ORG_A,
-        jeId,
-        USER_OWNER,
-        'Correction of improper classification'
-      )).rejects.toThrow(/Legacy journal reversal is disabled/);
+      // Legacy journal reversal wrapper and endpoint decommissioned
+      expect((FinancialDestructiveActionsService as any).reverseJournalEntry).toBeUndefined();
+      const res = await request(app)
+        .post('/api/v1/security/reverse-journal')
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .set('x-organization-id', ORG_A)
+        .send({ journalEntryId: jeId, reason: 'Correction' });
+      expect(res.status).toBe(404);
     });
   });
 

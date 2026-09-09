@@ -47,6 +47,8 @@ export const TENANT_SCOPED_TABLES = [
   'journal_entries',
   'journal_lines',
   'payment_gateway_events',
+  'payment_intents',
+  'organization_payment_gateways',
   'period_locks',
   'period_close_checklists',
   'accounting_period_closes',

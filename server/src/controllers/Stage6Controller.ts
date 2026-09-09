@@ -154,20 +154,39 @@ export class Stage6Controller {
     }
   }
 
-  public static async processPublicPortalPayment(req: Request, res: Response): Promise<void> {
+  public static async createPublicPortalCheckoutSession(req: Request, res: Response): Promise<void> {
     try {
       const { token } = req.params;
-      const { invoiceId, amount, gatewayEventId } = req.body;
-      const result = await CustomerPortalService.processPortalPayment(token, {
+      const { invoiceId, amount, gateway, idempotencyKey } = req.body;
+      const session = await CustomerPortalService.createPortalCheckoutSession(token, {
         invoiceId,
         amount: Number(amount),
-        gatewayEventId,
+        gateway,
+        idempotencyKey,
       });
-      res.json(result);
+      res.status(201).json({ session });
     } catch (err: any) {
       const status = err.message.includes('expired') || err.message.includes('Invalid') ? 404 : 400;
-      res.status(status).json({ error: err.message || 'Failed to process payment' });
+      res.status(status).json({ error: err.message || 'Failed to create checkout session' });
     }
+  }
+
+  public static async getPublicPortalPaymentStatus(req: Request, res: Response): Promise<void> {
+    try {
+      const { token, reference } = req.params;
+      const status = await CustomerPortalService.getPortalPaymentStatus(token, reference);
+      res.json({ paymentStatus: status });
+    } catch (err: any) {
+      const status = err.message.includes('expired') || err.message.includes('Invalid') ? 404 : 400;
+      res.status(status).json({ error: err.message || 'Failed to fetch payment status' });
+    }
+  }
+
+  public static async processPublicPortalPayment(_req: Request, res: Response): Promise<void> {
+    res.status(501).json({
+      error: 'Public /pay endpoint is permanently disabled. Payments must be processed through certified provider hosted checkout and confirmed solely via signed webhooks.',
+      code: 'PUBLIC_PAYMENTS_DISABLED',
+    });
   }
 
   // ==========================================

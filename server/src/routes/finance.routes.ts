@@ -68,6 +68,7 @@ router.get('/payments-received', requirePermission(['customer_payments.view', 'i
 router.post('/payments-received', requirePermission(['customer_payments.create', 'invoices.receive_payment']), FinanceController.recordPaymentReceived);
 router.post('/payments-received/:id/post-approved', requirePermission(['customer_payments.create', 'invoices.receive_payment', 'accounting.post']), FinanceController.postApprovedPaymentReceived);
 router.post('/payments-received/:id/reverse', requirePermission(['customer_payments.reverse', 'invoices.receive_payment']), FinanceController.reversePaymentReceived);
+router.put('/payments-received/:id', requirePermission(['customer_payments.create', 'invoices.receive_payment']), FinanceController.updateCustomerPayment);
 router.get('/customer-advances', requirePermission(['customer_payments.view', 'invoices.view']), requireTrustedFinanceFeature('customer-advance-application'), FinanceController.getCustomerAdvances);
 router.post('/customer-advances', requirePermission(['customer_payments.create', 'invoices.receive_payment']), requireTrustedFinanceFeature('customer-advance-application'), FinanceController.recordCustomerAdvance);
 router.post('/customer-advances/:id/reverse', requirePermission(['customer_payments.reverse', 'invoices.receive_payment']), requireTrustedFinanceFeature('customer-advance-application'), FinanceController.reverseCustomerAdvance);
@@ -92,6 +93,7 @@ router.get('/vendor-payments', requirePermission(['vendor_payments.view', 'purch
 router.post('/vendor-payments', requirePermission(['vendor_payments.create', 'purchases.pay']), requireTrustedFinanceFeature('vendor-settlements'), FinanceController.recordVendorPayment);
 router.post('/vendor-payments/:id/post-approved', requirePermission(['vendor_payments.create', 'purchases.pay', 'accounting.post']), requireTrustedFinanceFeature('vendor-settlements'), FinanceController.postApprovedVendorPayment);
 router.post('/vendor-payments/:id/reverse', requirePermission(['vendor_payments.reverse', 'purchases.pay']), requireTrustedFinanceFeature('vendor-settlements'), FinanceController.reverseVendorPayment);
+router.put('/vendor-payments/:id', requirePermission(['vendor_payments.create', 'purchases.pay']), requireTrustedFinanceFeature('vendor-settlements'), FinanceController.updateVendorPayment);
 router.get('/vendor-advances', requirePermission(['vendor_advances.view', 'purchases.view']), requireTrustedFinanceFeature('vendor-settlements'), FinanceController.getVendorAdvances);
 router.get('/vendor-advance-applications', requirePermission(['vendor_advances.view', 'purchases.view']), requireTrustedFinanceFeature('vendor-settlements'), FinanceController.getVendorAdvanceApplications);
 router.post('/vendor-advances', requirePermission(['vendor_advances.create', 'purchases.create']), requireTrustedFinanceFeature('vendor-settlements'), FinanceController.recordVendorAdvance);
@@ -175,6 +177,7 @@ router.post('/expenses', requirePermission(['expenses.create']), FinanceControll
 router.get('/expenses/:id/receipts/:receiptId', requirePermission(['expenses.view', 'expenses.attach_receipt']), FinanceController.getExpenseReceipt);
 router.get('/expenses/:id/pdf', requirePermission(['expenses.view']), FinanceController.getExpensePdf);
 router.post('/expenses/:id/void', requirePermission(['expenses.void', 'expenses.create']), FinanceController.voidExpense);
+router.put('/expenses/:id', requirePermission(['expenses.create']), FinanceController.updateExpense);
 
 // Purchase Orders & Goods Receipts
 router.get('/purchase-orders', requirePermission(['purchases.view', 'bills.view']), FinanceController.getPurchaseOrders);
@@ -182,6 +185,7 @@ router.get('/purchase-orders/:id', requirePermission(['purchases.view', 'bills.v
 router.post('/purchase-orders', requirePermission(['purchases.create', 'bills.create']), FinanceController.createPurchaseOrder);
 router.put('/purchase-orders/:id', requirePermission(['purchases.edit', 'purchases.create', 'bills.edit']), FinanceController.updatePurchaseOrder);
 router.post('/purchase-orders/:id/approve', requirePermission(['purchases.create', 'bills.create']), FinanceController.approvePurchaseOrder);
+router.post('/purchase-orders/:id/approve/:approvalRequestId', requirePermission(['purchases.create', 'bills.create']), FinanceController.approvePurchaseOrder);
 router.post('/purchase-orders/:id/convert-bill', requirePermission(['bills.create', 'purchases.create']), FinanceController.convertPurchaseOrderToBill);
 router.post('/purchase-orders/:id/receive', requirePermission(['purchases.create', 'bills.create']), FinanceController.receivePurchaseOrder);
 router.post('/purchase-orders/:id/cancel', requirePermission(['purchases.delete', 'purchases.edit', 'bills.edit']), FinanceController.cancelPurchaseOrder);
@@ -193,6 +197,7 @@ router.get('/bills', requirePermission(['bills.view', 'purchases.view']), Financ
 router.post('/bills', requirePermission(['bills.create', 'purchases.create']), FinanceController.createBill);
 router.post('/bills/:id/post-approved', requirePermission(['bills.create', 'purchases.create', 'accounting.post']), FinanceController.postApprovedBill);
 router.post('/bills/:id/void', requirePermission(['bills.void', 'purchases.delete']), FinanceController.voidBill);
+router.put('/bills/:id', requirePermission(['bills.create', 'purchases.create', 'purchases.edit']), FinanceController.updateBill);
 
 // Period Locks
 router.get('/period-locks', requirePermission(['periods.view', 'accounting.view']), FinanceController.getPeriodLocks);

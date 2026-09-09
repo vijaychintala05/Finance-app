@@ -852,6 +852,43 @@ export class MigrationRunner {
         CONSTRAINT uq_gateway_event UNIQUE (organization_id, gateway, event_id)
       )`,
 
+      `CREATE TABLE IF NOT EXISTS payment_intents (
+        id VARCHAR(64) PRIMARY KEY,
+        organization_id VARCHAR(64) NOT NULL,
+        customer_id VARCHAR(64) NOT NULL,
+        invoice_id VARCHAR(64) NOT NULL,
+        gateway VARCHAR(32) NOT NULL,
+        provider_session_id VARCHAR(255) NOT NULL,
+        provider_reference VARCHAR(255) NOT NULL,
+        currency VARCHAR(10) NOT NULL,
+        amount NUMERIC(15, 2) NOT NULL,
+        status VARCHAR(32) NOT NULL DEFAULT 'CREATED',
+        idempotency_key VARCHAR(128) NOT NULL,
+        checkout_url TEXT,
+        metadata JSONB DEFAULT '{}',
+        payment_id VARCHAR(64),
+        gateway_event_id VARCHAR(64),
+        expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT uq_payment_intents_idempotency UNIQUE (organization_id, idempotency_key),
+        CONSTRAINT uq_payment_intents_provider_ref UNIQUE (organization_id, gateway, provider_reference)
+      )`,
+
+      `CREATE TABLE IF NOT EXISTS organization_payment_gateways (
+        id VARCHAR(64) PRIMARY KEY,
+        organization_id VARCHAR(64) NOT NULL,
+        gateway VARCHAR(32) NOT NULL,
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        key_id VARCHAR(255),
+        key_secret VARCHAR(255),
+        webhook_secret VARCHAR(255),
+        config JSONB DEFAULT '{}',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT uq_org_gateway UNIQUE (organization_id, gateway)
+      )`,
+
       `CREATE TABLE IF NOT EXISTS bank_feed_connections (
         id VARCHAR(64) PRIMARY KEY,
         organization_id VARCHAR(64) NOT NULL,
@@ -1027,8 +1064,13 @@ export class MigrationRunner {
         approved_by VARCHAR(64),
         approved_at TIMESTAMP WITH TIME ZONE,
         rejection_reason TEXT,
-        amount NUMERIC(15, 2)
+        amount NUMERIC(15, 2),
+        document_hash VARCHAR(128),
+        document_version INT DEFAULT 1
       )`,
+
+      `ALTER TABLE approval_requests ADD COLUMN IF NOT EXISTS document_hash VARCHAR(128)`,
+      `ALTER TABLE approval_requests ADD COLUMN IF NOT EXISTS document_version INT DEFAULT 1`,
 
       `CREATE TABLE IF NOT EXISTS backups (
         id VARCHAR(64) PRIMARY KEY,

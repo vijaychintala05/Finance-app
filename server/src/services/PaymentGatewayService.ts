@@ -271,7 +271,16 @@ export class PaymentGatewayService {
       if (!signature || !rawBody) {
         throw new Error(`MISSING_WEBHOOK_SIGNATURE: Signature and raw body required for gateway '${gateway}'`);
       }
-      const secret = webhookSecret || process.env[`${gateway.toUpperCase()}_WEBHOOK_SECRET`];
+      let secret = webhookSecret || process.env[`${gateway.toUpperCase()}_WEBHOOK_SECRET`];
+      if (!secret) {
+        const gwDb = await db.query(
+          `SELECT webhook_secret FROM organization_payment_gateways WHERE organization_id = $1 AND gateway = $2 AND is_active = TRUE`,
+          [organizationId, gateway.toLowerCase()]
+        );
+        if (gwDb.rows.length > 0 && gwDb.rows[0].webhook_secret) {
+          secret = gwDb.rows[0].webhook_secret;
+        }
+      }
       if (!secret) {
         throw new Error(`GATEWAY_SECRET_MISSING: Webhook secret not configured for gateway '${gateway}'`);
       }
@@ -353,6 +362,36 @@ export class PaymentGatewayService {
       && ['won', 'reversed', 'funds_reinstated'].includes(String(payload?.data?.object?.status || payload?.status || '').toLowerCase())
     );
 
+    const isCancellation = [
+      'payment_intent.canceled',
+      'payment.canceled',
+      'checkout.session.cancelled',
+    ].includes(eventType.toLowerCase());
+
+    const isExpiration = [
+      'checkout.session.expired',
+      'payment_intent.expired',
+    ].includes(eventType.toLowerCase());
+
+    if (isCancellation || isExpiration) {
+      const data = payload?.data?.object || payload?.payload?.payment?.entity || payload;
+      const ref = data.id || data.payment_intent || eventId;
+      const newStatus = isCancellation ? 'CANCELLED' : 'EXPIRED';
+      await db.query(
+        `UPDATE payment_intents
+            SET status = $1, gateway_event_id = $2, updated_at = CURRENT_TIMESTAMP
+          WHERE organization_id = $3 AND (provider_reference = $4 OR provider_session_id = $4)`,
+        [newStatus, eventId, organizationId, ref]
+      );
+      await db.query(
+        `UPDATE payment_gateway_events
+            SET status = 'PROCESSED', processed_at = CURRENT_TIMESTAMP
+          WHERE organization_id = $1 AND gateway = $2 AND event_id = $3`,
+        [organizationId, gateway, eventId]
+      );
+      return { eventId, status: 'PROCESSED' };
+    }
+
     if (!isPaymentSuccess && !isPayoutSuccess && !isRefundOrChargeback && !isRefundOrChargebackReinstated) {
       await db.query(
         `UPDATE payment_gateway_events
@@ -372,7 +411,7 @@ export class PaymentGatewayService {
       const grossAmount = isSubunit ? Math.round((rawAmount / 100) * 100) / 100 : rawAmount;
       const fee = isSubunit ? Math.round((rawFee / 100) * 100) / 100 : rawFee;
       const paymentDate = normalizeGatewayDate(data.paymentDate || data.created_at || data.created);
-      const bankAccountId = data.bankAccountId || data.depositAccountId;
+      const bankAccountId = data.bankAccountId || data.depositAccountId || data.bank_account_id || data.deposit_account_id;
       const reference = data.id || eventId;
       const paymentMode = gateway.toUpperCase();
       const currency = String(data.currency || '').trim().toUpperCase();
@@ -424,6 +463,19 @@ export class PaymentGatewayService {
         if (fRes.rows.length > 0) feeAccountId = fRes.rows[0].id;
 
         if (isPaymentSuccess) {
+          // Overpayment defense: verify remaining invoice balance
+          const invCheck = await txClient.query(
+            `SELECT balance_due, status FROM invoices WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+            [organizationId, invoiceId]
+          );
+          if (invCheck.rows.length === 0) {
+            throw new Error('GATEWAY_INVOICE_NOT_FOUND: Referenced invoice was not found');
+          }
+          const currentBalance = Math.round(Number(invCheck.rows[0].balance_due) * 100) / 100;
+          if (grossAmount > currentBalance) {
+            throw new Error(`OVERPAYMENT_NOT_PERMITTED: Webhook payment amount ${grossAmount.toFixed(2)} exceeds invoice balance due ${currentBalance.toFixed(2)}`);
+          }
+
           // Record Customer Payment allocated to invoice
           const pmtRes = await SalesEngine.recordCustomerPayment(
             organizationId,
@@ -445,6 +497,14 @@ export class PaymentGatewayService {
           if (!paymentId || !journalEntryId || pmtRes.status === 'SUBMITTED') {
             throw new Error('GATEWAY_PAYMENT_NOT_POSTED: Verified receipt did not create a final accounting posting');
           }
+
+          // Update linked payment_intents to SUCCEEDED
+          await txClient.query(
+            `UPDATE payment_intents
+                SET status = 'SUCCEEDED', payment_id = $1, gateway_event_id = $2, updated_at = CURRENT_TIMESTAMP
+              WHERE organization_id = $3 AND (provider_reference = $4 OR provider_session_id = $4)`,
+            [paymentId, eventId, organizationId, reference]
+          );
 
           // If gateway fee charged, record gateway processing fee expense
           if (fee > 0) {

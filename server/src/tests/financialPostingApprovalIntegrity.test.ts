@@ -108,7 +108,8 @@ describe('Financial Posting & Approval Mutation Integrity Tests (T3/T4 Hardening
     ).rejects.toThrow(/APPROVAL_REQUIRED/);
 
     // Manager approves the request
-    await ApprovalWorkflowService.approveRequest(orgId, 'MANUAL_JOURNAL', res.id, managerUserId, 'Finance Manager');
+    const appReq1 = await ApprovalWorkflowService.getApprovalRequestByEntity(orgId, 'MANUAL_JOURNAL', res.id);
+    await ApprovalWorkflowService.approveRequestById(orgId, appReq1!.id, { userId: managerUserId, role: 'Finance Manager' });
 
     // Now posting succeeds on the exact same draft ID
     const posted = await ManualJournalService.postApprovedJournal(orgId, accountantUserId, res.id);
@@ -168,7 +169,8 @@ describe('Financial Posting & Approval Mutation Integrity Tests (T3/T4 Hardening
     expect(Number(vendorMid.rows[0]?.payables_balance || 0)).toBe(balanceBefore);
 
     // Approve bill
-    await ApprovalWorkflowService.approveRequest(orgId, 'VENDOR_BILL', bill.id, managerUserId, 'Finance Manager');
+    const appReq2 = await ApprovalWorkflowService.getApprovalRequestByEntity(orgId, 'VENDOR_BILL', bill.id);
+    await ApprovalWorkflowService.approveRequestById(orgId, appReq2!.id, { userId: managerUserId, role: 'Finance Manager' });
 
     // Post approved bill using the exact same ID
     const postedBill = await PurchasesEngine.postApprovedBill(orgId, accountantUserId, bill.id);
@@ -232,7 +234,8 @@ describe('Financial Posting & Approval Mutation Integrity Tests (T3/T4 Hardening
     expect(Number(billCheckBefore.rows[0].balance_due)).toBe(10000);
 
     // Approve the payment
-    await ApprovalWorkflowService.approveRequest(orgId, 'PAYMENT', pmt.id, managerUserId, 'Finance Manager');
+    const appReq3 = await ApprovalWorkflowService.getApprovalRequestByEntity(orgId, 'PAYMENT', pmt.id);
+    await ApprovalWorkflowService.approveRequestById(orgId, appReq3!.id, { userId: managerUserId, role: 'Finance Manager' });
 
     // Post approved vendor payment
     const postedPmt = await PurchasesEngine.postApprovedVendorPayment(orgId, accountantUserId, pmt.id);
@@ -285,7 +288,8 @@ describe('Financial Posting & Approval Mutation Integrity Tests (T3/T4 Hardening
     expect(Number(custMid.rows[0]?.receivables_balance || 0)).toBe(balanceBefore);
 
     // Approve the invoice
-    await ApprovalWorkflowService.approveRequest(orgId, 'INVOICE', invoice.id, managerUserId, 'Finance Manager');
+    const appReq4 = await ApprovalWorkflowService.getApprovalRequestByEntity(orgId, 'INVOICE', invoice.id);
+    await ApprovalWorkflowService.approveRequestById(orgId, appReq4!.id, { userId: managerUserId, role: 'Finance Manager' });
 
     // Post approved invoice
     const postedInv = await SalesEngine.postApprovedInvoice(orgId, accountantUserId, invoice.id);
@@ -351,7 +355,8 @@ describe('Financial Posting & Approval Mutation Integrity Tests (T3/T4 Hardening
     expect(Number(invCheckBefore.rows[0].balance_due)).toBe(15000);
 
     // Approve the customer payment
-    await ApprovalWorkflowService.approveRequest(orgId, 'CUSTOMER_PAYMENT', pmt.id, managerUserId, 'Finance Manager');
+    const appReq5 = await ApprovalWorkflowService.getApprovalRequestByEntity(orgId, 'CUSTOMER_PAYMENT', pmt.id);
+    await ApprovalWorkflowService.approveRequestById(orgId, appReq5!.id, { userId: managerUserId, role: 'Finance Manager' });
 
     // Post approved payment
     const postedPmt = await SalesEngine.postApprovedPayment(orgId, accountantUserId, pmt.id);
@@ -456,8 +461,9 @@ describe('Financial Posting & Approval Mutation Integrity Tests (T3/T4 Hardening
     });
 
     // Manager attempts to approve their own request
+    const appReq7 = await ApprovalWorkflowService.getApprovalRequestByEntity(orgId, 'MANUAL_JOURNAL', draft.id);
     await expect(
-      ApprovalWorkflowService.approveRequest(orgId, 'MANUAL_JOURNAL', draft.id, managerUserId, 'Finance Manager')
+      ApprovalWorkflowService.approveRequestById(orgId, appReq7!.id, { userId: managerUserId, role: 'Finance Manager' })
     ).rejects.toThrow(/Self-approval forbidden/);
   });
 
@@ -523,14 +529,25 @@ describe('Financial Posting & Approval Mutation Integrity Tests (T3/T4 Hardening
       .set('Authorization', `Bearer ${accountantToken}`);
     expect(prematurePostRes.status).toBeGreaterThanOrEqual(400);
 
-    // 3. Manager approves the request via HTTP security endpoint
-    const approveRes = await request(app)
+    // Query submitted approval request ID
+    const approvalReq = await db.query('SELECT id FROM approval_requests WHERE entity_id = $1', [invoiceId]);
+    const approvalRequestId = approvalReq.rows[0].id;
+
+    // 3a. Calling without approvalRequestId must be rejected with 400 MISSING_APPROVAL_REQUEST_ID
+    const legacyApproveRes = await request(app)
       .post('/api/v1/security/approvals/approve')
       .set('Authorization', `Bearer ${managerToken}`)
       .send({
         entityType: 'INVOICE',
         entityId: invoiceId,
       });
+    expect(legacyApproveRes.status).toBe(400);
+    expect(legacyApproveRes.body.error).toContain('MISSING_APPROVAL_REQUEST_ID');
+
+    // 3b. Manager approves the request via HTTP security endpoint with immutable approvalRequestId
+    const approveRes = await request(app)
+      .post(`/api/v1/security/approvals/${approvalRequestId}/approve`)
+      .set('Authorization', `Bearer ${managerToken}`);
     expect(approveRes.status).toBe(200);
 
     // 4. Accountant calls post-approved via HTTP
@@ -621,7 +638,8 @@ describe('Financial Posting & Approval Mutation Integrity Tests (T3/T4 Hardening
     expect(inv.status).toBe('SUBMITTED');
 
     // Manager approves invoice
-    await ApprovalWorkflowService.approveRequest(orgId, 'INVOICE', inv.id, managerUserId, 'Finance Manager');
+    const appReq9 = await ApprovalWorkflowService.getApprovalRequestByEntity(orgId, 'INVOICE', inv.id);
+    await ApprovalWorkflowService.approveRequestById(orgId, appReq9!.id, { userId: managerUserId, role: 'Finance Manager' });
 
     // Verify approval request is currently APPROVED
     const reqBefore = await db.query('SELECT status FROM approval_requests WHERE entity_id = $1', [inv.id]);

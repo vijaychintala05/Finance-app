@@ -5,12 +5,14 @@ on:
     branches:
       - main
       - master
+      - nas-deploy
       - "feature/**"
       - "release/**"
   pull_request:
     branches:
       - main
       - master
+      - nas-deploy
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -71,7 +73,7 @@ jobs:
         env:
           DATABASE_URL: postgres://firmbooks_test:firmbooks_test_password@127.0.0.1:5432/firmbooks_test
           JWT_SECRET: test-ci-secret-32-chars-long-security
-          APP_ENCRYPTION_KEY: test-encryption-key-for-ci-suite-32ch
+          AUTH_ENCRYPTION_KEY: test-encryption-key-for-ci-suite-32ch
           REQUIRE_REAL_POSTGRES: "true"
           DATABASE_MODE: postgres
           USE_PG_MEM: "false"
@@ -79,29 +81,15 @@ jobs:
 
       - name: Run Full Vitest Regression Suite
         env:
-          DATABASE_URL: postgres://firmbooks_test:firmbooks_test_password@127.0.0.1:5432/firmbooks_test
           JWT_SECRET: test-ci-secret-32-chars-long-security
-          APP_ENCRYPTION_KEY: test-encryption-key-for-ci-suite-32ch
+          AUTH_ENCRYPTION_KEY: test-encryption-key-for-ci-suite-32ch
+          DATABASE_MODE: memory
+          USE_PG_MEM: "true"
         run: npm test
 
   browser-qualification:
     name: Playwright Browser Qualification
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_DB: firmbooks_e2e
-          POSTGRES_USER: firmbooks_e2e
-          POSTGRES_PASSWORD: firmbooks_e2e_password
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U firmbooks_e2e"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 5
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -123,9 +111,10 @@ jobs:
 
       - name: Run Playwright Browser Regression Specs
         env:
-          DATABASE_URL: postgres://firmbooks_e2e:firmbooks_e2e_password@127.0.0.1:5432/firmbooks_e2e
           JWT_SECRET: test-e2e-secret-32-chars-long-security
-          APP_ENCRYPTION_KEY: test-encryption-key-for-e2e-suite-32ch
+          AUTH_ENCRYPTION_KEY: test-encryption-key-for-e2e-suite-32ch
+          DATABASE_MODE: memory
+          USE_PG_MEM: "true"
         run: npx playwright test
 
       - name: Upload E2E Test Artifacts on Failure

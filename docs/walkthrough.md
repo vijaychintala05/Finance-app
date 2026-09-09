@@ -167,7 +167,20 @@ All requirements and exit gate criteria have been implemented and verified on re
 
 ---
 
-## 7. Conclusion & Exit Gate Status
+## 7. CI/CD Qualification & Container Publication
+
+All continuous integration workflows and automated release pipelines are 100% passing across both `main` and `nas-deploy` branches:
+
+| Workflow | Branch | Run # | Status | Summary |
+|---|---|---|---|---|
+| **FirmBooks CI - Production Qualification** | `main` | [#13](https://github.com/vijaychintala05/Finance-app/actions/runs/34352692657) | **PASS (100% Green)** | Lint & Type Check, Playwright Browser Qualification, Isolated PostgreSQL Suites, and Production Artifact Build all passed. |
+| **FirmBooks CI - Production Qualification** | `nas-deploy` | [#14](https://github.com/vijaychintala05/Finance-app/actions/runs/34352696656) | **PASS (100% Green)** | Identical qualification passed on deployment branch. |
+| **Publish FirmBooks container** | `main` | [#66](https://github.com/vijaychintala05/Finance-app/actions/runs/34352692664) | **PASS (100% Green)** | Full production build, live PostgreSQL container mutation smoke test (with strict idempotency enforcement), and container published to GHCR. |
+| **Publish FirmBooks container** | `nas-deploy` | [#67](https://github.com/vijaychintala05/Finance-app/actions/runs/34352696660) | **PASS (100% Green)** | Release image published to `ghcr.io/vijaychintala05/finance-app:latest` and tagged with commit SHA `1e98bbf`. |
+
+---
+
+## 8. Conclusion & Exit Gate Status
 
 All exit gate criteria for **Stages 0, 1, 2, 3 and P1/P2 Governance** are fully certified:
 1. **Immutable Request IDs**: Legacy overloads removed from `ApprovalWorkflowService`; only `approveRequestById` and `rejectRequestById` exist. Older tests migrated.
@@ -179,3 +192,5 @@ All exit gate criteria for **Stages 0, 1, 2, 3 and P1/P2 Governance** are fully 
    - **Mock Gateway Containment**: Blocked in production via `MOCK_GATEWAY_FORBIDDEN` in `PaymentProviderRegistry` while retained for local tests and development.
    - **Restore Route Containment**: `/api/v1/security/restore` intentionally returns HTTP 410 `LEGACY_RESTORE_DISABLED` to contain unsafe destructive restores and direct users to `/api/v1/recovery`.
 6. **Recovery Center Hardened**: Legacy restore retired in production; 78-table topological manifest; audit immutability preserved; GL balance reconciled prior to promotion; atomic rollback & tenant lock active.
+7. **Container & CI Certification**: 146 test files passed, 1 skipped (147 total); 1,163 tests passed, 3 skipped (1,166 total). Both CI pipelines and release container publication workflows are verified 100% Green.
+

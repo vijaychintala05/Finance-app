@@ -558,7 +558,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
               )}
 
               <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px] lg:gap-6">
-                <div className="order-last min-w-0 space-y-4 lg:order-none">
+                <div className="order-none min-w-0 space-y-4">
                   <section className="border border-slate-200 p-5 dark:border-slate-700 sm:p-6">
                     <div className="mb-5 flex items-start gap-3">
                       <span className="flex h-9 w-9 items-center justify-center rounded-md bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300"><Receipt className="h-4 w-4" /></span>
@@ -890,7 +890,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                   </section>
                 </div>
 
-                <section className="order-first min-w-0 border border-slate-200 p-4 dark:border-slate-700 sm:p-5 lg:order-none">
+                <section className="order-none min-w-0 border border-slate-200 p-4 dark:border-slate-700 sm:p-5">
                   <h3 className="text-sm font-bold text-slate-900 dark:text-white">Receipt images (optional)</h3>
                   <p className="mt-1 text-xs text-slate-500">Attach up to three JPG, PNG, or WebP receipt images.</p>
                   <div

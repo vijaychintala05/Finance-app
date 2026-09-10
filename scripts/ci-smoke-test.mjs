@@ -133,13 +133,17 @@ async function run() {
   console.log('[CI Smoke Test] Client created successfully.');
 
   console.log('[CI Smoke Test] Step 6: Creating Customer-Billable Expense (POST /api/v1/finance/expenses)...');
-  const expenseAcc = getAccData.find((a) => a.type === 'Expense' || a.code?.startsWith('6') || a.code?.startsWith('5')) || accData;
+  const expenseAcc = getAccData.find((a) => a.type === 'Expense' || a.code?.startsWith('6') || a.code?.startsWith('5'));
+  if (!expenseAcc) {
+    throw new Error('[CI Smoke Test] No provisioned Expense account found in organization');
+  }
   const expRes = await fetch(`${BASE_URL}/api/v1/finance/expenses`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
       'X-Organization-ID': orgId,
+      'Idempotency-Key': `ci-exp-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`,
     },
     body: JSON.stringify({
       expenseAccountId: expenseAcc.id,
@@ -165,6 +169,7 @@ async function run() {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
       'X-Organization-ID': orgId,
+      'Idempotency-Key': `ci-conv-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`,
     },
     body: JSON.stringify({}),
   });

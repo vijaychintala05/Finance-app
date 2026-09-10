@@ -5,6 +5,7 @@ coverage/
 test-results/
 playwright-report/
 .gstack/benchmark-reports/
+.gstack/design-reports/
 .DS_Store
 *.log
 .env*

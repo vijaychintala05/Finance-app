@@ -1256,10 +1256,19 @@ export class SalesEngine {
       );
       if (customer.rows.length === 0) {
         customer = await client.query(
-          `SELECT id, name, company_name AS legal_name, email, phone, tax_id AS gstin, billing_address
+          `SELECT id, name, company_name AS legal_name, email, phone, tax_id AS gstin, billing_address, currency, payment_terms, notes
              FROM clients WHERE organization_id = $1 AND id = $2`,
           [orgId, customerId]
         );
+        if (customer.rows.length > 0) {
+          const cl = customer.rows[0];
+          await client.query(
+            `INSERT INTO customers (id, organization_id, customer_id, display_name, legal_name, email, phone, currency, payment_terms, notes)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             ON CONFLICT (id) DO NOTHING`,
+            [cl.id, orgId, cl.id, cl.name, cl.legal_name || cl.name, cl.email || '', cl.phone || '', (cl.currency || 'USD').slice(0, 3), cl.payment_terms || 'Net 30', cl.notes || null]
+          );
+        }
       }
       if (customer.rows.length === 0) throw new Error('Invoice customer does not belong to this organization');
       resolvedCustomerName = customer.rows[0].name || data.customerName || 'Customer';

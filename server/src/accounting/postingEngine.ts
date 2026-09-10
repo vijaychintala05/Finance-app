@@ -218,7 +218,7 @@ export class ServerPostingEngine {
              LIMIT 1`,
             [line.customerId, payload.organizationId]
           );
-          if (customer.rows.length !== 1) throw new Error(`Customer ${line.customerId} does not belong to this organization`);
+          if (customer.rows.length === 0) throw new Error(`Customer ${line.customerId} does not belong to this organization`);
         }
         if (line.vendorId) {
           const vendor = await client.query(

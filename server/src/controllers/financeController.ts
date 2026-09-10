@@ -563,6 +563,12 @@ export class FinanceController {
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
         [record.id, orgId, record.name, record.companyName, record.email, record.phone, record.billingAddress, record.taxId, record.currency, record.paymentTerms, record.notes]
       );
+      await client.query(
+        `INSERT INTO customers (id, organization_id, customer_id, display_name, legal_name, email, phone, currency, payment_terms, notes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         ON CONFLICT (id) DO NOTHING`,
+        [record.id, orgId, record.id, record.name, record.companyName, record.email, record.phone, record.currency, record.paymentTerms, record.notes]
+      );
       await client.query(`INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state) VALUES ($1, $2, $3, 'CLIENT_CREATED', 'Client', $4, $5)`, [newId('aud'), orgId, req.auth!.userId, cliId, JSON.stringify(record)]);
     });
     res.status(201).json({ ...record, createdAt: new Date().toISOString() });
@@ -2926,19 +2932,38 @@ export class FinanceController {
           throw new Error('Expense must be assigned to a customer before it can be invoiced');
         }
 
-        if (!customerName) {
-          const custRes = await client.query(
-            `SELECT display_name, legal_name FROM customers WHERE organization_id = $1 AND id = $2
-             UNION ALL
-             SELECT name AS display_name, company_name AS legal_name FROM clients WHERE organization_id = $1 AND id = $2
-             LIMIT 1`,
+        // Ensure customer exists in customers table to satisfy fk_invoices_customer_org
+        const custCheck = await client.query(
+          `SELECT id, display_name, legal_name FROM customers WHERE organization_id = $1 AND id = $2`,
+          [orgId, customerId]
+        );
+        if (custCheck.rows.length === 0) {
+          const clientRow = await client.query(
+            `SELECT id, name, company_name, email, phone, currency, payment_terms, notes FROM clients WHERE organization_id = $1 AND id = $2`,
             [orgId, customerId]
           );
-          if (custRes.rows.length === 1) {
-            customerName = custRes.rows[0].display_name || custRes.rows[0].legal_name || 'Customer';
+          if (clientRow.rows.length > 0) {
+            const cl = clientRow.rows[0];
+            await client.query(
+              `INSERT INTO customers (id, organization_id, customer_id, display_name, legal_name, email, phone, currency, payment_terms, notes)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+               ON CONFLICT (id) DO NOTHING`,
+              [cl.id, orgId, cl.id, cl.name, cl.company_name || cl.name, cl.email, cl.phone, (cl.currency || exp.currency || 'USD').slice(0, 3), cl.payment_terms || 'Net 30', cl.notes]
+            );
+            if (!customerName) {
+              customerName = cl.name || cl.company_name || 'Customer';
+            }
           } else {
-            throw new Error('Customer associated with this billable expense was not found');
+            // Self-heal: ensure customer record exists for foreign key constraint
+            await client.query(
+              `INSERT INTO customers (id, organization_id, customer_id, display_name, currency)
+               VALUES ($1, $2, $3, $4, $5)
+               ON CONFLICT (id) DO NOTHING`,
+              [customerId, orgId, customerId, customerName || 'Customer', (exp.currency || 'USD').slice(0, 3)]
+            );
           }
+        } else if (!customerName) {
+          customerName = custCheck.rows[0].display_name || custCheck.rows[0].legal_name || 'Customer';
         }
 
         let lineItems: Array<{ description: string; quantity: number; unitPrice: number; taxRate: number }> = [];

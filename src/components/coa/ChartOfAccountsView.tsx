@@ -364,34 +364,37 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
           <div className="flex items-center rounded-lg border border-slate-200 p-0.5 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50">
             <button
               onClick={() => setViewMode('tree')}
-              className={`rounded-md p-1.5 transition-colors cursor-pointer min-h-[36px] min-w-[36px] flex items-center justify-center ${
+              className={`rounded-md px-1.5 py-1.5 transition-colors cursor-pointer min-h-[36px] min-w-[36px] flex items-center justify-center gap-1.5 ${
                 viewMode === 'tree' ? 'bg-white text-blue-700 shadow-2xs dark:bg-slate-800' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900 dark:hover:bg-slate-800'
               }`}
               title="Hierarchy view"
               aria-label="Hierarchy view"
             >
               <FolderTree className="h-4 w-4" />
+              <span className="hidden lg:inline text-xs font-semibold">Hierarchy</span>
             </button>
             <button
               onClick={() => setViewMode('table')}
-              className={`rounded-md p-1.5 transition-colors cursor-pointer min-h-[36px] min-w-[36px] flex items-center justify-center ${
+              className={`rounded-md px-1.5 py-1.5 transition-colors cursor-pointer min-h-[36px] min-w-[36px] flex items-center justify-center gap-1.5 ${
                 viewMode === 'table' ? 'bg-white text-blue-700 shadow-2xs dark:bg-slate-800' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900 dark:hover:bg-slate-800'
               }`}
               title="List view"
               aria-label="List view"
             >
               <List className="h-4 w-4" />
+              <span className="hidden lg:inline text-xs font-semibold">List</span>
             </button>
           </div>
 
           <div className="flex items-center gap-2">
             <button
               onClick={() => setIsQuickAccountModalOpen(true)}
-              className="rounded-lg border border-slate-200 p-2 text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-900 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800 cursor-pointer min-h-[36px] min-w-[36px] flex items-center justify-center"
+              className="rounded-lg border border-slate-200 px-2 py-2 text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-900 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800 cursor-pointer min-h-[36px] min-w-[36px] flex items-center justify-center gap-1.5"
               title="Add cash or bank account"
               aria-label="Add cash or bank account"
             >
               <Landmark className="w-4 h-4" />
+              <span className="hidden xl:inline text-xs font-semibold">Bank / Cash</span>
             </button>
 
             <button
@@ -504,12 +507,13 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
           <button
             type="button"
             onClick={() => setShowPostingDefaults((value) => !value)}
-            className={`rounded-lg p-2 transition-colors cursor-pointer min-h-[36px] min-w-[36px] flex items-center justify-center ${showPostingDefaults ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'text-slate-500 border border-slate-200 hover:bg-slate-100 hover:text-slate-800 dark:border-slate-700 dark:hover:bg-slate-800'}`}
+            className={`rounded-lg px-2 py-2 transition-colors cursor-pointer min-h-[36px] min-w-[36px] flex items-center justify-center gap-1.5 ${showPostingDefaults ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'text-slate-500 border border-slate-200 hover:bg-slate-100 hover:text-slate-800 dark:border-slate-700 dark:hover:bg-slate-800'}`}
             title="Posting defaults"
             aria-label="Show posting defaults"
             aria-pressed={showPostingDefaults}
-          >
-            <SlidersHorizontal className="h-4 w-4" />
+            >
+              <SlidersHorizontal className="h-4 w-4" />
+              <span className="hidden lg:inline text-xs font-semibold">Posting defaults</span>
           </button>
         </div>
         <div className="relative w-full sm:w-72">

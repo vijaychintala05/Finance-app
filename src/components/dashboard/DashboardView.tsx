@@ -884,7 +884,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
             {/* Card 1: OPERATING CASH & BANK */}
             <div
               onClick={() => onNavigate('banking')}
-              className="relative overflow-hidden rounded-2xl border border-slate-200/80 bg-white p-5 shadow-xs transition-all hover:border-slate-300 dark:border-slate-800/90 dark:bg-slate-900 cursor-pointer flex flex-col justify-between min-h-[175px]"
+              className="relative overflow-hidden rounded-2xl border border-slate-200/80 bg-white p-4 shadow-xs transition-all hover:border-slate-300 sm:p-5 dark:border-slate-800/90 dark:bg-slate-900 cursor-pointer flex flex-col justify-between min-h-[145px] sm:min-h-[175px]"
             >
               <div>
                 <div className="flex items-center justify-between">
@@ -929,7 +929,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
             {/* Card 2: ACCOUNTS RECEIVABLE (AR) */}
             <div
               onClick={() => onNavigate('invoices')}
-              className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-xs transition-all hover:border-slate-300 dark:border-slate-800/90 dark:bg-slate-900 cursor-pointer flex flex-col justify-between min-h-[175px]"
+              className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-xs transition-all hover:border-slate-300 sm:p-5 dark:border-slate-800/90 dark:bg-slate-900 cursor-pointer flex flex-col justify-between min-h-[145px] sm:min-h-[175px]"
             >
               <div>
                 <div className="flex items-center justify-between">
@@ -965,7 +965,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
             {/* Card 3: ACCOUNTS PAYABLE (AP) */}
             <div
               onClick={() => onNavigate('bills')}
-              className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-xs transition-all hover:border-slate-300 dark:border-slate-800/90 dark:bg-slate-900 cursor-pointer flex flex-col justify-between min-h-[175px]"
+              className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-xs transition-all hover:border-slate-300 sm:p-5 dark:border-slate-800/90 dark:bg-slate-900 cursor-pointer flex flex-col justify-between min-h-[145px] sm:min-h-[175px]"
             >
               <div>
                 <div className="flex items-center justify-between">
@@ -1001,7 +1001,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
             {/* Card 4: TOP EXPENSES (Donut Chart + Legend) */}
             <div
               onClick={() => onNavigate('expenses')}
-              className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-xs transition-all hover:border-slate-300 dark:border-slate-800/90 dark:bg-slate-900 cursor-pointer flex flex-col justify-between min-h-[175px]"
+              className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-xs transition-all hover:border-slate-300 sm:p-5 dark:border-slate-800/90 dark:bg-slate-900 cursor-pointer flex flex-col justify-between min-h-[145px] sm:min-h-[175px]"
             >
               <div className="flex items-center gap-2.5">
                 <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-50 text-blue-600 dark:bg-blue-950/60 dark:text-blue-400">

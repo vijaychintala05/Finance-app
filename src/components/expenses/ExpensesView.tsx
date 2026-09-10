@@ -67,6 +67,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
   const deferredSearch = useDeferredValue(search);
   const [isModalOpen, setIsModalOpen] = useState(autoOpenCreateModal);
   const [viewingExpense, setViewingExpense] = useState<Expense | null>(null);
+  const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
 
   // Filter states
   const [filterStatus, setFilterStatus] = useState<'ALL' | 'ACTIVE' | 'VOIDED'>('ALL');
@@ -107,6 +108,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
 
   const handleCloseModal = () => {
     setIsModalOpen(false);
+    setEditingExpense(null);
     onModalClosed?.();
     if (autoOpenCreateModal && onExit) {
       onExit();
@@ -114,6 +116,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
   };
 
   const handleOpenNew = () => {
+    setEditingExpense(null);
     setIsModalOpen(true);
   };
 
@@ -793,12 +796,18 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
       <ExpenseModal
         isOpen={isModalOpen}
         onClose={handleCloseModal}
+        expenseToEdit={editingExpense}
       />
 
       <ExpenseDetailsModal
         isOpen={!!viewingExpense}
         onClose={() => setViewingExpense(null)}
         expense={viewingExpense}
+        onEdit={(expense) => {
+          setViewingExpense(null);
+          setEditingExpense(expense);
+          setIsModalOpen(true);
+        }}
       />
     </div>
   );

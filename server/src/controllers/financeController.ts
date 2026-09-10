@@ -40,8 +40,19 @@ import { DrillDownService } from '../services/DrillDownService';
 import { ReportExportService } from '../services/ReportExportService';
 import { ApprovalWorkflowService } from '../approvals/ApprovalWorkflowService';
 import { TreasuryTransactionService } from '../services/TreasuryTransactionService';
+import { EmployeeReimbursementService } from '../services/EmployeeReimbursementService';
 
 export class FinanceController {
+  private static employeeClaimErrorStatus(message: string): number {
+    if (message.startsWith('CLAIM_NOT_FOUND') || message.startsWith('PAYMENT_NOT_FOUND')) return 404;
+    if (
+      message.startsWith('CLAIM_NOT_PAYABLE') ||
+      message.startsWith('CLAIM_HAS_SETTLED_PAYMENTS') ||
+      message.startsWith('PAYMENT_AMOUNT_EXCEEDS_REMAINING')
+    ) return 400;
+    return 422;
+  }
+
   // --- AUDIT LOG UTILITY ---
   public static async logAudit(
     orgId: string,
@@ -1270,7 +1281,17 @@ export class FinanceController {
       paidFromAccountId: expense.paid_from_account_id,
       paidFromAccountName: expense.paid_from_account_name || '',
       date: expense.date,
-      amount: Number(expense.amount), taxAmount: Number(expense.tax_amount || 0),
+      amount: Number(expense.amount),
+      taxRate: expense.tax_rate !== null && expense.tax_rate !== undefined ? Number(expense.tax_rate) : undefined,
+      taxAmount: Number(expense.tax_amount || 0),
+      taxAccountId: expense.tax_account_id || undefined,
+      isTaxInclusive: Boolean(expense.is_tax_inclusive),
+      isRcm: Boolean(expense.is_rcm),
+      rcmTaxAccountId: expense.rcm_tax_account_id || undefined,
+      tdsRate: expense.tds_rate !== null && expense.tds_rate !== undefined ? Number(expense.tds_rate) : undefined,
+      tdsAmount: Number(expense.tds_amount || 0),
+      tdsSection: expense.tds_section || undefined,
+      tdsAccountId: expense.tds_account_id || undefined,
       projectId: expense.project_id || undefined,
       projectName: expense.project_name || undefined,
       clientId: expense.client_id || undefined,
@@ -2838,12 +2859,24 @@ export class FinanceController {
   }
 
   public static async updateExpense(req: AuthenticatedRequest, res: Response): Promise<void> {
+    res.status(409).json({
+      error: 'POSTED_EXPENSE_IMMUTABLE: Use the expense correction workflow, which reverses the original journal and posts a replacement.',
+    });
+  }
+
+  public static async correctExpense(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
-      const orgId = req.organizationId || req.auth?.organizationId!;
-      const expense = await ExpensePostingService.updateExpense(orgId, req.params.id, req.body);
-      res.json({ expense });
+      const { reason, ...replacementInput } = req.body || {};
+      const result = await ExpensePostingService.correctAndPost(
+        req.auth!.organizationId,
+        req.auth!.userId,
+        req.params.id,
+        replacementInput,
+        reason
+      );
+      res.status(201).json(result);
     } catch (error: any) {
-      res.status(400).json({ error: error.message || 'Expense could not be updated' });
+      res.status(422).json({ error: error.message || 'Expense could not be corrected' });
     }
   }
 
@@ -3050,6 +3083,122 @@ export class FinanceController {
       res.json({ payment });
     } catch (error: any) {
       res.status(400).json({ error: error.message || 'Customer payment could not be updated' });
+    }
+  }
+
+  // --- EMPLOYEE CLAIMS & REIMBURSEMENTS ---
+
+  public static async createEmployeeClaim(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const orgId = req.auth!.organizationId;
+      const userId = req.auth!.userId;
+      const result = await EmployeeReimbursementService.createClaim(orgId, userId, req.body);
+      res.status(201).json(result);
+    } catch (error: any) {
+      const message = error.message || 'Employee claim could not be created';
+      res.status(FinanceController.employeeClaimErrorStatus(message)).json({ error: message });
+    }
+  }
+
+  public static async listEmployeeClaims(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const orgId = req.auth!.organizationId;
+      const claims = await EmployeeReimbursementService.listClaims(orgId, req.query as any);
+      res.json({ items: claims });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || 'Employee claims could not be retrieved' });
+    }
+  }
+
+  public static async getEmployeeClaim(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const orgId = req.auth!.organizationId;
+      const claim = await EmployeeReimbursementService.getClaim(orgId, req.params.id);
+      if (!claim) {
+        res.status(404).json({ error: 'Employee claim not found' });
+        return;
+      }
+      res.json(claim);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || 'Employee claim could not be retrieved' });
+    }
+  }
+
+  public static async submitEmployeeClaim(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const orgId = req.auth!.organizationId;
+      const userId = req.auth!.userId;
+      const result = await EmployeeReimbursementService.submitClaim(orgId, userId, req.params.id);
+      res.json(result);
+    } catch (error: any) {
+      const message = error.message || 'Employee claim could not be submitted';
+      res.status(FinanceController.employeeClaimErrorStatus(message)).json({ error: message });
+    }
+  }
+
+  public static async approveEmployeeClaim(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const orgId = req.auth!.organizationId;
+      const userId = req.auth!.userId;
+      const result = await EmployeeReimbursementService.approveClaim(orgId, userId, req.params.id);
+      res.json(result);
+    } catch (error: any) {
+      const message = error.message || 'Employee claim could not be approved';
+      res.status(FinanceController.employeeClaimErrorStatus(message)).json({ error: message });
+    }
+  }
+
+  public static async rejectEmployeeClaim(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const orgId = req.auth!.organizationId;
+      const userId = req.auth!.userId;
+      const { reason } = req.body || {};
+      const result = await EmployeeReimbursementService.rejectClaim(orgId, userId, req.params.id, reason);
+      res.json(result);
+    } catch (error: any) {
+      const message = error.message || 'Employee claim could not be rejected';
+      res.status(FinanceController.employeeClaimErrorStatus(message)).json({ error: message });
+    }
+  }
+
+  public static async recordEmployeeReimbursementPayment(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const orgId = req.auth!.organizationId;
+      const userId = req.auth!.userId;
+      const result = await EmployeeReimbursementService.recordPayment(orgId, userId, {
+        claimId: req.params.id,
+        ...req.body,
+      });
+      res.status(201).json(result);
+    } catch (error: any) {
+      const message = error.message || 'Reimbursement payment could not be recorded';
+      res.status(FinanceController.employeeClaimErrorStatus(message)).json({ error: message });
+    }
+  }
+
+  public static async voidEmployeeClaim(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const orgId = req.auth!.organizationId;
+      const userId = req.auth!.userId;
+      const { reason } = req.body || {};
+      const result = await EmployeeReimbursementService.voidClaim(orgId, userId, req.params.id, reason);
+      res.json(result);
+    } catch (error: any) {
+      const message = error.message || 'Employee claim could not be voided';
+      res.status(FinanceController.employeeClaimErrorStatus(message)).json({ error: message });
+    }
+  }
+
+  public static async voidEmployeeReimbursementPayment(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const orgId = req.auth!.organizationId;
+      const userId = req.auth!.userId;
+      const { reason } = req.body || {};
+      const result = await EmployeeReimbursementService.voidPayment(orgId, userId, req.params.id, reason);
+      res.json(result);
+    } catch (error: any) {
+      const message = error.message || 'Reimbursement payment could not be voided';
+      res.status(FinanceController.employeeClaimErrorStatus(message)).json({ error: message });
     }
   }
 }

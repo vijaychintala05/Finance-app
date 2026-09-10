@@ -381,7 +381,16 @@ export interface Expense {
   date: string;
   currency?: string;
   amount: number;
+  taxRate?: number;
   taxAmount: number;
+  taxAccountId?: string;
+  isTaxInclusive?: boolean;
+  isRcm?: boolean;
+  rcmTaxAccountId?: string;
+  tdsRate?: number;
+  tdsAmount?: number;
+  tdsSection?: string;
+  tdsAccountId?: string;
   isItemized?: boolean;
   items?: ExpenseItem[];
   isBillable: boolean;

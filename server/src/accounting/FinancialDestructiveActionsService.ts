@@ -1017,6 +1017,19 @@ export class FinancialDestructiveActionsService {
       const expense = result.rows[0];
       if (String(expense.status).toUpperCase() === 'VOIDED') throw new Error('Expense is already voided');
       if (!expense.journal_entry_id) throw new Error('Expense has no certified posting journal to reverse');
+
+      // Reject voiding if expense or its journal entry is actively matched in a bank reconciliation
+      const matchedCheck = await client.query(
+        `SELECT id FROM bank_reconciliation_matches
+          WHERE organization_id = $1
+            AND accounting_transaction_id IN ($2, $3)
+            AND status = 'MATCHED'
+          LIMIT 1`,
+        [organizationId, expenseId, expense.journal_entry_id]
+      );
+      if (matchedCheck.rows.length > 0) {
+        throw new Error('EXPENSE_RECONCILED: This expense is matched in bank reconciliation. Unmatch or reopen the reconciliation before voiding.');
+      }
       const reversalJournalId = await this.reversePostedJournal(
         client, organizationId, expense.journal_entry_id, userId, normalizedReason,
         `expense ${expense.expense_number}`

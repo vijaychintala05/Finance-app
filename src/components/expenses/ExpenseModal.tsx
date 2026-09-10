@@ -22,6 +22,11 @@ interface ItemizedLine {
 
 const today = () => new Date().toISOString().slice(0, 10);
 
+function toDateInputValue(value?: string): string {
+  const match = value?.match(/^\d{4}-\d{2}-\d{2}/);
+  return match ? match[0] : today();
+}
+
 const MAX_RECEIPT_IMAGES = 3;
 const MAX_RECEIPT_BYTES = 900 * 1024;
 
@@ -203,7 +208,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
   defaultProjectId,
   defaultClientId,
 }) => {
-  const { accounts = [], refreshAccounts, vendors = [], projects = [], clients = [], addVendor, addExpense, settings } = useBooks();
+  const { accounts = [], refreshAccounts, vendors = [], projects = [], clients = [], addVendor, addExpense, correctExpense, settings } = useBooks();
 
   // Support Expense, Cost of Goods Sold, and Other Expense accounts from Chart of Accounts
   const expenseAccounts = useMemo(
@@ -243,6 +248,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
   const [projectId, setProjectId] = useState(defaultProjectId || '');
   const [clientId, setClientId] = useState(defaultClientId || '');
   const [isBillable, setIsBillable] = useState(false);
+  const [correctionReason, setCorrectionReason] = useState('');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [receiptFiles, setReceiptFiles] = useState<File[]>([]);
@@ -351,20 +357,23 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
 
     if (!prevIsOpenRef.current) {
       // Modal just opened: initialize fields and fetch latest accounts in real-time
-      setDate(today());
-      setExpenseAccountId(expenseAccounts[0]?.id || '');
-      setPaidFromAccountId(paymentAccounts[0]?.id || '');
-      setVendorId('');
-      setAmount('');
-      setDescription('');
-      setProjectId(defaultProjectId || '');
-      setClientId(defaultClientId || '');
-      setIsBillable(false);
+      setDate(toDateInputValue(expenseToEdit?.date));
+      setExpenseAccountId(expenseToEdit?.accountId || expenseAccounts[0]?.id || '');
+      setPaidFromAccountId(expenseToEdit?.paidFromAccountId || paymentAccounts[0]?.id || '');
+      setVendorId(expenseToEdit?.vendorId || '');
+      setAmount(expenseToEdit ? String(expenseToEdit.amount) : '');
+      setDescription(expenseToEdit?.description || '');
+      setProjectId(expenseToEdit?.projectId || defaultProjectId || '');
+      setClientId(expenseToEdit?.clientId || defaultClientId || '');
+      setIsBillable(Boolean(expenseToEdit?.isBillable));
+      setCorrectionReason('');
       setError('');
       setIsSubmitting(false);
       setReceiptFiles([]);
-      setIsItemized(false);
-      setItems([{ id: 'item-1', accountId: expenseAccounts[0]?.id || '', description: '', amount: '' }]);
+      setIsItemized(Boolean(expenseToEdit?.isItemized));
+      setItems(expenseToEdit?.isItemized && expenseToEdit.items?.length
+        ? expenseToEdit.items.map((item, index) => ({ id: item.id || `item-${index + 1}`, accountId: item.accountId, description: item.description || '', amount: String(item.amount) }))
+        : [{ id: 'item-1', accountId: expenseToEdit?.accountId || expenseAccounts[0]?.id || '', description: '', amount: '' }]);
       if (refreshAccounts) {
         refreshAccounts().catch((err) => console.error('Realtime accounts fetch error:', err));
       }
@@ -378,7 +387,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
       );
     }
     prevIsOpenRef.current = true;
-  }, [isOpen, expenseAccounts, paymentAccounts, defaultProjectId, defaultClientId, refreshAccounts]);
+  }, [isOpen, expenseAccounts, paymentAccounts, expenseToEdit, defaultProjectId, defaultClientId, refreshAccounts]);
 
   if (!isOpen) return null;
 
@@ -416,11 +425,6 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     setError('');
-
-    if (expenseToEdit) {
-      setError('Posted expenses cannot be edited. Use an audited reversing entry and post a correction.');
-      return;
-    }
 
     const parsedAmount = isItemized ? calculatedItemizedTotal : Number(amount);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -473,7 +477,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
     setIsSubmitting(true);
     try {
       const receiptImages = await Promise.all(receiptFiles.map(compressReceiptImage));
-      await addExpense({
+      const expenseInput = {
         vendorId: vendor?.id,
         vendorName: vendor?.companyName || vendor?.name,
         accountId: expenseAccount.id,
@@ -483,7 +487,16 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
         date,
         currency: settings.currencyCode,
         amount: parsedAmount,
-        taxAmount: 0,
+        taxRate: expenseToEdit?.taxRate,
+        taxAmount: expenseToEdit?.taxAmount || 0,
+        taxAccountId: expenseToEdit?.taxAccountId,
+        isTaxInclusive: expenseToEdit?.isTaxInclusive,
+        isRcm: expenseToEdit?.isRcm,
+        rcmTaxAccountId: expenseToEdit?.rcmTaxAccountId,
+        tdsRate: expenseToEdit?.tdsRate,
+        tdsAmount: expenseToEdit?.tdsAmount,
+        tdsSection: expenseToEdit?.tdsSection,
+        tdsAccountId: expenseToEdit?.tdsAccountId,
         projectId: projectId || undefined,
         clientId: resolvedClientId || undefined,
         isBillable: Boolean(isBillable && resolvedClientId),
@@ -499,7 +512,16 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
             }))
           : undefined,
         description: description.trim() || `Expense paid${vendor ? ` to ${vendor.companyName || vendor.name}` : ''}`,
-      });
+      };
+      if (expenseToEdit) {
+        if (correctionReason.trim().length < 3) {
+          setError('Provide a correction reason of at least 3 characters.');
+          return;
+        }
+        await correctExpense(expenseToEdit.id, expenseInput, correctionReason.trim());
+      } else {
+        await addExpense(expenseInput);
+      }
       onClose();
     } catch (submissionError) {
       setError(
@@ -525,8 +547,8 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                 <Receipt className="h-5 w-5" />
               </span>
               <div>
-                <h2 className="text-lg font-bold text-slate-900 dark:text-white">Record Expense</h2>
-                <p className="mt-0.5 text-xs text-slate-500">Record a paid business expense and attach its receipt.</p>
+                <h2 className="text-lg font-bold text-slate-900 dark:text-white">{expenseToEdit ? 'Edit & correct expense' : 'Record Expense'}</h2>
+                <p className="mt-0.5 text-xs text-slate-500">{expenseToEdit ? 'The original journal will be reversed and a corrected expense will be posted.' : 'Record a paid business expense and attach its receipt.'}</p>
               </div>
             </div>
             <button type="button" onClick={onClose} className="rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 cursor-pointer" aria-label="Close record expense">
@@ -540,9 +562,24 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                 <div className="mb-5 flex gap-2 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
                   <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                   <p>
-                    Posted expense editing is unavailable. Financial corrections require an audited reversal.
+                    Saving this correction will preserve the original expense, post its audited reversal, and create a new corrected expense.
                   </p>
                 </div>
+              )}
+
+              {expenseToEdit && (
+                <label className="mb-5 block space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200">
+                  <span>Correction reason <span className="text-rose-600">*</span></span>
+                  <textarea
+                    value={correctionReason}
+                    onChange={(event) => setCorrectionReason(event.target.value)}
+                    maxLength={1000}
+                    rows={2}
+                    required
+                    placeholder="Explain why the recorded expense needs correction"
+                    className="w-full resize-none rounded-md border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                  />
+                </label>
               )}
 
               {error && (
@@ -682,18 +719,14 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                               {items.map((it, idx) => (
                                 <tr key={it.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/40">
                                   <td className="p-2 pl-3">
-                                    <select
+                                    <SearchableAccountPicker
+                                      id={`expense-item-${it.id}-account-select`}
+                                      label={`Expense category, line ${idx + 1}`}
+                                      placeholder="Select category"
+                                      accounts={expenseAccounts}
                                       value={it.accountId}
-                                      onChange={(e) => handleUpdateItem(idx, 'accountId', e.target.value)}
-                                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-900 outline-hidden focus:border-blue-500 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-                                    >
-                                      <option value="">Select Category</option>
-                                      {expenseAccounts.map((acc) => (
-                                        <option key={acc.id} value={acc.id}>
-                                          {acc.code} - {acc.name}
-                                        </option>
-                                      ))}
-                                    </select>
+                                      onChange={(accountId) => handleUpdateItem(idx, 'accountId', accountId)}
+                                    />
                                   </td>
                                   <td className="p-2">
                                     <input
@@ -968,10 +1001,10 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                 </button>
                 <button
                   type="submit"
-                  disabled={postingUnavailable || Boolean(expenseToEdit) || isSubmitting}
+                  disabled={postingUnavailable || isSubmitting}
                   className="rounded-md bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
                 >
-                  {isSubmitting ? 'Recording…' : 'Record expense'}
+                  {isSubmitting ? (expenseToEdit ? 'Correcting…' : 'Recording…') : (expenseToEdit ? 'Save correction' : 'Record expense')}
                 </button>
               </div>
             </div>

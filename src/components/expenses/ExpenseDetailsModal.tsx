@@ -27,12 +27,14 @@ interface ExpenseDetailsModalProps {
   isOpen: boolean;
   onClose: () => void;
   expense: Expense | null;
+  onEdit?: (expense: Expense) => void;
 }
 
 export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
   isOpen,
   onClose,
   expense,
+  onEdit,
 }) => {
   const { settings, deleteExpense, convertExpenseToInvoice } = useBooks();
   const [currentExpense, setCurrentExpense] = useState<Expense | null>(expense);
@@ -192,6 +194,16 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
                   <Download className="w-4 h-4 text-slate-500" />
                   <span>Download Voucher PDF</span>
                 </button>
+
+                {activeExpense.status !== 'VOIDED' && !activeExpense.isBilled && (
+                  <button
+                    onClick={() => onEdit?.(activeExpense)}
+                    className="w-full text-left px-4 py-2 text-xs font-semibold text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950 flex items-center space-x-2"
+                  >
+                    <FileText className="w-4 h-4" />
+                    <span>Edit & correct</span>
+                  </button>
+                )}
 
                 <button
                   onClick={() => {

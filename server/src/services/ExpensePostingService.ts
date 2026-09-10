@@ -6,6 +6,7 @@ import { DocumentNumberingEngine } from './DocumentNumberingEngine';
 import { newId } from '../utils/ids';
 import { isIsoCalendarDate } from '../utils/date';
 import { ExpenseReceiptService, type ExpenseReceiptUpload } from './ExpenseReceiptService';
+import { FinancialDestructiveActionsService } from '../accounting/FinancialDestructiveActionsService';
 
 export interface ExpenseItemInput {
   id?: string;
@@ -24,6 +25,16 @@ export interface ExpensePostingInput {
   vendorName?: string;
   date: string;
   amount: number;
+  taxRate?: number;
+  taxAmount?: number;
+  taxAccountId?: string;
+  isTaxInclusive?: boolean;
+  isRcm?: boolean;
+  rcmTaxAccountId?: string;
+  tdsRate?: number;
+  tdsAmount?: number;
+  tdsSection?: string;
+  tdsAccountId?: string;
   description?: string;
   projectId?: string;
   clientId?: string;
@@ -35,6 +46,70 @@ export interface ExpensePostingInput {
 }
 
 export class ExpensePostingService {
+  /**
+   * Correct a posted cash expense without ever changing its original journal.
+   * The original is reversed and retained, then the replacement is posted in
+   * the same transaction so GL, cash/bank, and the document trail agree.
+   */
+  public static async correctAndPost(
+    organizationId: string,
+    userId: string,
+    expenseId: string,
+    input: ExpensePostingInput,
+    reason: string
+  ): Promise<{ voidedExpenseId: string; reversalJournalId: string; replacement: Awaited<ReturnType<typeof ExpensePostingService.createAndPost>> }> {
+    const normalizedReason = String(reason || '').trim();
+    if (normalizedReason.length < 3 || normalizedReason.length > 1000) {
+      throw new Error('EXPENSE_CORRECTION_REASON_INVALID: A correction reason containing 3-1000 characters is required');
+    }
+
+    return db.transaction(async (client) => {
+      const originalResult = await client.query(
+        `SELECT * FROM expenses WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [organizationId, expenseId]
+      );
+      if (originalResult.rows.length !== 1) throw new Error('EXPENSE_NOT_FOUND: Expense not found');
+      const original = originalResult.rows[0];
+      if (String(original.status).toUpperCase() === 'VOIDED') throw new Error('EXPENSE_ALREADY_VOIDED: A voided expense cannot be corrected');
+      if (original.is_billed || original.invoice_id) throw new Error('EXPENSE_ALREADY_BILLED: Reverse the linked customer invoice before correcting this expense');
+      if (!original.journal_entry_id) throw new Error('EXPENSE_POSTING_MISSING: Expense has no certified posting journal to reverse');
+
+      // Scope 8: Reject correction if expense or its journal entry is actively matched in a bank reconciliation
+      const matchedCheck = await client.query(
+        `SELECT id FROM bank_reconciliation_matches
+          WHERE organization_id = $1
+            AND accounting_transaction_id IN ($2, $3)
+            AND status = 'MATCHED'
+          LIMIT 1`,
+        [organizationId, expenseId, original.journal_entry_id]
+      );
+      if (matchedCheck.rows.length > 0) {
+        throw new Error('EXPENSE_RECONCILED: This expense is matched in bank reconciliation. Unmatch or reopen the reconciliation before correcting.');
+      }
+
+      const reversalJournalId = await FinancialDestructiveActionsService.reversePostedJournal(
+        client, organizationId, original.journal_entry_id, userId, normalizedReason, `expense correction ${original.expense_number}`
+      );
+      await client.query(
+        `UPDATE expenses SET status = 'VOIDED', reversal_journal_id = $1,
+            reversed_at = CURRENT_TIMESTAMP, reversed_by = $2, reversal_reason = $3
+          WHERE organization_id = $4 AND id = $5`,
+        [reversalJournalId, userId, normalizedReason, organizationId, expenseId]
+      );
+      await DocumentLifecycleHelper.onDocumentVoided(organizationId, 'EXPENSE', expenseId, client, normalizedReason);
+
+      const replacement = await this.createAndPost(organizationId, userId, input, client);
+      await client.query(
+        `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state, after_state)
+         VALUES ($1, $2, $3, 'EXPENSE_CORRECTED', 'Expense', $4, $5, $6)`,
+        [newId('aud'), organizationId, userId, expenseId,
+          JSON.stringify({ expenseNumber: original.expense_number, amount: original.amount, journalEntryId: original.journal_entry_id }),
+          JSON.stringify({ replacementExpenseId: replacement.id, replacementExpenseNumber: replacement.expenseNumber, reversalJournalId, reason: normalizedReason })]
+      );
+      return { voidedExpenseId: expenseId, reversalJournalId, replacement };
+    });
+  }
+
   public static async createAndPost(
     organizationId: string,
     userId: string,
@@ -79,16 +154,154 @@ export class ExpensePostingService {
       );
       if (periodLock.rows.length) throw new Error('EXPENSE_PERIOD_LOCKED: Expense date falls within a locked period');
 
+      const grossOrBase = amount;
+      const isTaxInclusive = Boolean(input.isTaxInclusive);
+      const isRcm = Boolean(input.isRcm);
+      const taxRate = input.taxRate !== undefined ? Number(input.taxRate) : 0;
+      const tdsRate = input.tdsRate !== undefined ? Number(input.tdsRate) : 0;
+      if (!Number.isFinite(taxRate) || taxRate < 0 || taxRate > 100) {
+        throw new Error('EXPENSE_TAX_RATE_INVALID: Tax rate must be between 0 and 100');
+      }
+      if (!Number.isFinite(tdsRate) || tdsRate < 0 || tdsRate > 100) {
+        throw new Error('EXPENSE_TDS_RATE_INVALID: TDS rate must be between 0 and 100');
+      }
+      if (input.taxAmount !== undefined && (!Number.isFinite(Number(input.taxAmount)) || Number(input.taxAmount) < 0)) {
+        throw new Error('EXPENSE_TAX_INVALID: Tax amount must be a non-negative two-decimal amount');
+      }
+      if (input.tdsAmount !== undefined && (!Number.isFinite(Number(input.tdsAmount)) || Number(input.tdsAmount) < 0)) {
+        throw new Error('EXPENSE_TDS_INVALID: TDS amount must be a non-negative two-decimal amount');
+      }
+
+      let taxableBaseAmount: number;
+      let computedTaxAmount: number;
+
+      if (isTaxInclusive) {
+        if (input.taxAmount !== undefined && Number.isFinite(Number(input.taxAmount)) && Number(input.taxAmount) >= 0) {
+          computedTaxAmount = Math.round(Number(input.taxAmount) * 100) / 100;
+          taxableBaseAmount = Math.round((grossOrBase - computedTaxAmount) * 100) / 100;
+        } else if (taxRate > 0) {
+          taxableBaseAmount = Math.round((grossOrBase / (1 + taxRate / 100)) * 100) / 100;
+          computedTaxAmount = Math.round((grossOrBase - taxableBaseAmount) * 100) / 100;
+        } else {
+          taxableBaseAmount = grossOrBase;
+          computedTaxAmount = 0;
+        }
+      } else {
+        taxableBaseAmount = grossOrBase;
+        if (input.taxAmount !== undefined && Number.isFinite(Number(input.taxAmount)) && Number(input.taxAmount) >= 0) {
+          computedTaxAmount = Math.round(Number(input.taxAmount) * 100) / 100;
+        } else if (taxRate > 0) {
+          computedTaxAmount = Math.round((grossOrBase * (taxRate / 100)) * 100) / 100;
+        } else {
+          computedTaxAmount = 0;
+        }
+      }
+
+      if (taxableBaseAmount < 0) {
+        throw new Error('EXPENSE_TAX_INVALID: Tax amount cannot exceed expense gross amount');
+      }
+      if (isRcm && computedTaxAmount <= 0) {
+        throw new Error('EXPENSE_RCM_TAX_REQUIRED: Reverse charge expenses require a positive GST amount');
+      }
+
+      let computedTdsAmount: number;
+      if (input.tdsAmount !== undefined && Number.isFinite(Number(input.tdsAmount)) && Number(input.tdsAmount) >= 0) {
+        computedTdsAmount = Math.round(Number(input.tdsAmount) * 100) / 100;
+      } else if (tdsRate > 0) {
+        computedTdsAmount = Math.round((taxableBaseAmount * (tdsRate / 100)) * 100) / 100;
+      } else {
+        computedTdsAmount = 0;
+      }
+
+      if (computedTdsAmount > taxableBaseAmount) {
+        throw new Error('EXPENSE_TDS_INVALID: TDS amount cannot exceed the taxable expense amount');
+      }
+
+      let bankCreditAmount: number;
+      if (isRcm) {
+        bankCreditAmount = Math.round((taxableBaseAmount - computedTdsAmount) * 100) / 100;
+      } else {
+        const grossTotal = Math.round((taxableBaseAmount + computedTaxAmount) * 100) / 100;
+        bankCreditAmount = Math.round((grossTotal - computedTdsAmount) * 100) / 100;
+      }
+
+      if (bankCreditAmount < 0) {
+        throw new Error('EXPENSE_TDS_INVALID: TDS amount cannot exceed total payout amount');
+      }
+
+      let resolvedTaxAccountId: string | null = null;
+      if (computedTaxAmount > 0) {
+        if (input.taxAccountId) {
+          resolvedTaxAccountId = input.taxAccountId;
+        } else {
+          const taxAccRes = await client.query(
+            `SELECT id FROM accounts
+             WHERE organization_id = $1 AND (system_role = 'GST_INPUT' OR code IN ('1200', '2110') OR LOWER(name) LIKE '%input gst%')
+               AND status = 'Active' AND COALESCE(is_locked, FALSE) = FALSE
+             ORDER BY (system_role = 'GST_INPUT') DESC, (code = '1200') DESC
+             LIMIT 1`,
+            [organizationId]
+          );
+          if (taxAccRes.rows.length === 0) {
+            throw new Error('EXPENSE_TAX_ACCOUNT_NOT_FOUND: No active Input Tax account found for organization');
+          }
+          resolvedTaxAccountId = taxAccRes.rows[0].id;
+        }
+      }
+
+      let resolvedRcmAccountId: string | null = null;
+      if (isRcm && computedTaxAmount > 0) {
+        if (input.rcmTaxAccountId) {
+          resolvedRcmAccountId = input.rcmTaxAccountId;
+        } else {
+          const rcmAccRes = await client.query(
+            `SELECT id FROM accounts
+             WHERE organization_id = $1 AND (code = '2240' OR LOWER(name) LIKE '%reverse charge%' OR system_role = 'GST_OUTPUT' OR code = '2200')
+               AND status = 'Active' AND COALESCE(is_locked, FALSE) = FALSE
+             ORDER BY (code = '2240') DESC, (LOWER(name) LIKE '%reverse charge%') DESC
+             LIMIT 1`,
+            [organizationId]
+          );
+          if (rcmAccRes.rows.length === 0) {
+            throw new Error('EXPENSE_RCM_ACCOUNT_NOT_FOUND: No active Reverse Charge Liability account found for organization');
+          }
+          resolvedRcmAccountId = rcmAccRes.rows[0].id;
+        }
+      }
+
+      let resolvedTdsAccountId: string | null = null;
+      if (computedTdsAmount > 0) {
+        if (input.tdsAccountId) {
+          resolvedTdsAccountId = input.tdsAccountId;
+        } else {
+          const tdsAccRes = await client.query(
+            `SELECT id FROM accounts
+             WHERE organization_id = $1 AND (system_role = 'TDS_PAYABLE' OR code = '2250' OR LOWER(name) LIKE '%tds payable%')
+               AND status = 'Active' AND COALESCE(is_locked, FALSE) = FALSE
+             ORDER BY (system_role = 'TDS_PAYABLE') DESC, (code = '2250') DESC
+             LIMIT 1`,
+            [organizationId]
+          );
+          if (tdsAccRes.rows.length === 0) {
+            throw new Error('EXPENSE_TDS_ACCOUNT_NOT_FOUND: No active TDS Payable account found for organization');
+          }
+          resolvedTdsAccountId = tdsAccRes.rows[0].id;
+        }
+      }
+
       // Check all unique accounts involved
-      const distinctAccountIds = Array.from(new Set(
-        isItemized
-          ? [input.paidFromAccountId, input.expenseAccountId, ...input.items!.map(it => it.accountId)]
-          : [input.paidFromAccountId, input.expenseAccountId]
-      ));
+      const distinctAccountIds = Array.from(new Set([
+        input.paidFromAccountId,
+        input.expenseAccountId,
+        ...(isItemized ? input.items!.map(it => it.accountId) : []),
+        ...(resolvedTaxAccountId ? [resolvedTaxAccountId] : []),
+        ...(resolvedRcmAccountId ? [resolvedRcmAccountId] : []),
+        ...(resolvedTdsAccountId ? [resolvedTdsAccountId] : []),
+      ]));
 
       const placeholders = distinctAccountIds.map((_, i) => String.fromCharCode(36) + (i + 2)).join(', ');
       const accountCheck = await client.query(
-        `SELECT id, type, sub_type FROM accounts
+        `SELECT id, code, name, type, sub_type, system_role FROM accounts
           WHERE organization_id = $1 AND id IN (${placeholders})
             AND status = 'Active' AND COALESCE(is_locked, FALSE) = FALSE`,
         [organizationId, ...distinctAccountIds]
@@ -106,6 +319,43 @@ export class ExpensePostingService {
 
       if (!isAssetPayment && !isLiabilityPayment) {
         throw new Error('EXPENSE_ACCOUNT_TYPE_INVALID: Credit a bank, cash, wallet, or credit card account');
+      }
+
+      const taxAccount = accountCheck.rows.find((account) => account.id === resolvedTaxAccountId);
+      if (taxAccount) {
+        const isInputTaxControl =
+          taxAccount.system_role === 'GST_INPUT' ||
+          ['1200', '1210', '1220', '1230', '2110'].includes(String(taxAccount.code)) ||
+          String(taxAccount.name || '').toLowerCase().includes('input gst');
+        if (!isInputTaxControl) {
+          throw new Error('EXPENSE_TAX_ACCOUNT_INVALID: Tax must debit an Input GST control account');
+        }
+      }
+
+      const rcmAccount = accountCheck.rows.find((account) => account.id === resolvedRcmAccountId);
+      if (rcmAccount) {
+        const isOutputTaxControl =
+          rcmAccount.type === 'Liability' && (
+            rcmAccount.system_role === 'GST_OUTPUT' ||
+            ['2200', '2210', '2220', '2230', '2240'].includes(String(rcmAccount.code)) ||
+            String(rcmAccount.name || '').toLowerCase().includes('reverse charge')
+          );
+        if (!isOutputTaxControl) {
+          throw new Error('EXPENSE_RCM_ACCOUNT_INVALID: Reverse charge GST must credit an Output GST liability account');
+        }
+      }
+
+      const tdsAccount = accountCheck.rows.find((account) => account.id === resolvedTdsAccountId);
+      if (tdsAccount) {
+        const isTdsPayableControl =
+          tdsAccount.type === 'Liability' && (
+            tdsAccount.system_role === 'TDS_PAYABLE' ||
+            String(tdsAccount.code) === '2250' ||
+            String(tdsAccount.name || '').toLowerCase().includes('tds payable')
+          );
+        if (!isTdsPayableControl) {
+          throw new Error('EXPENSE_TDS_ACCOUNT_INVALID: TDS must credit a TDS Payable liability account');
+        }
       }
 
       // Check all expense accounts
@@ -165,11 +415,17 @@ export class ExpensePostingService {
       await client.query(
         `INSERT INTO expenses
           (id, organization_id, expense_number, expense_account_id, paid_from_account_id,
-           vendor_name, date, amount, description, project_id, client_id, is_billable, is_billed, invoice_id, source_occurrence_key,
+           vendor_name, date, amount, tax_rate, tax_amount, tax_account_id,
+           is_tax_inclusive, is_rcm, rcm_tax_account_id,
+           tds_rate, tds_amount, tds_section, tds_account_id,
+           description, project_id, client_id, is_billable, is_billed, invoice_id, source_occurrence_key,
            is_itemized, items)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, FALSE, NULL, $13, $14, $15)`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, FALSE, NULL, $23, $24, $25)`,
         [id, organizationId, expenseNumber, input.expenseAccountId, input.paidFromAccountId,
-          input.vendorName || '', input.date, amount, input.description || '', input.projectId || null,
+          input.vendorName || '', input.date, amount, taxRate, computedTaxAmount, resolvedTaxAccountId,
+          isTaxInclusive, isRcm, resolvedRcmAccountId,
+          tdsRate, computedTdsAmount, input.tdsSection || null, resolvedTdsAccountId,
+          input.description || '', input.projectId || null,
           effectiveClientId, Boolean(input.isBillable), input.sourceOccurrenceKey || null,
           isItemized, itemsJson]
       );
@@ -179,34 +435,90 @@ export class ExpensePostingService {
       const journalLines: Array<{ accountId: string; debit: number; credit: number; description?: string; projectId?: string; customerId?: string }> = [];
 
       if (isItemized) {
-        for (const it of input.items!) {
-          journalLines.push({
-            accountId: it.accountId,
-            debit: Number(it.amount),
-            credit: 0,
-            description: it.description || input.description || `Expense item`,
-            projectId: it.projectId || input.projectId,
-            customerId: it.clientId || effectiveClientId,
-          });
+        if (isTaxInclusive) {
+          let itemDebitsSum = 0;
+          for (let i = 0; i < input.items!.length; i++) {
+            const it = input.items![i];
+            let itemDebit: number;
+            if (i === input.items!.length - 1) {
+              itemDebit = Math.round((taxableBaseAmount - itemDebitsSum) * 100) / 100;
+            } else {
+              itemDebit = Math.round((taxableBaseAmount * (Number(it.amount) / grossOrBase)) * 100) / 100;
+              itemDebitsSum += itemDebit;
+            }
+            journalLines.push({
+              accountId: it.accountId,
+              debit: itemDebit,
+              credit: 0,
+              description: it.description || input.description || `Expense item`,
+              projectId: it.projectId || input.projectId,
+              customerId: it.clientId || effectiveClientId,
+            });
+          }
+        } else {
+          for (const it of input.items!) {
+            journalLines.push({
+              accountId: it.accountId,
+              debit: Number(it.amount),
+              credit: 0,
+              description: it.description || input.description || `Expense item`,
+              projectId: it.projectId || input.projectId,
+              customerId: it.clientId || effectiveClientId,
+            });
+          }
         }
       } else {
         journalLines.push({
           accountId: input.expenseAccountId,
-          debit: amount,
+          debit: taxableBaseAmount,
           credit: 0,
           projectId: input.projectId,
           customerId: effectiveClientId || undefined,
         });
       }
 
-      // Credit the payment account (Bank / Cash / Card)
-      journalLines.push({
-        accountId: input.paidFromAccountId,
-        debit: 0,
-        credit: amount,
-        projectId: input.projectId,
-        customerId: effectiveClientId || undefined,
-      });
+      if (computedTaxAmount > 0 && resolvedTaxAccountId) {
+        journalLines.push({
+          accountId: resolvedTaxAccountId,
+          debit: computedTaxAmount,
+          credit: 0,
+          description: isRcm ? 'Input GST on Reverse Charge' : 'Input GST Credit',
+          projectId: input.projectId,
+          customerId: effectiveClientId || undefined,
+        });
+      }
+
+      if (bankCreditAmount > 0) {
+        journalLines.push({
+          accountId: input.paidFromAccountId,
+          debit: 0,
+          credit: bankCreditAmount,
+          projectId: input.projectId,
+          customerId: effectiveClientId || undefined,
+        });
+      }
+
+      if (computedTdsAmount > 0 && resolvedTdsAccountId) {
+        journalLines.push({
+          accountId: resolvedTdsAccountId,
+          debit: 0,
+          credit: computedTdsAmount,
+          description: `TDS deducted ${input.tdsSection ? `u/s ${input.tdsSection}` : ''}`.trim(),
+          projectId: input.projectId,
+          customerId: effectiveClientId || undefined,
+        });
+      }
+
+      if (isRcm && computedTaxAmount > 0 && resolvedRcmAccountId) {
+        journalLines.push({
+          accountId: resolvedRcmAccountId,
+          debit: 0,
+          credit: computedTaxAmount,
+          description: 'Output GST Liability under Reverse Charge',
+          projectId: input.projectId,
+          customerId: effectiveClientId || undefined,
+        });
+      }
 
       const posting = await ServerPostingEngine.postEntry({
         organizationId,
@@ -230,6 +542,16 @@ export class ExpensePostingService {
         id,
         expenseNumber,
         amount,
+        taxRate,
+        taxAmount: computedTaxAmount,
+        taxAccountId: resolvedTaxAccountId,
+        isTaxInclusive,
+        isRcm,
+        rcmTaxAccountId: resolvedRcmAccountId,
+        tdsRate,
+        tdsAmount: computedTdsAmount,
+        tdsSection: input.tdsSection || null,
+        tdsAccountId: resolvedTdsAccountId,
         isBillable: Boolean(input.isBillable),
         isBilled: false,
         clientId: effectiveClientId,

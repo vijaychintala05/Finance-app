@@ -7,7 +7,7 @@ import { applyUsabilitySchema } from './usabilitySchema';
 import { applyPaymentAccountingSchema } from './paymentAccountingSchema';
 import type { DbQueryResult } from './db';
 
-export const CURRENT_SCHEMA_VERSION = '2026.09.10-v8-billable-expense-recovery';
+export const CURRENT_SCHEMA_VERSION = '2026.09.10-v10-employee-reimbursements';
 
 export class MigrationRunner {
   public static async runMigrations(queryClient?: { query: (text: string, params?: any[]) => Promise<DbQueryResult> }): Promise<void> {
@@ -484,6 +484,15 @@ export class MigrationRunner {
         date DATE NOT NULL,
         amount NUMERIC(15, 2) NOT NULL,
         tax_rate NUMERIC(5, 2) DEFAULT 0.00,
+        tax_amount NUMERIC(15, 2) DEFAULT 0.00,
+        tax_account_id VARCHAR(64),
+        is_tax_inclusive BOOLEAN DEFAULT FALSE,
+        is_rcm BOOLEAN DEFAULT FALSE,
+        rcm_tax_account_id VARCHAR(64),
+        tds_rate NUMERIC(5, 2) DEFAULT 0.00,
+        tds_amount NUMERIC(15, 2) DEFAULT 0.00,
+        tds_section VARCHAR(50),
+        tds_account_id VARCHAR(64),
         description TEXT,
         project_id VARCHAR(64),
         client_id VARCHAR(64),
@@ -1324,6 +1333,71 @@ export class MigrationRunner {
       )`,
       `CREATE UNIQUE INDEX IF NOT EXISTS uk_org_doc_seq ON document_sequences (organization_id, document_type, financial_year)`,
 
+      `CREATE TABLE IF NOT EXISTS employee_claims (
+        id VARCHAR(64) PRIMARY KEY,
+        organization_id VARCHAR(64) NOT NULL,
+        claim_number VARCHAR(64) NOT NULL,
+        claimant_id VARCHAR(64) NOT NULL,
+        claimant_name VARCHAR(255) NOT NULL,
+        claim_date DATE NOT NULL,
+        title VARCHAR(255) NOT NULL,
+        description TEXT,
+        total_amount NUMERIC(15, 2) NOT NULL,
+        approved_amount NUMERIC(15, 2) DEFAULT 0.00,
+        paid_amount NUMERIC(15, 2) DEFAULT 0.00,
+        status VARCHAR(30) NOT NULL DEFAULT 'DRAFT',
+        payable_account_id VARCHAR(64),
+        claim_journal_entry_id VARCHAR(64),
+        reversal_journal_id VARCHAR(64),
+        submitted_at TIMESTAMP WITH TIME ZONE,
+        submitted_by VARCHAR(64),
+        approved_at TIMESTAMP WITH TIME ZONE,
+        approved_by VARCHAR(64),
+        rejected_at TIMESTAMP WITH TIME ZONE,
+        rejected_by VARCHAR(64),
+        rejection_reason TEXT,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT uk_org_claim_number UNIQUE (organization_id, claim_number)
+      )`,
+
+      `CREATE TABLE IF NOT EXISTS employee_claim_items (
+        id VARCHAR(64) PRIMARY KEY,
+        organization_id VARCHAR(64) NOT NULL,
+        claim_id VARCHAR(64) NOT NULL,
+        expense_account_id VARCHAR(64) NOT NULL,
+        date DATE NOT NULL,
+        amount NUMERIC(15, 2) NOT NULL,
+        tax_rate NUMERIC(5, 2) DEFAULT 0.00,
+        tax_amount NUMERIC(15, 2) DEFAULT 0.00,
+        description TEXT,
+        project_id VARCHAR(64),
+        client_id VARCHAR(64),
+        receipt_url TEXT,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      )`,
+
+      `CREATE TABLE IF NOT EXISTS employee_reimbursement_payments (
+        id VARCHAR(64) PRIMARY KEY,
+        organization_id VARCHAR(64) NOT NULL,
+        payment_number VARCHAR(64) NOT NULL,
+        claim_id VARCHAR(64) NOT NULL,
+        claimant_id VARCHAR(64) NOT NULL,
+        payment_date DATE NOT NULL,
+        amount NUMERIC(15, 2) NOT NULL,
+        paid_from_account_id VARCHAR(64) NOT NULL,
+        payable_account_id VARCHAR(64) NOT NULL,
+        payment_method VARCHAR(50) DEFAULT 'Bank Transfer',
+        reference VARCHAR(100),
+        notes TEXT,
+        status VARCHAR(20) DEFAULT 'POSTED',
+        journal_entry_id VARCHAR(64) NOT NULL,
+        reversal_journal_id VARCHAR(64),
+        created_by VARCHAR(64),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT uk_org_reimb_payment_number UNIQUE (organization_id, payment_number)
+      )`,
+
       `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS customer_id VARCHAR(64)`,
       `ALTER TABLE journal_entries ADD COLUMN IF NOT EXISTS reversal_of_journal_id VARCHAR(64)`,
       `ALTER TABLE journal_entries ADD COLUMN IF NOT EXISTS reversed_by_journal_id VARCHAR(64)`,
@@ -1345,6 +1419,15 @@ export class MigrationRunner {
       `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS reversal_reason TEXT`,
       `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS is_itemized BOOLEAN NOT NULL DEFAULT FALSE`,
       `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS items JSONB`,
+      `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS tax_amount NUMERIC(15, 2) DEFAULT 0.00`,
+      `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS tax_account_id VARCHAR(64)`,
+      `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS is_tax_inclusive BOOLEAN DEFAULT FALSE`,
+      `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS is_rcm BOOLEAN DEFAULT FALSE`,
+      `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS rcm_tax_account_id VARCHAR(64)`,
+      `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS tds_rate NUMERIC(5, 2) DEFAULT 0.00`,
+      `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS tds_amount NUMERIC(15, 2) DEFAULT 0.00`,
+      `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS tds_section VARCHAR(50)`,
+      `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS tds_account_id VARCHAR(64)`,
       `ALTER TABLE bills ADD COLUMN IF NOT EXISTS reversal_journal_id VARCHAR(64)`,
       `ALTER TABLE bills ADD COLUMN IF NOT EXISTS reversed_at TIMESTAMP WITH TIME ZONE`,
       `ALTER TABLE bills ADD COLUMN IF NOT EXISTS reversed_by VARCHAR(64)`,

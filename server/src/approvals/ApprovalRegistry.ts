@@ -9,7 +9,8 @@ export type ApprovalEntityType =
   | 'CREDIT_NOTE'
   | 'MANUAL_JOURNAL'
   | 'PERIOD_REOPENING'
-  | 'EXPENSE';
+  | 'EXPENSE'
+  | 'EMPLOYEE_CLAIM';
 
 export type ApprovalStatus = 'DRAFT' | 'SUBMITTED' | 'APPROVED' | 'REJECTED' | 'CONSUMED';
 
@@ -199,6 +200,25 @@ export const APPROVAL_ENTITIES: Record<ApprovalEntityType, ApprovalEntityDefinit
       amount: Math.round(Number(data.amount ?? data.totalAmount ?? data.total_amount ?? 0) * 100) / 100,
       partyId: data.vendorId || data.vendor_id || '',
       date: String(data.expenseDate || data.date || data.expense_date || '').slice(0, 10),
+      dueDate: '',
+      currency: String(data.currency || 'USD').toUpperCase(),
+      lines: extractLines(data),
+    }),
+    allowedTransitions: COMMON_TRANSITIONS,
+  },
+  EMPLOYEE_CLAIM: {
+    entityType: 'EMPLOYEE_CLAIM',
+    displayName: 'Employee Claim',
+    defaultApproverRole: 'Finance Manager',
+    defaultThreshold: 5000,
+    defaultRuleId: 'rule-claim',
+    allowSelfApproval: false,
+    isRequiredByDefault: false,
+    computeCanonicalPayload: (data: any) => ({
+      entityType: 'EMPLOYEE_CLAIM',
+      amount: Math.round(Number(data.totalAmount ?? data.total_amount ?? data.amount ?? 0) * 100) / 100,
+      partyId: data.claimantId || data.claimant_id || '',
+      date: String(data.claimDate || data.claim_date || data.date || '').slice(0, 10),
       dueDate: '',
       currency: String(data.currency || 'USD').toUpperCase(),
       lines: extractLines(data),

@@ -365,7 +365,16 @@ export class AccountingIntegrityService {
       [organizationId]
     );
     const cnTaxReversalCents = databaseMoneyToCents(cnRes.rows[0]?.total, 'Credit note tax reversal');
-    const netDocumentOutputCents = invoiceOutputCents - cnTaxReversalCents;
+
+    // 2b. Expense RCM Output GST
+    const expRcmRes = await db.query<any>(
+      `SELECT COALESCE(SUM(tax_amount), 0) as total
+       FROM expenses
+       WHERE organization_id = $1 AND UPPER(status) NOT IN ('VOID', 'VOIDED') AND is_rcm = TRUE`,
+      [organizationId]
+    );
+    const expenseRcmOutputCents = databaseMoneyToCents(expRcmRes.rows[0]?.total, 'Expense RCM output tax');
+    const netDocumentOutputCents = invoiceOutputCents - cnTaxReversalCents + expenseRcmOutputCents;
 
     // 3. Bill Input GST
     const billRes = await db.query<any>(
@@ -376,6 +385,16 @@ export class AccountingIntegrityService {
     );
     const billInputCents = databaseMoneyToCents(billRes.rows[0]?.total, 'Bill input tax');
 
+    // 3b. Expense Input GST
+    const expRes = await db.query<any>(
+      `SELECT COALESCE(SUM(tax_amount), 0) as total
+       FROM expenses
+       WHERE organization_id = $1 AND UPPER(status) NOT IN ('VOID', 'VOIDED')`,
+      [organizationId]
+    );
+    const expenseInputCents = databaseMoneyToCents(expRes.rows[0]?.total, 'Expense input tax');
+    const totalDocumentInputCents = billInputCents + expenseInputCents;
+
     // 4. GL Output GST balance
     const glOutputRes = await db.query<any>(
       `SELECT COALESCE(SUM(jl.credit - jl.debit), 0) as balance
@@ -383,7 +402,10 @@ export class AccountingIntegrityService {
        JOIN journal_entries je ON jl.journal_entry_id = je.id
        JOIN accounts a ON a.id = jl.account_id AND a.organization_id = je.organization_id
        WHERE je.organization_id = $1
-         AND a.code IN ('2100', '2200')
+         AND (
+           a.code IN ('2200', '2210', '2220', '2230', '2240')
+           OR (a.system_role = 'GST_OUTPUT' AND a.code NOT IN ('2100', '2110'))
+         )
          AND UPPER(je.status) = 'POSTED'`,
       [organizationId]
     );
@@ -396,15 +418,15 @@ export class AccountingIntegrityService {
        JOIN journal_entries je ON jl.journal_entry_id = je.id
        JOIN accounts a ON a.id = jl.account_id AND a.organization_id = je.organization_id
        WHERE je.organization_id = $1
-         AND (a.code = '2110' OR (a.code = '1200' AND LOWER(a.name) LIKE '%tax%'))
+         AND (a.code = '2110' OR a.code IN ('1200', '1210', '1220', '1230') OR a.system_role = 'GST_INPUT' OR (a.code = '1200' AND LOWER(a.name) LIKE '%tax%'))
          AND UPPER(je.status) = 'POSTED'`,
       [organizationId]
     );
     const glInputCents = databaseMoneyToCents(glInputRes.rows[0]?.balance, 'Input tax control balance');
 
     const outputDifferenceCents = absoluteCents(netDocumentOutputCents - glOutputCents);
-    const inputDifferenceCents = absoluteCents(billInputCents - glInputCents);
-    const totalExpectedCents = netDocumentOutputCents + billInputCents;
+    const inputDifferenceCents = absoluteCents(totalDocumentInputCents - glInputCents);
+    const totalExpectedCents = netDocumentOutputCents + totalDocumentInputCents;
     const totalActualCents = glOutputCents + glInputCents;
     const totalDifferenceCents = outputDifferenceCents + inputDifferenceCents;
 
@@ -418,8 +440,11 @@ export class AccountingIntegrityService {
       details: {
         invoiceOutputTax: centsDetail(invoiceOutputCents, 'Invoice output tax'),
         creditNoteOutputTaxReversal: centsDetail(cnTaxReversalCents, 'Credit note tax reversal'),
+        expenseRcmOutputTax: centsDetail(expenseRcmOutputCents, 'Expense RCM output tax'),
         netDocumentOutputTax: centsDetail(netDocumentOutputCents, 'Net document output tax'),
         billInputTax: centsDetail(billInputCents, 'Bill input tax'),
+        expenseInputTax: centsDetail(expenseInputCents, 'Expense input tax'),
+        totalDocumentInputTax: centsDetail(totalDocumentInputCents, 'Total document input tax'),
         glOutputTax: centsDetail(glOutputCents, 'Output tax control balance'),
         glInputTax: centsDetail(glInputCents, 'Input tax control balance'),
         outputDifference: centsDetail(outputDifferenceCents, 'Output tax difference'),

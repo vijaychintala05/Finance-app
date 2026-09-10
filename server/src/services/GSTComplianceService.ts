@@ -30,8 +30,13 @@ export class GSTComplianceService {
           COALESCE(SUM(CASE WHEN c.tax_id IS NULL OR c.tax_id = '' THEN 1 ELSE 0 END), 0) AS missing_gstin_count
         FROM invoices i LEFT JOIN clients c ON c.id = i.client_id AND c.organization_id = i.organization_id
         WHERE i.organization_id = $1 AND i.issue_date >= $2 AND i.issue_date <= $3 AND UPPER(i.status) NOT IN ('VOID', 'VOIDED', 'DRAFT')`, [organizationId, periodStart, periodEnd]),
-      db.query(`SELECT COUNT(*) AS document_count, COALESCE(SUM(subtotal), 0) AS taxable_value, COALESCE(SUM(tax_total), 0) AS tax_amount
-        FROM bills WHERE organization_id = $1 AND bill_date >= $2 AND bill_date <= $3 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT')`, [organizationId, periodStart, periodEnd]),
+      db.query(`SELECT
+          (SELECT COUNT(*) FROM bills WHERE organization_id = $1 AND bill_date >= $2 AND bill_date <= $3 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT'))
+          + (SELECT COUNT(*) FROM expenses WHERE organization_id = $1 AND date >= $2 AND date <= $3 AND UPPER(status) NOT IN ('VOID', 'VOIDED') AND COALESCE(tax_amount, 0) > 0) AS document_count,
+          (SELECT COALESCE(SUM(subtotal), 0) FROM bills WHERE organization_id = $1 AND bill_date >= $2 AND bill_date <= $3 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT'))
+          + (SELECT COALESCE(SUM(CASE WHEN is_tax_inclusive THEN amount - COALESCE(tax_amount, 0) ELSE amount END), 0) FROM expenses WHERE organization_id = $1 AND date >= $2 AND date <= $3 AND UPPER(status) NOT IN ('VOID', 'VOIDED') AND COALESCE(tax_amount, 0) > 0) AS taxable_value,
+          (SELECT COALESCE(SUM(tax_total), 0) FROM bills WHERE organization_id = $1 AND bill_date >= $2 AND bill_date <= $3 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT'))
+          + (SELECT COALESCE(SUM(tax_amount), 0) FROM expenses WHERE organization_id = $1 AND date >= $2 AND date <= $3 AND UPPER(status) NOT IN ('VOID', 'VOIDED') AND COALESCE(tax_amount, 0) > 0) AS tax_amount`, [organizationId, periodStart, periodEnd]),
       AccountingIntegrityService.verifyGSTIntegrity(organizationId),
     ]);
     const outward = outwardRes.rows[0] || {};

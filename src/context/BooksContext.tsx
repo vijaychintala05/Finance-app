@@ -221,6 +221,7 @@ interface BooksContextType {
 
   expenses: Expense[];
   addExpense: (expense: Omit<Expense, 'id' | 'createdAt' | 'referenceNumber'>) => Promise<void>;
+  correctExpense: (id: string, expense: Omit<Expense, 'id' | 'createdAt' | 'referenceNumber'>, reason: string) => Promise<void>;
   deleteExpense: (id: string) => Promise<void>;
   convertExpenseToInvoice: (expenseId: string, issueDate?: string, dueDate?: string) => Promise<any>;
 
@@ -1142,9 +1143,6 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const addExpense = async (expenseData: Omit<Expense, 'id' | 'createdAt' | 'referenceNumber'>): Promise<void> => {
 
-    if (Number(expenseData.taxAmount || 0) !== 0) {
-      throw new Error('Expense tax posting is not enabled. Record a bill with verified tax lines instead.');
-    }
     if (expenseData.invoiceNumber) {
       throw new Error('Vendor references are not enabled until their server workflow is certified.');
     }
@@ -1157,6 +1155,16 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       vendorName: expenseData.vendorName,
       date: expenseData.date,
       amount: expenseData.amount,
+      taxRate: expenseData.taxRate,
+      taxAmount: expenseData.taxAmount,
+      taxAccountId: expenseData.taxAccountId,
+      isTaxInclusive: expenseData.isTaxInclusive,
+      isRcm: expenseData.isRcm,
+      rcmTaxAccountId: expenseData.rcmTaxAccountId,
+      tdsRate: expenseData.tdsRate,
+      tdsAmount: expenseData.tdsAmount,
+      tdsSection: expenseData.tdsSection,
+      tdsAccountId: expenseData.tdsAccountId,
       description: expenseData.description,
       projectId: expenseData.projectId,
       clientId: expenseData.clientId,
@@ -1174,6 +1182,40 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (!reason) return;
     const response = await apiClient.post(`/finance/expenses/${id}/void`, { reason });
     if (!response.data) throw new Error(response.error || 'Expense could not be voided');
+    await refreshAfterCommittedWrite();
+  };
+
+  const correctExpense = async (
+    id: string,
+    expenseData: Omit<Expense, 'id' | 'createdAt' | 'referenceNumber'>,
+    reason: string
+  ): Promise<void> => {
+    const response = await apiClient.post(`/finance/expenses/${id}/correct`, {
+      reason,
+      expenseAccountId: expenseData.accountId,
+      paidFromAccountId: expenseData.paidFromAccountId,
+      vendorName: expenseData.vendorName,
+      date: expenseData.date,
+      amount: expenseData.amount,
+      taxRate: expenseData.taxRate,
+      taxAmount: expenseData.taxAmount,
+      taxAccountId: expenseData.taxAccountId,
+      isTaxInclusive: expenseData.isTaxInclusive,
+      isRcm: expenseData.isRcm,
+      rcmTaxAccountId: expenseData.rcmTaxAccountId,
+      tdsRate: expenseData.tdsRate,
+      tdsAmount: expenseData.tdsAmount,
+      tdsSection: expenseData.tdsSection,
+      tdsAccountId: expenseData.tdsAccountId,
+      description: expenseData.description,
+      projectId: expenseData.projectId,
+      clientId: expenseData.clientId,
+      isBillable: expenseData.isBillable,
+      isItemized: expenseData.isItemized,
+      items: expenseData.items,
+      receiptImages: expenseData.receiptImages,
+    });
+    if (!response.data) throw new Error(response.error || 'Expense could not be corrected');
     await refreshAfterCommittedWrite();
   };
 
@@ -1700,6 +1742,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       convertEstimateToInvoice,
       expenses,
       addExpense,
+      correctExpense,
       deleteExpense,
       convertExpenseToInvoice,
       journalEntries,

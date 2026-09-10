@@ -177,8 +177,20 @@ router.post('/expenses', requirePermission(['expenses.create']), FinanceControll
 router.get('/expenses/:id/receipts/:receiptId', requirePermission(['expenses.view', 'expenses.attach_receipt']), FinanceController.getExpenseReceipt);
 router.get('/expenses/:id/pdf', requirePermission(['expenses.view']), FinanceController.getExpensePdf);
 router.post('/expenses/:id/void', requirePermission(['expenses.void', 'expenses.create']), FinanceController.voidExpense);
+router.post('/expenses/:id/correct', requirePermission(['expenses.void', 'expenses.create']), FinanceController.correctExpense);
 router.post('/expenses/:id/convert-to-invoice', requirePermission(['expenses.create', 'invoices.create']), FinanceController.convertExpenseToInvoice);
 router.put('/expenses/:id', requirePermission(['expenses.create']), FinanceController.updateExpense);
+
+// Employee Claims & Reimbursements
+router.get(['/employee-claims', '/claims'], requirePermission(['expenses.view']), FinanceController.listEmployeeClaims);
+router.post(['/employee-claims', '/claims'], requirePermission(['expenses.create']), FinanceController.createEmployeeClaim);
+router.get(['/employee-claims/:id', '/claims/:id'], requirePermission(['expenses.view']), FinanceController.getEmployeeClaim);
+router.post(['/employee-claims/:id/submit', '/claims/:id/submit'], requirePermission(['expenses.create']), FinanceController.submitEmployeeClaim);
+router.post(['/employee-claims/:id/approve', '/claims/:id/approve'], requirePermission(['expenses.approve']), FinanceController.approveEmployeeClaim);
+router.post(['/employee-claims/:id/reject', '/claims/:id/reject'], requirePermission(['expenses.approve']), FinanceController.rejectEmployeeClaim);
+router.post(['/employee-claims/:id/pay', '/employee-claims/:id/record-payment', '/claims/:id/pay', '/claims/:id/record-payment'], requirePermission(['expenses.create']), FinanceController.recordEmployeeReimbursementPayment);
+router.post(['/employee-claims/:id/void', '/claims/:id/void'], requirePermission(['expenses.void', 'expenses.create']), FinanceController.voidEmployeeClaim);
+router.post(['/employee-reimbursements/:id/void', '/reimbursements/payments/:id/void'], requirePermission(['expenses.void', 'expenses.create']), FinanceController.voidEmployeeReimbursementPayment);
 
 // Purchase Orders & Goods Receipts
 router.get('/purchase-orders', requirePermission(['purchases.view', 'bills.view']), FinanceController.getPurchaseOrders);

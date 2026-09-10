@@ -27,6 +27,8 @@ export class DocumentNumberingEngine {
     VENDOR_PAYMENT: 'VPAY',
     DELIVERY_CHALLAN: 'DC',
     JOURNAL: 'JV',
+    EMPLOYEE_CLAIM: 'CLM',
+    REIMBURSEMENT_PAYMENT: 'REIMB',
   };
 
   /**

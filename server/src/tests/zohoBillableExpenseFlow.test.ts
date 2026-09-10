@@ -311,4 +311,69 @@ describe('Zoho Books Customer-Billable Recoverable Expenses', () => {
     expect(afterPosting.rows[0].is_billed).toBe(true);
     expect(afterPosting.rows[0].invoice_id).toBe(convertRes.body.invoice.id);
   });
+
+  it('7. corrects a recorded expense through an atomic reversal and replacement posting', async () => {
+    const f = await fixture('expense-correction');
+    const original = await request(app)
+      .post('/api/v1/finance/expenses')
+      .set(f.auth)
+      .send({
+        expenseAccountId: f.expenseAccountId,
+        paidFromAccountId: f.paidFromAccountId,
+        vendorName: 'Original vendor',
+        date: '2026-08-21',
+        amount: 125.5,
+        description: 'Original posted expense',
+      });
+    expect(original.status).toBe(201);
+
+    const correction = await request(app)
+      .post(`/api/v1/finance/expenses/${original.body.id}/correct`)
+      .set(f.auth)
+      .send({
+        reason: 'Corrected vendor amount',
+        expenseAccountId: f.expenseAccountId,
+        paidFromAccountId: f.paidFromAccountId,
+        vendorName: 'Correct vendor',
+        date: '2026-08-22',
+        amount: 150.75,
+        description: 'Corrected posted expense',
+      });
+    expect(correction.status).toBe(201);
+    expect(correction.body.voidedExpenseId).toBe(original.body.id);
+    expect(correction.body.replacement.id).toBeTruthy();
+    expect(correction.body.replacement.id).not.toBe(original.body.id);
+    expect(correction.body.reversalJournalId).toBeTruthy();
+
+    const voidedResult = await db.query(
+      `SELECT id, status, amount, journal_entry_id, reversal_journal_id
+         FROM expenses WHERE organization_id = $1 AND id = $2`,
+      [f.orgId, original.body.id]
+    );
+    const replacementResult = await db.query(
+      `SELECT id, status, amount, journal_entry_id, reversal_journal_id
+         FROM expenses WHERE organization_id = $1 AND id = $2`,
+      [f.orgId, correction.body.replacement.id]
+    );
+    const voided = voidedResult.rows[0];
+    const replacement = replacementResult.rows[0];
+    expect(voided.status).toBe('VOIDED');
+    expect(voided.reversal_journal_id).toBe(correction.body.reversalJournalId);
+    expect(Number(replacement.amount)).toBe(150.75);
+    expect(replacement.journal_entry_id).toBe(correction.body.replacement.journalEntryId);
+
+    const replacementLines = await db.query(
+      `SELECT debit, credit FROM journal_lines WHERE organization_id = $1 AND journal_entry_id = $2`,
+      [f.orgId, replacement.journal_entry_id]
+    );
+    expect(replacementLines.rows.reduce((total, line) => total + Number(line.debit), 0)).toBe(150.75);
+    expect(replacementLines.rows.reduce((total, line) => total + Number(line.credit), 0)).toBe(150.75);
+
+    const unsafeUpdate = await request(app)
+      .put(`/api/v1/finance/expenses/${correction.body.replacement.id}`)
+      .set(f.auth)
+      .send({ amount: 1 });
+    expect(unsafeUpdate.status).toBe(409);
+    expect(unsafeUpdate.body.error).toContain('POSTED_EXPENSE_IMMUTABLE');
+  });
 });

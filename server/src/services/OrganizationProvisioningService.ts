@@ -3,13 +3,13 @@ import { newId } from '../utils/ids';
 
 export type SystemAccountRole =
   | 'BANK_OPERATING' | 'AR_CONTROL' | 'GST_INPUT' | 'TDS_RECEIVABLE' | 'VENDOR_ADVANCE' | 'PAYMENT_CLEARING'
-  | 'AP_CONTROL' | 'CUSTOMER_ADVANCE' | 'GST_OUTPUT' | 'TDS_PAYABLE'
+  | 'AP_CONTROL' | 'CUSTOMER_ADVANCE' | 'GST_OUTPUT' | 'TDS_PAYABLE' | 'EMPLOYEE_REIMBURSEMENTS_PAYABLE'
   | 'OWNER_CAPITAL' | 'RETAINED_EARNINGS' | 'OPENING_BALANCE'
   | 'SALES_REVENUE' | 'ROUNDING_GAIN' | 'DIRECT_COSTS' | 'BAD_DEBT' | 'ROUNDING_LOSS' | 'OPERATING_EXPENSE';
 
 export const SYSTEM_ACCOUNT_ROLE_TYPES: Record<SystemAccountRole, string[]> = {
   BANK_OPERATING: ['Asset'], AR_CONTROL: ['Asset'], GST_INPUT: ['Asset'], TDS_RECEIVABLE: ['Asset'], VENDOR_ADVANCE: ['Asset'], PAYMENT_CLEARING: ['Asset'],
-  AP_CONTROL: ['Liability'], CUSTOMER_ADVANCE: ['Liability'], GST_OUTPUT: ['Liability'], TDS_PAYABLE: ['Liability'],
+  AP_CONTROL: ['Liability'], CUSTOMER_ADVANCE: ['Liability'], GST_OUTPUT: ['Liability'], TDS_PAYABLE: ['Liability'], EMPLOYEE_REIMBURSEMENTS_PAYABLE: ['Liability'],
   OWNER_CAPITAL: ['Equity'], RETAINED_EARNINGS: ['Equity'], OPENING_BALANCE: ['Equity'],
   SALES_REVENUE: ['Income', 'Revenue', 'Other Income'], ROUNDING_GAIN: ['Income', 'Revenue', 'Other Income'],
   DIRECT_COSTS: ['Expense', 'Cost of Goods Sold'], BAD_DEBT: ['Expense', 'Cost of Goods Sold'], ROUNDING_LOSS: ['Expense', 'Cost of Goods Sold'], OPERATING_EXPENSE: ['Expense', 'Cost of Goods Sold'],
@@ -38,6 +38,7 @@ const SYSTEM_DEFAULT_ACCOUNTS: SystemProvisionedAccount[] = [
   { code: '1600', name: 'Payment Clearing', type: 'Asset', subType: 'Payment Clearing', role: 'PAYMENT_CLEARING', financialStatement: 'BALANCE_SHEET', cashFlow: 'OPERATING' },
   { code: '2000', name: 'Accounts Payable', type: 'Liability', subType: 'Accounts Payable', role: 'AP_CONTROL', financialStatement: 'BALANCE_SHEET', cashFlow: 'OPERATING' },
   { code: '2100', name: 'Customer Advances', type: 'Liability', subType: 'Other Current Liability', role: 'CUSTOMER_ADVANCE', financialStatement: 'BALANCE_SHEET', cashFlow: 'OPERATING' },
+  { code: '2105', name: 'Employee Reimbursements Payable', type: 'Liability', subType: 'Other Current Liability', role: 'EMPLOYEE_REIMBURSEMENTS_PAYABLE', financialStatement: 'BALANCE_SHEET', cashFlow: 'OPERATING' },
   { code: '2200', name: 'Output GST Payable', type: 'Liability', subType: 'Taxes Payable', role: 'GST_OUTPUT', financialStatement: 'BALANCE_SHEET', cashFlow: 'OPERATING' },
   { code: '2250', name: 'TDS Payable', type: 'Liability', subType: 'Other Current Liability', role: 'TDS_PAYABLE', financialStatement: 'BALANCE_SHEET', cashFlow: 'OPERATING' },
   { code: '3000', name: 'Owner Equity', type: 'Equity', subType: 'Equity', role: 'OWNER_CAPITAL', financialStatement: 'BALANCE_SHEET', cashFlow: 'FINANCING' },
@@ -149,14 +150,15 @@ function normalBalanceFor(account: ProvisionedAccount): 'Debit' | 'Credit' {
 const LEGACY_CODE_ROLES: Record<string, SystemAccountRole> = {
   '1000': 'BANK_OPERATING', '1100': 'AR_CONTROL', '1150': 'VENDOR_ADVANCE', '1200': 'GST_INPUT',
   '1400': 'TDS_RECEIVABLE', '1600': 'PAYMENT_CLEARING', '2000': 'AP_CONTROL', '2100': 'CUSTOMER_ADVANCE',
+  '2105': 'EMPLOYEE_REIMBURSEMENTS_PAYABLE',
   '2200': 'GST_OUTPUT', '2250': 'TDS_PAYABLE', '3000': 'OWNER_CAPITAL', '3400': 'RETAINED_EARNINGS',
   '3500': 'OPENING_BALANCE', '4000': 'SALES_REVENUE', '4900': 'ROUNDING_GAIN', '5000': 'DIRECT_COSTS',
   '5800': 'BAD_DEBT', '5900': 'ROUNDING_LOSS', '6000': 'OPERATING_EXPENSE',
 };
 
 const LEGACY_ROLE_CODES: Record<SystemAccountRole, string[]> = {
-  BANK_OPERATING: ['1000', '1010', '1020'], AR_CONTROL: ['1100'], GST_INPUT: ['1200'], TDS_RECEIVABLE: ['1400'], VENDOR_ADVANCE: ['1150', '1200'], PAYMENT_CLEARING: ['1600'],
-  AP_CONTROL: ['2000'], CUSTOMER_ADVANCE: ['2100'], GST_OUTPUT: ['2200', '2110', '2100'], TDS_PAYABLE: ['2250'],
+  BANK_OPERATING: ['1000', '1010', '1020'], AR_CONTROL: ['1100'], GST_INPUT: ['1200', '2110'], TDS_RECEIVABLE: ['1400'], VENDOR_ADVANCE: ['1150', '1200'], PAYMENT_CLEARING: ['1600'],
+  AP_CONTROL: ['2000'], CUSTOMER_ADVANCE: ['2100'], EMPLOYEE_REIMBURSEMENTS_PAYABLE: ['2105'], GST_OUTPUT: ['2200'], TDS_PAYABLE: ['2250'],
   OWNER_CAPITAL: ['3000'], RETAINED_EARNINGS: ['3400', '3000'], OPENING_BALANCE: ['3500'],
   SALES_REVENUE: ['4000', '4010'], ROUNDING_GAIN: ['4900'], DIRECT_COSTS: ['5000', '5010'], BAD_DEBT: ['5800', '6000'], ROUNDING_LOSS: ['5900'], OPERATING_EXPENSE: ['6000', '6010', '6020', '6030'],
 };

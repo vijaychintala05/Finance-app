@@ -1233,7 +1233,23 @@ export class FinanceController {
     const orgId = req.auth!.organizationId;
     const limit = req.query.limit ? Number(req.query.limit) : null;
     const offset = req.query.offset ? Number(req.query.offset) : 0;
-    let queryText = 'SELECT * FROM expenses WHERE organization_id = $1 ORDER BY date DESC';
+    let queryText = `
+      SELECT e.*,
+             ea.name AS expense_account_name,
+             pa.name AS paid_from_account_name,
+             COALESCE(cu.display_name, cu.legal_name, cl.name, p.client_name) AS client_name,
+             p.name AS project_name,
+             inv.invoice_number AS customer_invoice_number
+        FROM expenses e
+        LEFT JOIN accounts ea ON ea.id = e.expense_account_id AND ea.organization_id = e.organization_id
+        LEFT JOIN accounts pa ON pa.id = e.paid_from_account_id AND pa.organization_id = e.organization_id
+        LEFT JOIN projects p ON p.id = e.project_id AND p.organization_id = e.organization_id
+        LEFT JOIN customers cu ON cu.id = e.client_id AND cu.organization_id = e.organization_id
+        LEFT JOIN clients cl ON cl.id = e.client_id AND cl.organization_id = e.organization_id
+        LEFT JOIN invoices inv ON inv.id = e.invoice_id AND inv.organization_id = e.organization_id
+       WHERE e.organization_id = $1
+       ORDER BY e.date DESC, e.created_at DESC, e.id DESC
+    `;
     const params: any[] = [orgId];
     if (limit && Number.isFinite(limit) && limit > 0) {
       queryText += ` LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
@@ -1244,10 +1260,20 @@ export class FinanceController {
     res.json(result.rows.map((expense) => ({
       id: expense.id, organizationId: expense.organization_id, referenceNumber: expense.expense_number,
       vendorName: expense.vendor_name || undefined, accountId: expense.expense_account_id,
-      accountName: '', paidFromAccountId: expense.paid_from_account_id, date: expense.date,
+      accountName: expense.expense_account_name || '',
+      paidFromAccountId: expense.paid_from_account_id,
+      paidFromAccountName: expense.paid_from_account_name || '',
+      date: expense.date,
       amount: Number(expense.amount), taxAmount: Number(expense.tax_amount || 0),
-      projectId: expense.project_id || undefined, clientId: expense.client_id || undefined,
-      isBillable: Boolean(expense.is_billable), paymentStatus: 'Paid', status: expense.status || 'POSTED', description: expense.description || '', createdAt: expense.created_at,
+      projectId: expense.project_id || undefined,
+      projectName: expense.project_name || undefined,
+      clientId: expense.client_id || undefined,
+      clientName: expense.client_name || undefined,
+      isBillable: Boolean(expense.is_billable),
+      isBilled: Boolean(expense.is_billed),
+      invoiceId: expense.invoice_id || undefined,
+      customerInvoiceNumber: expense.customer_invoice_number || undefined,
+      paymentStatus: 'Paid', status: expense.status || 'POSTED', description: expense.description || '', createdAt: expense.created_at,
       receiptAttachments: attachmentsByExpense.get(expense.id) || [],
       receiptFileName: attachmentsByExpense.get(expense.id)?.[0]?.fileName,
       isItemized: Boolean(expense.is_itemized),
@@ -1265,7 +1291,7 @@ export class FinanceController {
       res.status(201).json(result);
     } catch (error: any) {
       const message = error.message || 'Expense could not be posted';
-      res.status(message.startsWith('EXPENSE_INPUT_INVALID:') || message.startsWith('EXPENSE_RECEIPT_INVALID:') ? 400 : 422).json({ error: message });
+      res.status(message.startsWith('EXPENSE_INPUT_INVALID:') || message.startsWith('EXPENSE_RECEIPT_INVALID:') || message.startsWith('EXPENSE_CUSTOMER') ? 400 : 422).json({ error: message });
     }
   }
 
@@ -2812,6 +2838,176 @@ export class FinanceController {
       res.json({ expense });
     } catch (error: any) {
       res.status(400).json({ error: error.message || 'Expense could not be updated' });
+    }
+  }
+
+  public static async convertExpenseToInvoice(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const expenseId = req.params.id;
+    const issueDate = req.body.issueDate || new Date().toISOString().split('T')[0];
+    const dueDate = req.body.dueDate || issueDate;
+
+    if (!isIsoCalendarDate(issueDate) || !isIsoCalendarDate(dueDate) || dueDate < issueDate) {
+      res.status(400).json({ error: 'Valid issue and due dates are required' });
+      return;
+    }
+
+    try {
+      const result = await db.transaction(async (client) => {
+        const expResult = await client.query(
+          `SELECT e.*, ea.name as account_name
+             FROM expenses e
+             LEFT JOIN accounts ea ON ea.id = e.expense_account_id AND ea.organization_id = e.organization_id
+            WHERE e.organization_id = $1 AND e.id = $2
+              FOR UPDATE`,
+          [orgId, expenseId]
+        );
+        if (expResult.rows.length !== 1) {
+          throw new Error('Expense was not found in this organization');
+        }
+        const exp = expResult.rows[0];
+
+        if (!exp.is_billable) {
+          throw new Error('Expense is not marked as billable to customer');
+        }
+        if (exp.is_billed) {
+          throw new Error(`Expense has already been billed to invoice ${exp.invoice_id}`);
+        }
+        // invoice_id reserves a recoverable expense while its invoice is in
+        // approval.  It prevents a retry/double-click from producing another
+        // submitted invoice, while is_billed remains the authoritative signal
+        // that revenue has actually been posted.
+        if (exp.invoice_id) {
+          const linkedInvoice = await client.query(
+            `SELECT status FROM invoices WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+            [orgId, exp.invoice_id]
+          );
+          const linkedStatus = String(linkedInvoice.rows[0]?.status || '').toUpperCase();
+          if (['SUBMITTED', 'APPROVED', 'DRAFT'].includes(linkedStatus)) {
+            throw new Error(`Expense is already awaiting invoice approval (${exp.invoice_id})`);
+          }
+          if (['POSTED', 'PAID', 'PARTIALLY_PAID'].includes(linkedStatus)) {
+            throw new Error(`Expense has already been billed to invoice ${exp.invoice_id}`);
+          }
+          // A rejected, voided, or missing linked invoice no longer reserves
+          // the expense; allow an explicitly requested replacement invoice.
+          await client.query(
+            `UPDATE expenses SET invoice_id = NULL, is_billed = FALSE
+              WHERE organization_id = $1 AND id = $2 AND is_billed = FALSE`,
+            [orgId, expenseId]
+          );
+        }
+        if (exp.status === 'VOID' || exp.status === 'VOIDED') {
+          throw new Error('Voided expenses cannot be billed to customer');
+        }
+
+        let customerId = exp.client_id;
+        let customerName = '';
+
+        if (exp.project_id) {
+          const projResult = await client.query(
+            `SELECT client_id, client_name, code, name FROM projects WHERE organization_id = $1 AND id = $2`,
+            [orgId, exp.project_id]
+          );
+          if (projResult.rows.length === 1) {
+            customerId = customerId || projResult.rows[0].client_id;
+            customerName = projResult.rows[0].client_name || '';
+          }
+        }
+
+        if (!customerId) {
+          throw new Error('Expense must be assigned to a customer before it can be invoiced');
+        }
+
+        if (!customerName) {
+          const custRes = await client.query(
+            `SELECT display_name, legal_name FROM customers WHERE organization_id = $1 AND id = $2
+             UNION ALL
+             SELECT name AS display_name, company_name AS legal_name FROM clients WHERE organization_id = $1 AND id = $2
+             LIMIT 1`,
+            [orgId, customerId]
+          );
+          if (custRes.rows.length === 1) {
+            customerName = custRes.rows[0].display_name || custRes.rows[0].legal_name || 'Customer';
+          } else {
+            throw new Error('Customer associated with this billable expense was not found');
+          }
+        }
+
+        let lineItems: Array<{ description: string; quantity: number; unitPrice: number; taxRate: number }> = [];
+        if (exp.is_itemized && exp.items) {
+          const parsedItems = typeof exp.items === 'string' ? JSON.parse(exp.items) : exp.items;
+          if (Array.isArray(parsedItems) && parsedItems.length > 0) {
+            lineItems = parsedItems.map((item: any) => ({
+              description: item.description || `Reimbursable expense line (${exp.expense_number})`,
+              quantity: 1,
+              unitPrice: Number(item.amount),
+              taxRate: 0,
+            }));
+          }
+        }
+
+        if (lineItems.length === 0) {
+          const vendorInfo = exp.vendor_name ? ` (Vendor: ${exp.vendor_name})` : '';
+          const descInfo = exp.description ? ` - ${exp.description}` : '';
+          const categoryInfo = exp.account_name || 'Reimbursable Expense';
+          lineItems = [{
+            description: `Billable Expense [${exp.expense_number}]: ${categoryInfo}${descInfo}${vendorInfo}`,
+            quantity: 1,
+            unitPrice: Number(exp.amount),
+            taxRate: 0,
+          }];
+        }
+
+        const invoice = await SalesEngine.createAndPostInvoice(orgId, {
+          customerId,
+          customerName,
+          projectId: exp.project_id || undefined,
+          issueDate,
+          dueDate,
+          lineItems,
+          notes: `Reimbursable billable expense ${exp.expense_number} incurred on ${exp.date}`,
+          status: 'POSTED',
+          createdBy: req.auth!.userId,
+        }, client);
+
+        const invoiceIsPosted = String(invoice.status).toUpperCase() === 'POSTED';
+        await client.query(
+          `UPDATE expenses SET is_billed = $1, invoice_id = $2 WHERE organization_id = $3 AND id = $4 AND is_billed = FALSE`,
+          [invoiceIsPosted, invoice.id, orgId, expenseId]
+        );
+
+        await client.query(
+          `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state)
+           VALUES ($1, $2, $3, 'EXPENSE_INVOICED', 'Expense', $4, $5)`,
+          [
+            newId('aud'),
+            orgId,
+            req.auth!.userId,
+            expenseId,
+            JSON.stringify({ invoiceId: invoice.id, invoiceNumber: invoice.invoiceNumber, amount: exp.amount }),
+          ]
+        );
+
+        return {
+          invoice,
+          expense: {
+            id: exp.id,
+            isBillable: true,
+            isBilled: invoiceIsPosted,
+            invoiceId: invoice.id,
+            invoiceNumber: invoice.invoiceNumber,
+          },
+        };
+      });
+
+      res.status(201).json(result);
+    } catch (error: any) {
+      const message = error.message || 'Billable expense could not be converted to invoice';
+      const statusCode = message.includes('already been billed') || message.includes('awaiting invoice approval') ? 409
+        : message.includes('not found') ? 404
+        : 422;
+      res.status(statusCode).json({ error: message });
     }
   }
 

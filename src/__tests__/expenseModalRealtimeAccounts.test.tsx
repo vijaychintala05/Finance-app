@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
 import { ExpenseModal } from '../components/expenses/ExpenseModal';
 import { Account } from '../types';
 
@@ -60,12 +60,19 @@ const mockAccounts: Account[] = [
 
 const mockRefreshAccounts = vi.fn().mockResolvedValue(undefined);
 const mockAddExpense = vi.fn().mockResolvedValue(undefined);
+const mockVendors: Array<{ id: string; name: string; companyName: string }> = [];
+const mockAddVendor = vi.fn(async () => {
+  const vendor = { id: 'vendor-new', name: 'Acme Supplies', companyName: 'Acme Supplies' };
+  mockVendors.push(vendor);
+  return vendor;
+});
 
 vi.mock('../context/BooksContext', () => ({
   useBooks: () => ({
     accounts: mockAccounts,
     refreshAccounts: mockRefreshAccounts,
-    vendors: [],
+    vendors: mockVendors,
+    addVendor: mockAddVendor,
     projects: [],
     addExpense: mockAddExpense,
     settings: { currencyCode: 'INR' },
@@ -75,6 +82,7 @@ vi.mock('../context/BooksContext', () => ({
 describe('ExpenseModal Realtime Chart of Accounts Integration', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockVendors.splice(0);
   });
 
   afterEach(() => {
@@ -119,5 +127,21 @@ describe('ExpenseModal Realtime Chart of Accounts Integration', () => {
 
     expect(screen.getByRole('button', { name: /new account/i })).toBeDefined();
     expect(screen.getByRole('button', { name: /new bank\/card/i })).toBeDefined();
+  });
+
+  it('creates and selects a vendor without leaving the expense form', async () => {
+    render(<ExpenseModal isOpen={true} onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add vendor' }));
+    fireEvent.change(screen.getByLabelText(/vendor name/i), { target: { value: 'Acme Supplies' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create vendor' }));
+
+    await waitFor(() => expect(mockAddVendor).toHaveBeenCalledWith({
+      name: 'Acme Supplies',
+      companyName: 'Acme Supplies',
+      paymentTerms: 'Net 30',
+      status: 'Active',
+    }));
+    expect((screen.getByRole('combobox', { name: 'Vendor' }) as HTMLSelectElement).value).toBe('vendor-new');
   });
 });

@@ -7,7 +7,7 @@ import { applyUsabilitySchema } from './usabilitySchema';
 import { applyPaymentAccountingSchema } from './paymentAccountingSchema';
 import type { DbQueryResult } from './db';
 
-export const CURRENT_SCHEMA_VERSION = '2026.08.31-v7-expense-receipts';
+export const CURRENT_SCHEMA_VERSION = '2026.09.10-v8-billable-expense-recovery';
 
 export class MigrationRunner {
   public static async runMigrations(queryClient?: { query: (text: string, params?: any[]) => Promise<DbQueryResult> }): Promise<void> {
@@ -485,6 +485,11 @@ export class MigrationRunner {
         amount NUMERIC(15, 2) NOT NULL,
         tax_rate NUMERIC(5, 2) DEFAULT 0.00,
         description TEXT,
+        project_id VARCHAR(64),
+        client_id VARCHAR(64),
+        is_billable BOOLEAN NOT NULL DEFAULT FALSE,
+        is_billed BOOLEAN NOT NULL DEFAULT FALSE,
+        invoice_id VARCHAR(64),
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       )`,
 
@@ -1018,6 +1023,8 @@ export class MigrationRunner {
       `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS project_id VARCHAR(64)`,
       `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS client_id VARCHAR(64)`,
       `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS is_billable BOOLEAN NOT NULL DEFAULT FALSE`,
+      `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS is_billed BOOLEAN NOT NULL DEFAULT FALSE`,
+      `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS invoice_id VARCHAR(64)`,
       `ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS invoice_id VARCHAR(64)`,
       `ALTER TABLE bills ADD COLUMN IF NOT EXISTS vendor_invoice_number VARCHAR(64)`,
       `ALTER TABLE bills ADD COLUMN IF NOT EXISTS vendor_email VARCHAR(255)`,

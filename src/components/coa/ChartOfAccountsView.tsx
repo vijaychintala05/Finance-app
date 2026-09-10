@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   ChevronDown,
   ChevronRight,
@@ -12,6 +12,12 @@ import {
   Search,
   SlidersHorizontal,
   Landmark,
+  Wallet,
+  CreditCard,
+  ShieldCheck,
+  TrendingUp,
+  ArrowDownRight,
+  CornerDownRight,
 } from 'lucide-react';
 import { Account } from '../../types';
 import { useBooks } from '../../context/BooksContext';
@@ -75,6 +81,20 @@ export const CATEGORY_TREE_SPECIFICATION: CategoryTreeSection[] = [
     subTypes: ['Sales', 'Services', 'Operating Revenue', 'Other Operating Income', 'Other Revenue', 'Interest Income', 'Asset Gains', 'Other Income'],
   },
   {
+    label: 'Cost of Goods Sold',
+    badgeColor: 'bg-orange-100 text-orange-800 border-orange-200',
+    subTypes: [
+      'Materials',
+      'Direct Labor',
+      'Subcontractors',
+      'Freight',
+      'Site Expenses',
+      'Other Direct Costs',
+      'Direct Expense / Cost of Goods',
+      'Cost of Goods Sold',
+    ],
+  },
+  {
     label: 'Expenses',
     badgeColor: 'bg-rose-100 text-rose-800 border-rose-200',
     subTypes: [
@@ -95,6 +115,31 @@ export const CATEGORY_TREE_SPECIFICATION: CategoryTreeSection[] = [
     ],
   },
 ];
+
+export const getCategoryLabelForAccount = (acc: Account): string => {
+  if (acc.type === 'Asset') return 'Assets';
+  if (acc.type === 'Liability') return 'Liabilities';
+  if (acc.type === 'Equity') return 'Equity';
+  if (acc.type === 'Income' || acc.type === 'Revenue' || acc.type === 'Other Income') return 'Income';
+  if (acc.type === 'Cost of Goods Sold') return 'Cost of Goods Sold';
+  if (acc.type === 'Expense') {
+    if (
+      acc.subType === 'Materials' ||
+      acc.subType === 'Direct Labor' ||
+      acc.subType === 'Subcontractors' ||
+      acc.subType === 'Freight' ||
+      acc.subType === 'Site Expenses' ||
+      acc.subType === 'Other Direct Costs' ||
+      acc.subType?.includes('Direct Expense') ||
+      acc.subType?.includes('Cost of Goods')
+    ) {
+      return 'Cost of Goods Sold';
+    }
+    return 'Expenses';
+  }
+  if (acc.type === 'Other Expense') return 'Expenses';
+  return 'Expenses';
+};
 
 export interface ChartOfAccountsViewProps {
   selectedEntityId?: string;
@@ -120,6 +165,7 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
     Liabilities: true,
     Equity: true,
     Income: true,
+    'Cost of Goods Sold': true,
     Expenses: true,
   });
 
@@ -127,9 +173,18 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
   const [selectedLedgerAccount, setSelectedLedgerAccount] = useState<Account | null>(null);
 
   const [modalParentId, setModalParentId] = useState<string>('');
+  const [selectedParentAccount, setSelectedParentAccount] = useState<Account | null>(null);
   const [modalSubCat, setModalSubCat] = useState<string>('');
   const [accountToEdit, setAccountToEdit] = useState<Account | null>(null);
   const [isQuickAccountModalOpen, setIsQuickAccountModalOpen] = useState(false);
+  const [collapsedParentAccounts, setCollapsedParentAccounts] = useState<Record<string, boolean>>({});
+
+  const toggleParentCollapse = (parentId: string) => {
+    setCollapsedParentAccounts((prev) => ({
+      ...prev,
+      [parentId]: !prev[parentId],
+    }));
+  };
 
   React.useEffect(() => {
     if (selectedEntityId) {
@@ -163,6 +218,7 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
 
   const handleOpenAddSubAccount = (parentAcc: Account) => {
     setAccountToEdit(null);
+    setSelectedParentAccount(parentAcc);
     setModalParentId(parentAcc.id);
     setModalSubCat(parentAcc.subCategory || parentAcc.name);
     setIsModalOpen(true);
@@ -170,6 +226,7 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
 
   const handleOpenNewModal = () => {
     setAccountToEdit(null);
+    setSelectedParentAccount(null);
     setModalParentId('');
     setModalSubCat('');
     setIsModalOpen(true);
@@ -177,33 +234,34 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
 
   const handleOpenEditModal = (acc: Account) => {
     setAccountToEdit(acc);
+    setSelectedParentAccount(null);
     setModalParentId('');
     setModalSubCat('');
     setIsModalOpen(true);
   };
 
-  // Helper function to map account to category label
-  const getCategoryLabelForAccount = (acc: Account): string => {
-    if (acc.type === 'Asset') return 'Assets';
-    if (acc.type === 'Liability') return 'Liabilities';
-    if (acc.type === 'Equity') return 'Equity';
-    if (acc.type === 'Income' || acc.type === 'Revenue' || acc.type === 'Other Income') return 'Income';
-    if (acc.type === 'Cost of Goods Sold') return 'Expenses';
-    if (acc.type === 'Expense') {
-      if (
-        acc.subType === 'Materials' ||
-        acc.subType === 'Direct Labor' ||
-        acc.subType === 'Subcontractors' ||
-        acc.subType === 'Other Direct Costs' ||
-        acc.subType.includes('Direct Expense')
-      ) {
-        return 'Expenses';
+  // Category totals and counts for Zoho-style KPI cards
+  const categoryMetrics = useMemo(() => {
+    const metrics: Record<string, { count: number; balance: number; normalBalance: 'Debit' | 'Credit' }> = {
+      Assets: { count: 0, balance: 0, normalBalance: 'Debit' },
+      Liabilities: { count: 0, balance: 0, normalBalance: 'Credit' },
+      Equity: { count: 0, balance: 0, normalBalance: 'Credit' },
+      Income: { count: 0, balance: 0, normalBalance: 'Credit' },
+      'Cost of Goods Sold': { count: 0, balance: 0, normalBalance: 'Debit' },
+      Expenses: { count: 0, balance: 0, normalBalance: 'Debit' },
+    };
+
+    accounts.forEach((acc) => {
+      if ((acc.status || 'Active') !== 'Active') return;
+      const cat = getCategoryLabelForAccount(acc);
+      if (metrics[cat]) {
+        metrics[cat].count += 1;
+        metrics[cat].balance += acc.balance || 0;
       }
-      return 'Expenses';
-    }
-    if (acc.type === 'Other Expense') return 'Expenses';
-    return 'Expenses';
-  };
+    });
+
+    return metrics;
+  }, [accounts]);
 
   // Filter accounts
   const filteredAccounts = accounts.filter((acc) => {
@@ -241,6 +299,45 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
       a.status === 'Archived' &&
       (search ? a.name.toLowerCase().includes(search.toLowerCase()) || a.code.includes(search) : false)
   ).length;
+
+  const hierarchicallyOrderedAccounts = useMemo(() => {
+    if (search.trim()) {
+      return filteredAccounts.map((account) => ({
+        account,
+        isChild: Boolean(account.parentAccountId || account.parentId),
+      }));
+    }
+
+    const childrenByParent = new Map<string, Account[]>();
+    const rootAccounts: Account[] = [];
+    const filteredIdSet = new Set(filteredAccounts.map((a) => a.id));
+
+    filteredAccounts.forEach((acc) => {
+      const pId = acc.parentAccountId || acc.parentId;
+      if (pId && filteredIdSet.has(pId)) {
+        const list = childrenByParent.get(pId) || [];
+        list.push(acc);
+        childrenByParent.set(pId, list);
+      } else {
+        rootAccounts.push(acc);
+      }
+    });
+
+    const result: { account: Account; isChild: boolean; parent?: Account }[] = [];
+
+    rootAccounts.forEach((parent) => {
+      result.push({ account: parent, isChild: false });
+      const children = childrenByParent.get(parent.id) || [];
+      const isCollapsed = collapsedParentAccounts[parent.id];
+      if (!isCollapsed) {
+        children.forEach((child) => {
+          result.push({ account: child, isChild: true, parent });
+        });
+      }
+    });
+
+    return result;
+  }, [filteredAccounts, search, collapsedParentAccounts]);
 
   return (
     <div className="max-w-none space-y-0 bg-white dark:bg-slate-900">
@@ -306,6 +403,76 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
             </button>
           </div>
         </div>
+      </div>
+
+      {/* Zoho-style Financial KPI Summary Ribbon */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6 border-b border-slate-200 bg-slate-50/70 p-3 sm:p-4 dark:border-slate-800 dark:bg-slate-900/60 sm:px-6">
+        {[
+          { key: 'Assets', label: 'Assets', color: 'emerald', icon: Wallet },
+          { key: 'Liabilities', label: 'Liabilities', color: 'amber', icon: CreditCard },
+          { key: 'Equity', label: 'Equity', color: 'purple', icon: ShieldCheck },
+          { key: 'Income', label: 'Income', color: 'blue', icon: TrendingUp },
+          { key: 'Cost of Goods Sold', label: 'Cost of Goods Sold', color: 'orange', icon: Layers },
+          { key: 'Expenses', label: 'Expenses', color: 'rose', icon: ArrowDownRight },
+        ].map((item) => {
+          const isSelected = selectedTypeFilter === item.key;
+          const metric = categoryMetrics[item.key] || { count: 0, balance: 0, normalBalance: 'Debit' };
+          const Icon = item.icon;
+
+          return (
+            <button
+              key={item.key}
+              type="button"
+              onClick={() => setSelectedTypeFilter(isSelected ? 'All' : item.key)}
+              className={`flex flex-col justify-between rounded-xl border p-3 text-left transition-all cursor-pointer ${
+                isSelected
+                  ? 'border-blue-500 bg-white shadow-md ring-2 ring-blue-500/20 dark:border-blue-400 dark:bg-slate-800'
+                  : 'border-slate-200 bg-white hover:border-slate-300 hover:shadow-2xs dark:border-slate-800 dark:bg-slate-850 dark:hover:border-slate-700'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-700 dark:text-slate-300">{item.label}</span>
+                <span className={`inline-flex items-center justify-center rounded-md p-1 ${
+                  item.color === 'emerald' ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400' :
+                  item.color === 'amber' ? 'bg-amber-50 text-amber-600 dark:bg-amber-950/40 dark:text-amber-400' :
+                  item.color === 'purple' ? 'bg-purple-50 text-purple-600 dark:bg-purple-950/40 dark:text-purple-400' :
+                  item.color === 'blue' ? 'bg-blue-50 text-blue-600 dark:bg-blue-950/40 dark:text-blue-400' :
+                  item.color === 'orange' ? 'bg-orange-50 text-orange-600 dark:bg-orange-950/40 dark:text-orange-400' :
+                  'bg-rose-50 text-rose-600 dark:bg-rose-950/40 dark:text-rose-400'
+                }`}>
+                  <Icon className="h-3.5 w-3.5" />
+                </span>
+              </div>
+              <div className="mt-2">
+                <div className="font-mono text-sm sm:text-base font-extrabold text-slate-900 dark:text-slate-100 truncate">
+                  {formatCurrency(metric.balance, settings.currencySymbol)}
+                </div>
+                <div className="mt-0.5 flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
+                  <span>{metric.count} {metric.count === 1 ? 'account' : 'accounts'}</span>
+                  <span className="font-semibold text-[10px] text-slate-400">{metric.normalBalance === 'Debit' ? 'Dr' : 'Cr'}</span>
+                </div>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Zoho-style Category Navigation Tabs */}
+      <div className="flex items-center gap-1.5 overflow-x-auto border-b border-slate-200 px-4 py-2 text-xs font-semibold dark:border-slate-800 sm:px-6">
+        {['All', 'Assets', 'Liabilities', 'Equity', 'Income', 'Cost of Goods Sold', 'Expenses'].map((tab) => (
+          <button
+            key={tab}
+            type="button"
+            onClick={() => setSelectedTypeFilter(tab)}
+            className={`rounded-lg px-3 py-1.5 transition-all cursor-pointer whitespace-nowrap ${
+              selectedTypeFilter === tab
+                ? 'bg-blue-600 text-white shadow-xs font-bold'
+                : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200'
+            }`}
+          >
+            {tab === 'All' ? 'All Accounts' : tab}
+          </button>
+        ))}
       </div>
 
       <div className="flex flex-col gap-2.5 border-b border-slate-200 px-4 py-3 sm:flex-row sm:items-center sm:px-6 dark:border-slate-800">
@@ -435,31 +602,39 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
 
                 {/* Sub-Types Branch Tree */}
                 {isExpanded && (
-                  <div className="p-4 space-y-5 bg-white">
-                    {catSpec.subTypes.map((subType, index) => {
-                      const isLastSubType = index === catSpec.subTypes.length - 1;
-
-                      // Accounts under this subType
-                      const subTypeAccounts = categoryAccounts.filter((a) => {
-                        if (a.subType === subType) return true;
-                        // Map legacy subtypes fallback
-                        if (
-                          subType === 'Bank' &&
-                          (a.subType === 'Cash & Bank' || a.subType === 'Bank')
-                        )
-                          return true;
-                        if (
-                          subType === 'Cash' &&
-                          (a.subType === 'Cash & Bank' || a.subType === 'Cash')
-                        )
-                          return true;
-                        if (
-                          subType === 'Materials' &&
-                          a.subType.includes('Direct Expense')
-                        )
-                          return true;
-                        return false;
+                  <div className="p-4 space-y-5 bg-white dark:bg-slate-900">
+                    {(() => {
+                      const allSubTypes = [...catSpec.subTypes];
+                      categoryAccounts.forEach((acc) => {
+                        if (acc.subType && !allSubTypes.includes(acc.subType)) {
+                          allSubTypes.push(acc.subType);
+                        }
                       });
+
+                      return allSubTypes.map((subType, index) => {
+                        const isLastSubType = index === allSubTypes.length - 1;
+
+                        // Accounts under this subType
+                        const subTypeAccounts = categoryAccounts.filter((a) => {
+                          if (a.subType === subType) return true;
+                          // Map legacy subtypes fallback
+                          if (
+                            subType === 'Bank' &&
+                            (a.subType === 'Cash & Bank' || a.subType === 'Bank')
+                          )
+                            return true;
+                          if (
+                            subType === 'Cash' &&
+                            (a.subType === 'Cash & Bank' || a.subType === 'Cash')
+                          )
+                            return true;
+                          if (
+                            subType === 'Materials' &&
+                            a.subType?.includes('Direct Expense')
+                          )
+                            return true;
+                          return false;
+                        });
 
                       const subTypeBalance = subTypeAccounts.reduce(
                         (sum, a) => sum + a.balance,
@@ -501,136 +676,303 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
                               </button>
                             </div>
                           ) : (
-                            <div className="ml-2 sm:ml-6 space-y-2 sm:space-y-1.5">
-                              {subTypeAccounts.map((acc) => {
-                                const parentName = acc.parentAccountId ? accountNameById.get(acc.parentAccountId) : undefined;
-                                return (
-                                  <div
-                                    key={acc.id}
-                                    onClick={() => setSelectedLedgerAccount(acc)}
-                                    className="p-3 sm:p-2.5 rounded-xl border border-slate-200/80 dark:border-slate-800 hover:border-blue-300 bg-white dark:bg-slate-800/60 hover:bg-blue-50/40 dark:hover:bg-slate-800 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-3 cursor-pointer group shadow-2xs"
-                                  >
-                                    <div className="flex items-start sm:items-center gap-2.5 sm:gap-3 min-w-0">
-                                      <span className="font-mono text-xs font-black text-blue-600 dark:text-blue-400 group-hover:underline shrink-0 pt-0.5 sm:pt-0">
-                                        {acc.code}
-                                      </span>
+                            <div className="ml-2 sm:ml-6 space-y-2 sm:space-y-2">
+                              {(() => {
+                                const subTypeAccountIds = new Set(subTypeAccounts.map((a) => a.id));
+                                const subTypeChildrenByParent = new Map<string, Account[]>();
+                                const rootSubTypeAccounts: Account[] = [];
 
-                                      <div className="min-w-0 flex-1">
-                                        <div className="flex items-center gap-1.5 flex-wrap">
-                                          <span className="font-bold text-xs text-slate-900 dark:text-slate-100">
-                                            {acc.name}
+                                subTypeAccounts.forEach((acc) => {
+                                  const pId = acc.parentAccountId || acc.parentId;
+                                  if (pId && subTypeAccountIds.has(pId)) {
+                                    const list = subTypeChildrenByParent.get(pId) || [];
+                                    list.push(acc);
+                                    subTypeChildrenByParent.set(pId, list);
+                                  } else {
+                                    rootSubTypeAccounts.push(acc);
+                                  }
+                                });
+
+                                return rootSubTypeAccounts.map((acc) => {
+                                  const parentName = acc.parentAccountId ? accountNameById.get(acc.parentAccountId) : undefined;
+                                  const children = subTypeChildrenByParent.get(acc.id) || [];
+                                  const hasChildren = children.length > 0;
+                                  const isCollapsed = collapsedParentAccounts[acc.id];
+                                  const totalChildrenCount = activeChildCountByParentId.get(acc.id) || children.length;
+
+                                  return (
+                                    <div key={acc.id} className="space-y-2">
+                                      {/* Parent / Root Account Card */}
+                                      <div
+                                        onClick={() => setSelectedLedgerAccount(acc)}
+                                        className={`p-3 sm:p-2.5 rounded-xl border transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-3 cursor-pointer group shadow-2xs ${
+                                          hasChildren
+                                            ? 'bg-slate-50/70 dark:bg-slate-800/80 border-slate-300/80 dark:border-slate-700 hover:border-blue-400 hover:bg-blue-50/30'
+                                            : 'bg-white dark:bg-slate-800/60 border-slate-200/80 dark:border-slate-800 hover:border-blue-300 hover:bg-blue-50/40'
+                                        }`}
+                                      >
+                                        <div className="flex items-start sm:items-center gap-2.5 sm:gap-3 min-w-0">
+                                          {hasChildren && (
+                                            <button
+                                              type="button"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                toggleParentCollapse(acc.id);
+                                              }}
+                                              className="p-1 -ml-1 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-700 rounded transition-colors cursor-pointer shrink-0"
+                                              title={isCollapsed ? 'Expand sub-accounts' : 'Collapse sub-accounts'}
+                                              aria-label={isCollapsed ? `Expand sub-accounts for ${acc.name}` : `Collapse sub-accounts for ${acc.name}`}
+                                            >
+                                              {isCollapsed ? (
+                                                <ChevronRight className="w-3.5 h-3.5" />
+                                              ) : (
+                                                <ChevronDown className="w-3.5 h-3.5" />
+                                              )}
+                                            </button>
+                                          )}
+
+                                          <span className="font-mono text-xs font-black text-blue-600 dark:text-blue-400 group-hover:underline shrink-0 pt-0.5 sm:pt-0">
+                                            {acc.code}
                                           </span>
 
-                                          {acc.subCategory && (
-                                            <span className="inline-flex items-center gap-1 text-[10px] font-extrabold bg-amber-50 text-amber-800 border border-amber-200 px-1.5 py-0.2 rounded">
-                                              <Layers className="w-2.5 h-2.5 text-amber-600" />
-                                              <span>{acc.subCategory}</span>
-                                            </span>
-                                          )}
+                                          <div className="min-w-0 flex-1">
+                                            <div className="flex items-center gap-1.5 flex-wrap">
+                                              <span className={`text-xs text-slate-900 dark:text-slate-100 ${hasChildren ? 'font-black' : 'font-bold'}`}>
+                                                {acc.name}
+                                              </span>
 
-                                          {parentName && (
-                                            <span className="text-[10px] font-semibold text-slate-500">under {parentName}</span>
-                                          )}
+                                              {acc.subCategory && (
+                                                <span className="inline-flex items-center gap-1 text-[10px] font-extrabold bg-amber-50 text-amber-800 border border-amber-200 px-1.5 py-0.2 rounded">
+                                                  <Layers className="w-2.5 h-2.5 text-amber-600" />
+                                                  <span>{acc.subCategory}</span>
+                                                </span>
+                                              )}
 
-                                          {acc.isSystemAccount && (
-                                            <span className="text-[10px] font-extrabold bg-violet-50 text-violet-800 border border-violet-200 px-1.5 py-0.2 rounded" title={acc.systemRole ? `System role: ${formatSystemRole(acc.systemRole)}` : 'Provisioned system account'}>
-                                              {acc.systemRole ? formatSystemRole(acc.systemRole) : 'System'}
-                                            </span>
-                                          )}
+                                              {parentName && (
+                                                <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200 dark:bg-blue-950/40 dark:text-blue-300 dark:border-blue-800 px-1.5 py-0.2 rounded">
+                                                  <CornerDownRight className="w-2.5 h-2.5 text-blue-600" />
+                                                  <span>Sub-account under {parentName}</span>
+                                                </span>
+                                              )}
 
-                                          {(activeChildCountByParentId.get(acc.id) || 0) > 0 && (
-                                            <span className="text-[10px] font-extrabold bg-slate-100 text-slate-700 border border-slate-200 px-1.5 py-0.2 rounded">Group account</span>
-                                          )}
+                                              {hasChildren && (
+                                                <span className="inline-flex items-center gap-1 text-[10px] font-extrabold bg-blue-100/70 text-blue-800 border border-blue-200 dark:bg-blue-950/60 dark:text-blue-300 dark:border-blue-800 px-1.5 py-0.2 rounded">
+                                                  <span>{totalChildrenCount} sub-accounts</span>
+                                                </span>
+                                              )}
 
-                                          {acc.allowDirectPosting === false && (
-                                            <span className="text-[10px] font-extrabold bg-sky-50 text-sky-800 border border-sky-200 px-1.5 py-0.2 rounded">No direct posting</span>
-                                          )}
+                                              {acc.isSystemAccount && (
+                                                <span className="text-[10px] font-extrabold bg-violet-50 text-violet-800 border border-violet-200 px-1.5 py-0.2 rounded" title={acc.systemRole ? `System role: ${formatSystemRole(acc.systemRole)}` : 'Provisioned system account'}>
+                                                  {acc.systemRole ? formatSystemRole(acc.systemRole) : 'System'}
+                                                </span>
+                                              )}
 
-                                          {acc.normalBalance && (
-                                            <span className="text-[10px] font-extrabold bg-slate-50 text-slate-600 border border-slate-200 px-1.5 py-0.2 rounded">{acc.normalBalance === 'Debit' ? 'Dr' : 'Cr'}</span>
-                                          )}
+                                              {(activeChildCountByParentId.get(acc.id) || 0) > 0 && !hasChildren && (
+                                                <span className="text-[10px] font-extrabold bg-slate-100 text-slate-700 border border-slate-200 px-1.5 py-0.2 rounded">Group account</span>
+                                              )}
 
-                                          {acc.status === 'Archived' && (
-                                            <span className="text-[10px] font-extrabold bg-slate-200 text-slate-700 border border-slate-300 px-1.5 py-0.2 rounded">Archived</span>
-                                          )}
+                                              {acc.allowDirectPosting === false && (
+                                                <span className="text-[10px] font-extrabold bg-sky-50 text-sky-800 border border-sky-200 px-1.5 py-0.2 rounded">No direct posting</span>
+                                              )}
 
-                                          {acc.isLocked && (
-                                            <span
-                                              className="inline-flex items-center gap-1 text-[10px] font-extrabold bg-rose-100 text-rose-800 border border-rose-300 px-1.5 py-0.2 rounded"
-                                              title={`Locked by ${acc.lockedBy || 'Auditor'}`}
-                                            >
-                                              <Lock className="w-2.5 h-2.5 text-rose-600" />
-                                              <span>Locked</span>
-                                            </span>
-                                          )}
+                                              {acc.normalBalance && (
+                                                <span className="text-[10px] font-extrabold bg-slate-50 text-slate-600 border border-slate-200 px-1.5 py-0.2 rounded">{acc.normalBalance === 'Debit' ? 'Dr' : 'Cr'}</span>
+                                              )}
+
+                                              {acc.status === 'Archived' && (
+                                                <span className="text-[10px] font-extrabold bg-slate-200 text-slate-700 border border-slate-300 px-1.5 py-0.2 rounded">Archived</span>
+                                              )}
+
+                                              {acc.isLocked && (
+                                                <span
+                                                  className="inline-flex items-center gap-1 text-[10px] font-extrabold bg-rose-100 text-rose-800 border border-rose-300 px-1.5 py-0.2 rounded"
+                                                  title={`Locked by ${acc.lockedBy || 'Auditor'}`}
+                                                >
+                                                  <Lock className="w-2.5 h-2.5 text-rose-600" />
+                                                  <span>Locked</span>
+                                                </span>
+                                              )}
+                                            </div>
+
+                                            {acc.description && (
+                                              <p className="text-[10px] text-slate-400 line-clamp-1 mt-0.5">
+                                                {acc.description}
+                                              </p>
+                                            )}
+                                          </div>
                                         </div>
 
-                                        {acc.description && (
-                                          <p className="text-[10px] text-slate-400 line-clamp-1 mt-0.5">
-                                            {acc.description}
-                                          </p>
-                                        )}
+                                        <div className="flex items-center justify-between sm:justify-end gap-3 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-100 dark:border-slate-800">
+                                          <span className="font-mono text-xs font-extrabold text-slate-900 dark:text-slate-100">
+                                            {formatCurrency(
+                                              acc.balance,
+                                              settings.currencySymbol
+                                            )}
+                                          </span>
+
+                                          <div className="flex items-center gap-1.5">
+                                            <button
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleOpenEditModal(acc);
+                                              }}
+                                              className="text-[11px] sm:text-[10px] font-bold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 hover:bg-amber-50 hover:text-amber-800 px-2.5 sm:px-2 py-1.5 sm:py-1 rounded-lg border border-slate-200 dark:border-slate-700 transition-colors inline-flex items-center gap-1 cursor-pointer min-h-[30px]"
+                                              title={`Edit ${acc.name}`}
+                                              aria-label={`Edit ${acc.name}`}
+                                            >
+                                              <Pencil className="w-3 h-3 text-amber-600" />
+                                              <span>Edit</span>
+                                            </button>
+
+                                            <button
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                setSelectedLedgerAccount(acc);
+                                              }}
+                                              className="text-[11px] sm:text-[10px] font-bold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 hover:bg-blue-50 hover:text-blue-700 px-2.5 sm:px-2 py-1.5 sm:py-1 rounded-lg border border-slate-200 dark:border-slate-700 transition-colors inline-flex items-center gap-1 cursor-pointer min-h-[30px]"
+                                              aria-label={`View ledger for ${acc.name}`}
+                                            >
+                                              <Eye className="w-3 h-3 text-blue-600" />
+                                              <span>Ledger</span>
+                                            </button>
+
+                                            {!acc.isSystemAccount && !acc.isLocked && (
+                                              <button
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  handleOpenAddSubAccount(acc);
+                                                }}
+                                                className="text-[11px] sm:text-[10px] font-bold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/40 hover:bg-blue-100 dark:hover:bg-blue-900/50 px-2.5 sm:px-2 py-1.5 sm:py-1 rounded-lg border border-blue-200 dark:border-blue-800 transition-colors inline-flex items-center gap-1 cursor-pointer min-h-[30px]"
+                                                title={`Add sub-item under ${acc.name}`}
+                                                aria-label={`Add sub-item under ${acc.name}`}
+                                              >
+                                                <Plus className="w-3 h-3" />
+                                                <span className="hidden sm:inline">Add Sub-Item</span>
+                                                <span className="sm:hidden">Sub</span>
+                                              </button>
+                                            )}
+                                          </div>
+                                        </div>
                                       </div>
+
+                                      {/* Nested Sub-Accounts Tree Branch */}
+                                      {hasChildren && !isCollapsed && (
+                                        <div className="ml-3 sm:ml-6 pl-3 sm:pl-4 border-l-2 border-blue-200/80 dark:border-blue-900/60 space-y-2 py-0.5">
+                                          {children.map((childAcc, childIdx) => {
+                                            const isLastChild = childIdx === children.length - 1;
+                                            return (
+                                              <div
+                                                key={childAcc.id}
+                                                onClick={() => setSelectedLedgerAccount(childAcc)}
+                                                className="relative p-2.5 sm:p-2 rounded-xl border border-slate-200/70 dark:border-slate-800/80 hover:border-blue-300 dark:hover:border-blue-700 bg-slate-50/80 hover:bg-blue-50/30 dark:bg-slate-850/60 dark:hover:bg-slate-800/90 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-3 cursor-pointer group shadow-2xs"
+                                              >
+                                                {/* Tree Branch Elbow Rail Indicator */}
+                                                <div className="flex items-start sm:items-center gap-2 sm:gap-2.5 min-w-0">
+                                                  <div className="flex items-center text-blue-500 dark:text-blue-400 shrink-0 pt-0.5 sm:pt-0">
+                                                    <span className="font-mono text-xs select-none text-blue-300 dark:text-blue-700 mr-1">
+                                                      {isLastChild ? '└──' : '├──'}
+                                                    </span>
+                                                    <CornerDownRight className="w-3.5 h-3.5 text-blue-500" />
+                                                  </div>
+
+                                                  <span className="font-mono text-xs font-bold text-blue-600 dark:text-blue-400 group-hover:underline shrink-0">
+                                                    {childAcc.code}
+                                                  </span>
+
+                                                  <div className="min-w-0 flex-1">
+                                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                                      <span className="font-semibold text-xs text-slate-800 dark:text-slate-200">
+                                                        {childAcc.name}
+                                                      </span>
+
+                                                      <span className="inline-flex items-center gap-0.5 text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200 dark:bg-blue-950/40 dark:text-blue-300 dark:border-blue-900 px-1.5 py-0.2 rounded">
+                                                        <CornerDownRight className="w-2.5 h-2.5" />
+                                                        <span>Sub-account</span>
+                                                      </span>
+
+                                                      <span className="text-[10px] font-medium text-slate-400 dark:text-slate-500">
+                                                        under {acc.name}
+                                                      </span>
+
+                                                      {childAcc.subCategory && (
+                                                        <span className="inline-flex items-center gap-1 text-[10px] font-extrabold bg-amber-50 text-amber-800 border border-amber-200 px-1.5 py-0.2 rounded">
+                                                          <Layers className="w-2.5 h-2.5 text-amber-600" />
+                                                          <span>{childAcc.subCategory}</span>
+                                                        </span>
+                                                      )}
+
+                                                      {childAcc.normalBalance && (
+                                                        <span className="text-[10px] font-extrabold bg-slate-50 text-slate-600 border border-slate-200 px-1.5 py-0.2 rounded">
+                                                          {childAcc.normalBalance === 'Debit' ? 'Dr' : 'Cr'}
+                                                        </span>
+                                                      )}
+
+                                                      {childAcc.status === 'Archived' && (
+                                                        <span className="text-[10px] font-extrabold bg-slate-200 text-slate-700 border border-slate-300 px-1.5 py-0.2 rounded">
+                                                          Archived
+                                                        </span>
+                                                      )}
+                                                    </div>
+
+                                                    {childAcc.description && (
+                                                      <p className="text-[10px] text-slate-400 line-clamp-1 mt-0.5">
+                                                        {childAcc.description}
+                                                      </p>
+                                                    )}
+                                                  </div>
+                                                </div>
+
+                                                <div className="flex items-center justify-between sm:justify-end gap-3 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-100 dark:border-slate-800">
+                                                  <span className="font-mono text-xs font-bold text-slate-800 dark:text-slate-200">
+                                                    {formatCurrency(
+                                                      childAcc.balance,
+                                                      settings.currencySymbol
+                                                    )}
+                                                  </span>
+
+                                                  <div className="flex items-center gap-1.5">
+                                                    <button
+                                                      onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        handleOpenEditModal(childAcc);
+                                                      }}
+                                                      className="text-[11px] sm:text-[10px] font-bold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 hover:bg-amber-50 hover:text-amber-800 px-2 sm:px-1.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 transition-colors inline-flex items-center gap-1 cursor-pointer min-h-[28px]"
+                                                      title={`Edit ${childAcc.name}`}
+                                                      aria-label={`Edit ${childAcc.name}`}
+                                                    >
+                                                      <Pencil className="w-2.5 h-2.5 text-amber-600" />
+                                                      <span>Edit</span>
+                                                    </button>
+
+                                                    <button
+                                                      onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        setSelectedLedgerAccount(childAcc);
+                                                      }}
+                                                      className="text-[11px] sm:text-[10px] font-bold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 hover:bg-blue-50 hover:text-blue-700 px-2 sm:px-1.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 transition-colors inline-flex items-center gap-1 cursor-pointer min-h-[28px]"
+                                                      aria-label={`View ledger for ${childAcc.name}`}
+                                                    >
+                                                      <Eye className="w-2.5 h-2.5 text-blue-600" />
+                                                      <span>Ledger</span>
+                                                    </button>
+                                                  </div>
+                                                </div>
+                                              </div>
+                                            );
+                                          })}
+                                        </div>
+                                      )}
                                     </div>
-
-                                    <div className="flex items-center justify-between sm:justify-end gap-3 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-100 dark:border-slate-800">
-                                      <span className="font-mono text-xs font-extrabold text-slate-900 dark:text-slate-100">
-                                        {formatCurrency(
-                                          acc.balance,
-                                          settings.currencySymbol
-                                        )}
-                                      </span>
-
-                                      <div className="flex items-center gap-1.5">
-                                        <button
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            handleOpenEditModal(acc);
-                                          }}
-                                          className="text-[11px] sm:text-[10px] font-bold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 hover:bg-amber-50 hover:text-amber-800 px-2.5 sm:px-2 py-1.5 sm:py-1 rounded-lg border border-slate-200 dark:border-slate-700 transition-colors inline-flex items-center gap-1 cursor-pointer min-h-[30px]"
-                                          title={`Edit ${acc.name}`}
-                                          aria-label={`Edit ${acc.name}`}
-                                        >
-                                          <Pencil className="w-3 h-3 text-amber-600" />
-                                          <span>Edit</span>
-                                        </button>
-
-                                        <button
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            setSelectedLedgerAccount(acc);
-                                          }}
-                                          className="text-[11px] sm:text-[10px] font-bold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 hover:bg-blue-50 hover:text-blue-700 px-2.5 sm:px-2 py-1.5 sm:py-1 rounded-lg border border-slate-200 dark:border-slate-700 transition-colors inline-flex items-center gap-1 cursor-pointer min-h-[30px]"
-                                          aria-label={`View ledger for ${acc.name}`}
-                                        >
-                                          <Eye className="w-3 h-3 text-blue-600" />
-                                          <span>Ledger</span>
-                                        </button>
-
-                                        <button
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            handleOpenAddSubAccount(acc);
-                                          }}
-                                          className="text-[11px] sm:text-[10px] font-bold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/40 hover:bg-blue-100 dark:hover:bg-blue-900/50 px-2.5 sm:px-2 py-1.5 sm:py-1 rounded-lg border border-blue-200 dark:border-blue-800 transition-colors inline-flex items-center gap-1 cursor-pointer min-h-[30px]"
-                                          title={`Add sub-item under ${acc.name}`}
-                                          aria-label={`Add sub-item under ${acc.name}`}
-                                        >
-                                          <Plus className="w-3 h-3" />
-                                          <span className="hidden sm:inline">Add Sub-Item</span>
-                                          <span className="sm:hidden">Sub</span>
-                                        </button>
-                                      </div>
-                                    </div>
-                                  </div>
-                                );
-                              })}
+                                  );
+                                });
+                              })()}
                             </div>
                           )}
                         </div>
                       );
-                    })}
-                  </div>
+                    });
+                  })()}
+                </div>
                 )}
               </div>
             );
@@ -641,19 +983,35 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
         <div className="overflow-hidden">
           {/* Mobile Accounts Cards Feed (block lg:hidden) */}
           <div className="block lg:hidden p-3 sm:p-4 space-y-3">
-            {filteredAccounts.length === 0 ? (
+            {hierarchicallyOrderedAccounts.length === 0 ? (
               <div className="py-12 text-center text-xs sm:text-sm text-slate-400 bg-slate-50/50 dark:bg-slate-800/30 rounded-2xl border border-slate-200 dark:border-slate-800">
                 No accounts match these filters.
               </div>
             ) : (
-              filteredAccounts.map((acc) => {
-                const parentName = acc.parentAccountId ? accountNameById.get(acc.parentAccountId) : undefined;
+              hierarchicallyOrderedAccounts.map(({ account: acc, isChild, parent }) => {
+                const parentName = parent?.name || (acc.parentAccountId ? accountNameById.get(acc.parentAccountId) : undefined);
+                const hasChildren = (activeChildCountByParentId.get(acc.id) || 0) > 0;
+                const isCollapsed = collapsedParentAccounts[acc.id];
+
                 return (
                   <div
                     key={acc.id}
                     onClick={() => setSelectedLedgerAccount(acc)}
-                    className="bg-white dark:bg-slate-800/90 rounded-2xl border border-slate-200 dark:border-slate-700/80 p-3.5 sm:p-4 shadow-2xs space-y-3 active:bg-slate-50 dark:active:bg-slate-800 transition-colors cursor-pointer"
+                    className={`rounded-2xl border p-3.5 sm:p-4 shadow-2xs space-y-3 active:bg-slate-50 dark:active:bg-slate-800 transition-colors cursor-pointer ${
+                      isChild
+                        ? 'ml-3 sm:ml-5 border-l-4 border-l-blue-500 dark:border-l-blue-400 bg-slate-50/90 dark:bg-slate-850/80 border-slate-200/80 dark:border-slate-700/80'
+                        : hasChildren
+                        ? 'bg-white dark:bg-slate-800/90 border-slate-300 dark:border-slate-700'
+                        : 'bg-white dark:bg-slate-800/90 border-slate-200 dark:border-slate-700/80'
+                    }`}
                   >
+                    {isChild && (
+                      <div className="flex items-center gap-1.5 text-[11px] font-bold text-blue-700 dark:text-blue-300 bg-blue-50/80 dark:bg-blue-950/40 px-2 py-1 rounded-md border border-blue-200/60 dark:border-blue-900/40">
+                        <CornerDownRight className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+                        <span>Sub-account of {parentName || 'Parent Account'}</span>
+                      </div>
+                    )}
+
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2 flex-wrap">
@@ -665,13 +1023,27 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
                               <Lock className="h-3 w-3" /> System
                             </span>
                           )}
+                          {!isChild && hasChildren && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleParentCollapse(acc.id);
+                              }}
+                              className="inline-flex items-center gap-1 text-[10px] font-bold text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/50 px-2 py-0.5 rounded border border-blue-200 dark:border-blue-800 cursor-pointer"
+                              title={isCollapsed ? 'Expand sub-accounts' : 'Collapse sub-accounts'}
+                            >
+                              {isCollapsed ? <ChevronRight className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                              <span>{activeChildCountByParentId.get(acc.id)} sub-accounts</span>
+                            </button>
+                          )}
                           {acc.status === 'Archived' && (
                             <span className="rounded border border-slate-300 bg-slate-100 dark:bg-slate-700 px-1.5 py-0.2 text-[10px] font-bold text-slate-600 dark:text-slate-300">
                               Archived
                             </span>
                           )}
                         </div>
-                        <h4 className="text-sm font-bold text-slate-900 dark:text-white mt-0.5 leading-snug">
+                        <h4 className={`text-sm text-slate-900 dark:text-white mt-0.5 leading-snug ${isChild ? 'font-semibold' : 'font-bold'}`}>
                           {acc.name}
                         </h4>
                         {acc.description && (
@@ -698,7 +1070,7 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
                       <span className="bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 font-bold px-2 py-0.5 rounded-md border border-blue-200 dark:border-blue-900">
                         {acc.type}
                       </span>
-                      {parentName && (
+                      {parentName && !isChild && (
                         <span className="bg-slate-50 dark:bg-slate-700/50 text-slate-500 dark:text-slate-300 font-medium px-2 py-0.5 rounded-md">
                           under {parentName}
                         </span>
@@ -711,6 +1083,22 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
                     </div>
 
                     <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-700/60">
+                      {!acc.isSystemAccount && !acc.isLocked && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleOpenAddSubAccount(acc);
+                          }}
+                          className="px-3 py-1.5 text-xs font-bold text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/50 hover:bg-blue-100 rounded-lg border border-blue-200 dark:border-blue-800 transition-colors inline-flex items-center gap-1.5 cursor-pointer min-h-[36px]"
+                          title={`Create Sub-Account under ${acc.name}`}
+                          aria-label={`Create Sub-Account under ${acc.name}`}
+                        >
+                          <Plus className="w-3.5 h-3.5 text-blue-600" />
+                          <span>+ Sub</span>
+                        </button>
+                      )}
+
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -750,52 +1138,146 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
                   <th className="w-[35%] px-6 py-3">Account name</th>
                   <th className="w-[14%] px-3 py-3">Account code</th>
                   <th className="w-[20%] px-3 py-3">Account type</th>
-                  <th className="w-[20%] px-3 py-3">Parent account</th>
+                  <th className="w-[18%] px-3 py-3">Parent account</th>
                   <th className="w-[11%] px-3 py-3 text-right">Balance</th>
-                  <th className="w-12 px-4 py-3"><span className="sr-only">Actions</span></th>
+                  <th className="w-36 px-4 py-3 text-right"><span className="sr-only">Actions</span></th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                {filteredAccounts.map((acc) => (
+                {hierarchicallyOrderedAccounts.map(({ account: acc, isChild, parent }) => (
                   <tr
                     key={acc.id}
                     onClick={() => setSelectedLedgerAccount(acc)}
-                    className="group h-14 cursor-pointer transition-colors hover:bg-blue-50/50 dark:hover:bg-slate-800/70"
+                    className={`group transition-colors cursor-pointer ${
+                      isChild
+                        ? 'h-12 bg-slate-50/60 dark:bg-slate-850/50 hover:bg-blue-50/60 dark:hover:bg-slate-800/80'
+                        : 'h-14 hover:bg-blue-50/40 dark:hover:bg-slate-800/60'
+                    }`}
                   >
-                    <td className="px-6 py-3">
+                    <td className={`px-6 py-3 ${isChild ? 'pl-12 sm:pl-14' : ''}`}>
                       <div className="flex items-center gap-2">
-                        {acc.isSystemAccount && <Lock className="h-3.5 w-3.5 shrink-0 text-slate-400" title={acc.systemRole ? `System role: ${formatSystemRole(acc.systemRole)}` : 'System account'} />}
-                        <span className="font-semibold text-blue-600 group-hover:underline">{acc.name}</span>
-                        {acc.status === 'Archived' && <span className="rounded border border-slate-300 bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-600">Archived</span>}
+                        {isChild && (
+                          <div className="flex items-center gap-1 text-blue-500 dark:text-blue-400 shrink-0">
+                            <span className="font-mono text-xs select-none text-blue-300 dark:text-blue-700">└──</span>
+                            <CornerDownRight className="h-3.5 w-3.5 text-blue-500 shrink-0" />
+                          </div>
+                        )}
+                        {acc.isSystemAccount && (
+                          <Lock className="h-3.5 w-3.5 shrink-0 text-slate-400" title={acc.systemRole ? `System role: ${formatSystemRole(acc.systemRole)}` : 'System account'} />
+                        )}
+                        {!isChild && (activeChildCountByParentId.get(acc.id) || 0) > 0 && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleParentCollapse(acc.id);
+                            }}
+                            className="p-1 -ml-1 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-700 rounded transition-colors cursor-pointer shrink-0"
+                            title={collapsedParentAccounts[acc.id] ? 'Expand sub-accounts' : 'Collapse sub-accounts'}
+                            aria-label={collapsedParentAccounts[acc.id] ? `Expand sub-accounts for ${acc.name}` : `Collapse sub-accounts for ${acc.name}`}
+                          >
+                            {collapsedParentAccounts[acc.id] ? (
+                              <ChevronRight className="h-3.5 w-3.5" />
+                            ) : (
+                              <ChevronDown className="h-3.5 w-3.5" />
+                            )}
+                          </button>
+                        )}
+                        <span className={`group-hover:underline ${isChild ? 'font-medium text-slate-800 dark:text-slate-200 group-hover:text-blue-600' : 'font-semibold text-blue-600'}`}>{acc.name}</span>
+                        {isChild && (
+                          <span className="rounded border border-blue-200 bg-blue-50 px-1.5 py-0.5 text-[10px] font-bold text-blue-700 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-300 inline-flex items-center gap-0.5">
+                            <CornerDownRight className="w-2.5 h-2.5" />
+                            Sub-account
+                          </span>
+                        )}
+                        {!isChild && (activeChildCountByParentId.get(acc.id) || 0) > 0 && (
+                          <span className="rounded bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 text-[10px] font-bold text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                            {activeChildCountByParentId.get(acc.id)} sub-accounts
+                          </span>
+                        )}
+                        {acc.status === 'Archived' && (
+                          <span className="rounded border border-slate-300 bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-600">
+                            Archived
+                          </span>
+                        )}
                       </div>
                       {acc.description && <p className="mt-0.5 max-w-md truncate text-[10px] text-slate-400">{acc.description}</p>}
                     </td>
                     <td className="px-3 py-3 font-mono font-medium text-slate-600 dark:text-slate-300">
-                      {acc.code}
+                      <span className={isChild ? 'pl-2 text-blue-600/90 dark:text-blue-400/90' : ''}>
+                        {acc.code}
+                      </span>
                     </td>
                     <td className="px-3 py-3 text-slate-800 dark:text-slate-200">
                       <div>{acc.subType}</div>
                       <div className="mt-0.5 text-[10px] text-slate-400">{acc.type} · {acc.normalBalance === 'Credit' ? 'Cr' : 'Dr'}</div>
                     </td>
                     <td className="px-3 py-3 text-slate-600 dark:text-slate-300">
-                      {acc.parentAccountId && accountNameById.get(acc.parentAccountId) ? accountNameById.get(acc.parentAccountId) : <span className="text-slate-300">-</span>}
+                      {isChild && parent ? (
+                        <span className="inline-flex items-center gap-1 text-xs font-medium text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-md border border-slate-200/60 dark:border-slate-700/60">
+                          <CornerDownRight className="w-3 h-3 text-blue-500 shrink-0" />
+                          {parent.name}
+                        </span>
+                      ) : acc.parentAccountId && accountNameById.get(acc.parentAccountId) ? (
+                        <span className="inline-flex items-center gap-1 text-xs font-medium text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-md border border-slate-200/60 dark:border-slate-700/60">
+                          <CornerDownRight className="w-3 h-3 text-blue-500 shrink-0" />
+                          {accountNameById.get(acc.parentAccountId)}
+                        </span>
+                      ) : (
+                        <span className="text-slate-300">-</span>
+                      )}
                     </td>
                     <td className="px-3 py-3 text-right font-mono font-semibold text-slate-800 dark:text-slate-100">
                       {formatCurrency(acc.balance, settings.currencySymbol)}
                     </td>
-                    <td className="px-4 py-3 text-right">
-                      <button
-                        onClick={(event) => { event.stopPropagation(); handleOpenEditModal(acc); }}
-                        className="rounded p-1.5 text-slate-500 opacity-80 lg:opacity-0 transition-all hover:bg-slate-100 hover:text-slate-900 group-hover:opacity-100 focus:opacity-100 dark:hover:bg-slate-800 cursor-pointer"
-                        title={`Edit ${acc.name}`}
-                        aria-label={`Edit ${acc.name}`}
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                      </button>
+                    <td className="px-4 py-3 text-right whitespace-nowrap">
+                      <div className="flex items-center justify-end gap-1.5">
+                        {!acc.isSystemAccount && !acc.isLocked && (
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              handleOpenAddSubAccount(acc);
+                            }}
+                            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold text-blue-600 hover:bg-blue-50 hover:text-blue-700 dark:text-blue-400 dark:hover:bg-blue-950/50 cursor-pointer"
+                            title={`Create Sub-Account under ${acc.name}`}
+                            aria-label={`Create Sub-Account under ${acc.name}`}
+                          >
+                            <Plus className="h-3 w-3" />
+                            <span className="hidden xl:inline">Sub-Account</span>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setSelectedLedgerAccount(acc);
+                          }}
+                          className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 cursor-pointer"
+                          title={`View ledger for ${acc.name}`}
+                          aria-label={`View ledger for ${acc.name}`}
+                        >
+                          <Eye className="h-3 w-3" />
+                          <span className="hidden xl:inline">Ledger</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            handleOpenEditModal(acc);
+                          }}
+                          className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold text-amber-700 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-950/40 cursor-pointer"
+                          title={`Edit ${acc.name}`}
+                          aria-label={`Edit ${acc.name}`}
+                        >
+                          <Pencil className="h-3 w-3" />
+                          <span className="hidden xl:inline">Edit</span>
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
-                {filteredAccounts.length === 0 && (
+                {hierarchicallyOrderedAccounts.length === 0 && (
                   <tr><td colSpan={6} className="px-6 py-16 text-center text-sm text-slate-500">No accounts match these filters.</td></tr>
                 )}
               </tbody>
@@ -810,8 +1292,10 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
         onClose={() => {
           setIsModalOpen(false);
           setAccountToEdit(null);
+          setSelectedParentAccount(null);
         }}
         initialParentId={modalParentId}
+        parentAccount={selectedParentAccount}
         initialSubCategory={modalSubCat}
         accountToEdit={accountToEdit}
       />

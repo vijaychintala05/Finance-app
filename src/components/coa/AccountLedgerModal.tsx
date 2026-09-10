@@ -206,6 +206,22 @@ export const AccountLedgerModal: React.FC<AccountLedgerModalProps> = ({
             </div>
 
             <div className="flex items-center gap-1.5 sm:gap-2">
+              {onAddSubAccount && !account.isSystemAccount && !account.isLocked && (
+                <button
+                  onClick={() => {
+                    onClose();
+                    onAddSubAccount(account);
+                  }}
+                  className="px-2.5 sm:px-3 py-1.5 bg-blue-50 dark:bg-blue-900/30 hover:bg-blue-100 dark:hover:bg-blue-900/50 text-blue-800 dark:text-blue-300 font-bold border border-blue-200 dark:border-blue-800 rounded-xl transition-colors cursor-pointer flex items-center gap-1.5 text-xs min-h-[36px]"
+                  title={`Create Sub-Account under ${account.name}`}
+                  aria-label={`Create Sub-Account under ${account.name}`}
+                >
+                  <Plus className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                  <span className="hidden sm:inline">+ Sub-Account</span>
+                  <span className="sm:hidden">+ Sub</span>
+                </button>
+              )}
+
               {onEditAccount && (
                 <button
                   onClick={() => {

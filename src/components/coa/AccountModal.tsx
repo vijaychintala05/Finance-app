@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, Archive, Check, CheckCircle2, ChevronDown, Info, RefreshCw, Search, Trash2, X } from 'lucide-react';
+import { AlertTriangle, Archive, Check, CheckCircle2, ChevronDown, FolderTree, Info, RefreshCw, Search, Trash2, X } from 'lucide-react';
 import { Account, AccountSubType, AccountType } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 
@@ -7,6 +7,7 @@ interface AccountModalProps {
   isOpen: boolean;
   onClose: () => void;
   initialParentId?: string;
+  parentAccount?: Account | null;
   initialSubCategory?: string;
   accountToEdit?: Account | null;
 }
@@ -109,10 +110,71 @@ export const getNextAvailableAccountCode = (category: AccountType, existingAccou
   return String(base + 1);
 };
 
+export const getNextSubAccountCode = (parentAccount: Account, existingAccounts: Account[]): string => {
+  const existingCodes = new Set(existingAccounts.map((a) => (a.code || '').trim()));
+  const parentCode = (parentAccount.code || '').trim();
+
+  // 1. Check existing children of the parent
+  const childCodes = existingAccounts
+    .filter((a) => (a.parentAccountId === parentAccount.id || a.parentId === parentAccount.id) && a.code)
+    .map((a) => a.code.trim());
+
+  // Check if existing children use hyphen format: e.g. "1010-01", "1010-02"
+  const hyphenMatches = childCodes
+    .map((c) => c.match(new RegExp(`^${parentCode}-(\\d+)$`)))
+    .filter(Boolean) as RegExpMatchArray[];
+
+  if (hyphenMatches.length > 0) {
+    const padLen = hyphenMatches[0][1].length;
+    const maxNum = Math.max(...hyphenMatches.map((m) => parseInt(m[1], 10)));
+    for (let next = maxNum + 1; next <= maxNum + 50; next++) {
+      const nextCode = `${parentCode}-${String(next).padStart(padLen, '0')}`;
+      if (!existingCodes.has(nextCode) && !RESERVED_CODES.has(nextCode)) {
+        return nextCode;
+      }
+    }
+  }
+
+  // Check if existing children use dot format: e.g. "1010.01", "1010.02" or "1010.1"
+  const dotMatches = childCodes
+    .map((c) => c.match(new RegExp(`^${parentCode}\\.(\\d+)$`)))
+    .filter(Boolean) as RegExpMatchArray[];
+
+  if (dotMatches.length > 0) {
+    const padLen = dotMatches[0][1].length;
+    const maxNum = Math.max(...dotMatches.map((m) => parseInt(m[1], 10)));
+    for (let next = maxNum + 1; next <= maxNum + 50; next++) {
+      const nextCode = `${parentCode}.${String(next).padStart(padLen, '0')}`;
+      if (!existingCodes.has(nextCode) && !RESERVED_CODES.has(nextCode)) {
+        return nextCode;
+      }
+    }
+  }
+
+  // 2. Default Zoho Books standard sub-account dot notation: parentCode.01, parentCode.02 ...
+  for (let i = 1; i <= 99; i++) {
+    const candidateDot = `${parentCode}.${String(i).padStart(2, '0')}`;
+    if (!existingCodes.has(candidateDot) && !RESERVED_CODES.has(candidateDot)) {
+      return candidateDot;
+    }
+  }
+
+  // 3. Fallback format: parentCode-01, parentCode-02...
+  for (let i = 1; i <= 99; i++) {
+    const candidateHyphen = `${parentCode}-${String(i).padStart(2, '0')}`;
+    if (!existingCodes.has(candidateHyphen) && !RESERVED_CODES.has(candidateHyphen)) {
+      return candidateHyphen;
+    }
+  }
+
+  return `${parentCode}.01`;
+};
+
 export const AccountModal: React.FC<AccountModalProps> = ({
   isOpen,
   onClose,
   initialParentId,
+  parentAccount,
   initialSubCategory,
   accountToEdit,
 }) => {
@@ -136,33 +198,85 @@ export const AccountModal: React.FC<AccountModalProps> = ({
 
   const selected = useMemo(() => ACCOUNT_TYPE_CATALOG[catalogIndex] || ACCOUNT_TYPE_CATALOG[0], [catalogIndex]);
 
+  // Find active parent account if configured
+  const activeParent = useMemo(() => {
+    const targetId = parentAccountId || parentAccount?.id || initialParentId;
+    if (!targetId) return null;
+    return parentAccount?.id === targetId
+      ? parentAccount
+      : accounts.find((a) => a.id === targetId) || null;
+  }, [parentAccountId, parentAccount, initialParentId, accounts]);
+
   useEffect(() => {
     if (!isOpen) return;
-    const existingIndex = accountToEdit
-      ? ACCOUNT_TYPE_CATALOG.findIndex((entry) => entry.category === accountToEdit.type && entry.subType === accountToEdit.subType)
-      : 0;
-    const activeIndex = existingIndex >= 0 ? existingIndex : 0;
-    setCatalogIndex(activeIndex);
-    setIsTypePickerOpen(false);
-    setTypePickerCategory('All');
-    setTypeSearch('');
-    setName(accountToEdit?.name || '');
-    setDescription(accountToEdit?.description || '');
-    const initialParentAccountId = accountToEdit?.parentAccountId || accountToEdit?.parentId || initialParentId || '';
-    setIsSubAccount(Boolean(initialParentAccountId));
-    setParentAccountId(initialParentAccountId);
-    setReportingGroup(accountToEdit?.reportingGroup || initialSubCategory || '');
-    setAllowDirectPosting(accountToEdit?.allowDirectPosting ?? true);
-    setNormalBalance(accountToEdit?.normalBalance || ACCOUNT_TYPE_CATALOG[activeIndex]?.normalBalance || 'Debit');
-    setError('');
-    setIsSubmitting(false);
 
     if (accountToEdit) {
+      const existingIndex = ACCOUNT_TYPE_CATALOG.findIndex(
+        (entry) => entry.category === accountToEdit.type && entry.subType === accountToEdit.subType
+      );
+      const activeIndex = existingIndex >= 0 ? existingIndex : 0;
+      setCatalogIndex(activeIndex);
+      setIsTypePickerOpen(false);
+      setTypePickerCategory('All');
+      setTypeSearch('');
+      setName(accountToEdit.name || '');
+      setDescription(accountToEdit.description || '');
+      const initialParentAccountId = accountToEdit.parentAccountId || accountToEdit.parentId || '';
+      setIsSubAccount(Boolean(initialParentAccountId));
+      setParentAccountId(initialParentAccountId);
+      setReportingGroup(accountToEdit.reportingGroup || initialSubCategory || '');
+      setAllowDirectPosting(accountToEdit.allowDirectPosting ?? true);
+      setNormalBalance(accountToEdit.normalBalance || ACCOUNT_TYPE_CATALOG[activeIndex]?.normalBalance || 'Debit');
       setCode(accountToEdit.code || '');
     } else {
-      setCode(getNextAvailableAccountCode(ACCOUNT_TYPE_CATALOG[activeIndex].category, accounts));
+      // Check if opening with a parent account pre-selected (Sub-Account mode)
+      const effectiveParentId = parentAccount?.id || initialParentId || '';
+      const resolvedParent = parentAccount || (effectiveParentId ? accounts.find((a) => a.id === effectiveParentId) : null);
+
+      if (resolvedParent) {
+        // AUTO-FILL ALL RELEVANT DATA FROM PARENT ACCOUNT!
+        setIsSubAccount(true);
+        setParentAccountId(resolvedParent.id);
+
+        // Match category and subtype from parent
+        const parentCatalogIndex = ACCOUNT_TYPE_CATALOG.findIndex(
+          (entry) => entry.category === resolvedParent.type && entry.subType === resolvedParent.subType
+        );
+        const fallbackCatalogIndex = ACCOUNT_TYPE_CATALOG.findIndex((entry) => entry.category === resolvedParent.type);
+        const activeIndex = parentCatalogIndex >= 0 ? parentCatalogIndex : fallbackCatalogIndex >= 0 ? fallbackCatalogIndex : 0;
+        setCatalogIndex(activeIndex);
+
+        // Inherit normal balance
+        const defaultBal = ['Asset', 'Expense', 'Cost of Goods Sold', 'Other Expense'].includes(resolvedParent.type) ? 'Debit' : 'Credit';
+        setNormalBalance(resolvedParent.normalBalance || defaultBal);
+
+        // Inherit reporting group
+        setReportingGroup(resolvedParent.reportingGroup || resolvedParent.subCategory || initialSubCategory || '');
+
+        // Auto-suggest next sub-account code based on parent
+        setCode(getNextSubAccountCode(resolvedParent, accounts));
+        setAllowDirectPosting(true);
+      } else {
+        // Standard new top-level account
+        setIsSubAccount(false);
+        setParentAccountId('');
+        setCatalogIndex(0);
+        setReportingGroup(initialSubCategory || '');
+        setAllowDirectPosting(true);
+        setNormalBalance(ACCOUNT_TYPE_CATALOG[0]?.normalBalance || 'Debit');
+        setCode(getNextAvailableAccountCode(ACCOUNT_TYPE_CATALOG[0].category, accounts));
+      }
+
+      setName('');
+      setDescription('');
+      setIsTypePickerOpen(false);
+      setTypePickerCategory('All');
+      setTypeSearch('');
     }
-  }, [isOpen, accountToEdit]);
+
+    setError('');
+    setIsSubmitting(false);
+  }, [isOpen, accountToEdit, initialParentId, parentAccount, accounts]);
 
   // Check code conflict dynamically
   const codeConflict = useMemo(() => {
@@ -209,6 +323,16 @@ export const AccountModal: React.FC<AccountModalProps> = ({
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [isTypePickerOpen]);
+
+  const availableParents = useMemo(() => {
+    return accounts.filter((account) =>
+      account.id !== accountToEdit?.id &&
+      account.status === 'Active' &&
+      !account.isSystemAccount &&
+      !account.isLocked &&
+      (account.type === selected.category || (isSubAccount && Boolean(parentAccountId)))
+    );
+  }, [accounts, accountToEdit, selected.category, isSubAccount, parentAccountId]);
 
   if (!isOpen) return null;
 
@@ -347,20 +471,44 @@ export const AccountModal: React.FC<AccountModalProps> = ({
     }
   };
 
-  const availableParents = accounts.filter((account) =>
-    account.id !== accountToEdit?.id &&
-    account.status === 'Active' &&
-    !account.isSystemAccount &&
-    !account.isLocked &&
-    account.type === selected.category
-  );
+  const handleParentAccountChange = (newParentId: string) => {
+    setParentAccountId(newParentId);
+    if (!newParentId) return;
+
+    const targetParent = accounts.find((a) => a.id === newParentId);
+    if (targetParent) {
+      // Auto-fill Type and SubType to match parent
+      const pIndex = ACCOUNT_TYPE_CATALOG.findIndex(
+        (entry) => entry.category === targetParent.type && entry.subType === targetParent.subType
+      );
+      const fallbackIndex = ACCOUNT_TYPE_CATALOG.findIndex((entry) => entry.category === targetParent.type);
+      const finalIndex = pIndex >= 0 ? pIndex : fallbackIndex >= 0 ? fallbackIndex : 0;
+      setCatalogIndex(finalIndex);
+
+      // Auto-fill Normal Balance
+      const defaultBal = ['Asset', 'Expense', 'Cost of Goods Sold', 'Other Expense'].includes(targetParent.type) ? 'Debit' : 'Credit';
+      setNormalBalance(targetParent.normalBalance || defaultBal);
+
+      // Auto-fill Reporting Group
+      setReportingGroup(targetParent.reportingGroup || targetParent.subCategory || '');
+
+      // Auto-suggest next sub-code
+      setCode(getNextSubAccountCode(targetParent, accounts));
+    }
+  };
+
+
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-950/50 p-0 sm:p-6" onClick={onClose}>
       <div className="max-h-[92vh] sm:max-h-[calc(100vh-3rem)] w-full max-w-4xl overflow-y-auto rounded-t-2xl sm:rounded-xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900" onClick={(event) => event.stopPropagation()}>
         <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3.5 dark:border-slate-800 sm:px-6 sm:py-4">
           <h3 className="text-base font-semibold text-slate-900 dark:text-white">
-            {accountToEdit ? `Account details: ${accountToEdit.name}` : 'Create account'}
+            {accountToEdit
+              ? `Account details: ${accountToEdit.name}`
+              : isSubAccount && activeParent
+              ? `Create Sub-Account of ${activeParent.name}`
+              : 'Create account'}
           </h3>
           <button type="button" onClick={onClose} disabled={isSubmitting} aria-label="Close account form" className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-100 hover:text-rose-500 disabled:opacity-50 dark:hover:bg-slate-800 cursor-pointer"><X className="h-4 w-4" /></button>
         </div>
@@ -496,27 +644,55 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                       type="checkbox"
                       checked={isSubAccount}
                       onChange={(event) => {
-                        setIsSubAccount(event.target.checked);
-                        if (!event.target.checked) setParentAccountId('');
+                        const checked = event.target.checked;
+                        setIsSubAccount(checked);
+                        if (!checked) {
+                          setParentAccountId('');
+                        } else if (availableParents.length > 0 && !parentAccountId) {
+                          handleParentAccountChange(availableParents[0].id);
+                        }
                       }}
                       className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
                     />
                     Make this a sub-account
                   </label>
                   {isSubAccount && (
-                    <label className="mt-3 block text-sm font-medium text-slate-800 dark:text-slate-200">
-                      Parent account <span className="text-rose-600">*</span>
+                    <div className="mt-3 space-y-2.5">
+                      <label htmlFor="parent-account-select" className="block text-sm font-medium text-slate-800 dark:text-slate-200">
+                        Parent account <span className="text-rose-600">*</span>
+                      </label>
                       <select
+                        id="parent-account-select"
                         required
                         value={parentAccountId}
-                        onChange={(event) => setParentAccountId(event.target.value)}
+                        onChange={(event) => handleParentAccountChange(event.target.value)}
                         className="mt-1.5 block h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-800 outline-none transition focus:border-blue-600 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:focus:ring-blue-950 cursor-pointer"
                       >
-                        <option value="">Select a parent account</option>
-                        {availableParents.map((account) => <option key={account.id} value={account.id}>{account.code} - {account.name}</option>)}
-                      </select>
-                      {availableParents.length === 0 && <p className="mt-1.5 text-xs font-normal text-amber-700 dark:text-amber-300">Create an active {selected.category} account first, then use it as the parent.</p>}
-                    </label>
+                          <option value="">Select a parent account</option>
+                          {availableParents.map((account) => (
+                            <option key={account.id} value={account.id}>
+                              {account.code} - {account.name}
+                            </option>
+                          ))}
+                        </select>
+                        {availableParents.length === 0 && (
+                          <p className="mt-1.5 text-xs font-normal text-amber-700 dark:text-amber-300">
+                            Create an active {selected.category} account first, then use it as the parent.
+                          </p>
+                        )}
+
+                        {activeParent && (
+                        <div className="rounded-lg border border-blue-200 bg-blue-50/80 p-3 text-xs text-blue-900 dark:border-blue-900/50 dark:bg-blue-950/40 dark:text-blue-200">
+                          <div className="flex items-center gap-1.5 font-bold">
+                            <FolderTree className="h-4 w-4 text-blue-600 dark:text-blue-400 shrink-0" />
+                            <span>Sub-Account of {activeParent.code} — {activeParent.name}</span>
+                          </div>
+                          <p className="mt-1 text-[11px] text-blue-800 dark:text-blue-300">
+                            Category ({activeParent.type} · {activeParent.subType}) and normal balance ({activeParent.normalBalance || 'Debit'}) are auto-filled to match parent account.
+                          </p>
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
 
@@ -614,7 +790,7 @@ export const AccountModal: React.FC<AccountModalProps> = ({
             <div className="flex items-center gap-2">
               <button type="button" onClick={onClose} disabled={isSubmitting} className="h-9 rounded-md border border-slate-300 px-4 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800 cursor-pointer">Cancel</button>
               <button type="submit" disabled={isSubmitting || Boolean(codeConflict)} className="h-9 rounded-md bg-blue-600 px-4 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer">
-                {isSubmitting ? 'Saving...' : accountToEdit ? 'Save changes' : 'Save account'}
+                {isSubmitting ? 'Saving...' : accountToEdit ? 'Save changes' : isSubAccount ? 'Create Sub-Account' : 'Save account'}
               </button>
             </div>
           </div>

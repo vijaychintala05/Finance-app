@@ -69,6 +69,16 @@ class DatabaseService {
     this.initPool();
   }
 
+  public async close(): Promise<void> {
+    if (this.pool && typeof this.pool.end === 'function') {
+      try {
+        await this.pool.end();
+      } finally {
+        this.pool = null;
+      }
+    }
+  }
+
   public async checkHealth(): Promise<{
     isConnected: boolean;
     isMemoryMode: boolean;

@@ -2016,6 +2016,19 @@ export class SalesEngine {
         [journalEntryId, orgId, invoiceId]
       );
 
+      // Billable expenses reserve their source row with invoice_id while an
+      // approval is pending.  Consume that reservation only when the invoice
+      // has its authoritative posted journal entry.
+      await client.query(
+        `UPDATE expenses
+            SET is_billed = TRUE
+          WHERE organization_id = $1
+            AND invoice_id = $2
+            AND is_billable = TRUE
+            AND is_billed = FALSE`,
+        [orgId, invoiceId]
+      );
+
       if (inv.sales_order_id) {
         const soRes = await client.query(
           `SELECT * FROM sales_orders WHERE organization_id = $1 AND id = $2 FOR UPDATE`,

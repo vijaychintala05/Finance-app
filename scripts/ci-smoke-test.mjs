@@ -132,6 +132,48 @@ async function run() {
   }
   console.log('[CI Smoke Test] Client created successfully.');
 
+  console.log('[CI Smoke Test] Step 6: Creating Customer-Billable Expense (POST /api/v1/finance/expenses)...');
+  const expenseAcc = getAccData.find((a) => a.type === 'Expense' || a.code?.startsWith('6') || a.code?.startsWith('5')) || accData;
+  const expRes = await fetch(`${BASE_URL}/api/v1/finance/expenses`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+      'X-Organization-ID': orgId,
+    },
+    body: JSON.stringify({
+      expenseAccountId: expenseAcc.id,
+      paidFromAccountId: accData.id,
+      date: new Date().toISOString().slice(0, 10),
+      amount: 750.0,
+      vendorName: 'Smoke Test Vendor',
+      clientId: cliData.id,
+      isBillable: true,
+      description: 'CI Container Recoverable Expense',
+    }),
+  });
+  const expData = await expRes.json();
+  if (!expRes.ok || !expData.id || expData.isBillable !== true) {
+    throw new Error(`[CI Smoke Test] Billable expense creation failed: ${JSON.stringify(expData)}`);
+  }
+  console.log(`[CI Smoke Test] Customer-billable expense created successfully: ${expData.expenseNumber}`);
+
+  console.log('[CI Smoke Test] Step 7: Converting Billable Expense to Invoice (POST /api/v1/finance/expenses/:id/convert-to-invoice)...');
+  const convRes = await fetch(`${BASE_URL}/api/v1/finance/expenses/${expData.id}/convert-to-invoice`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+      'X-Organization-ID': orgId,
+    },
+    body: JSON.stringify({}),
+  });
+  const convData = await convRes.json();
+  if (!convRes.ok || !convData.invoice?.id) {
+    throw new Error(`[CI Smoke Test] Expense-to-invoice conversion failed: ${JSON.stringify(convData)}`);
+  }
+  console.log(`[CI Smoke Test] Expense converted to invoice successfully: ${convData.invoice.invoiceNumber || convData.invoice.id}`);
+
   console.log('[CI Smoke Test] ============================================================');
   console.log('[CI Smoke Test] ALL REAL POSTGRESQL MUTATIONS VERIFIED! SAFE TO PUBLISH.');
   console.log('[CI Smoke Test] ============================================================');

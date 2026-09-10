@@ -82,9 +82,29 @@ async function startServer() {
     });
   }
 
-  apiApp.listen(PORT, "0.0.0.0", () => {
+  const server = apiApp.listen(PORT, "0.0.0.0", () => {
     console.log(`Finance Application & Server running on http://0.0.0.0:${PORT}`);
   });
+
+  const shutdown = async (signal: string) => {
+    console.log(`[Server] Received ${signal}. Gracefully shutting down...`);
+    server.close(async () => {
+      try {
+        await db.close();
+        console.log('[Server] Database pool closed.');
+      } catch (err) {
+        console.error('[Server] Error closing database pool:', err);
+      }
+      process.exit(0);
+    });
+    setTimeout(() => {
+      console.error('[Server] Forced shutdown after timeout.');
+      process.exit(1);
+    }, 10000).unref();
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 startServer();

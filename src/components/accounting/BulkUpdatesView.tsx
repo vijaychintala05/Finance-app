@@ -15,6 +15,22 @@ interface BulkRow {
 }
 
 const today = () => new Date().toISOString().slice(0, 10);
+
+const parseBulkAmount = (input: string): number | null => {
+  const value = input.trim().replaceAll(' ', '');
+  if (!value) return null;
+
+  const ungrouped = /^\d+(?:\.\d{1,2})?$/;
+  const internationalGrouping = /^\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?$/;
+  const indianGrouping = /^\d{1,2}(?:,\d{2})*,\d{3}(?:\.\d{1,2})?$/;
+  if (!ungrouped.test(value) && !internationalGrouping.test(value) && !indianGrouping.test(value)) {
+    return null;
+  }
+
+  const amount = Number(value.replaceAll(',', ''));
+  return Number.isFinite(amount) && Number.isSafeInteger(Math.round(amount * 100)) ? amount : null;
+};
+
 const newRow = (): BulkRow => ({
   id: createBrowserId('bulk'),
   date: today(),
@@ -37,16 +53,19 @@ export const BulkUpdatesView: React.FC = () => {
     [accounts]
   );
 
-  const validRows = rows.filter(
-    (row) =>
+  const validRows = rows.filter((row) => {
+    const amount = parseBulkAmount(row.amount);
+    return Boolean(
       row.date &&
       row.debitAccountId &&
       row.creditAccountId &&
-      Number(row.amount) > 0 &&
+      amount !== null &&
+      amount > 0 &&
       row.debitAccountId !== row.creditAccountId
-  );
+    );
+  });
 
-  const total = validRows.reduce((sum, row) => sum + (Number(row.amount) || 0), 0);
+  const total = validRows.reduce((sum, row) => sum + (parseBulkAmount(row.amount) || 0), 0);
 
   const update = (id: string, patch: Partial<BulkRow>) =>
     setRows((current) => current.map((row) => (row.id === id ? { ...row, ...patch } : row)));
@@ -78,15 +97,21 @@ export const BulkUpdatesView: React.FC = () => {
 
     try {
       const response = await apiClient.post<{ count: number; created?: any[] }>('/finance/journals/bulk', {
-        entries: rows.map((row) => ({
-          date: row.date,
-          reference: row.reference || undefined,
-          narration: row.narration || 'Bulk journal entry',
-          lines: [
-            { accountId: row.debitAccountId, debit: Number(row.amount), credit: 0, description: row.narration },
-            { accountId: row.creditAccountId, debit: 0, credit: Number(row.amount), description: row.narration },
-          ],
-        })),
+        entries: rows.map((row) => {
+          const amount = parseBulkAmount(row.amount);
+          if (amount === null || amount <= 0) {
+            throw new Error('Each bulk journal amount must be a positive monetary value with no more than two decimal places.');
+          }
+          return {
+            date: row.date,
+            reference: row.reference || undefined,
+            narration: row.narration || 'Bulk journal entry',
+            lines: [
+              { accountId: row.debitAccountId, debit: amount, credit: 0, description: row.narration },
+              { accountId: row.creditAccountId, debit: 0, credit: amount, description: row.narration },
+            ],
+          };
+        }),
       });
 
       setBusy(false);

@@ -66,7 +66,7 @@ export const POINT1_RECOVERY_SCHEMA: readonly RecoveryTableSchema[] = [
   tenantTable('payment_made_allocations', ['id', 'organization_id', 'payment_id', 'bill_id', 'amount']),
   tenantTable('credit_notes', ['id', 'organization_id', 'credit_note_number', 'client_id', 'client_name', 'date', 'total_amount', 'remaining_credit', 'status', 'reason', 'created_at']),
   tenantTable('vendor_credits', ['id', 'organization_id', 'credit_number', 'vendor_id', 'vendor_name', 'date', 'total_amount', 'remaining_credit', 'status', 'reason', 'created_at']),
-  tenantTable('expenses', ['id', 'organization_id', 'expense_number', 'expense_account_id', 'paid_from_account_id', 'vendor_name', 'date', 'amount', 'tax_rate', 'description', 'created_at']),
+  tenantTable('expenses', ['id', 'organization_id', 'expense_number', 'expense_account_id', 'paid_from_account_id', 'vendor_name', 'date', 'amount', 'tax_rate', 'description', 'project_id', 'client_id', 'is_billable', 'is_billed', 'invoice_id', 'created_at']),
   tenantTable('expense_receipt_attachments', ['id', 'organization_id', 'expense_id', 'file_name', 'mime_type', 'byte_size', 'content_base64', 'created_at']),
   tenantTable('journal_entries', ['id', 'organization_id', 'entry_number', 'date', 'reference', 'description', 'status', 'created_at', 'reversal_of_journal_id', 'reversed_by_journal_id', 'reversed_at', 'reversed_by', 'reversal_reason']),
   journalChildTable('journal_lines', ['id', 'journal_entry_id', 'organization_id', 'account_id', 'account_code', 'account_name', 'debit', 'credit', 'description']),

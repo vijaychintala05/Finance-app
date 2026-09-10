@@ -386,6 +386,8 @@ export interface Expense {
   items?: ExpenseItem[];
   isBillable: boolean;
   isBilled?: boolean;
+  invoiceId?: string;
+  customerInvoiceNumber?: string;
   paymentStatus: 'Paid' | 'Unpaid';
   status?: 'POSTED' | 'VOIDED';
   description: string;

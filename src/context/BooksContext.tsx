@@ -222,6 +222,7 @@ interface BooksContextType {
   expenses: Expense[];
   addExpense: (expense: Omit<Expense, 'id' | 'createdAt' | 'referenceNumber'>) => Promise<void>;
   deleteExpense: (id: string) => Promise<void>;
+  convertExpenseToInvoice: (expenseId: string, issueDate?: string, dueDate?: string) => Promise<any>;
 
   journalEntries: JournalEntry[];
   addJournalEntry: (entry: Omit<JournalEntry, 'id' | 'createdAt' | 'entryNumber'>) => Promise<boolean>;
@@ -1176,6 +1177,16 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     await refreshAfterCommittedWrite();
   };
 
+  const convertExpenseToInvoice = async (expenseId: string, issueDate?: string, dueDate?: string): Promise<any> => {
+    const response = await apiClient.post<any>(`/finance/expenses/${expenseId}/convert-to-invoice`, {
+      issueDate,
+      dueDate,
+    });
+    if (!response.data) throw new Error(response.error || 'Failed to convert expense to invoice');
+    await refreshAfterCommittedWrite();
+    return response.data;
+  };
+
   const addJournalEntry = (
     entryData: Omit<JournalEntry, 'id' | 'createdAt' | 'entryNumber'>
   ): Promise<boolean> => {
@@ -1690,6 +1701,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       expenses,
       addExpense,
       deleteExpense,
+      convertExpenseToInvoice,
       journalEntries,
       addJournalEntry,
       periodLocks,

@@ -15,7 +15,8 @@ export interface SearchResultItem {
     | 'Bank Transaction'
     | 'Account'
     | 'Credit Note'
-    | 'Vendor Credit';
+    | 'Vendor Credit'
+    | 'Expense';
   title: string;
   subtitle: string;
   status?: string;
@@ -65,6 +66,8 @@ export class GlobalSearchService {
       !permissions ||
       permissions.includes('purchases.view') ||
       permissions.includes('bill.view') ||
+      permissions.includes('expenses.view') ||
+      permissions.includes('expense.view') ||
       permissions.includes('admin') ||
       permissions.includes('Super Admin') ||
       permissions.includes('Owner') ||
@@ -104,6 +107,7 @@ export class GlobalSearchService {
       accRes,
       cnRes,
       vcRes,
+      expRes,
     ] = await Promise.all([
       hasSalesPerm
         ? db.query(
@@ -193,6 +197,22 @@ export class GlobalSearchService {
         ? db.query(
             `SELECT id, credit_number, vendor_name, total_amount, status, date FROM vendor_credits
              WHERE organization_id = $1 AND (LOWER(credit_number) LIKE $2 OR LOWER(vendor_name) LIKE $2 OR total_amount = $3) LIMIT 10`,
+            [organizationId, q, numQ]
+          )
+        : Promise.resolve({ rows: [], rowCount: 0 }),
+      hasPurchasesPerm
+        ? db.query(
+            `SELECT e.id, e.expense_number, e.vendor_name, e.amount, e.status, e.date, e.description,
+                    ea.name as expense_account_name
+               FROM expenses e
+               LEFT JOIN accounts ea ON ea.id = e.expense_account_id AND ea.organization_id = e.organization_id
+              WHERE e.organization_id = $1
+                AND (LOWER(e.expense_number) LIKE $2
+                  OR LOWER(COALESCE(e.vendor_name, '')) LIKE $2
+                  OR LOWER(COALESCE(e.description, '')) LIKE $2
+                  OR LOWER(COALESCE(ea.name, '')) LIKE $2
+                  OR e.amount = $3)
+              LIMIT 10`,
             [organizationId, q, numQ]
           )
         : Promise.resolve({ rows: [], rowCount: 0 }),
@@ -381,6 +401,21 @@ export class GlobalSearchService {
         date: r.date,
         linkRoute: `/purchases/vendor_credits?id=${r.id}`,
         url: `/purchases/vendor_credits?id=${r.id}`,
+      });
+    }
+
+    for (const r of (expRes?.rows || [])) {
+      results.push({
+        id: r.id,
+        category: 'Expense',
+        type: 'EXPENSE',
+        title: r.expense_number,
+        subtitle: `${r.vendor_name || r.expense_account_name || 'General Expense'} • ₹${Number(r.amount).toLocaleString('en-IN')}`,
+        status: r.status,
+        amount: Number(r.amount),
+        date: r.date,
+        linkRoute: `/purchases/expenses?id=${r.id}`,
+        url: `/purchases/expenses?id=${r.id}`,
       });
     }
 

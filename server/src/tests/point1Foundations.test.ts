@@ -65,7 +65,7 @@ describe('Point-1 shared foundations', () => {
       expect(result.rows).toEqual([]);
     }
 
-    expect(CURRENT_SCHEMA_VERSION).toBe('2026.08.31-v7-expense-receipts');
+    expect(CURRENT_SCHEMA_VERSION).toBe('2026.09.10-v8-billable-expense-recovery');
     expect(await MigrationRunner.isCurrent()).toBe(true);
   });
 });

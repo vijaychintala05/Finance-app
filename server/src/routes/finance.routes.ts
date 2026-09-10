@@ -177,6 +177,7 @@ router.post('/expenses', requirePermission(['expenses.create']), FinanceControll
 router.get('/expenses/:id/receipts/:receiptId', requirePermission(['expenses.view', 'expenses.attach_receipt']), FinanceController.getExpenseReceipt);
 router.get('/expenses/:id/pdf', requirePermission(['expenses.view']), FinanceController.getExpensePdf);
 router.post('/expenses/:id/void', requirePermission(['expenses.void', 'expenses.create']), FinanceController.voidExpense);
+router.post('/expenses/:id/convert-to-invoice', requirePermission(['expenses.create', 'invoices.create']), FinanceController.convertExpenseToInvoice);
 router.put('/expenses/:id', requirePermission(['expenses.create']), FinanceController.updateExpense);
 
 // Purchase Orders & Goods Receipts

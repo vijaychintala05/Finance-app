@@ -203,7 +203,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
   defaultProjectId,
   defaultClientId,
 }) => {
-  const { accounts = [], refreshAccounts, vendors, projects, addExpense, settings } = useBooks();
+  const { accounts = [], refreshAccounts, vendors = [], projects = [], clients = [], addVendor, addExpense, settings } = useBooks();
 
   // Support Expense, Cost of Goods Sold, and Other Expense accounts from Chart of Accounts
   const expenseAccounts = useMemo(
@@ -241,6 +241,8 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
   const [amount, setAmount] = useState('');
   const [description, setDescription] = useState('');
   const [projectId, setProjectId] = useState(defaultProjectId || '');
+  const [clientId, setClientId] = useState(defaultClientId || '');
+  const [isBillable, setIsBillable] = useState(false);
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [receiptFiles, setReceiptFiles] = useState<File[]>([]);
@@ -249,11 +251,71 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
   const [isRefreshingAccounts, setIsRefreshingAccounts] = useState(false);
   const [isAddExpenseModalOpen, setIsAddExpenseModalOpen] = useState(false);
   const [isAddPaymentModalOpen, setIsAddPaymentModalOpen] = useState(false);
+  const [isAddVendorModalOpen, setIsAddVendorModalOpen] = useState(false);
+  const [newVendorName, setNewVendorName] = useState('');
+  const [newVendorError, setNewVendorError] = useState('');
+  const [isCreatingVendor, setIsCreatingVendor] = useState(false);
   const [isItemized, setIsItemized] = useState(false);
   const [items, setItems] = useState<ItemizedLine[]>([
     { id: 'item-1', accountId: '', description: '', amount: '' },
   ]);
   const receiptInputRef = useRef<HTMLInputElement>(null);
+
+  const handleProjectChange = (newProjectId: string) => {
+    setProjectId(newProjectId);
+    if (newProjectId) {
+      const selectedProj = projects.find((p) => p.id === newProjectId);
+      if (selectedProj?.clientId) {
+        setClientId(selectedProj.clientId);
+      }
+    }
+  };
+
+  const handleClientChange = (newClientId: string) => {
+    setClientId(newClientId);
+    if (projectId) {
+      const selectedProj = projects.find((p) => p.id === projectId);
+      if (selectedProj?.clientId && selectedProj.clientId !== newClientId) {
+        setProjectId('');
+      }
+    }
+    if (!newClientId) {
+      setIsBillable(false);
+    }
+  };
+
+  const handleCreateVendor = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const name = newVendorName.trim();
+    if (!name) {
+      setNewVendorError('Vendor name is required.');
+      return;
+    }
+
+    setIsCreatingVendor(true);
+    setNewVendorError('');
+    try {
+      const vendor = await addVendor({
+        name,
+        companyName: name,
+        paymentTerms: 'Net 30',
+        status: 'Active',
+      });
+      setVendorId(vendor.id);
+      setNewVendorName('');
+      setIsAddVendorModalOpen(false);
+    } catch (creationError) {
+      setNewVendorError(creationError instanceof Error ? creationError.message : 'Vendor could not be created.');
+    } finally {
+      setIsCreatingVendor(false);
+    }
+  };
+
+  const availableProjects = useMemo(() => {
+    return (projects || []).filter(
+      (p) => p.status !== 'Cancelled' && (!clientId || !p.clientId || p.clientId === clientId)
+    );
+  }, [projects, clientId]);
 
   useEffect(() => {
     const previews = receiptFiles.map((file) => ({
@@ -296,6 +358,8 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
       setAmount('');
       setDescription('');
       setProjectId(defaultProjectId || '');
+      setClientId(defaultClientId || '');
+      setIsBillable(false);
       setError('');
       setIsSubmitting(false);
       setReceiptFiles([]);
@@ -314,7 +378,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
       );
     }
     prevIsOpenRef.current = true;
-  }, [isOpen, expenseAccounts, paymentAccounts, defaultProjectId, refreshAccounts]);
+  }, [isOpen, expenseAccounts, paymentAccounts, defaultProjectId, defaultClientId, refreshAccounts]);
 
   if (!isOpen) return null;
 
@@ -399,6 +463,13 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
     }
 
     const vendor = vendors.find((candidate) => candidate.id === vendorId);
+    const resolvedClientId = clientId || projects.find((project) => project.id === projectId)?.clientId || defaultClientId;
+
+    if (isBillable && !resolvedClientId) {
+      setError('Please select a customer to mark this expense as billable.');
+      return;
+    }
+
     setIsSubmitting(true);
     try {
       const receiptImages = await Promise.all(receiptFiles.map(compressReceiptImage));
@@ -414,8 +485,8 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
         amount: parsedAmount,
         taxAmount: 0,
         projectId: projectId || undefined,
-        clientId: projects.find((project) => project.id === projectId)?.clientId || defaultClientId,
-        isBillable: false,
+        clientId: resolvedClientId || undefined,
+        isBillable: Boolean(isBillable && resolvedClientId),
         receiptImages,
         paymentStatus: 'Paid',
         isItemized,
@@ -713,9 +784,23 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                         </select>
                       </div>
 
-                      <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200">
-                        <span>Vendor</span>
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <label htmlFor="expense-vendor-select" className="text-sm font-semibold text-slate-700 dark:text-slate-200">Vendor</label>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setNewVendorError('');
+                              setIsAddVendorModalOpen(true);
+                            }}
+                            className="inline-flex items-center gap-0.5 text-[11px] font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
+                          >
+                            <Plus className="h-3 w-3" />
+                            <span>Add vendor</span>
+                          </button>
+                        </div>
                         <select
+                          id="expense-vendor-select"
                           value={vendorId}
                           onChange={(event) => setVendorId(event.target.value)}
                           className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal text-slate-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
@@ -723,19 +808,72 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                           <option value="">No vendor selected</option>
                           {vendors.map((vendor) => <option key={vendor.id} value={vendor.id}>{vendor.companyName || vendor.name}</option>)}
                         </select>
+                      </div>
+
+                      <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200">
+                        <span>Customer</span>
+                        <select
+                          id="expense-customer-select"
+                          value={clientId}
+                          onChange={(event) => handleClientChange(event.target.value)}
+                          className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal text-slate-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                        >
+                          <option value="">No customer selected</option>
+                          {clients.map((client) => (
+                            <option key={client.id} value={client.id}>
+                              {client.companyName || client.name}
+                            </option>
+                          ))}
+                        </select>
                       </label>
 
                       <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200 sm:col-span-2">
                         <span>Project</span>
                         <select
+                          id="expense-project-select"
                           value={projectId}
-                          onChange={(event) => setProjectId(event.target.value)}
+                          onChange={(event) => handleProjectChange(event.target.value)}
                           className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal text-slate-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                         >
                           <option value="">No project selected</option>
-                          {projects.filter((project) => project.status !== 'Cancelled').map((project) => <option key={project.id} value={project.id}>{project.code} — {project.name}</option>)}
+                          {availableProjects.map((project) => (
+                            <option key={project.id} value={project.id}>
+                              {project.code} — {project.name}
+                            </option>
+                          ))}
                         </select>
                       </label>
+
+                      {/* Zoho Books Billable to Customer Switch */}
+                      <div className="sm:col-span-2 rounded-xl border border-amber-200/80 bg-amber-50/60 p-3.5 dark:border-amber-900/50 dark:bg-amber-950/20">
+                        <label className="flex items-start gap-3 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            id="expense-is-billable"
+                            checked={isBillable}
+                            onChange={(e) => setIsBillable(e.target.checked)}
+                            className="mt-0.5 h-4 w-4 rounded border-slate-300 text-amber-600 focus:ring-amber-500 dark:border-slate-600 dark:bg-slate-700"
+                          />
+                          <div className="space-y-0.5">
+                            <span className="text-sm font-bold text-slate-900 dark:text-slate-100 flex items-center gap-1.5">
+                              <span>Billable to Customer</span>
+                              {isBillable && (
+                                <span className="text-[10px] uppercase font-black tracking-wider bg-amber-200/70 text-amber-800 dark:bg-amber-900/60 dark:text-amber-200 px-1.5 py-0.2 rounded">
+                                  Recoverable Cost
+                                </span>
+                              )}
+                            </span>
+                            <p className="text-xs text-slate-600 dark:text-slate-400">
+                              Paid upfront by your firm. Check this to track this expense as unbilled and convert it to a customer invoice later.
+                            </p>
+                            {isBillable && !clientId && !projectId && (
+                              <p className="text-xs font-semibold text-rose-600 dark:text-rose-400 mt-1">
+                                * Please select a customer above to bill this expense to.
+                              </p>
+                            )}
+                          </div>
+                        </label>
+                      </div>
 
                       <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200 sm:col-span-2">
                         <div className="flex items-center justify-between"><span>Notes</span><span className="text-xs font-normal text-slate-400">{description.length}/500</span></div>
@@ -854,6 +992,38 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
           onClose={() => setIsAddPaymentModalOpen(false)}
           defaultCategory="Bank"
         />
+      )}
+
+      {isAddVendorModalOpen && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center bg-slate-950/50 p-4" role="dialog" aria-modal="true" aria-label="Add vendor">
+          <form onSubmit={handleCreateVendor} className="w-full max-w-md rounded-xl bg-white p-5 shadow-xl dark:bg-slate-900">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">Add vendor</h3>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Create a vendor and use it for this expense.</p>
+              </div>
+              <button type="button" onClick={() => setIsAddVendorModalOpen(false)} disabled={isCreatingVendor} aria-label="Close add vendor" className="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 cursor-pointer">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <label className="mt-5 block space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200">
+              <span>Vendor name <span className="text-rose-600">*</span></span>
+              <input
+                autoFocus
+                value={newVendorName}
+                onChange={(event) => setNewVendorName(event.target.value)}
+                placeholder="e.g. Acme Supplies"
+                maxLength={255}
+                className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal text-slate-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+              />
+            </label>
+            {newVendorError && <p role="alert" className="mt-3 text-xs font-medium text-rose-600 dark:text-rose-400">{newVendorError}</p>}
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={() => setIsAddVendorModalOpen(false)} disabled={isCreatingVendor} className="rounded-md border border-slate-300 bg-white px-3.5 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 cursor-pointer">Cancel</button>
+              <button type="submit" disabled={isCreatingVendor} className="rounded-md bg-blue-600 px-3.5 py-2 text-sm font-bold text-white hover:bg-blue-700 disabled:opacity-50 cursor-pointer">{isCreatingVendor ? 'Creating…' : 'Create vendor'}</button>
+            </div>
+          </form>
+        </div>
       )}
     </>
   );

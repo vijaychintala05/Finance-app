@@ -3,6 +3,8 @@ import {
   ArrowLeft,
   Building2,
   Calendar,
+  CheckCircle2,
+  Clock,
   CreditCard,
   Download,
   FileText,
@@ -11,6 +13,7 @@ import {
   Paperclip,
   Printer,
   Receipt,
+  Send,
   Trash2,
   User,
   X,
@@ -31,10 +34,16 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
   onClose,
   expense,
 }) => {
-  const { settings, deleteExpense } = useBooks();
+  const { settings, deleteExpense, convertExpenseToInvoice } = useBooks();
+  const [currentExpense, setCurrentExpense] = useState<Expense | null>(expense);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
   const [receiptUrls, setReceiptUrls] = useState<Record<string, string>>({});
   const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
+  const [isConvertingToInvoice, setIsConvertingToInvoice] = useState(false);
+
+  useEffect(() => {
+    setCurrentExpense(expense);
+  }, [expense]);
 
   useEffect(() => {
     let active = true;
@@ -61,19 +70,48 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
   }, [expense?.id, expense?.receiptAttachments, isOpen]);
 
   if (!isOpen || !expense) return null;
+  const activeExpense = currentExpense || expense;
+
+  const handleConvertToInvoice = async () => {
+    if (!activeExpense?.id) return;
+    const confirmMsg = `Convert expense #${activeExpense.referenceNumber} (${formatCurrency(activeExpense.amount, settings.currencySymbol)}) into a customer invoice for ${activeExpense.clientName || 'the customer'}?`;
+    if (!window.confirm(confirmMsg)) return;
+
+    try {
+      setIsConvertingToInvoice(true);
+      setShowMoreMenu(false);
+      const res = await convertExpenseToInvoice(activeExpense.id);
+      if (res?.invoice) {
+        const isBilled = Boolean(res.expense?.isBilled);
+        window.alert(isBilled
+          ? `Successfully created Invoice #${res.invoice.invoiceNumber || res.invoice.id} for this expense!`
+          : `Invoice #${res.invoice.invoiceNumber || res.invoice.id} was submitted for approval. This expense will be marked billed after the invoice is posted.`);
+        setCurrentExpense((prev) => prev ? ({
+          ...prev,
+          isBilled,
+          invoiceId: res.invoice.id,
+          customerInvoiceNumber: res.invoice.invoiceNumber,
+        }) : null);
+      }
+    } catch (err: any) {
+      window.alert('Failed to convert expense to invoice: ' + (err.message || 'Unknown error'));
+    } finally {
+      setIsConvertingToInvoice(false);
+    }
+  };
 
   const handleDownloadPdf = async () => {
-    if (!expense?.id) return;
+    if (!activeExpense?.id) return;
     try {
       setIsDownloadingPdf(true);
       setShowMoreMenu(false);
-      const res = await apiClient.getBlob(`/finance/expenses/${expense.id}/pdf`);
+      const res = await apiClient.getBlob(`/finance/expenses/${activeExpense.id}/pdf`);
       if (res.data) {
         const blob = new Blob([res.data], { type: 'application/pdf' });
         const url = window.URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
-        link.download = `ExpenseVoucher-${expense.referenceNumber || expense.id}.pdf`;
+        link.download = `ExpenseVoucher-${activeExpense.referenceNumber || activeExpense.id}.pdf`;
         document.body.appendChild(link);
         link.click();
         link.remove();
@@ -104,6 +142,19 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
           </div>
 
           <div className="flex items-center space-x-2 relative">
+            {activeExpense.isBillable && !activeExpense.isBilled && activeExpense.status !== 'VOIDED' && (
+              <button
+                type="button"
+                onClick={handleConvertToInvoice}
+                disabled={isConvertingToInvoice}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 transition-colors shadow-xs disabled:opacity-50 cursor-pointer"
+                title="Convert this recoverable expense into a Customer Invoice"
+              >
+                <Send className="w-3.5 h-3.5" />
+                <span>{isConvertingToInvoice ? 'Converting...' : 'Convert to Invoice'}</span>
+              </button>
+            )}
+
             <button
               onClick={handleDownloadPdf}
               disabled={isDownloadingPdf}
@@ -123,6 +174,17 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
 
             {showMoreMenu && (
               <div className="absolute right-0 top-12 w-48 bg-white dark:bg-slate-800 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-700 py-2 z-20">
+                {activeExpense.isBillable && !activeExpense.isBilled && activeExpense.status !== 'VOIDED' && (
+                  <button
+                    onClick={handleConvertToInvoice}
+                    disabled={isConvertingToInvoice}
+                    className="w-full text-left px-4 py-2 text-xs font-semibold text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950 flex items-center space-x-2"
+                  >
+                    <Send className="w-4 h-4" />
+                    <span>Convert to Invoice</span>
+                  </button>
+                )}
+
                 <button
                   onClick={handleDownloadPdf}
                   className="w-full text-left px-4 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 flex items-center space-x-2"
@@ -142,12 +204,12 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
                   <span>Print Details</span>
                 </button>
 
-                {expense.status !== 'VOIDED' && (
+                {activeExpense.status !== 'VOIDED' && (
                   <button
                     onClick={() => {
                       setShowMoreMenu(false);
-                      if (confirm(`Void expense #${expense.referenceNumber} by posting an audited reversal?`)) {
-                        void deleteExpense(expense.id).then(onClose).catch((error) => window.alert(error.message));
+                      if (confirm(`Void expense #${activeExpense.referenceNumber} by posting an audited reversal?`)) {
+                        void deleteExpense(activeExpense.id).then(onClose).catch((error) => window.alert(error.message));
                       }
                     }}
                     className="w-full text-left px-4 py-2 text-xs font-semibold text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950 flex items-center space-x-2"
@@ -170,36 +232,36 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
                 Expense Amount
               </p>
               <h2 className="text-2xl sm:text-3xl font-black text-rose-600 dark:text-rose-500 font-mono tracking-tight mt-0.5">
-                {expense.currency ? expense.currency : ''}{' '}
-                {formatCurrency(expense.amount, settings.currencySymbol)}
+                {activeExpense.currency ? activeExpense.currency : ''}{' '}
+                {formatCurrency(activeExpense.amount, settings.currencySymbol)}
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mt-1">
-                on {formatDate(expense.date)} ? Ref #{expense.referenceNumber}
+                on {formatDate(activeExpense.date)} • Ref #{activeExpense.referenceNumber}
               </p>
-              {expense.status === 'VOIDED' && <p className="mt-2 text-xs font-bold uppercase text-slate-500">Voided by audited reversal</p>}
+              {activeExpense.status === 'VOIDED' && <p className="mt-2 text-xs font-bold uppercase text-slate-500">Voided by audited reversal</p>}
             </div>
 
             {/* Receipt Box */}
             <div className="w-24 h-24 rounded-2xl border-2 border-dashed border-slate-200 dark:border-slate-700 p-2 flex flex-col items-center justify-center text-center bg-slate-50/50 dark:bg-slate-800/40 shrink-0">
               <Paperclip className="w-5 h-5 text-slate-400 mb-1" />
               <span className="text-[10px] font-bold text-slate-600 dark:text-slate-300 leading-tight">
-                {expense.receiptFileName
+                {activeExpense.receiptFileName
                   ? 'Receipt Attached'
                   : 'No Receipt'}
               </span>
-              {expense.receiptAttachments?.length ? (
-                <span className="text-[9px] text-emerald-600 font-bold mt-0.5">{expense.receiptAttachments.length} image{expense.receiptAttachments.length === 1 ? '' : 's'}</span>
-              ) : expense.receiptFileName && (
+              {activeExpense.receiptAttachments?.length ? (
+                <span className="text-[9px] text-emerald-600 font-bold mt-0.5">{activeExpense.receiptAttachments.length} image{activeExpense.receiptAttachments.length === 1 ? '' : 's'}</span>
+              ) : activeExpense.receiptFileName && (
                 <span className="text-[9px] text-emerald-600 font-bold mt-0.5">Uploaded</span>
               )}
             </div>
           </div>
 
-          {expense.receiptAttachments && expense.receiptAttachments.length > 0 && (
+          {activeExpense.receiptAttachments && activeExpense.receiptAttachments.length > 0 && (
             <section>
               <p className="mb-2 text-xs font-semibold text-slate-500 dark:text-slate-400">Receipt images</p>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                {expense.receiptAttachments.map((attachment) => (
+                {activeExpense.receiptAttachments.map((attachment) => (
                   <a
                     key={attachment.id}
                     href={receiptUrls[attachment.id] || undefined}
@@ -210,7 +272,7 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
                     {receiptUrls[attachment.id] ? (
                       <img src={receiptUrls[attachment.id]} alt={attachment.fileName} className="aspect-square w-full object-cover" />
                     ) : (
-                      <div className="grid aspect-square place-items-center text-xs text-slate-400">Loading receipt?</div>
+                      <div className="grid aspect-square place-items-center text-xs text-slate-400">Loading receipt…</div>
                     )}
                     <span className="block truncate px-2 py-1.5 text-[10px] font-medium text-slate-600 dark:text-slate-300">{attachment.fileName}</span>
                   </a>
@@ -219,17 +281,61 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
             </section>
           )}
 
-          {/* BILLABLE / NON-BILLABLE TAG */}
-          <div>
-            <span
-              className={`inline-block text-xs font-bold px-3 py-1 rounded-lg border ${
-                expense.isBillable
-                  ? 'bg-amber-50 text-amber-800 border-amber-200'
-                  : 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700'
-              }`}
-            >
-              {expense.isBillable ? 'Billable Customer Cost' : 'Non-Billable'}
-            </span>
+          {/* BILLABLE / NON-BILLABLE SECTION (ZOHO BOOKS RECOVERABLE WORKFLOW) */}
+          <div className="rounded-2xl border p-4 transition-all duration-200 bg-white dark:bg-slate-800/60 shadow-xs border-slate-200 dark:border-slate-700">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                {activeExpense.isBillable ? (
+                  activeExpense.isBilled ? (
+                    <span className="inline-flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-xl border bg-emerald-50 text-emerald-800 border-emerald-200 dark:bg-emerald-950/50 dark:text-emerald-300 dark:border-emerald-800">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                      <span>Billed to Customer</span>
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-xl border bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-950/50 dark:text-amber-300 dark:border-amber-800">
+                      <Clock className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                      <span>Billable (Unbilled)</span>
+                    </span>
+                  )
+                ) : (
+                  <span className="inline-block text-xs font-bold px-3 py-1.5 rounded-xl border bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700">
+                    Non-Billable Internal Expense
+                  </span>
+                )}
+
+                {activeExpense.isBillable && activeExpense.isBilled && (activeExpense.customerInvoiceNumber || activeExpense.invoiceId) && (
+                  <span className="text-xs font-mono font-bold text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/50 border border-blue-200 dark:border-blue-800 px-2 py-1 rounded-lg">
+                    Inv #{activeExpense.customerInvoiceNumber || activeExpense.invoiceId}
+                  </span>
+                )}
+              </div>
+
+              {activeExpense.isBillable && !activeExpense.isBilled && activeExpense.status !== 'VOIDED' && (
+                <button
+                  type="button"
+                  id="btn-convert-expense-to-invoice"
+                  onClick={handleConvertToInvoice}
+                  disabled={isConvertingToInvoice}
+                  className="inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 active:bg-blue-800 shadow-sm transition-all disabled:opacity-50 cursor-pointer"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                  <span>{isConvertingToInvoice ? 'Converting...' : 'Convert to Invoice'}</span>
+                </button>
+              )}
+            </div>
+
+            {activeExpense.isBillable && !activeExpense.isBilled && (
+              <p className="mt-2.5 text-xs text-slate-500 dark:text-slate-400">
+                Paid upfront by the firm for{' '}
+                <strong className="text-slate-800 dark:text-slate-200">{activeExpense.clientName || 'the customer'}</strong>. Click &ldquo;Convert to Invoice&rdquo; to recover these funds.
+              </p>
+            )}
+
+            {activeExpense.isBillable && activeExpense.isBilled && (
+              <p className="mt-2 text-xs text-emerald-600 dark:text-emerald-400 font-medium">
+                ✓ This expense has been invoiced to the customer and locked against duplicate billing.
+              </p>
+            )}
           </div>
 
           {/* CATEGORY / ACCOUNT HIGHLIGHT PILL */}
@@ -238,16 +344,16 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
               Expense Account / Category
             </p>
             <p className="text-sm font-bold text-sky-900 dark:text-sky-200 mt-0.5">
-              {expense.accountName || 'Uncategorized Expense'}
+              {activeExpense.accountName || 'Uncategorized Expense'}
             </p>
 
             {/* Itemized breakdown if present */}
-            {expense.isItemized && expense.items && expense.items.length > 0 && (
+            {activeExpense.isItemized && activeExpense.items && activeExpense.items.length > 0 && (
               <div className="mt-3 pt-2 border-t border-sky-200/60 dark:border-sky-800 space-y-1">
                 <p className="text-[10px] font-bold text-sky-700 dark:text-sky-300 uppercase">
-                  Item Breakdown ({expense.items.length} items)
+                  Item Breakdown ({activeExpense.items.length} items)
                 </p>
-                {expense.items.map((it, idx) => (
+                {activeExpense.items.map((it, idx) => (
                   <div key={idx} className="flex justify-between text-xs text-sky-900 dark:text-sky-200 font-medium">
                     <span>{it.description || `Item #${idx + 1}`} ({it.quantity} x {formatCurrency(it.unitPrice, settings.currencySymbol)})</span>
                     <span className="font-bold">{formatCurrency(it.amount, settings.currencySymbol)}</span>
@@ -264,39 +370,39 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
               <p className="text-xs text-slate-400 dark:text-slate-500 font-medium">Paid Through</p>
               <p className="text-sm font-bold text-slate-900 dark:text-slate-100 mt-0.5 flex items-center gap-2">
                 <CreditCard className="w-4 h-4 text-slate-400" />
-                <span>{expense.paidFromAccountName || 'Undeposited Funds / Cash'}</span>
+                <span>{activeExpense.paidFromAccountName || 'Undeposited Funds / Cash'}</span>
               </p>
             </div>
 
             {/* Vendor */}
-            {expense.vendorName && (
+            {activeExpense.vendorName && (
               <div>
                 <p className="text-xs text-slate-400 dark:text-slate-500 font-medium">Vendor</p>
                 <p className="text-sm font-bold text-slate-900 dark:text-slate-100 mt-0.5 flex items-center gap-2">
                   <Building2 className="w-4 h-4 text-slate-400" />
-                  <span>{expense.vendorName}</span>
+                  <span>{activeExpense.vendorName}</span>
                 </p>
               </div>
             )}
 
             {/* Customer / Project */}
-            {(expense.clientName || expense.projectName) && (
+            {(activeExpense.clientName || activeExpense.projectName) && (
               <div className="grid grid-cols-2 gap-4">
-                {expense.clientName && (
+                {activeExpense.clientName && (
                   <div>
                     <p className="text-xs text-slate-400 dark:text-slate-500 font-medium">Customer</p>
                     <p className="text-sm font-bold text-slate-900 dark:text-slate-100 mt-0.5 flex items-center gap-2">
                       <User className="w-4 h-4 text-slate-400" />
-                      <span>{expense.clientName}</span>
+                      <span>{activeExpense.clientName}</span>
                     </p>
                   </div>
                 )}
-                {expense.projectName && (
+                {activeExpense.projectName && (
                   <div>
                     <p className="text-xs text-slate-400 dark:text-slate-500 font-medium">Project</p>
                     <p className="text-sm font-bold text-slate-900 dark:text-slate-100 mt-0.5 flex items-center gap-2">
                       <FolderKanban className="w-4 h-4 text-slate-400" />
-                      <span>{expense.projectName}</span>
+                      <span>{activeExpense.projectName}</span>
                     </p>
                   </div>
                 )}
@@ -304,13 +410,13 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
             )}
 
             {/* Description Notes */}
-            {expense.description && (
+            {activeExpense.description && (
               <div>
                 <p className="text-xs text-slate-400 dark:text-slate-500 font-medium">Notes / Memo</p>
                 <div className="mt-1 p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-100 dark:border-slate-700/60 flex items-start gap-2.5">
                   <FileText className="w-4 h-4 text-slate-400 mt-0.5 shrink-0" />
                   <p className="text-xs text-slate-700 dark:text-slate-300 whitespace-pre-wrap leading-relaxed">
-                    {expense.description}
+                    {activeExpense.description}
                   </p>
                 </div>
               </div>

@@ -13,6 +13,8 @@
     "test": "vitest run --configLoader native",
     "test:postgres": "node scripts/run-postgres-qualification.mjs",
     "test:e2e": "playwright test",
+    "test:push-readiness": "node --test scripts/tests/gitPushReadiness.test.mjs",
+    "verify:push-readiness": "node scripts/verify-git-push-readiness.mjs",
     "lint": "tsc --noEmit -p tsconfig.build.json"
   },
   "engines": {

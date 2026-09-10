@@ -1,0 +1,4 @@
+#!/bin/sh
+# Versioned local safeguard. Enable it once per checkout with:
+# git config core.hooksPath .githooks
+node scripts/verify-git-push-readiness.mjs

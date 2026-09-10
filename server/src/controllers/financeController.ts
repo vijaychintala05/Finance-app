@@ -2855,10 +2855,8 @@ export class FinanceController {
     try {
       const result = await db.transaction(async (client) => {
         const expResult = await client.query(
-          `SELECT e.*, ea.name as account_name
-             FROM expenses e
-             LEFT JOIN accounts ea ON ea.id = e.expense_account_id AND ea.organization_id = e.organization_id
-            WHERE e.organization_id = $1 AND e.id = $2
+          `SELECT * FROM expenses
+            WHERE organization_id = $1 AND id = $2
               FOR UPDATE`,
           [orgId, expenseId]
         );
@@ -2866,6 +2864,15 @@ export class FinanceController {
           throw new Error('Expense was not found in this organization');
         }
         const exp = expResult.rows[0];
+
+        let accountName = '';
+        if (exp.expense_account_id) {
+          const accRes = await client.query(
+            `SELECT name FROM accounts WHERE organization_id = $1 AND id = $2`,
+            [orgId, exp.expense_account_id]
+          );
+          accountName = accRes.rows[0]?.name || '';
+        }
 
         if (!exp.is_billable) {
           throw new Error('Expense is not marked as billable to customer');
@@ -2950,7 +2957,7 @@ export class FinanceController {
         if (lineItems.length === 0) {
           const vendorInfo = exp.vendor_name ? ` (Vendor: ${exp.vendor_name})` : '';
           const descInfo = exp.description ? ` - ${exp.description}` : '';
-          const categoryInfo = exp.account_name || 'Reimbursable Expense';
+          const categoryInfo = accountName || 'Reimbursable Expense';
           lineItems = [{
             description: `Billable Expense [${exp.expense_number}]: ${categoryInfo}${descInfo}${vendorInfo}`,
             quantity: 1,

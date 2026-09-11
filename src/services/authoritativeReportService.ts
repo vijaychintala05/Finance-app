@@ -6,7 +6,8 @@ export type CertifiedReportId =
   | 'aged_receivables'
   | 'aged_payables'
   | 'trial_balance'
-  | 'general_ledger';
+  | 'general_ledger'
+  | 'project_profitability';
 
 export type ReportPeriodMode = 'range' | 'as_of';
 
@@ -23,12 +24,14 @@ export const AUTHORITATIVE_REPORTS: Record<CertifiedReportId, AuthoritativeRepor
   aged_payables: { id: 'aged_payables', endpoint: '/finance/reports/ap-aging', periodMode: 'as_of' },
   trial_balance: { id: 'trial_balance', endpoint: '/finance/reports/trial-balance', periodMode: 'as_of' },
   general_ledger: { id: 'general_ledger', endpoint: '/finance/reports/general-ledger', periodMode: 'range' },
+  project_profitability: { id: 'project_profitability', endpoint: '/finance/reports/project-profitability', periodMode: 'range' },
 };
 
 export async function fetchAuthoritativeReport(
   reportId: CertifiedReportId,
   fromDate: string,
-  toDate: string
+  toDate: string,
+  filters: { projectId?: string } = {},
 ): Promise<any> {
   const definition = AUTHORITATIVE_REPORTS[reportId];
   if (!definition) throw new Error('This report is not in the certified reporting scope');
@@ -42,7 +45,10 @@ export async function fetchAuthoritativeReport(
     : trialBalanceReport
     ? `toDate=${encodeURIComponent(toDate)}`
     : `fromDate=${encodeURIComponent(fromDate)}&toDate=${encodeURIComponent(toDate)}`;
-  const response = await apiClient.get<any>(`${definition.endpoint}?${query}`);
+  const projectQuery = reportId === 'project_profitability' && filters.projectId
+    ? `&projectId=${encodeURIComponent(filters.projectId)}`
+    : '';
+  const response = await apiClient.get<any>(`${definition.endpoint}?${query}${projectQuery}`);
   if (response.error || !response.data) throw new Error(response.error || 'The report returned no data');
   return response.data;
 }
@@ -87,6 +93,23 @@ function reportRows(reportId: CertifiedReportId, data: any): Record<string, unkn
         credit: row.credit,
       }))
     );
+  }
+  if (reportId === 'project_profitability') {
+    return (data.projects || []).map((project: any) => ({
+      projectCode: project.projectCode,
+      projectName: project.projectName,
+      clientName: project.clientName,
+      status: project.status,
+      revenue: project.revenue,
+      directCosts: project.directCosts,
+      grossProfit: project.grossProfit,
+      grossMarginPercent: project.grossMarginPercent,
+      collectedCash: project.collectedCash,
+      outstandingReceivables: project.outstandingReceivables,
+      overdueReceivables: project.overdueReceivables,
+      operationalUnbilledTime: project.operationalWip?.unbilledBillableValue || 0,
+      operationalUnbilledHours: project.operationalWip?.unbilledBillableHours || 0,
+    }));
   }
   return [
     ...(data.rows || []).map((row: any) => ({

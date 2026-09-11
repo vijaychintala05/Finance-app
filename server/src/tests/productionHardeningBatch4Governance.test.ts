@@ -130,5 +130,10 @@ describe('Production Hardening: Batch 4 - Governance, Control Account Guard & Ex
 
     expect(content).toContain('prevent_posted_journal_mutation');
     expect(content).toContain('journal_entries_posted_immutable');
+    expect(content).toContain('reversal_of_journal_id');
+
+    const enterprisePath = path.resolve(__dirname, '../database/enterpriseHardeningSchema.ts');
+    const enterpriseContent = fs.readFileSync(enterprisePath, 'utf-8');
+    expect(enterpriseContent).toContain('reversal_of_journal_id');
   });
 });

@@ -1624,14 +1624,28 @@ export class MigrationRunner {
       `DROP TRIGGER IF EXISTS audit_logs_immutable ON audit_logs`,
       `CREATE TRIGGER audit_logs_immutable BEFORE UPDATE OR DELETE ON audit_logs
         FOR EACH ROW EXECUTE FUNCTION prevent_audit_log_mutation()`,
-      `CREATE OR REPLACE FUNCTION prevent_posted_journal_mutation() RETURNS trigger AS $$
+      `CREATE OR REPLACE FUNCTION prevent_posted_journal_mutation() RETURNS trigger AS $
         BEGIN
-          IF OLD.status = 'Posted' THEN
-            RAISE EXCEPTION 'Posted journal entries are immutable. Adjustments require reversal entries.';
+          IF UPPER(OLD.status) = 'POSTED' THEN
+            IF TG_OP = 'DELETE' THEN
+              RAISE EXCEPTION 'Posted journal entries are immutable. Adjustments require reversal entries.';
+            END IF;
+            IF TG_OP = 'UPDATE' THEN
+              IF (NEW.id IS DISTINCT FROM OLD.id) OR
+                 (NEW.organization_id IS DISTINCT FROM OLD.organization_id) OR
+                 (NEW.entry_number IS DISTINCT FROM OLD.entry_number) OR
+                 (NEW.date IS DISTINCT FROM OLD.date) OR
+                 (NEW.reference IS DISTINCT FROM OLD.reference) OR
+                 (NEW.description IS DISTINCT FROM OLD.description) OR
+                 (NEW.status IS DISTINCT FROM OLD.status) OR
+                 (NEW.created_at IS DISTINCT FROM OLD.created_at) THEN
+                RAISE EXCEPTION 'Posted journal entries are immutable. Adjustments require reversal entries.';
+              END IF;
+            END IF;
           END IF;
           RETURN NEW;
         END;
-      $$ LANGUAGE plpgsql`,
+      $ LANGUAGE plpgsql`,
       `DROP TRIGGER IF EXISTS journal_entries_posted_immutable ON journal_entries`,
       `CREATE TRIGGER journal_entries_posted_immutable BEFORE UPDATE OR DELETE ON journal_entries
         FOR EACH ROW EXECUTE FUNCTION prevent_posted_journal_mutation()`,

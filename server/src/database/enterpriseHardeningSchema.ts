@@ -108,6 +108,7 @@ export async function applyEnterpriseHardeningSchema(client: DbQueryClient): Pro
     // High-Performance Query & Subledger Composite Indexes
     `CREATE INDEX IF NOT EXISTS idx_journal_lines_org_account ON journal_lines (organization_id, account_id)`,
     `CREATE INDEX IF NOT EXISTS idx_journal_lines_org_acc_entry ON journal_lines (organization_id, account_id, journal_entry_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_journal_lines_org_project_entry ON journal_lines (organization_id, project_id, journal_entry_id)`,
     `CREATE INDEX IF NOT EXISTS idx_invoices_org_status_date ON invoices (organization_id, status, issue_date)`,
     `CREATE INDEX IF NOT EXISTS idx_bills_org_status_date ON bills (organization_id, status, bill_date)`,
     `CREATE INDEX IF NOT EXISTS idx_payments_received_org_client_date ON payments_received (organization_id, client_id, payment_date DESC)`,
@@ -193,10 +194,22 @@ export async function applyEnterpriseHardeningSchema(client: DbQueryClient): Pro
       RETURNS TRIGGER AS $$
       BEGIN
         IF UPPER(OLD.status) = 'POSTED' THEN
-          IF TG_OP = 'DELETE' OR
-             (to_jsonb(NEW) - ARRAY['reversed_by_journal_id', 'reversed_at', 'reversed_by', 'reversal_reason']) <>
-             (to_jsonb(OLD) - ARRAY['reversed_by_journal_id', 'reversed_at', 'reversed_by', 'reversal_reason']) THEN
+          IF TG_OP = 'DELETE' THEN
             RAISE EXCEPTION 'Posted journal entries are immutable. Adjustments require reversal entries.';
+          END IF;
+          IF TG_OP = 'UPDATE' THEN
+            IF (NEW.id IS DISTINCT FROM OLD.id) OR
+               (NEW.organization_id IS DISTINCT FROM OLD.organization_id) OR
+               (NEW.entry_number IS DISTINCT FROM OLD.entry_number) OR
+               (NEW.date IS DISTINCT FROM OLD.date) OR
+               (NEW.reference IS DISTINCT FROM OLD.reference) OR
+               (NEW.description IS DISTINCT FROM OLD.description) OR
+               (NEW.status IS DISTINCT FROM OLD.status) OR
+               (NEW.created_at IS DISTINCT FROM OLD.created_at) OR
+               (OLD.reversal_of_journal_id IS NOT NULL AND NEW.reversal_of_journal_id IS DISTINCT FROM OLD.reversal_of_journal_id) OR
+               (OLD.reversal_reason IS NOT NULL AND NEW.reversal_reason IS DISTINCT FROM OLD.reversal_reason) THEN
+              RAISE EXCEPTION 'Posted journal entries are immutable. Adjustments require reversal entries.';
+            END IF;
           END IF;
         END IF;
         RETURN NEW;

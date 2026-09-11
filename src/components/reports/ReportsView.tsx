@@ -23,7 +23,7 @@ function localIsoDate(date: Date): string {
 }
 
 export const ReportsView: React.FC = () => {
-  const { settings } = useBooks();
+  const { settings, projects } = useBooks();
   const today = new Date();
   const [reportsCatalog, setReportsCatalog] = useState<ReportItem[]>(INITIAL_REPORTS_CATALOG);
   const [activeGroup, setActiveGroup] = useState<SidebarGroup>('home');
@@ -31,6 +31,7 @@ export const ReportsView: React.FC = () => {
   const [selectedReportId, setSelectedReportId] = useState<CertifiedReportId | null>(null);
   const [fromDate, setFromDate] = useState(() => localIsoDate(new Date(today.getFullYear(), 0, 1)));
   const [toDate, setToDate] = useState(() => localIsoDate(today));
+  const [selectedProjectId, setSelectedProjectId] = useState('');
   const [reportData, setReportData] = useState<any | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -61,7 +62,9 @@ export const ReportsView: React.FC = () => {
     const sequence = ++requestSequence.current;
     setLoading(true);
     setError(null);
-    fetchAuthoritativeReport(selectedReportId, fromDate, toDate)
+    fetchAuthoritativeReport(selectedReportId, fromDate, toDate, {
+      projectId: selectedReportId === 'project_profitability' ? selectedProjectId || undefined : undefined,
+    })
       .then((data) => {
         if (sequence === requestSequence.current) setReportData(data);
       })
@@ -74,7 +77,7 @@ export const ReportsView: React.FC = () => {
       .finally(() => {
         if (sequence === requestSequence.current) setLoading(false);
       });
-  }, [selectedReportId, fromDate, toDate, reloadToken, settings.currencyCode, settings.currencySymbol]);
+  }, [selectedReportId, fromDate, toDate, selectedProjectId, reloadToken, settings.currencyCode, settings.currencySymbol]);
 
   useEffect(() => {
     fetchSavedReportViews().then(setSavedViews).catch(() => setSavedViews([]));
@@ -99,7 +102,7 @@ export const ReportsView: React.FC = () => {
   });
 
   const selectedReport = reportsCatalog.find((report) => report.id === selectedReportId);
-  const categoriesList: ReportCategory[] = ['Business Overview', 'Receivables', 'Payables', 'Accountant'];
+  const categoriesList: ReportCategory[] = ['Business Overview', 'Receivables', 'Payables', 'Projects and Timesheet', 'Accountant'];
   const periodLabel = selectedReportId && AUTHORITATIVE_REPORTS[selectedReportId].periodMode === 'as_of'
     ? `As of ${toDate}`
     : `${fromDate} through ${toDate}`;
@@ -112,7 +115,14 @@ export const ReportsView: React.FC = () => {
     setSavingView(true);
     setSaveError(null);
     try {
-      await saveReportView({ name: savedViewName.trim(), reportId: selectedReportId, fromDate, toDate, visibility: saveVisibility });
+      await saveReportView({
+        name: savedViewName.trim(),
+        reportId: selectedReportId,
+        fromDate,
+        toDate,
+        projectId: selectedReportId === 'project_profitability' ? selectedProjectId || undefined : undefined,
+        visibility: saveVisibility,
+      });
       setSavedViews(await fetchSavedReportViews());
       setSaveDialogOpen(false);
       setSavedViewName('');
@@ -127,6 +137,7 @@ export const ReportsView: React.FC = () => {
     if (!AUTHORITATIVE_REPORTS[view.report_type]) return;
     setFromDate(view.config?.fromDate || fromDate);
     setToDate(view.config?.toDate || toDate);
+    setSelectedProjectId(view.config?.projectId || '');
     setSelectedReportId(view.report_type);
   };
 
@@ -202,6 +213,11 @@ export const ReportsView: React.FC = () => {
                   setSaveDialogOpen(true);
                 }}
                 exportDisabled={!reportData || loading}
+                projectFilter={selectedReportId === 'project_profitability' ? {
+                  projectId: selectedProjectId,
+                  onChange: setSelectedProjectId,
+                  projects,
+                } : undefined}
               />
 
               <div className="min-w-0 flex-1 rounded-3xl border border-slate-200 bg-white p-4 shadow-xs sm:p-8 dark:border-slate-800 dark:bg-slate-900">

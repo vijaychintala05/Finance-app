@@ -19,3 +19,4 @@ firmbooks-nas-upload.zip
 *.patch
 .gstack/qa-reports/2026-09-08/
 scratch/
+.gstack/

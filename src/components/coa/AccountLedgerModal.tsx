@@ -33,7 +33,7 @@ interface AccountLedgerModalProps {
 interface LedgerTransaction {
   id: string;
   date: string;
-  type: 'Expense' | 'Invoice' | 'Journal Entry';
+  type: 'Expense' | 'Invoice' | 'Journal Entry' | 'Payment';
   reference: string;
   entityName: string;
   description: string;
@@ -51,7 +51,7 @@ export const AccountLedgerModal: React.FC<AccountLedgerModalProps> = ({
   onAddSubAccount,
   onEditAccount,
 }) => {
-  const { accounts, expenses, invoices, journalEntries, settings } = useBooks();
+  const { accounts, expenses, invoices, journalEntries, paymentsReceived = [], settings } = useBooks();
 
   const [filterType, setFilterType] = useState<string>('All');
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -71,9 +71,12 @@ export const AccountLedgerModal: React.FC<AccountLedgerModalProps> = ({
 
   // Aggregate Transactions
   const ledgerTransactions: LedgerTransaction[] = [];
+  const postedJournalIds = new Set(journalEntries.map((journal) => journal.id));
 
-  // 1. Expenses
+  // 1. Legacy expenses that predate certified journal postings. Posted
+  // expenses appear in the authoritative journal section below.
   expenses.forEach((exp) => {
+    if (exp.journalEntryId && postedJournalIds.has(exp.journalEntryId)) return;
     const isDirectMatch = targetAccountIds.has(exp.accountId);
     const isPaidFromMatch = targetAccountIds.has(exp.paidFromAccountId);
     const isItemizedMatch = exp.items?.some((i) => targetAccountIds.has(i.accountId));
@@ -124,6 +127,30 @@ export const AccountLedgerModal: React.FC<AccountLedgerModalProps> = ({
         credit,
         amount: inv.totalAmount,
         status: inv.status,
+      });
+    }
+  });
+
+  // 2b. Customer Payments
+  paymentsReceived.forEach((pmt) => {
+    if (pmt.journalEntryId && postedJournalIds.has(pmt.journalEntryId)) return;
+    const isDepositMatch = pmt.depositToAccountId ? targetAccountIds.has(pmt.depositToAccountId) : false;
+    const isARMatch = account.code === '1100' || account.subType === 'Accounts Receivable';
+
+    if (isDepositMatch || isARMatch) {
+      const debit = isDepositMatch ? pmt.amount : 0;
+      const credit = isARMatch ? pmt.amount : 0;
+      ledgerTransactions.push({
+        id: `pmt-${pmt.id}`,
+        date: pmt.paymentDate,
+        type: 'Payment',
+        reference: pmt.paymentNumber || `PMT-${pmt.id.slice(0, 4)}`,
+        entityName: pmt.clientName || 'Customer Payment',
+        description: pmt.notes || `Payment received${pmt.paymentMode ? ` via ${pmt.paymentMode}` : ''}`,
+        debit,
+        credit,
+        amount: pmt.amount,
+        status: pmt.status,
       });
     }
   });

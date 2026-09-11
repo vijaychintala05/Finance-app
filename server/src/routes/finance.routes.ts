@@ -127,6 +127,7 @@ router.get('/reports/profit-loss', requirePermission(['reports.financial_stateme
 router.get('/reports/profit-loss/comparative', requirePermission(['reports.financial_statements', 'reports.view']), FinanceController.getComparativeProfitLoss);
 router.get('/reports/balance-sheet', requirePermission(['reports.financial_statements', 'reports.view']), FinanceController.getBalanceSheet);
 router.get('/reports/balance-sheet/comparative', requirePermission(['reports.financial_statements', 'reports.view']), FinanceController.getComparativeBalanceSheet);
+router.get('/reports/project-profitability', requirePermission(['reports.projects', 'reports.view']), FinanceController.getProjectProfitabilityReport);
 router.get('/reports/drill-down/:journalEntryId', requirePermission(['reports.financial_statements', 'reports.view']), FinanceController.getDrillDown);
 router.get('/reports/export/:reportType', requirePermission(['reports.financial_statements', 'reports.view']), FinanceController.exportReport);
 router.get('/reports/cash-flow', requirePermission(['reports.financial_statements', 'reports.view']), requireTrustedFinanceFeature('cash-flow-classification'), FinanceController.getCashFlow);

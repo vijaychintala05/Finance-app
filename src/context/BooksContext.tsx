@@ -77,10 +77,32 @@ const isExpectedOptionalReadFailure = (endpoint: string, status: number): boolea
   status === 503 && OPTIONAL_UNAVAILABLE_READ_ENDPOINTS.has(endpoint)
 );
 
-const upsertAccount = (accounts: Account[], account: Account): Account[] => (
-  [...accounts.filter((existing) => existing.id !== account.id), account]
-    .sort((left, right) => left.code.localeCompare(right.code) || left.name.localeCompare(right.name))
-);
+const normalizeAccountForUi = (record: any): Account => ({
+  ...record,
+  balance: Number(record?.balance || 0),
+});
+
+const normalizeJournalForUi = (record: any): JournalEntry => ({
+  ...record,
+  lines: (record?.lines || []).map((line: any) => ({
+    ...line,
+    debit: Number(line?.debit || 0),
+    credit: Number(line?.credit || 0),
+  })),
+});
+
+const normalizeExpenseForUi = (record: any): Expense => ({
+  ...record,
+  amount: Number(record?.amount || 0),
+  taxAmount: Number(record?.taxAmount || 0),
+  tdsAmount: Number(record?.tdsAmount || 0),
+});
+
+const upsertAccount = (accounts: Account[], account: Account): Account[] => {
+  const normalized = normalizeAccountForUi(account);
+  return [...accounts.filter((existing) => existing.id !== normalized.id), normalized]
+    .sort((left, right) => left.code.localeCompare(right.code) || left.name.localeCompare(right.name));
+};
 
 const normalizeInvoiceForUi = (record: any): Invoice => {
   const rawStatus = String(record.status || '').trim().toUpperCase().replaceAll(' ', '_');
@@ -665,7 +687,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         endpoint,
         responses[index].error ? [] : camelizeRecord(responses[index].data || []),
       ]));
-      setAccounts(data.accounts);
+      setAccounts((data.accounts || []).map(normalizeAccountForUi));
       setClients(data.clients);
       setVendors(data.vendors);
       setProjects(data.projects);
@@ -673,8 +695,8 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setProjectSummaries(data['project-summaries']);
       setInvoices((data.invoices || []).map(normalizeInvoiceForUi));
       setEstimates(data.estimates);
-      setExpenses(data.expenses);
-      setJournalEntries(data.journals);
+      setExpenses((data.expenses || []).map(normalizeExpenseForUi));
+      setJournalEntries((data.journals || []).map(normalizeJournalForUi));
       setPeriodLocks(data['period-locks']);
       setSalesOrders((data['sales-orders'] || []).map(normalizeSalesOrderForUi));
       setDeliveryChallans(data['delivery-challans']);
@@ -719,11 +741,11 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (res.error || !Array.isArray(res.data)) return;
       const data = camelizeRecord(res.data);
       switch (ep) {
-        case 'accounts': setAccounts(data as Account[]); break;
-        case 'expenses': setExpenses(data as Expense[]); break;
+        case 'accounts': setAccounts(((data || []) as any[]).map(normalizeAccountForUi)); break;
+        case 'expenses': setExpenses(((data || []) as any[]).map(normalizeExpenseForUi)); break;
         case 'bills': setBills((data || []).map(normalizeBillForUi)); break;
         case 'invoices': setInvoices((data || []).map(normalizeInvoiceForUi)); break;
-        case 'journals': setJournalEntries(data as JournalEntry[]); break;
+        case 'journals': setJournalEntries(((data || []) as any[]).map(normalizeJournalForUi)); break;
         case 'payments-received': setPaymentsReceived(data as PaymentReceipt[]); break;
         case 'vendor-payments': setPaymentsMade(data as PaymentMade[]); break;
         case 'clients': setClients(data as Client[]); break;
@@ -761,7 +783,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (response.error) throw new Error(response.error);
     if (activeOrgIdRef.current !== requestedOrgId) return;
     if (!Array.isArray(response.data)) throw new Error('The account list response was invalid');
-    const refreshedAccounts = camelizeRecord(response.data) as Account[];
+    const refreshedAccounts = (camelizeRecord(response.data) as any[]).map(normalizeAccountForUi);
     if (expectedAccountId && !refreshedAccounts.some((account) => account.id === expectedAccountId)) {
       throw new Error('The server did not return the account that was just saved');
     }
@@ -1342,7 +1364,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       partialAmount,
     });
     if (!response.data) throw new Error(response.error || 'Sales order could not be converted to invoice');
-    await refreshAfterCommittedWrite(['sales-orders', 'invoices', 'accounts', 'clients']);
+    await refreshAfterCommittedWrite(['sales-orders', 'invoices', 'accounts', 'clients', 'journals']);
     return normalizeInvoiceForUi(response.data);
   };
 
@@ -1395,7 +1417,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       reason: noteData.reason || 'Sales return / adjustment',
     });
     if (!response.data) throw new Error(response.error || 'Credit note could not be created');
-    await refreshAfterCommittedWrite(['credit-notes', 'invoices', 'accounts']);
+    await refreshAfterCommittedWrite(['credit-notes', 'invoices', 'accounts', 'journals']);
     return {
       id: response.data.id,
       cnNumber: response.data.creditNoteNumber || noteData.cnNumber,
@@ -1418,20 +1440,21 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (!reason) return;
     const response = await apiClient.post(`/finance/credit-notes/${id}/reverse`, { reason });
     if (!response.data) throw new Error(response.error || 'Credit note could not be reversed');
-    await refreshAfterCommittedWrite(['credit-notes', 'invoices', 'accounts']);
+    await refreshAfterCommittedWrite(['credit-notes', 'invoices', 'accounts', 'journals']);
   };
 
-  const addPaymentReceived = async (paymentData: Omit<PaymentReceipt, 'id'> & { invoiceId?: string; clientId?: string; depositToAccountId?: string }): Promise<PaymentReceipt> => {
+  const addPaymentReceived = async (paymentData: Omit<PaymentReceipt, 'id'> & { invoiceId?: string; clientId?: string; depositToAccountId?: string; paymentMode?: string; reference?: string; notes?: string }): Promise<PaymentReceipt> => {
     const response = await apiClient.post<any>('/finance/payments-received', {
       paymentNumber: paymentData.paymentNumber,
       clientId: paymentData.clientId,
       clientName: paymentData.clientName,
       paymentDate: paymentData.paymentDate,
       amount: paymentData.amount,
-      paymentMode: paymentData.paymentMethod,
+      paymentMode: (paymentData as any).paymentMode || paymentData.paymentMethod || 'Bank Transfer',
       depositToAccountId: paymentData.depositToAccountId,
       invoiceId: paymentData.invoiceId,
-      reference: paymentData.referenceNumber,
+      reference: (paymentData as any).reference || paymentData.referenceNumber || '',
+      notes: (paymentData as any).notes || '',
     });
     if (!response.data) throw new Error(response.error || 'Payment could not be posted');
     const newPayment: PaymentReceipt = {
@@ -1439,7 +1462,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       id: response.data.id,
       paymentNumber: response.data.paymentNumber || paymentData.paymentNumber,
     };
-    await refreshAfterCommittedWrite(['payments-received', 'invoices', 'accounts', 'clients']);
+    await refreshAfterCommittedWrite(['payments-received', 'invoices', 'accounts', 'clients', 'journals']);
     return newPayment;
   };
   const deletePaymentReceived = async (id: string): Promise<void> => {
@@ -1447,7 +1470,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (!reason) return;
     const response = await apiClient.post('/security/reverse-payment', { paymentId: id, reason });
     if (!response.data) throw new Error(response.error || 'Payment could not be reversed');
-    await refreshAfterCommittedWrite(['payments-received', 'invoices', 'accounts', 'clients']);
+    await refreshAfterCommittedWrite(['payments-received', 'invoices', 'accounts', 'clients', 'journals']);
   };
 
   const addRecurringInvoice = (profileData: Omit<RecurringInvoiceProfile, 'id'>): RecurringInvoiceProfile | null => {
@@ -1506,7 +1529,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       partialAmount,
     });
     if (!response.data) throw new Error(response.error || 'Purchase order conversion to bill failed');
-    await refreshAfterCommittedWrite(['purchase-orders', 'bills', 'accounts', 'vendors']);
+    await refreshAfterCommittedWrite(['purchase-orders', 'bills', 'accounts', 'vendors', 'journals']);
     return normalizeBillForUi(response.data);
   };
 
@@ -1526,7 +1549,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       billNumber: response.data.billNumber || billData.billNumber,
       totalAmount: Number(response.data.totalAmount),
     };
-    await refreshAfterCommittedWrite(['bills', 'accounts', 'vendor-payments', 'vendors']);
+    await refreshAfterCommittedWrite(['bills', 'accounts', 'vendor-payments', 'vendors', 'journals']);
     return newBill;
   };
   const updateBill = (id: string, updated: Partial<Bill>) => {
@@ -1537,7 +1560,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (!reason) return;
     const response = await apiClient.post(`/finance/bills/${id}/void`, { reason });
     if (!response.data) throw new Error(response.error || 'Bill could not be voided');
-    await refreshAfterCommittedWrite(['bills', 'accounts', 'vendor-payments', 'vendors']);
+    await refreshAfterCommittedWrite(['bills', 'accounts', 'vendor-payments', 'vendors', 'journals']);
   };
 
   const addRecurringBill = (billData: Omit<RecurringBill, 'id'>): RecurringBill | null => {
@@ -1604,7 +1627,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       amount: Number(response.data.amount || paymentData.amount),
     };
 
-    await refreshAfterCommittedWrite(['vendor-payments', 'bills', 'accounts', 'vendors']);
+    await refreshAfterCommittedWrite(['vendor-payments', 'bills', 'accounts', 'vendors', 'journals']);
     return newPayment;
   };
 
@@ -1634,7 +1657,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (response.error || !response.data) {
       throw new Error(response.error || 'Vendor advance could not be recorded.');
     }
-    await refreshAfterCommittedWrite(['vendor-payments', 'bills', 'accounts', 'vendors']);
+    await refreshAfterCommittedWrite(['vendor-payments', 'bills', 'accounts', 'vendors', 'journals']);
     return response.data;
   };
 
@@ -1649,7 +1672,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (response.error || !response.data) {
       throw new Error(response.error || 'Vendor advance could not be applied to bill.');
     }
-    await refreshAfterCommittedWrite(['vendor-payments', 'bills', 'accounts', 'vendors']);
+    await refreshAfterCommittedWrite(['vendor-payments', 'bills', 'accounts', 'vendors', 'journals']);
     return response.data;
   };
 
@@ -1660,7 +1683,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (response.error || !response.data) {
       throw new Error(response.error || 'Vendor payment could not be reversed.');
     }
-    await refreshAfterCommittedWrite(['vendor-payments', 'bills', 'accounts', 'vendors']);
+    await refreshAfterCommittedWrite(['vendor-payments', 'bills', 'accounts', 'vendors', 'journals']);
   };
 
   const addRecurringExpense = (expenseData: Omit<RecurringExpense, 'id'>): RecurringExpense | null => {

@@ -2,6 +2,7 @@ import React from 'react';
 import { AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { formatCurrency, formatDate } from '../../utils/formatters';
 import { CertifiedReportId } from '../../services/authoritativeReportService';
+import { ProjectProfitabilityReportRenderer } from './ProjectProfitabilityReportRenderer';
 
 interface Props {
   reportId: CertifiedReportId;
@@ -32,6 +33,10 @@ const AmountRows: React.FC<{ rows: any[]; currencySymbol: string }> = ({ rows, c
 );
 
 export const AuthoritativeReportRenderer: React.FC<Props> = ({ reportId, data, currencySymbol }) => {
+  if (reportId === 'project_profitability') {
+    return <ProjectProfitabilityReportRenderer data={data} currencySymbol={currencySymbol} />;
+  }
+
   if (reportId === 'pnl_standard') {
     return <div className="mx-auto max-w-4xl space-y-6">
       <section className="space-y-2"><h4 className="text-xs font-black uppercase tracking-wider">Income</h4><AmountRows rows={data.incomeAccounts || []} currencySymbol={currencySymbol} /><div className="text-right text-sm font-black">Total income: {formatCurrency(Number(data.totalIncome || 0), currencySymbol)}</div></section>

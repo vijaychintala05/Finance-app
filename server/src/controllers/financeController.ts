@@ -22,6 +22,7 @@ import { ManualJournalService } from '../services/ManualJournalService';
 import { RecurringJournalService } from '../services/RecurringJournalService';
 import { BudgetService } from '../services/BudgetService';
 import { CashFlowForecastService } from '../services/CashFlowForecastService';
+import { ProjectReportingService } from '../services/ProjectReportingService';
 import { FixedAssetService } from '../services/FixedAssetService';
 import { PeriodCloseService } from '../services/PeriodCloseService';
 import { SavedReportService } from '../services/SavedReportService';
@@ -111,7 +112,7 @@ export class FinanceController {
       (client) => client.query('SELECT * FROM accounts WHERE organization_id = $1 ORDER BY code ASC', [orgId]),
       { organizationId: orgId }
     );
-    res.json(result.rows);
+    res.json(result.rows.map((r: any) => ({ ...r, balance: Number(r.balance || 0) })));
   }
 
   public static async getAccountingDefaults(req: AuthenticatedRequest, res: Response): Promise<void> {
@@ -877,6 +878,20 @@ export class FinanceController {
     res.json(summaries);
   }
 
+  public static async getProjectProfitabilityReport(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const report = await ProjectReportingService.getProfitabilityReport(req.auth!.organizationId, {
+        fromDate: req.query.fromDate as string | undefined,
+        toDate: req.query.toDate as string | undefined,
+        projectId: req.query.projectId as string | undefined,
+      });
+      res.json(report);
+    } catch (error: any) {
+      const message = error?.message || 'Project profitability report could not be generated';
+      res.status(message.includes('was not found') ? 404 : 400).json({ error: message });
+    }
+  }
+
   public static async invoiceUnbilledTime(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
     const issueDate = req.body.issueDate || new Date().toISOString().split('T')[0];
@@ -1300,6 +1315,7 @@ export class FinanceController {
       isBilled: Boolean(expense.is_billed),
       invoiceId: expense.invoice_id || undefined,
       customerInvoiceNumber: expense.customer_invoice_number || undefined,
+      journalEntryId: expense.journal_entry_id || undefined,
       paymentStatus: 'Paid', status: expense.status || 'POSTED', description: expense.description || '', createdAt: expense.created_at,
       receiptAttachments: attachmentsByExpense.get(expense.id) || [],
       receiptFileName: attachmentsByExpense.get(expense.id)?.[0]?.fileName,
@@ -1556,7 +1572,11 @@ export class FinanceController {
     const linesByEntryId = new Map<string, any[]>();
     for (const line of linesResult.rows) {
       const list = linesByEntryId.get(line.journal_entry_id) || [];
-      list.push(line);
+      list.push({
+        ...line,
+        debit: Number(line.debit || 0),
+        credit: Number(line.credit || 0),
+      });
       linesByEntryId.set(line.journal_entry_id, list);
     }
 
@@ -2859,9 +2879,33 @@ export class FinanceController {
   }
 
   public static async updateExpense(req: AuthenticatedRequest, res: Response): Promise<void> {
-    res.status(409).json({
-      error: 'POSTED_EXPENSE_IMMUTABLE: Use the expense correction workflow, which reverses the original journal and posts a replacement.',
-    });
+    try {
+      const orgId = req.organizationId || req.auth?.organizationId!;
+      const userId = req.auth?.userId!;
+      const expenseId = req.params.id;
+      const body = req.body || {};
+
+      const hasFinancialChanges = body.amount !== undefined || body.expenseAccountId !== undefined ||
+        body.paidFromAccountId !== undefined || body.date !== undefined || body.items !== undefined;
+
+      if (hasFinancialChanges) {
+        const reason = String(body.reason || '').trim();
+        if (!reason) {
+          res.status(409).json({
+            error: 'POSTED_EXPENSE_IMMUTABLE: Use the expense correction workflow with a documented correction reason.',
+          });
+          return;
+        }
+        const result = await ExpensePostingService.correctAndPost(orgId, userId, expenseId, body, reason);
+        res.json({ success: true, expense: result.replacement, correction: result });
+        return;
+      }
+
+      const updated = await ExpensePostingService.updateExpense(orgId, expenseId, body);
+      res.json({ expense: updated });
+    } catch (error: any) {
+      res.status(422).json({ error: error.message || 'Expense could not be updated' });
+    }
   }
 
   public static async correctExpense(req: AuthenticatedRequest, res: Response): Promise<void> {

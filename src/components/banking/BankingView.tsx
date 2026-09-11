@@ -26,7 +26,7 @@ export const BankingView: React.FC<BankingViewProps> = ({
   selectedEntityId,
   onSelectedEntityClosed,
 }) => {
-  const { accounts, journalEntries, expenses, settings, refreshAccounts } = useBooks();
+  const { accounts, journalEntries, expenses, paymentsReceived, settings, refreshAccounts } = useBooks();
 
   // Screen 2 visibility toggle ("More Details" button)
   const [showMoreDetails, setShowMoreDetails] = useState<boolean>(true);
@@ -70,6 +70,10 @@ export const BankingView: React.FC<BankingViewProps> = ({
   React.useEffect(refreshBankAccounts, [refreshBankAccounts]);
 
   React.useEffect(() => {
+    refreshBankAccounts();
+  }, [accounts, journalEntries, refreshBankAccounts]);
+
+  React.useEffect(() => {
     if (autoOpenReconcile) {
       setIsReconcileOpen(true);
     }
@@ -88,7 +92,10 @@ export const BankingView: React.FC<BankingViewProps> = ({
   const bankAccountsList = useMemo(() => {
     return accounts.filter(
       (a) =>
+        a.type === 'Bank' ||
         a.subType === 'Bank' ||
+        a.subType === 'Cash and Bank' ||
+        a.subType === 'Cash & Bank' ||
         (a.type === 'Asset' && a.name.toLowerCase().includes('bank'))
     );
   }, [accounts]);
@@ -161,15 +168,15 @@ export const BankingView: React.FC<BankingViewProps> = ({
 
   // Aggregate Treasury Totals
   const totalCashInBank = useMemo(() => {
-    return bankAccountsList.reduce((sum, a) => sum + (a.balance || 0), 0);
+    return bankAccountsList.reduce((sum, a) => sum + Number(a.balance || 0), 0);
   }, [bankAccountsList]);
 
   const totalPettyCash = useMemo(() => {
-    return pettyCashList.reduce((sum, a) => sum + (a.balance || 0), 0);
+    return pettyCashList.reduce((sum, a) => sum + Number(a.balance || 0), 0);
   }, [pettyCashList]);
 
   const totalCreditCardLoans = useMemo(() => {
-    return creditCardLoansList.reduce((sum, a) => sum + Math.abs(a.balance || 0), 0);
+    return creditCardLoansList.reduce((sum, a) => sum + Math.abs(Number(a.balance || 0)), 0);
   }, [creditCardLoansList]);
 
   // Filtered accounts list for the currently selected category tab
@@ -198,7 +205,7 @@ export const BankingView: React.FC<BankingViewProps> = ({
     }
 
     if (statusFilter !== 'ALL') {
-      list = list.filter((a) => (a.status || 'Active') === statusFilter);
+      list = list.filter((a) => String(a.status || 'Active').toUpperCase() === statusFilter);
     }
 
     if (accountSearch.trim()) {
@@ -283,11 +290,14 @@ export const BankingView: React.FC<BankingViewProps> = ({
       });
     });
 
-    // 2. From Expenses
+    // 2. Legacy expenses without a certified journal. Every current expense
+    // posts a journal atomically, so rendering both sources would duplicate
+    // its bank movement.
+    const postedJournalIds = new Set(journalEntries.map((journal) => journal.id));
     expenses.forEach((exp) => {
       if (exp.paidFromAccountId === activeAccount.id) {
-        const existsInJournals = list.some((l) => l.ref === exp.referenceNumber);
-        if (!existsInJournals) {
+        const isRepresentedByJournal = Boolean(exp.journalEntryId && postedJournalIds.has(exp.journalEntryId));
+        if (!isRepresentedByJournal) {
           list.push({
             id: `exp-${exp.id}`,
             date: exp.date,

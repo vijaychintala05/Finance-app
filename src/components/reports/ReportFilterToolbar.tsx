@@ -11,6 +11,11 @@ interface ReportFilterToolbarProps {
   periodMode: ReportPeriodMode;
   onSaveView: () => void;
   exportDisabled?: boolean;
+  projectFilter?: {
+    projectId: string;
+    onChange: (value: string) => void;
+    projects: Array<{ id: string; code: string; name: string }>;
+  };
 }
 
 export const ReportFilterToolbar: React.FC<ReportFilterToolbarProps> = ({
@@ -22,6 +27,7 @@ export const ReportFilterToolbar: React.FC<ReportFilterToolbarProps> = ({
   periodMode,
   onSaveView,
   exportDisabled = false,
+  projectFilter,
 }) => (
   <div className="flex flex-col items-start justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 md:flex-row md:items-center dark:border-slate-700/80 dark:bg-slate-800/60">
     <div className="flex flex-wrap items-center gap-2.5">
@@ -34,6 +40,13 @@ export const ReportFilterToolbar: React.FC<ReportFilterToolbarProps> = ({
         <span>{periodMode === 'as_of' ? 'As of' : 'To'}</span>
         <input type="date" value={toDate} min={fromDate} onChange={(event) => setToDate(event.target.value)} className="rounded-xl border border-slate-200 bg-white px-2 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-900" />
       </label>
+      {projectFilter && <label className="flex min-w-48 items-center gap-1.5 text-xs font-semibold">
+        <span>Project</span>
+        <select value={projectFilter.projectId} onChange={(event) => projectFilter.onChange(event.target.value)} className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-2 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-900">
+          <option value="">All projects</option>
+          {projectFilter.projects.map((project) => <option key={project.id} value={project.id}>[{project.code}] {project.name}</option>)}
+        </select>
+      </label>}
     </div>
     <div className="flex items-center space-x-2">
       <button onClick={onSaveView} className="flex cursor-pointer items-center space-x-1 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">

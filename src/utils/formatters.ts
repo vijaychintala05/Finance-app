@@ -7,8 +7,9 @@ const currencyFormatter = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 2,
 });
 
-export const formatCurrency = (amount: number, symbol: string = ''): string => {
-  const safeAmount = typeof amount === 'number' && !isNaN(amount) ? amount : 0;
+export const formatCurrency = (amount: number | string, symbol: string = ''): string => {
+  const numericAmount = typeof amount === 'number' ? amount : parseFloat(String(amount ?? 0));
+  const safeAmount = Number.isFinite(numericAmount) ? numericAmount : 0;
   const formatted = currencyFormatter.format(Math.abs(safeAmount));
   const cleanSymbol = symbol.trim();
   const separator = /^[A-Za-z]{2,4}$/.test(cleanSymbol) ? ' ' : '';

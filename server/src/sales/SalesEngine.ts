@@ -1436,6 +1436,10 @@ export class SalesEngine {
           }
         }
 
+        // Preserve the project dimension on every journal leg so project-ledger
+        // queries remain balanced and profitability can use posted revenue.
+        if (data.projectId) journalLines.forEach((line) => { line.projectId = data.projectId; });
+
         journalEntryId = await SalesEngine.persistJournalEntry(
           orgId,
           `JE-${invNumber}`,
@@ -1693,6 +1697,7 @@ export class SalesEngine {
         }
       }
 
+      const newProjectId = data.projectId !== undefined ? data.projectId : inv.project_id;
       let currentJournalEntryId = inv.journal_entry_id;
       const isPostedState = ['POSTED', 'SENT', 'VIEWED', 'OVERDUE', 'PARTIALLY_PAID', 'PAID'].includes(String(inv.status).toUpperCase());
 
@@ -1772,6 +1777,12 @@ export class SalesEngine {
           }
         }
 
+        if (newProjectId) {
+          journalLines.forEach((line) => {
+            line.projectId = newProjectId;
+          });
+        }
+
         currentJournalEntryId = await SalesEngine.persistJournalEntry(
           orgId,
           `JE-${inv.invoice_number}-REV-${Date.now().toString().slice(-4)}`,
@@ -1805,7 +1816,6 @@ export class SalesEngine {
 
       const newNotes = data.notes !== undefined ? data.notes : inv.notes;
       const newTerms = data.terms !== undefined ? data.terms : inv.terms;
-      const newProjectId = data.projectId !== undefined ? data.projectId : inv.project_id;
       const newSalespersonId = data.salespersonId !== undefined ? data.salespersonId : inv.salesperson_id;
 
       await client.query(
@@ -2009,6 +2019,10 @@ export class SalesEngine {
           });
         }
       }
+
+      // Historical invoice journals are handled by the reporting fallback. All
+      // new invoice postings retain the project dimension on every ledger leg.
+      if (inv.project_id) journalLines.forEach((line) => { line.projectId = inv.project_id; });
 
       const journalEntryId = await SalesEngine.persistJournalEntry(
         orgId,
@@ -3111,6 +3125,7 @@ export class SalesEngine {
       const taxAmount = Number(payload.taxAmount || 0);
       const totalAmount = Math.round((taxableAmount + taxAmount) * 100) / 100;
 
+      let sourceProjectId: string | null = null;
       // Lock and validate invoice if linked directly to an invoice
       if (payload.invoiceId) {
         const invRes = await client.query(
@@ -3121,6 +3136,7 @@ export class SalesEngine {
           throw new Error(`Invoice ${payload.invoiceId} not found`);
         }
         const inv = invRes.rows[0];
+        sourceProjectId = inv.project_id || null;
         const currentBal = Math.max(0, Math.round((Number(inv.total_amount) - Number(inv.paid_amount || 0) - Number(inv.amount_credited || 0) - Number(inv.amount_written_off || 0)) * 100) / 100);
         if (totalAmount > currentBal + 0.009) {
           throw new Error(`Credit Note amount (${totalAmount}) exceeds invoice ${inv.invoice_number} remaining balance (${currentBal})`);
@@ -3161,6 +3177,12 @@ export class SalesEngine {
         credit: totalAmount,
         description: `Credit Note ${cnNumber} AR Reduction`,
       });
+
+      if (sourceProjectId) {
+        journalLines.forEach((line) => {
+          line.projectId = sourceProjectId;
+        });
+      }
 
       const journalEntryId = await SalesEngine.persistJournalEntry(
         orgId,

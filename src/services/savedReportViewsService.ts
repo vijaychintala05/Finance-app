@@ -10,6 +10,7 @@ export interface SavedReportView {
   config: {
     fromDate?: string;
     toDate?: string;
+    projectId?: string;
   };
 }
 
@@ -24,13 +25,14 @@ export async function saveReportView(input: {
   reportId: CertifiedReportId;
   fromDate: string;
   toDate: string;
+  projectId?: string;
   visibility: 'PRIVATE' | 'ORGANIZATION';
 }): Promise<void> {
   const response = await apiClient.post('/finance/saved-reports', {
     name: input.name,
     reportType: input.reportId,
     visibility: input.visibility,
-    config: { fromDate: input.fromDate, toDate: input.toDate },
+    config: { fromDate: input.fromDate, toDate: input.toDate, projectId: input.projectId },
   });
   if (response.error) throw new Error(response.error);
 }

@@ -127,4 +127,66 @@ describe('v1 authoritative project accounting', () => {
     const duplicate = await request(app).post(`/api/v1/finance/projects/${fixture.project.id}/invoice-unbilled-time`).set(fixture.auth).send({ issueDate: '2026-08-12', dueDate: '2026-08-30' });
     expect(duplicate.status).toBe(409);
   });
+
+  it('reports project profitability from posted ledger lines with operational WIP and receipt follow-up', async () => {
+    const fixture = await projectFixture('project-profitability');
+    const accounts = await db.query('SELECT id, code FROM accounts WHERE organization_id = $1', [fixture.orgId]);
+    const bankAccountId = accounts.rows.find((row) => row.code === '1000').id;
+    const expenseAccountId = accounts.rows.find((row) => row.code === '6000').id;
+
+    const billedTime = await request(app).post('/api/v1/finance/time-entries').set(fixture.auth).send({
+      projectId: fixture.project.id, staffName: 'Asha', taskName: 'Site design', date: '2026-08-12',
+      hours: 2, hourlyRate: 100, isBillable: true,
+    });
+    expect(billedTime.status).toBe(201);
+    const invoice = await request(app)
+      .post(`/api/v1/finance/projects/${fixture.project.id}/invoice-unbilled-time`)
+      .set(fixture.auth)
+      .send({ issueDate: '2026-08-12', dueDate: '2026-08-30' });
+    expect(invoice.status).toBe(201);
+
+    const unbilledTime = await request(app).post('/api/v1/finance/time-entries').set(fixture.auth).send({
+      projectId: fixture.project.id, staffName: 'Asha', taskName: 'Client revisions', date: '2026-08-18',
+      hours: 1.5, hourlyRate: 80, isBillable: true,
+    });
+    expect(unbilledTime.status).toBe(201);
+
+    const expense = await request(app).post('/api/v1/finance/expenses').set(fixture.auth).send({
+      expenseAccountId, paidFromAccountId: bankAccountId, projectId: fixture.project.id, clientId: fixture.client.id,
+      vendorName: 'Project Vendor', date: '2026-08-14', amount: 70, description: 'Site materials',
+    });
+    expect(expense.status).toBe(201);
+
+    const payment = await request(app).post('/api/v1/finance/payments-received').set(fixture.auth).send({
+      customerId: fixture.client.id, paymentDate: '2026-08-20', amount: 50, paymentMode: 'Bank Transfer',
+      depositToAccountId: bankAccountId, invoiceId: invoice.body.id,
+    });
+    expect(payment.status).toBe(201);
+
+    const report = await request(app)
+      .get(`/api/v1/finance/reports/project-profitability?fromDate=2026-08-01&toDate=2026-08-31&projectId=${fixture.project.id}`)
+      .set(fixture.auth);
+    expect(report.status, JSON.stringify(report.body)).toBe(200);
+    expect(report.body.integrity).toMatchObject({ postedLedgerOnly: true, projectScoped: true, operationalWipIsNotFinancialWip: true });
+    expect(report.body.projects).toHaveLength(1);
+    expect(report.body.projects[0]).toMatchObject({
+      projectId: fixture.project.id,
+      revenue: 200,
+      directCosts: 70,
+      grossProfit: 130,
+      collectedCash: 50,
+      outstandingReceivables: 150,
+      overdueReceivables: 150,
+      operationalWip: { unbilledBillableHours: 1.5, unbilledBillableValue: 120, status: 'OPERATIONAL_ONLY' },
+    });
+    expect(report.body.projects[0].directCostsByAccount).toHaveLength(1);
+    expect(report.body.projects[0].expensesByVendor).toEqual([{ vendorName: 'Project Vendor', amount: 70 }]);
+    expect(report.body.projects[0].collections).toHaveLength(1);
+
+    const other = await projectFixture('project-profitability-other');
+    const isolated = await request(app)
+      .get(`/api/v1/finance/reports/project-profitability?fromDate=2026-08-01&toDate=2026-08-31&projectId=${fixture.project.id}`)
+      .set(other.auth);
+    expect(isolated.status).toBe(404);
+  });
 });

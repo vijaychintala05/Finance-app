@@ -33,14 +33,43 @@ import { FinancialDestructiveActionsService } from '../accounting/FinancialDestr
 export class BankReconciliationService {
   // --- 1. BANK ACCOUNTS ---
   public static async getBankAccounts(orgId: string): Promise<BankAccount[]> {
-    const res = await db.transaction(
-      (client) => client.query<BankAccount>(
-        `SELECT * FROM bank_accounts WHERE organization_id = $1 AND is_active = TRUE ORDER BY created_at DESC`,
-        [orgId]
-      ),
+    const rows = await db.transaction(
+      async (client) => {
+        const queryRes = await client.query(
+          `SELECT * FROM bank_accounts WHERE organization_id = $1 AND is_active = TRUE ORDER BY created_at DESC`,
+          [orgId]
+        );
+        if (queryRes.rows.length === 0) {
+          const bankLedgerAcc = await client.query(
+            `SELECT id, name, code, balance, currency_code FROM accounts
+              WHERE organization_id = $1 AND (type = 'Bank' OR code = '1000' OR system_role = 'PRIMARY_BANK') AND status = 'Active'
+              ORDER BY code ASC LIMIT 1`,
+            [orgId]
+          );
+          if (bankLedgerAcc.rows.length > 0) {
+            const acc = bankLedgerAcc.rows[0];
+            const newBankId = newId('bank-acc');
+            const todayDate = new Date().toISOString().split('T')[0];
+            await client.query(
+              `INSERT INTO bank_accounts
+                (id, organization_id, ledger_account_id, account_name, account_number, masked_account_number, bank_name,
+                 account_type, currency, country, current_balance, opening_balance_date, statement_import_enabled, is_active)
+               VALUES ($1, $2, $3, $4, $5, $5, 'Primary Operating Bank', 'Checking', $6, 'IN', $7, $8, TRUE, TRUE)
+               ON CONFLICT DO NOTHING`,
+              [newBankId, orgId, acc.id, acc.name, `•••• ${acc.code || '1000'}`, acc.currency_code || 'INR', parseFloat(acc.balance || 0), todayDate]
+            );
+            const refetched = await client.query(
+              `SELECT * FROM bank_accounts WHERE organization_id = $1 AND is_active = TRUE ORDER BY created_at DESC`,
+              [orgId]
+            );
+            return refetched.rows;
+          }
+        }
+        return queryRes.rows;
+      },
       { organizationId: orgId }
     );
-    return (res.rows || []).map((r) => this.formatBankAccount(r));
+    return (rows || []).map((r) => this.formatBankAccount(r));
   }
 
   public static async createBankAccount(orgId: string, data: Partial<BankAccount>, actorId: string = 'system'): Promise<BankAccount> {

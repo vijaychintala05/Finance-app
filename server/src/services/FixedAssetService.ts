@@ -51,6 +51,8 @@ async function reverseSourceJournal(
     organizationId: orgId, entryNumber: reversalEntryNumber, date,
     reference: `REV-${original.reference || original.entry_number}`,
     description: `Reversal of ${original.entry_number}: ${reason}`,
+    reversalOfJournalId: journalId,
+    reversalReason: reason,
     lines: lines.rows.map((line: any) => ({
       accountId: line.account_id,
       debit: asNumber(databaseMoneyToCents(line.credit, 'Reversal debit'), 'Reversal debit'),
@@ -65,12 +67,14 @@ async function reverseSourceJournal(
     [posting.entryId, userId, reason, orgId, journalId]
   );
   if (originalUpdate.rowCount !== 1) throw new Error('FIXED_ASSET_JOURNAL_ALREADY_REVERSED: Source journal is already reversed');
-  const reversalUpdate = await tx.query(
-    `UPDATE journal_entries SET reversal_of_journal_id = $1, reversal_reason = $2
-      WHERE organization_id = $3 AND id = $4 AND reversal_of_journal_id IS NULL`,
-    [journalId, reason, orgId, posting.entryId]
+  // postEntry persists this relationship atomically with the reversal journal.
+  // Verify it rather than trying to write the same immutable linkage again.
+  const linkedReversal = await tx.query(
+    `SELECT id FROM journal_entries
+      WHERE organization_id = $1 AND id = $2 AND reversal_of_journal_id = $3 AND reversal_reason = $4`,
+    [orgId, posting.entryId, journalId, reason]
   );
-  if (reversalUpdate.rowCount !== 1) throw new Error('FIXED_ASSET_REVERSAL_JOURNAL_INVALID: Reversal journal was not linked');
+  if (linkedReversal.rows.length !== 1) throw new Error('FIXED_ASSET_REVERSAL_JOURNAL_INVALID: Reversal journal was not linked');
   return { reversalJournalId: posting.entryId, reversalEntryNumber };
 }
 

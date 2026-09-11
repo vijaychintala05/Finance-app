@@ -23,6 +23,8 @@ export interface PostJournalPayload {
   reference?: string;
   description: string;
   lines: JournalLineItem[];
+  reversalOfJournalId?: string;
+  reversalReason?: string;
 }
 
 export interface QueryClient {
@@ -136,11 +138,11 @@ export class ServerPostingEngine {
           [line.code, line.name, organizationId, journalEntryId, line.accountId]
         );
         await client.query(
-          'UPDATE accounts SET balance = balance + $1 WHERE id = $2 AND organization_id = $3',
+          'UPDATE accounts SET balance = COALESCE(balance, 0) + $1 WHERE id = $2 AND organization_id = $3',
           [balanceDelta, line.accountId, organizationId]
         );
         await client.query(
-          'UPDATE bank_accounts SET current_balance = current_balance + $1, updated_at = CURRENT_TIMESTAMP WHERE (ledger_account_id = $2 OR id = $2) AND organization_id = $3',
+          'UPDATE bank_accounts SET current_balance = COALESCE(current_balance, 0) + $1, updated_at = CURRENT_TIMESTAMP WHERE (ledger_account_id = $2 OR id = $2) AND organization_id = $3',
           [balanceDelta, line.accountId, organizationId]
         );
       }
@@ -241,9 +243,9 @@ export class ServerPostingEngine {
       const entryId = newId('jrn');
       await client.query(
         `INSERT INTO journal_entries
-          (id, organization_id, entry_number, date, reference, description, status)
-         VALUES ($1, $2, $3, $4, $5, $6, 'Posted')`,
-        [entryId, payload.organizationId, payload.entryNumber.trim(), payload.date, payload.reference || '', payload.description]
+          (id, organization_id, entry_number, date, reference, description, status, reversal_of_journal_id, reversal_reason)
+         VALUES ($1, $2, $3, $4, $5, $6, 'Posted', $7, $8)`,
+        [entryId, payload.organizationId, payload.entryNumber.trim(), payload.date, payload.reference || '', payload.description, payload.reversalOfJournalId || null, payload.reversalReason || null]
       );
 
       for (const line of normalizedLines) {
@@ -256,11 +258,11 @@ export class ServerPostingEngine {
         const normalDebit = (line as JournalLineItem & { normalBalance: string }).normalBalance === 'Debit';
         const balanceDelta = normalDebit ? line.debit - line.credit : line.credit - line.debit;
         await client.query(
-          'UPDATE accounts SET balance = balance + $1 WHERE id = $2 AND organization_id = $3',
+          'UPDATE accounts SET balance = COALESCE(balance, 0) + $1 WHERE id = $2 AND organization_id = $3',
           [balanceDelta, line.accountId, payload.organizationId]
         );
         await client.query(
-          'UPDATE bank_accounts SET current_balance = current_balance + $1, updated_at = CURRENT_TIMESTAMP WHERE (ledger_account_id = $2 OR id = $2) AND organization_id = $3',
+          'UPDATE bank_accounts SET current_balance = COALESCE(current_balance, 0) + $1, updated_at = CURRENT_TIMESTAMP WHERE (ledger_account_id = $2 OR id = $2) AND organization_id = $3',
           [balanceDelta, line.accountId, payload.organizationId]
         );
       }

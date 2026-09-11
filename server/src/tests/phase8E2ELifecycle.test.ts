@@ -11,6 +11,7 @@ describe('Phase 8: Complete End-to-End Business Lifecycle & Production UX Harden
   const orgId = `org-e2e-${Date.now()}`;
   const ownerUserId = `usr-owner-${Date.now()}`;
   const ownerEmail = `owner-${Date.now()}@acme.com`;
+  const today = new Date().toISOString().slice(0, 10);
 
   let authHeader: { Authorization: string };
   let publicToken: string;
@@ -151,7 +152,7 @@ describe('Phase 8: Complete End-to-End Business Lifecycle & Production UX Harden
       .send({
         customerId,
         customerName: 'Horizon Technologies Pvt Ltd',
-        issueDate: '2026-08-11',
+        issueDate: today,
         status: 'SENT',
         validityDays: 30,
         items: [

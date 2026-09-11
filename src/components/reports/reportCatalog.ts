@@ -52,4 +52,12 @@ export const INITIAL_REPORTS_CATALOG: ReportItem[] = [
     createdBy: 'Posted ledger service',
     isFavorite: true,
   },
+  {
+    id: 'project_profitability',
+    name: 'Project Profitability',
+    category: 'Projects and Timesheet',
+    description: 'Revenue and direct costs from posted project journal lines, with collections, receivables, expense vendors, and operational unbilled time.',
+    createdBy: 'Project reporting service',
+    isFavorite: true,
+  },
 ];

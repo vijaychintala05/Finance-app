@@ -292,6 +292,8 @@ export class ManualJournalService {
         date: todayStr,
         reference: `REV-${originalJournal.entry_number}`,
         description: `Reversal of ${originalJournal.entry_number}: ${normalizedReason}`,
+        reversalOfJournalId: journalId,
+        reversalReason: normalizedReason,
         lines: linesRes.rows.map((line) => ({
           accountId: line.account_id,
           debit: Number(line.credit || 0),
@@ -302,7 +304,7 @@ export class ManualJournalService {
       await tx.query(
         `UPDATE journal_entries
             SET reversal_of_journal_id = $1, reversal_reason = $2
-          WHERE id = $3 AND organization_id = $4`,
+          WHERE id = $3 AND organization_id = $4 AND reversal_of_journal_id IS NULL`,
         [journalId, normalizedReason, posting.entryId, orgId]
       );
       const updated = await tx.query(

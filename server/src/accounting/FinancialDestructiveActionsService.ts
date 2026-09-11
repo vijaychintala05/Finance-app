@@ -68,6 +68,8 @@ export class FinancialDestructiveActionsService {
       date: reversalDate,
       reference: String(original.entry_number || '').slice(0, 255),
       description: `Reversal of ${sourceLabel}: ${reason}`,
+      reversalOfJournalId: journalEntryId,
+      reversalReason: reason,
       lines: lines.rows.map((line) => ({
         accountId: line.account_id,
         debit: Number(line.credit || 0),
@@ -76,12 +78,7 @@ export class FinancialDestructiveActionsService {
       })),
     }, client);
 
-    await client.query(
-      `UPDATE journal_entries
-          SET reversal_of_journal_id = $1, reversal_reason = $2
-        WHERE organization_id = $3 AND id = $4`,
-      [journalEntryId, reason, organizationId, reversal.entryId]
-    );
+// reversal_of_journal_id was already inserted by postEntry
     const linked = await client.query(
       `UPDATE journal_entries
           SET reversed_by_journal_id = $1, reversed_at = CURRENT_TIMESTAMP,

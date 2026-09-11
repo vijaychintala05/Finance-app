@@ -397,6 +397,7 @@ export interface Expense {
   isBilled?: boolean;
   invoiceId?: string;
   customerInvoiceNumber?: string;
+  journalEntryId?: string;
   paymentStatus: 'Paid' | 'Unpaid';
   status?: 'POSTED' | 'VOIDED';
   description: string;

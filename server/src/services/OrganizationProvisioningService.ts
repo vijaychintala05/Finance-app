@@ -203,6 +203,23 @@ export class OrganizationProvisioningService {
           normalBalanceFor(account), account.financialStatement, account.cashFlow || null]
       );
     }
+
+    const primaryBank = await client.query(
+      `SELECT id, name, currency_code FROM accounts WHERE organization_id = $1 AND (code = '1000' OR system_role = 'PRIMARY_BANK') LIMIT 1`,
+      [organizationId]
+    );
+    if (primaryBank.rows.length > 0) {
+      const bankAcc = primaryBank.rows[0];
+      const todayDate = new Date().toISOString().split('T')[0];
+      await client.query(
+        `INSERT INTO bank_accounts
+          (id, organization_id, ledger_account_id, account_name, account_number, masked_account_number, bank_name,
+           account_type, currency, country, current_balance, opening_balance_date, statement_import_enabled, is_active)
+         VALUES ($1, $2, $3, $4, '•••• 1000', '•••• 1000', 'Primary Operating Bank', 'Checking', $5, 'IN', 0, $6, TRUE, TRUE)
+         ON CONFLICT DO NOTHING`,
+        [newId('bank-acc'), organizationId, bankAcc.id, bankAcc.name, bankAcc.currency_code || 'INR', todayDate]
+      );
+    }
   }
 
   public static async resolveAccountId(

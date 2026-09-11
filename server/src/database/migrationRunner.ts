@@ -1624,7 +1624,7 @@ export class MigrationRunner {
       `DROP TRIGGER IF EXISTS audit_logs_immutable ON audit_logs`,
       `CREATE TRIGGER audit_logs_immutable BEFORE UPDATE OR DELETE ON audit_logs
         FOR EACH ROW EXECUTE FUNCTION prevent_audit_log_mutation()`,
-      `CREATE OR REPLACE FUNCTION prevent_posted_journal_mutation() RETURNS trigger AS $
+      `CREATE OR REPLACE FUNCTION prevent_posted_journal_mutation() RETURNS trigger AS $$
         BEGIN
           IF UPPER(OLD.status) = 'POSTED' THEN
             IF TG_OP = 'DELETE' THEN
@@ -1645,7 +1645,7 @@ export class MigrationRunner {
           END IF;
           RETURN NEW;
         END;
-      $ LANGUAGE plpgsql`,
+      $$ LANGUAGE plpgsql`,
       `DROP TRIGGER IF EXISTS journal_entries_posted_immutable ON journal_entries`,
       `CREATE TRIGGER journal_entries_posted_immutable BEFORE UPDATE OR DELETE ON journal_entries
         FOR EACH ROW EXECUTE FUNCTION prevent_posted_journal_mutation()`,

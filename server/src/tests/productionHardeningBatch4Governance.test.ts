@@ -131,6 +131,8 @@ describe('Production Hardening: Batch 4 - Governance, Control Account Guard & Ex
     expect(content).toContain('prevent_posted_journal_mutation');
     expect(content).toContain('journal_entries_posted_immutable');
     expect(content).toContain('reversal_of_journal_id');
+    expect(content).toMatch(/prevent_posted_journal_mutation\(\) RETURNS trigger AS \$\$/);
+    expect(content).not.toMatch(/prevent_posted_journal_mutation\(\) RETURNS trigger AS \$\s/);
 
     const enterprisePath = path.resolve(__dirname, '../database/enterpriseHardeningSchema.ts');
     const enterpriseContent = fs.readFileSync(enterprisePath, 'utf-8');

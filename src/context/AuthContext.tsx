@@ -51,23 +51,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           localStorage.setItem('active_organization_id', response.data.organizations[0].id);
         }
         setLoading(false);
-      } else if (import.meta.env.DEV) {
-        // Zero-Auth Dev Mode: Auto-login immediately so UI changes can be previewed without authentication hurdles
-        try {
-          const devRes = await apiClient.post<{
-            user: AuthUser;
-            token: string;
-            organizationId: string;
-          }>('/auth/dev-login', { role: 'Owner' });
-          if (!active) return;
-          if (devRes.data?.user && devRes.data.token) {
-            storeSession(devRes.data.token, devRes.data.organizationId);
-            setUser(devRes.data.user);
-          }
-        } catch {
-          // Dev auto-login fallback
-        }
-        setLoading(false);
       } else {
         setLoading(false);
       }

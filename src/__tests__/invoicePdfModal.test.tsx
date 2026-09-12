@@ -54,6 +54,7 @@ describe('Invoice Preview Modal & PDF UI Tests', () => {
         unitPrice: 50000,
         taxRate: 18,
         amount: 50000,
+        accountId: 'acc-sales-1',
       },
     ],
     notes: 'Thank you for your business.',

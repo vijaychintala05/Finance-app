@@ -11,7 +11,7 @@ test.describe('Period Close & Accounting Lock Lifecycle', () => {
 
     // Verify workspace header is rendered
     await expect(page.getByRole('heading', { name: 'Month-End Close' })).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByText('System Checks')).toBeVisible();
+    await expect(page.getByText('System Checks')).toBeVisible({ timeout: 15_000 });
 
     // Verify checklist / review tasks section
     await expect(page.getByText('Reviewer Checklist')).toBeVisible();

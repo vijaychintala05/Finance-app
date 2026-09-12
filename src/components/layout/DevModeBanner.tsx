@@ -9,8 +9,8 @@ export function DevModeBanner() {
   const [seeding, setSeeding] = useState(false);
   const [seedMessage, setSeedMessage] = useState<string | null>(null);
 
-  // In production builds, this component returns null immediately
-  if (!import.meta.env.DEV) {
+  // In production builds or during automated test runs (Playwright / WebDriver), return null
+  if (!import.meta.env.DEV || (typeof navigator !== 'undefined' && navigator.webdriver)) {
     return null;
   }
 

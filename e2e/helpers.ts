@@ -17,6 +17,7 @@ export async function registerTenant(page: Page, testInfo: TestInfo): Promise<{ 
   await page.getByRole('button', { name: 'Create account' }).click();
 
   await expect(page.getByRole('button', { name: '+ New', exact: true })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText('Loading workspace…')).toBeHidden({ timeout: 15_000 });
   return { email, organizationName };
 }
 

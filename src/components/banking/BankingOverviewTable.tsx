@@ -135,7 +135,7 @@ export const BankingOverviewTable: React.FC<BankingOverviewTableProps> = ({
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-black text-slate-900 dark:text-white tracking-tight">
-            Banking Overview
+            Banking &amp; Cash Management
           </h1>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
             Reconcile your statement feeds, review pending transactions, and keep your books balanced.
@@ -172,9 +172,14 @@ export const BankingOverviewTable: React.FC<BankingOverviewTableProps> = ({
       {/* 2. ZOHO-STYLE 3 SUMMARY METRIC CARDS */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-2xs">
-          <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-            Amount in FirmBooks (Book Balance)
-          </span>
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+              Bank Balance
+            </span>
+            <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
+              Book Balance
+            </span>
+          </div>
           <div className="text-2xl font-black font-mono text-slate-900 dark:text-white mt-1.5">
             {formatCurrency(totalBookBalance, currencySymbol)}
           </div>

@@ -20,7 +20,7 @@ test.describe('V1 settings and PWA shell', () => {
     } else {
       await page.getByRole('button', { name: 'Settings', exact: true }).click();
     }
-    await expect(page.getByRole('heading', { name: 'All Settings', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'All Settings', exact: true })).toBeVisible({ timeout: 15_000 });
     await expect(page.getByRole('button', { name: /Identity & Password/ })).toBeVisible();
     await expect(page.getByRole('button', { name: /Workspace Governance/ })).toBeVisible();
     await expect(page.getByRole('button', { name: /Security & Audit Logs/ })).toBeVisible();

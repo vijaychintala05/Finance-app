@@ -64,6 +64,34 @@ export class FinancialCommandService {
       const schemaVersion = input.schemaVersion ?? 1;
       const resultVersion = input.resultVersion ?? 1;
 
+      if (input.idempotencyKey) {
+        const existing = await client.query<{
+          id: string;
+          payload_hash: string;
+          status: string;
+          result: TResult | string | null;
+        }>(
+          `SELECT id, payload_hash, status, result
+             FROM financial_commands
+            WHERE organization_id = $1 AND idempotency_key = $2 AND command_type = $3
+            FOR UPDATE`,
+          [input.organizationId, input.idempotencyKey, input.commandType]
+        );
+        if (existing.rows.length > 0) {
+          const receipt = existing.rows[0];
+          if (receipt.payload_hash !== payloadHash) {
+            throw new Error('COMMAND_IDEMPOTENCY_CONFLICT: This key was already used for a different command payload');
+          }
+          if (receipt.status !== 'COMPLETED' || receipt.result == null) {
+            throw new Error('COMMAND_IN_PROGRESS: This financial command is already being processed');
+          }
+          const storedResult = typeof receipt.result === 'string'
+            ? JSON.parse(receipt.result) as TResult
+            : receipt.result as TResult;
+          return { commandId: receipt.id, result: storedResult };
+        }
+      }
+
       await client.query(
         `INSERT INTO financial_commands
           (id, organization_id, actor_user_id, command_type, schema_version, idempotency_key, payload, payload_hash, status)

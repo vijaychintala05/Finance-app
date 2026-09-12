@@ -160,9 +160,10 @@ describe('Zoho Books Banking Columns and UI', () => {
     expect(screen.getByText('Status')).toBeDefined();
     expect(screen.getByText('Actions')).toBeDefined();
 
-    // Verify Row Actions (Match, Categorize)
-    expect(screen.getAllByText('Match').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('Categorize').length).toBeGreaterThan(0);
+    // A bank workspace is statement-first: posted GL lines must not masquerade as bank evidence.
+    expect(screen.getByText(/Import a CSV or spreadsheet statement/i)).toBeDefined();
+    expect(screen.queryByText('Client payment received via NEFT')).toBeNull();
+    expect(screen.queryByText('Office internet subscription')).toBeNull();
   });
 
   it('renders BankTransactionsFeed with Zoho Books columns', () => {

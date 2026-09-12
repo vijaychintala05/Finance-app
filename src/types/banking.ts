@@ -196,8 +196,6 @@ export interface ParsedStatementResult {
   statementHealthWarning?: string;
 }
 
-export type BankStatementSourceFormat = 'CSV' | 'XLSX' | 'XLS' | 'OFX' | 'MT940' | 'CAMT053';
-
 export interface BankStatementImportObservation {
   id: string;
   organizationId: string;

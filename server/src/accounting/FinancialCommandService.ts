@@ -9,6 +9,15 @@ export interface FinancialOutboxEventInput {
   payload: unknown;
 }
 
+export interface FinancialEvidenceLinkInput {
+  sourceType: string;
+  sourceId: string;
+  relationType: string;
+  targetType: string;
+  targetId: string;
+  metadata?: unknown;
+}
+
 export interface FinancialCommandInput<TResult> {
   organizationId: string;
   actorUserId?: string;
@@ -20,6 +29,7 @@ export interface FinancialCommandInput<TResult> {
   transactionClient?: DbQueryClient;
   execute: (client: DbQueryClient) => Promise<TResult>;
   events: (result: TResult) => FinancialOutboxEventInput[];
+  evidenceLinks?: (result: TResult) => FinancialEvidenceLinkInput[];
 }
 
 export interface FinancialCommandResult<TResult> {
@@ -110,6 +120,7 @@ export class FinancialCommandService {
 
       const result = await input.execute(client);
       const events = input.events(result);
+      const evidenceLinks = input.evidenceLinks?.(result) ?? [];
 
       await client.query(
         `UPDATE financial_commands
@@ -131,6 +142,36 @@ export class FinancialCommandService {
             event.aggregateType,
             event.aggregateId,
             JSON.stringify(event.payload),
+          ]
+        );
+
+        evidenceLinks.push({
+          sourceType: 'FinancialCommand',
+          sourceId: commandId,
+          relationType: 'RESULTS_IN',
+          targetType: event.aggregateType,
+          targetId: event.aggregateId,
+          metadata: { eventType: event.eventType },
+        });
+      }
+
+      for (const link of evidenceLinks) {
+        await client.query(
+          `INSERT INTO financial_evidence_links
+            (id, organization_id, command_id, source_type, source_id, relation_type, target_type, target_id, metadata)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           ON CONFLICT (organization_id, command_id, source_type, source_id, relation_type, target_type, target_id)
+           DO NOTHING`,
+          [
+            newId('evidence'),
+            input.organizationId,
+            commandId,
+            link.sourceType,
+            link.sourceId,
+            link.relationType,
+            link.targetType,
+            link.targetId,
+            JSON.stringify(redactPayload(link.metadata ?? {})),
           ]
         );
       }

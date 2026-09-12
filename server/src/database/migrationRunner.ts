@@ -9,7 +9,7 @@ import { applyBankingStatementSchema } from './bankingStatementSchema';
 import { applyFinancialCommandSchema } from './financialCommandSchema';
 import type { DbQueryResult } from './db';
 
-export const CURRENT_SCHEMA_VERSION = '2026.09.12-v12-financial-command-platform';
+export const CURRENT_SCHEMA_VERSION = '2026.09.12-v13-financial-command-evidence';
 
 export class MigrationRunner {
   public static async runMigrations(queryClient?: { query: (text: string, params?: any[]) => Promise<DbQueryResult> }): Promise<void> {
@@ -1968,7 +1968,7 @@ export class MigrationRunner {
       `INSERT INTO schema_migrations (version, description)
        VALUES ($1, $2)
        ON CONFLICT (version) DO NOTHING`,
-      [CURRENT_SCHEMA_VERSION, 'FirmBooks v12 financial command receipts, transactional outbox, and projection checkpoints']
+      [CURRENT_SCHEMA_VERSION, 'FirmBooks v13 financial command receipts, evidence links, transactional outbox, and projection checkpoints']
     );
 
     console.log('[Migration] All PostgreSQL tables initialized successfully.');

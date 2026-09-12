@@ -35,6 +35,7 @@ import { FinancialDestructiveActionsService } from '../accounting/FinancialDestr
 import { isIsoCalendarDate } from '../utils/date';
 import { ExpensePostingService } from '../services/ExpensePostingService';
 import { FinancialCommandService } from '../accounting/FinancialCommandService';
+import { toFinancialCommandError } from '../accounting/FinancialCommandError';
 import { ExpenseReceiptService } from '../services/ExpenseReceiptService';
 import { ExpensePdfService } from '../services/ExpensePdfService';
 import { InvoicePdfService } from '../services/InvoicePdfService';
@@ -1500,29 +1501,43 @@ export class FinanceController {
           req.body,
           client
         ),
-        events: (result) => [{
+          events: (result) => [{
           eventType: 'expense.posted',
           aggregateType: 'Expense',
           aggregateId: result.id,
           payload: {
             expenseId: result.id,
             expenseNumber: result.expenseNumber,
-            journalEntryId: result.journalEntryId,
-          },
-        }],
-      });
+              journalEntryId: result.journalEntryId,
+            },
+          }],
+          evidenceLinks: (result) => [
+            {
+              sourceType: 'Expense',
+              sourceId: result.id,
+              relationType: 'POSTED_TO',
+              targetType: 'JournalEntry',
+              targetId: result.journalEntryId,
+            },
+            ...result.receiptAttachments.map((attachment) => ({
+              sourceType: 'Expense',
+              sourceId: result.id,
+              relationType: 'HAS_ATTACHMENT',
+              targetType: 'ExpenseReceipt',
+              targetId: attachment.id,
+              metadata: {
+                fileName: attachment.fileName,
+                mimeType: attachment.mimeType,
+                byteSize: attachment.byteSize,
+              },
+            })),
+          ],
+        });
       res.status(201).json({ ...command.result, commandId: command.commandId });
-    } catch (error: any) {
-      const message = error.message || 'Expense could not be posted';
-      res.status(
-        message.startsWith('EXPENSE_INPUT_INVALID:') ||
-        message.startsWith('EXPENSE_RECEIPT_INVALID:') ||
-        message.startsWith('EXPENSE_CUSTOMER') ||
-        message.startsWith('EXPENSE_VENDOR_INVALID:')
-          ? 400
-          : 422
-      ).json({ error: message });
-    }
+      } catch (error: any) {
+        const commandError = toFinancialCommandError(error);
+        res.status(commandError.status).json(commandError.body);
+      }
   }
 
   public static async getExpensePdf(req: AuthenticatedRequest, res: Response): Promise<void> {
@@ -1544,6 +1559,43 @@ export class FinanceController {
         res.status(500).json({ error: err.message || 'Failed to generate expense voucher PDF' });
       }
     }
+  }
+
+  public static async getExpenseEvidence(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const expenseId = req.params.id;
+    const organizationId = req.auth!.organizationId;
+    const expense = await db.query(
+      'SELECT id FROM expenses WHERE organization_id = $1 AND id = $2',
+      [organizationId, expenseId]
+    );
+    if (expense.rows.length === 0) {
+      res.status(404).json({ error: 'Expense not found' });
+      return;
+    }
+
+    const result = await db.query(
+      `SELECT
+         link.id,
+         link.command_id,
+         command.command_type,
+         command.status AS command_status,
+         link.source_type,
+         link.source_id,
+         link.relation_type,
+         link.target_type,
+         link.target_id,
+         link.metadata,
+         link.created_at
+       FROM financial_evidence_links link
+       JOIN financial_commands command
+         ON command.organization_id = link.organization_id AND command.id = link.command_id
+      WHERE link.organization_id = $1
+        AND ((link.source_type = 'Expense' AND link.source_id = $2)
+          OR (link.target_type = 'Expense' AND link.target_id = $2))
+      ORDER BY link.created_at ASC, link.id ASC`,
+      [organizationId, expenseId]
+    );
+    res.json({ data: result.rows, freshness: 'transactional' });
   }
 
   public static async getExpenseReceipt(req: AuthenticatedRequest, res: Response): Promise<void> {

@@ -6,6 +6,8 @@ export interface ApiResponse<T> {
   data: T | null;
   error: string | null;
   status: number;
+  errorCode?: string;
+  recovery?: string;
 }
 
 export class ApiClient {
@@ -123,6 +125,8 @@ export class ApiClient {
           data: null,
           error: errorData.details || errorData.error || errorData.message || `HTTP Error ${response.status}`,
           status: response.status,
+          errorCode: errorData.code,
+          recovery: errorData.recovery,
         };
       }
 
@@ -138,6 +142,8 @@ export class ApiClient {
         data: null,
         error: err.message || 'Network communication failure',
         status: 500,
+        errorCode: 'NETWORK_FAILURE',
+        recovery: 'Check your connection, then reload before retrying this financial action.',
       };
     }
   }
@@ -154,11 +160,11 @@ export class ApiClient {
       });
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({ error: response.statusText }));
-        return { data: null, error: errorData.error || response.statusText, status: response.status };
+        return { data: null, error: errorData.error || response.statusText, status: response.status, errorCode: errorData.code, recovery: errorData.recovery };
       }
       return { data: await response.blob(), error: null, status: response.status };
     } catch (error: any) {
-      return { data: null, error: error.message || 'Receipt image could not be loaded', status: 500 };
+      return { data: null, error: error.message || 'Receipt image could not be loaded', status: 500, errorCode: 'NETWORK_FAILURE', recovery: 'Check your connection and retry loading the receipt.' };
     }
   }
 

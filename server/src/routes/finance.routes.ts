@@ -180,6 +180,7 @@ router.post('/saved-reports/:id/favorite', requirePermission(['reports.view']), 
 // Expenses
 router.get('/expenses', requirePermission(['expenses.view']), FinanceController.getExpenses);
 router.post('/expenses', requirePermission(['expenses.create']), FinanceController.createExpense);
+router.get('/expenses/:id/evidence', requirePermission(['expenses.view']), FinanceController.getExpenseEvidence);
 router.post('/expenses/:id/receipts', requirePermission(['expenses.attach_receipt']), FinanceController.attachExpenseReceipts);
 router.get('/expenses/:id/receipts/:receiptId', requirePermission(['expenses.view', 'expenses.attach_receipt']), FinanceController.getExpenseReceipt);
 router.get('/expenses/:id/pdf', requirePermission(['expenses.view']), FinanceController.getExpensePdf);

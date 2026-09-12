@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { BankReconciliationService } from '../banking/BankReconciliationService';
 import { FinancialCommandService } from '../accounting/FinancialCommandService';
+import { toFinancialCommandError } from '../accounting/FinancialCommandError';
 
 function getOrgId(req: Request): string {
   const orgId = (req as any).auth?.organizationId;
@@ -422,10 +423,10 @@ export class BankingController {
         }],
       });
       res.status(201).json({ success: true, data: command.result, ...command.result, commandId: command.commandId });
-    } catch (e: any) {
-      const msg = e instanceof Error ? e.message : 'Statement import confirmation failed';
-      res.status(400).json({ success: false, error: msg });
-    }
+      } catch (e: any) {
+        const commandError = toFinancialCommandError(e);
+        res.status(commandError.status).json({ success: false, ...commandError.body });
+      }
   }
 
   // GET /api/v1/banking/workspace

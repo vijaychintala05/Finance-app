@@ -41,6 +41,27 @@ interface VoucherPreviewProps {
   receiptUrls: Record<string, string>;
 }
 
+interface ExpenseEvidenceLink {
+  id: string;
+  command_id: string;
+  command_type: string;
+  command_status: string;
+  source_type: string;
+  source_id: string;
+  relation_type: string;
+  target_type: string;
+  target_id: string;
+  metadata?: { fileName?: string };
+  created_at: string;
+}
+
+function evidenceDescription(link: ExpenseEvidenceLink): string {
+  if (link.relation_type === 'POSTED_TO') return 'Posted as a balanced journal entry';
+  if (link.relation_type === 'HAS_ATTACHMENT') return `Receipt attached${link.metadata?.fileName ? `: ${link.metadata.fileName}` : ''}`;
+  if (link.relation_type === 'RESULTS_IN') return 'Command created this expense';
+  return `${link.relation_type.replaceAll('_', ' ').toLowerCase()} ${link.target_type.replace(/([a-z])([A-Z])/g, '$1 $2')}`;
+}
+
 const VoucherPreview: React.FC<VoucherPreviewProps> = ({ expense, currencySymbol, journal, receiptUrls }) => {
   const lines = journal?.lines || [
     { id: 'expense-debit', accountCode: '', accountName: expense.accountName || 'Expense account', debit: expense.amount, credit: 0 },
@@ -120,9 +141,11 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
   const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
   const [isConvertingToInvoice, setIsConvertingToInvoice] = useState(false);
   const [showJournal, setShowJournal] = useState(false);
-  const [viewMode, setViewMode] = useState<'details' | 'voucher'>('details');
+  const [viewMode, setViewMode] = useState<'details' | 'voucher' | 'activity'>('details');
   const [isAttachingReceipts, setIsAttachingReceipts] = useState(false);
   const [isReceiptDragActive, setIsReceiptDragActive] = useState(false);
+  const [evidence, setEvidence] = useState<ExpenseEvidenceLink[]>([]);
+  const [isEvidenceLoading, setIsEvidenceLoading] = useState(false);
   const receiptInputRef = useRef<HTMLInputElement>(null);
   const activeExpenseForReceipts = currentExpense || expense;
 
@@ -155,6 +178,26 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
       urls.forEach((url) => URL.revokeObjectURL(url));
     };
   }, [activeExpenseForReceipts?.id, activeExpenseForReceipts?.receiptAttachments, isOpen]);
+
+  useEffect(() => {
+    let active = true;
+    const loadEvidence = async () => {
+      if (!isOpen || !expense?.id) {
+        setEvidence([]);
+        return;
+      }
+      setIsEvidenceLoading(true);
+      const response = await apiClient.get<{ data: ExpenseEvidenceLink[] }>(`/finance/expenses/${expense.id}/evidence`);
+      if (active) {
+        setEvidence(response.data?.data || []);
+        setIsEvidenceLoading(false);
+      }
+    };
+    void loadEvidence();
+    return () => {
+      active = false;
+    };
+  }, [expense?.id, isOpen]);
 
   if (!isOpen || !expense) return null;
   const activeExpense = currentExpense || expense;
@@ -400,14 +443,44 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
           <div role="tablist" aria-label="Expense display mode" className="inline-flex rounded-md border border-slate-200 bg-white p-0.5 dark:border-slate-700 dark:bg-slate-800">
             <button type="button" role="tab" aria-selected={viewMode === 'details'} onClick={() => setViewMode('details')} className={`rounded px-3 py-1.5 text-xs font-semibold transition-colors ${viewMode === 'details' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-700'}`}>Details</button>
             <button type="button" role="tab" aria-selected={viewMode === 'voucher'} onClick={() => setViewMode('voucher')} className={`rounded px-3 py-1.5 text-xs font-semibold transition-colors ${viewMode === 'voucher' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-700'}`}>Voucher view</button>
+            <button type="button" role="tab" aria-selected={viewMode === 'activity'} onClick={() => setViewMode('activity')} className={`rounded px-3 py-1.5 text-xs font-semibold transition-colors ${viewMode === 'activity' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-700'}`}>Activity</button>
           </div>
           <p className="hidden text-xs text-slate-500 sm:block">Evidence can be added without correcting the posted record.</p>
         </div>
 
         {viewMode === 'voucher' && <div className="max-h-[80vh] overflow-y-auto bg-slate-50 p-5 dark:bg-slate-950"><VoucherPreview expense={activeExpense} currencySymbol={settings.currencySymbol} journal={postingJournal} receiptUrls={receiptUrls} /></div>}
 
+        {viewMode === 'activity' && (
+          <section role="tabpanel" aria-label="Expense activity" className="max-h-[80vh] overflow-y-auto p-5 sm:p-7">
+            <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-slate-200 pb-4 dark:border-slate-700">
+              <div>
+                <h4 className="text-base font-bold text-slate-900 dark:text-white">Posting activity</h4>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Transactional evidence for this expense.</p>
+              </div>
+              <span className="text-xs font-medium text-emerald-700 dark:text-emerald-300">Transactionally current</span>
+            </div>
+            {isEvidenceLoading ? (
+              <p className="py-10 text-center text-sm text-slate-500">Loading evidence…</p>
+            ) : evidence.length === 0 ? (
+              <p className="py-10 text-center text-sm text-slate-500">This expense predates the evidence trail. Its accounting details remain available in the voucher view.</p>
+            ) : (
+              <ol className="divide-y divide-slate-100 dark:divide-slate-800">
+                {evidence.map((link) => (
+                  <li key={link.id} className="grid gap-2 py-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">{evidenceDescription(link)}</p>
+                      <p className="mt-1 break-all text-xs font-mono text-slate-500 dark:text-slate-400">{link.command_type} · {link.command_id}</p>
+                    </div>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">{formatDate(link.created_at)}</p>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </section>
+        )}
+
         {/* DETAILS BODY */}
-        <div className={`p-5 space-y-5 max-h-[80vh] overflow-y-auto ${viewMode === 'voucher' ? 'hidden' : ''}`}>
+        <div className={`p-5 space-y-5 max-h-[80vh] overflow-y-auto ${viewMode !== 'details' ? 'hidden' : ''}`}>
           {/* AMOUNT & RECEIPT SECTION */}
           <div className="flex items-start justify-between gap-4 border-b border-slate-100 pb-5 dark:border-slate-800">
             <div>

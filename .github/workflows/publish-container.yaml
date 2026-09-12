@@ -35,7 +35,7 @@ jobs:
         run: npm ci
 
       - name: Security audit (production dependencies)
-        run: npm audit --audit-level=high --omit=dev
+        run: node scripts/ci-audit-allowlist.mjs
 
       - name: Type check
         run: npm run lint

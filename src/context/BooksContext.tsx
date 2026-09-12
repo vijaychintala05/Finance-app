@@ -1221,7 +1221,9 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       items: expenseData.items,
       receiptImages: expenseData.receiptImages,
     });
-    if (!response.data) throw new Error(response.error || 'Expense could not be posted');
+    if (!response.data) {
+      throw new Error([response.error || 'Expense could not be posted', response.recovery].filter(Boolean).join(' '));
+    }
     await refreshAfterCommittedWrite();
   };
 

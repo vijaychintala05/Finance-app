@@ -27,6 +27,24 @@ export async function applyFinancialCommandSchema(client: DbQueryClient): Promis
       ON financial_commands (organization_id, idempotency_key, command_type)`,
     `CREATE INDEX IF NOT EXISTS idx_financial_commands_org_created
       ON financial_commands (organization_id, created_at DESC)`,
+    `CREATE TABLE IF NOT EXISTS financial_evidence_links (
+      id VARCHAR(64) PRIMARY KEY,
+      organization_id VARCHAR(64) NOT NULL,
+      command_id VARCHAR(64) NOT NULL,
+      source_type VARCHAR(100) NOT NULL,
+      source_id VARCHAR(64) NOT NULL,
+      relation_type VARCHAR(100) NOT NULL,
+      target_type VARCHAR(100) NOT NULL,
+      target_id VARCHAR(64) NOT NULL,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT uk_financial_evidence_relation UNIQUE
+        (organization_id, command_id, source_type, source_id, relation_type, target_type, target_id)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_financial_evidence_source
+      ON financial_evidence_links (organization_id, source_type, source_id, created_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_financial_evidence_target
+      ON financial_evidence_links (organization_id, target_type, target_id, created_at DESC)`,
     `CREATE TABLE IF NOT EXISTS financial_outbox_events (
       id VARCHAR(64) PRIMARY KEY,
       organization_id VARCHAR(64) NOT NULL,

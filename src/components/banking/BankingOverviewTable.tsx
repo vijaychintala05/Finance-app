@@ -66,8 +66,8 @@ export const BankingOverviewTable: React.FC<BankingOverviewTableProps> = ({
           item?.difference !== undefined && item?.difference !== null
             ? item.difference
             : statementBalance !== null
-            ? statementBalance - bookBalance
-            : null;
+              ? statementBalance - bookBalance
+              : null;
 
         return {
           account: acc,
@@ -207,41 +207,37 @@ export const BankingOverviewTable: React.FC<BankingOverviewTableProps> = ({
         <div className="flex items-center space-x-1 overflow-x-auto">
           <button
             onClick={() => setActiveTab('ALL')}
-            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
-              activeTab === 'ALL'
+            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${activeTab === 'ALL'
                 ? 'bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 shadow-2xs'
                 : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-            }`}
+              }`}
           >
             All Accounts ({mergedAccounts.length})
           </button>
           <button
             onClick={() => setActiveTab('BANKS')}
-            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
-              activeTab === 'BANKS'
+            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${activeTab === 'BANKS'
                 ? 'bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 shadow-2xs'
                 : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-            }`}
+              }`}
           >
             Bank Accounts
           </button>
           <button
             onClick={() => setActiveTab('CREDIT_CARDS')}
-            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
-              activeTab === 'CREDIT_CARDS'
+            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${activeTab === 'CREDIT_CARDS'
                 ? 'bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 shadow-2xs'
                 : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-            }`}
+              }`}
           >
             Credit Cards
           </button>
           <button
             onClick={() => setActiveTab('CASH')}
-            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
-              activeTab === 'CASH'
+            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${activeTab === 'CASH'
                 ? 'bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 shadow-2xs'
                 : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-            }`}
+              }`}
           >
             Petty Cash
           </button>

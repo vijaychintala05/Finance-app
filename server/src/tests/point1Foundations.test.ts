@@ -65,7 +65,7 @@ describe('Point-1 shared foundations', () => {
       expect(result.rows).toEqual([]);
     }
 
-    expect(CURRENT_SCHEMA_VERSION).toBe('2026.09.12-v12-financial-command-platform');
+    expect(CURRENT_SCHEMA_VERSION).toBe('2026.09.12-v13-financial-command-evidence');
     expect(await MigrationRunner.isCurrent()).toBe(true);
   });
 });

@@ -28,6 +28,13 @@ describe('FinancialCommandService', () => {
         aggregateId: result.expenseId,
         payload: { expenseId: result.expenseId, journalEntryId: result.journalEntryId },
       }],
+      evidenceLinks: (result) => [{
+        sourceType: 'Expense',
+        sourceId: result.expenseId,
+        relationType: 'POSTED_TO',
+        targetType: 'JournalEntry',
+        targetId: result.journalEntryId,
+      }],
     });
 
     expect(command.result).toEqual({ expenseId: 'exp-command-1', journalEntryId: 'jrn-command-1' });
@@ -38,6 +45,18 @@ describe('FinancialCommandService', () => {
 
     const events = await db.query(`SELECT event_type, aggregate_id, status FROM financial_outbox_events WHERE command_id = $1`, [command.commandId]);
     expect(events.rows).toEqual([{ event_type: 'expense.posted', aggregate_id: 'exp-command-1', status: 'PENDING' }]);
+
+    const evidence = await db.query(
+      `SELECT source_type, relation_type, target_type, target_id
+         FROM financial_evidence_links
+        WHERE command_id = $1
+        ORDER BY source_type ASC`,
+      [command.commandId]
+    );
+    expect(evidence.rows).toEqual([
+      expect.objectContaining({ source_type: 'Expense', relation_type: 'POSTED_TO', target_type: 'JournalEntry', target_id: 'jrn-command-1' }),
+      expect.objectContaining({ source_type: 'FinancialCommand', relation_type: 'RESULTS_IN', target_type: 'Expense', target_id: 'exp-command-1' }),
+    ]);
   });
 
   it('returns a completed command result on a direct idempotent retry without rerunning the mutation', async () => {

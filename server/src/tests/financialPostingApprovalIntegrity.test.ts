@@ -518,6 +518,13 @@ describe('Financial Posting & Approval Mutation Integrity Tests (T3/T4 Hardening
     expect(createRes.status).toBe(201);
     const invoiceId = createRes.body.id;
     expect(createRes.body.status).toBe('SUBMITTED');
+    expect(createRes.body.commandId).toBeTruthy();
+
+    const commandReceipt = await db.query(
+      `SELECT command_type, status FROM financial_commands WHERE id = $1 AND organization_id = $2`,
+      [createRes.body.commandId, orgId]
+    );
+    expect(commandReceipt.rows[0]).toMatchObject({ command_type: 'invoice.post', status: 'COMPLETED' });
 
     // Confirm it is stored in SUBMITTED status
     const dbCheck = await db.query('SELECT status FROM invoices WHERE id = $1', [invoiceId]);

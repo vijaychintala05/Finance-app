@@ -1768,7 +1768,13 @@ export class FinanceController {
     const billId = newId('bill');
     let finalBillNumber = '';
     try {
-      const result = await db.transaction(async (client) => {
+      const command = await FinancialCommandService.execute({
+        organizationId: orgId,
+        actorUserId: req.auth!.userId,
+        commandType: 'bill.post',
+        payload: req.body,
+        idempotencyKey: req.header('idempotency-key') || undefined,
+        execute: async (client) => {
         finalBillNumber = finalBillNumber || await DocumentNumberingEngine.getNextNumber(orgId, 'VENDOR_BILL', billDate, undefined, client);
         const vendor = await client.query(`SELECT id, name, company_name FROM vendors WHERE organization_id = $1 AND id = $2`, [orgId, vendorId]);
         if (vendor.rows.length !== 1) throw new Error('Bill vendor does not belong to this organization');
@@ -1836,11 +1842,27 @@ export class FinanceController {
            VALUES ($1, $2, $3, 'BILL_CREATED', 'Bill', $4, $5)`,
           [newId('aud'), orgId, req.auth!.userId, billId, JSON.stringify({ billNumber: finalBillNumber, totalAmount: parsedTotal, journalEntryId: postingEntryId, status: initialStatus })]
         );
-        return { entryId: postingEntryId, status: initialStatus };
+        return { id: billId, billNumber: finalBillNumber, entryId: postingEntryId, status: initialStatus };
+        },
+        events: (result) => [{
+          eventType: 'bill.posted',
+          aggregateType: 'Bill',
+          aggregateId: result.id,
+          payload: { billId: result.id, billNumber: result.billNumber, journalEntryId: result.entryId, status: result.status },
+        }],
+        evidenceLinks: (result) => result.entryId ? [{
+          sourceType: 'Bill',
+          sourceId: result.id,
+          relationType: 'POSTED_TO',
+          targetType: 'JournalEntry',
+          targetId: result.entryId,
+        }] : [],
       });
-      res.status(201).json({ id: billId, billNumber: finalBillNumber, totalAmount: parsedTotal, status: result.status, journalEntryId: result.entryId });
+      const result = command.result;
+      res.status(201).json({ id: result.id, billNumber: result.billNumber, totalAmount: parsedTotal, status: result.status, journalEntryId: result.entryId, commandId: command.commandId });
     } catch (error: any) {
-      res.status(422).json({ error: error.message || 'Bill could not be posted' });
+      const commandError = toFinancialCommandError(error);
+      res.status(commandError.status).json(commandError.body);
     }
   }
 

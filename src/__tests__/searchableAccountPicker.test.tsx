@@ -14,6 +14,7 @@ describe('SearchableAccountPicker Component', () => {
       type: 'Expense',
       subType: 'Operating Expense',
       status: 'Active',
+      balance: 0,
       isLocked: false,
     },
     {
@@ -23,6 +24,7 @@ describe('SearchableAccountPicker Component', () => {
       type: 'Expense',
       subType: 'Operating Expense',
       status: 'Active',
+      balance: 0,
       isLocked: false,
     },
     {
@@ -32,6 +34,7 @@ describe('SearchableAccountPicker Component', () => {
       type: 'Expense',
       subType: 'Operating Expense',
       status: 'Active',
+      balance: 0,
       isLocked: false,
     },
     {
@@ -41,6 +44,7 @@ describe('SearchableAccountPicker Component', () => {
       type: 'Expense',
       subType: 'Direct Expense / Cost of Goods',
       status: 'Active',
+      balance: 0,
       isLocked: false,
     },
   ];

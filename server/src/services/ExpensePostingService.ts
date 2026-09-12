@@ -22,7 +22,9 @@ export interface ExpensePostingInput {
   id?: string;
   expenseAccountId: string;
   paidFromAccountId: string;
+  vendorId?: string;
   vendorName?: string;
+  vendorInvoiceNumber?: string;
   date: string;
   amount: number;
   taxRate?: number;
@@ -407,6 +409,30 @@ export class ExpensePostingService {
         }
       }
 
+      let vendorId: string | null = null;
+      let vendorName = String(input.vendorName || '').trim();
+      if (input.vendorId !== undefined && input.vendorId !== null && input.vendorId !== '') {
+        if (typeof input.vendorId !== 'string' || input.vendorId.length > 64) {
+          throw new Error('EXPENSE_VENDOR_INVALID: Vendor is invalid');
+        }
+        const vendorCheck = await client.query(
+          `SELECT id, name, company_name FROM vendors WHERE organization_id = $1 AND id = $2`,
+          [organizationId, input.vendorId]
+        );
+        if (vendorCheck.rows.length !== 1) {
+          throw new Error('EXPENSE_VENDOR_INVALID: Vendor was not found in this organization');
+        }
+        vendorId = vendorCheck.rows[0].id;
+        vendorName = String(vendorCheck.rows[0].company_name || vendorCheck.rows[0].name || '').trim();
+      }
+
+      const vendorInvoiceNumber = input.vendorInvoiceNumber === undefined || input.vendorInvoiceNumber === null
+        ? null
+        : String(input.vendorInvoiceNumber).trim();
+      if (vendorInvoiceNumber !== null && vendorInvoiceNumber.length > 128) {
+        throw new Error('EXPENSE_INPUT_INVALID: Vendor invoice or receipt reference cannot exceed 128 characters');
+      }
+
       const id = input.id || newId('exp');
       const expenseNumber = await DocumentNumberingEngine.getNextNumber(organizationId, 'EXPENSE', input.date, undefined, client);
 
@@ -415,14 +441,14 @@ export class ExpensePostingService {
       await client.query(
         `INSERT INTO expenses
           (id, organization_id, expense_number, expense_account_id, paid_from_account_id,
-           vendor_name, date, amount, tax_rate, tax_amount, tax_account_id,
+           vendor_id, vendor_name, vendor_invoice_number, date, amount, tax_rate, tax_amount, tax_account_id,
            is_tax_inclusive, is_rcm, rcm_tax_account_id,
            tds_rate, tds_amount, tds_section, tds_account_id,
            description, project_id, client_id, is_billable, is_billed, invoice_id, source_occurrence_key,
            is_itemized, items)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, FALSE, NULL, $23, $24, $25)`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, FALSE, NULL, $25, $26, $27)`,
         [id, organizationId, expenseNumber, input.expenseAccountId, input.paidFromAccountId,
-          input.vendorName || '', input.date, amount, taxRate, computedTaxAmount, resolvedTaxAccountId,
+          vendorId, vendorName, vendorInvoiceNumber || null, input.date, amount, taxRate, computedTaxAmount, resolvedTaxAccountId,
           isTaxInclusive, isRcm, resolvedRcmAccountId,
           tdsRate, computedTdsAmount, input.tdsSection || null, resolvedTdsAccountId,
           input.description || '', input.projectId || null,
@@ -522,7 +548,7 @@ export class ExpensePostingService {
 
       const posting = await ServerPostingEngine.postEntry({
         organizationId,
-        entryNumber: `JRN-EXP-${id}`,
+        entryNumber: `JRN-${expenseNumber}`,
         date: input.date,
         reference: expenseNumber,
         description: `Expense paid to ${input.vendorName || 'Vendor'}`,

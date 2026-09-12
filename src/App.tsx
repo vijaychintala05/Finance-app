@@ -8,6 +8,7 @@ import { CreateOrganizationWizardModal } from './components/organization/CreateO
 import { OrganizationSwitcherModal } from './components/organization/OrganizationSwitcherModal';
 import { CapabilityUnavailable } from './components/common/CapabilityUnavailable';
 import { useFinanceCapabilities } from './capabilities/useFinanceCapabilities';
+import { DevModeBanner } from './components/layout/DevModeBanner';
 
 const lazyNamed = <T extends React.ComponentType<any>>(loader: () => Promise<any>, name: string) =>
   React.lazy(async () => ({ default: (await loader())[name] as T }));
@@ -406,6 +407,9 @@ function MainAppLayout() {
         isOpen={isOrgWizardOpen}
         onClose={() => setIsOrgWizardOpen(false)}
       />
+
+      {/* Dev Mode Zero-Auth Test Control Banner */}
+      <DevModeBanner />
     </div>
   );
 }

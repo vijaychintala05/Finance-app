@@ -20,6 +20,7 @@ import { AccountingPeriodService } from '../accounting/AccountingPeriodService';
 import { ServerPostingEngine } from '../accounting/postingEngine';
 import { MonetaryAccountPolicy } from '../accounting/monetaryAccountPolicy';
 import { FinancialDestructiveActionsService } from '../accounting/FinancialDestructiveActionsService';
+import { LedgerQueryService } from '../services/LedgerQueryService';
 
 /**
  * BANK RECONCILIATION SERVICE
@@ -39,7 +40,8 @@ export class BankReconciliationService {
           `SELECT * FROM bank_accounts WHERE organization_id = $1 AND is_active = TRUE ORDER BY created_at DESC`,
           [orgId]
         );
-        if (queryRes.rows.length === 0) {
+        let profiles = queryRes.rows;
+        if (profiles.length === 0) {
           const bankLedgerAcc = await client.query(
             `SELECT id, name, code, balance, currency_code FROM accounts
               WHERE organization_id = $1 AND (type = 'Bank' OR code = '1000' OR system_role = 'PRIMARY_BANK') AND status = 'Active'
@@ -62,10 +64,24 @@ export class BankReconciliationService {
               `SELECT * FROM bank_accounts WHERE organization_id = $1 AND is_active = TRUE ORDER BY created_at DESC`,
               [orgId]
             );
-            return refetched.rows;
+            profiles = refetched.rows;
           }
         }
-        return queryRes.rows;
+        const linkedLedgerAccountIds = profiles
+          .map((profile: any) => profile.ledger_account_id)
+          .filter((accountId: unknown): accountId is string => typeof accountId === 'string' && accountId.length > 0);
+        if (linkedLedgerAccountIds.length === 0) return profiles;
+
+        const balances = await LedgerQueryService.getAccountBalances(
+          orgId,
+          { accountIds: linkedLedgerAccountIds },
+          client
+        );
+        const balanceByLedgerAccountId = new Map(balances.map((balance) => [balance.id, balance.netBalance]));
+        return profiles.map((profile: any) => ({
+          ...profile,
+          current_balance: balanceByLedgerAccountId.get(profile.ledger_account_id) ?? profile.current_balance,
+        }));
       },
       { organizationId: orgId }
     );
@@ -1504,4 +1520,815 @@ export class BankReconciliationService {
       createdAt: row.created_at || row.createdAt || new Date().toISOString(),
     };
   }
+
+  // --- STATEMENT-FIRST ZOHO-STYLE BANKING WORKFLOWS ---
+
+  public static async getBankingOverview(orgId: string): Promise<any> {
+    const bankAccounts = await db.query(
+      `SELECT * FROM bank_accounts WHERE organization_id = $1 AND is_active = TRUE AND COALESCE(is_archived, FALSE) = FALSE ORDER BY created_at ASC`,
+      [orgId]
+    );
+
+    const accounts: any[] = [];
+
+    for (const rawAcc of bankAccounts.rows) {
+      const acc = this.formatBankAccount(rawAcc);
+      const latestImportRes = await db.query(
+        `SELECT * FROM bank_statement_imports WHERE organization_id = $1 AND bank_account_id = $2 ORDER BY statement_to DESC NULLS LAST, imported_at DESC LIMIT 1`,
+        [orgId, acc.id]
+      );
+      const latestImport = latestImportRes.rows[0];
+
+      let hasStatement = false;
+      let bookBalance: number | null = null;
+      let statementBalance: number | null = null;
+      let difference: number | null = null;
+      let lastStatementDate: string | null = null;
+      let toReviewCount = 0;
+      let status = 'STATEMENT_NEEDED';
+
+      if (latestImport) {
+        hasStatement = true;
+        statementBalance = Number(latestImport.closing_balance || 0);
+        if (latestImport.statement_to instanceof Date) {
+          lastStatementDate = latestImport.statement_to.toISOString().split('T')[0];
+        } else if (latestImport.statement_to) {
+          const parsedD = new Date(latestImport.statement_to);
+          lastStatementDate = !isNaN(parsedD.getTime()) ? parsedD.toISOString().split('T')[0] : String(latestImport.statement_to).slice(0, 10);
+        } else if (latestImport.imported_at instanceof Date) {
+          lastStatementDate = latestImport.imported_at.toISOString().split('T')[0];
+        } else if (latestImport.imported_at) {
+          const parsedD = new Date(latestImport.imported_at);
+          lastStatementDate = !isNaN(parsedD.getTime()) ? parsedD.toISOString().split('T')[0] : String(latestImport.imported_at).slice(0, 10);
+        } else {
+          lastStatementDate = null;
+        }
+
+        if (acc.ledgerAccountId && lastStatementDate) {
+          const glRes = await db.query(
+            `SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) AS balance
+             FROM journal_lines jl
+             JOIN journal_entries je ON je.id = jl.journal_entry_id
+             WHERE je.organization_id = $1 AND je.status = 'Posted'
+               AND je.date <= $2 AND jl.account_id = $3`,
+            [orgId, lastStatementDate, acc.ledgerAccountId]
+          );
+          bookBalance = Number(glRes.rows[0]?.balance || 0);
+        } else {
+          bookBalance = Number(acc.currentBalance || 0);
+        }
+
+        difference = Number((statementBalance - bookBalance).toFixed(2));
+
+        const reviewRes = await db.query(
+          `SELECT COUNT(*) as count FROM bank_statement_transactions
+           WHERE organization_id = $1 AND bank_account_id = $2
+             AND reconciliation_status IN ('UNMATCHED', 'TO_REVIEW')
+             AND COALESCE(is_ignored, FALSE) = FALSE`,
+          [orgId, acc.id]
+        );
+        toReviewCount = Number(reviewRes.rows[0]?.count || 0);
+
+        if (rawAcc.reconciled_through_date && lastStatementDate && rawAcc.reconciled_through_date >= lastStatementDate && Math.abs(difference) < 0.01 && toReviewCount === 0) {
+          status = 'RECONCILED';
+        } else {
+          status = 'NEEDS_REVIEW';
+        }
+      } else {
+        status = 'STATEMENT_NEEDED';
+      }
+
+      accounts.push({
+        id: acc.id,
+        organizationId: acc.organizationId,
+        ledgerAccountId: acc.ledgerAccountId,
+        accountName: acc.accountName,
+        accountNumber: acc.accountNumber,
+        maskedAccountNumber: acc.maskedAccountNumber || acc.accountNumber,
+        bankName: acc.bankName,
+        accountType: acc.accountType,
+        currency: acc.currency,
+        currentBalance: acc.currentBalance,
+        bookBalance,
+        statementBalance,
+        difference,
+        toReviewCount,
+        lastStatementDate,
+        status,
+        hasStatement,
+        reconciledThroughDate: rawAcc.reconciled_through_date ? String(rawAcc.reconciled_through_date).split('T')[0] : null,
+        isActive: acc.isActive,
+        isArchived: Boolean(rawAcc.is_archived),
+      });
+    }
+
+    const totalToReview = accounts.reduce((sum, a) => sum + a.toReviewCount, 0);
+
+    const dupRes = await db.query(
+      `SELECT COUNT(*) as count FROM bank_statement_transactions
+       WHERE organization_id = $1 AND reconciliation_status = 'POSSIBLE_DUPLICATE'`,
+      [orgId]
+    );
+    const totalPossibleDuplicates = Number(dupRes.rows[0]?.count || 0);
+
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const staleDateStr = thirtyDaysAgo.toISOString().split('T')[0];
+
+    let staleStatementAccountsCount = 0;
+    let reconciliationDifferenceAccountsCount = 0;
+
+    for (const a of accounts) {
+      if (!a.lastStatementDate || a.lastStatementDate < staleDateStr) {
+        staleStatementAccountsCount++;
+      }
+      if (a.hasStatement && a.difference !== null && Math.abs(a.difference) >= 0.01) {
+        reconciliationDifferenceAccountsCount++;
+      }
+    }
+
+    return {
+      accounts,
+      health: {
+        totalToReview,
+        totalPossibleDuplicates,
+        staleStatementAccountsCount,
+        reconciliationDifferenceAccountsCount,
+      },
+    };
+  }
+
+  public static async previewStatementImport(
+    orgId: string,
+    payload: {
+      fileContent: string;
+      filename: string;
+      bankAccountId?: string;
+      mapping?: any;
+    }
+  ): Promise<any> {
+    const filename = payload.filename || 'statement.csv';
+    const parsed = BankStatementParserFactory.parseStatement(
+      payload.fileContent,
+      payload.bankAccountId || 'unbound',
+      undefined,
+      payload.mapping,
+      filename
+    );
+
+    const existingTxs = payload.bankAccountId
+      ? await this.getTransactions(orgId, { bankAccountId: payload.bankAccountId, limit: 100000 })
+      : await this.getTransactions(orgId, { limit: 100000 });
+
+    const existingFingerprints = new Set(existingTxs.map((t) => t.fingerprint));
+    const rules = await this.getRules(orgId);
+
+    let exactDuplicatesCount = 0;
+    let possibleDuplicatesCount = 0;
+    let newRowsCount = 0;
+
+    const previewRows: any[] = [];
+
+    for (const tx of parsed.transactions) {
+      const isExactDuplicate = existingFingerprints.has(tx.fingerprint!);
+      let status = 'NEW';
+      let ruleMatchName: string | undefined;
+
+      if (isExactDuplicate) {
+        exactDuplicatesCount++;
+        status = 'EXACT_DUPLICATE';
+      } else {
+        const txDate = new Date(tx.transactionDate).getTime();
+        const isPossibleDuplicate = existingTxs.some((et) => {
+          if (et.amount !== tx.amount || et.direction !== tx.direction) return false;
+          const etDate = new Date(et.transactionDate).getTime();
+          const diffDays = Math.abs(txDate - etDate) / (1000 * 60 * 60 * 24);
+          return diffDays <= 3;
+        });
+
+        if (isPossibleDuplicate) {
+          possibleDuplicatesCount++;
+          status = 'POSSIBLE_DUPLICATE';
+        } else {
+          newRowsCount++;
+          const ruleMatch = BankRulesEngine.evaluateRules(
+            { ...tx, organizationId: orgId, bankAccountId: payload.bankAccountId || '', reconciliationStatus: 'UNMATCHED', currency: parsed.currency } as any,
+            rules as any
+          );
+          if (ruleMatch) {
+            ruleMatchName = (ruleMatch as any).ruleName || 'Auto-Recognized';
+          }
+        }
+      }
+
+      previewRows.push({
+        date: tx.transactionDate,
+        narration: tx.narration,
+        reference: tx.reference,
+        moneyIn: tx.direction === 'CREDIT' ? tx.amount : undefined,
+        moneyOut: tx.direction === 'DEBIT' ? tx.amount : undefined,
+        runningBalance: tx.runningBalance,
+        status,
+        ruleMatch: ruleMatchName,
+      });
+    }
+
+    return {
+      fileHash: parsed.fileHash,
+      filename,
+      sourceFormat: 'CSV',
+      detectedBankName: parsed.detectedBankName,
+      detectedAccountNumber: parsed.detectedAccountNumber,
+      currency: parsed.currency || 'INR',
+      statementFrom: parsed.statementFrom,
+      statementTo: parsed.statementTo,
+      openingBalance: parsed.openingBalance,
+      closingBalance: parsed.closingBalance,
+      totalRows: parsed.transactions.length,
+      exactDuplicatesCount,
+      newRowsCount,
+      possibleDuplicatesCount,
+      statementHealthWarning: parsed.statementHealthWarning,
+      discrepancy: parsed.discrepancy || 0,
+      previewRows: previewRows.slice(0, 50),
+    };
+  }
+
+  public static async confirmStatementImport(
+    orgId: string,
+    payload: {
+      fileContent: string;
+      filename: string;
+      mode: 'USE_EXISTING' | 'CREATE_NEW';
+      bankAccountId?: string;
+      newBankData?: {
+        bankName: string;
+        accountName: string;
+        accountNumber: string;
+        currency?: string;
+        ledgerAccountId?: string;
+      };
+      mapping?: any;
+    },
+    userId: string
+  ): Promise<any> {
+    const filename = payload.filename || 'statement.csv';
+
+    return db.transaction(async (client) => {
+      let targetBankAccountId = payload.bankAccountId;
+
+      if (payload.mode === 'CREATE_NEW' || !targetBankAccountId) {
+        if (!payload.newBankData?.bankName || !payload.newBankData?.accountNumber) {
+          throw new Error('Bank name and account number are required to create a bank account from statement.');
+        }
+
+        const bnkId = newId('bnk');
+        let ledgerAccId = payload.newBankData.ledgerAccountId;
+
+        if (!ledgerAccId) {
+          const existingAcc = await client.query(
+            `SELECT id FROM accounts WHERE organization_id = $1 AND (type = 'Bank' OR sub_type = 'Bank') AND status = 'Active' ORDER BY code ASC LIMIT 1`,
+            [orgId]
+          );
+          if (existingAcc.rows.length > 0) {
+            ledgerAccId = existingAcc.rows[0].id;
+          } else {
+            ledgerAccId = newId('acc');
+            const codeRes = await client.query(
+              `SELECT code FROM accounts WHERE organization_id = $1 AND code LIKE '10%' ORDER BY code DESC LIMIT 1`,
+              [orgId]
+            );
+            const nextCode = codeRes.rows[0]?.code ? String(Number(codeRes.rows[0].code) + 10) : '1010';
+            await client.query(
+              `INSERT INTO accounts (id, organization_id, code, name, type, sub_type, balance, status)
+               VALUES ($1, $2, $3, $4, 'Asset', 'Bank', 0.00, 'Active')`,
+              [ledgerAccId, orgId, nextCode, `${payload.newBankData.bankName} - ${payload.newBankData.accountName || 'Current'}`]
+            );
+          }
+        }
+
+        const masked = payload.newBankData.accountNumber.length > 4
+          ? 'XXXX' + payload.newBankData.accountNumber.slice(-4)
+          : payload.newBankData.accountNumber;
+
+        await client.query(
+          `INSERT INTO bank_accounts (id, organization_id, ledger_account_id, bank_name, account_name, account_number, masked_account_number, account_type, currency, country, current_balance, statement_import_enabled, is_active)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, 'Checking', $8, 'IN', 0.00, TRUE, TRUE)`,
+          [
+            bnkId,
+            orgId,
+            ledgerAccId,
+            payload.newBankData.bankName,
+            payload.newBankData.accountName || `${payload.newBankData.bankName} Account`,
+            payload.newBankData.accountNumber,
+            masked,
+            payload.newBankData.currency || 'INR',
+          ]
+        );
+        targetBankAccountId = bnkId;
+      }
+
+      const parsed = BankStatementParserFactory.parseStatement(
+        payload.fileContent,
+        targetBankAccountId!,
+        undefined,
+        payload.mapping,
+        filename
+      );
+
+      const importId = newId('imp');
+      const importDate = new Date().toISOString();
+
+      await client.query(
+        `INSERT INTO bank_statement_imports (
+          id, organization_id, bank_account_id, source_format, original_filename,
+          file_hash, parser_version, statement_from, statement_to, opening_balance,
+          closing_balance, currency, imported_by, imported_at, transaction_count, status
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'Completed')`,
+        [
+          importId,
+          orgId,
+          targetBankAccountId,
+          'CSV',
+          filename,
+          parsed.fileHash,
+          parsed.parserVersion || '2.0',
+          parsed.statementFrom || null,
+          parsed.statementTo || null,
+          parsed.openingBalance || 0,
+          parsed.closingBalance || 0,
+          parsed.currency || 'INR',
+          userId || 'system',
+          importDate,
+          parsed.transactions.length,
+        ]
+      );
+
+      const existingTxsRes = await client.query(
+        `SELECT id, fingerprint, transaction_date, amount, direction FROM bank_statement_transactions
+         WHERE organization_id = $1 AND bank_account_id = $2`,
+        [orgId, targetBankAccountId]
+      );
+      const existingTxs = existingTxsRes.rows;
+      const fpToTxId = new Map<string, string>();
+      for (const et of existingTxs) {
+        fpToTxId.set(et.fingerprint, et.id);
+      }
+
+      const rules = await this.getRules(orgId);
+
+      let newTransactionsCount = 0;
+      let exactDuplicatesCount = 0;
+      let possibleDuplicatesCount = 0;
+
+      for (let idx = 0; idx < parsed.transactions.length; idx++) {
+        const tx = parsed.transactions[idx];
+        const rowNumber = idx + 1;
+        const existingTxId = fpToTxId.get(tx.fingerprint!);
+
+        if (existingTxId) {
+          exactDuplicatesCount++;
+          await client.query(
+            `INSERT INTO bank_statement_import_observations (id, organization_id, statement_import_id, statement_transaction_id, row_number, raw_data)
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [newId('obs'), orgId, importId, existingTxId, rowNumber, JSON.stringify(tx.rawData || {})]
+          );
+        } else {
+          const txDate = new Date(tx.transactionDate).getTime();
+          const isPossibleDup = existingTxs.some((et) => {
+            if (Number(et.amount) !== tx.amount || et.direction !== tx.direction) return false;
+            const diffDays = Math.abs(txDate - new Date(et.transaction_date).getTime()) / (1000 * 60 * 60 * 24);
+            return diffDays <= 3;
+          });
+
+          let status = 'TO_REVIEW';
+          if (isPossibleDup) {
+            possibleDuplicatesCount++;
+            status = 'POSSIBLE_DUPLICATE';
+          } else {
+            newTransactionsCount++;
+            const ruleMatch = BankRulesEngine.evaluateRules(
+              { ...tx, organizationId: orgId, bankAccountId: targetBankAccountId!, reconciliationStatus: 'UNMATCHED', currency: parsed.currency } as any,
+              rules as any
+            );
+            if (ruleMatch) {
+              status = 'RECOGNIZED';
+            }
+          }
+
+          const txId = newId('btx');
+          await client.query(
+            `INSERT INTO bank_statement_transactions (
+              id, organization_id, bank_account_id, statement_import_id, transaction_date,
+              value_date, amount, direction, running_balance, narration, reference,
+              transaction_type, utr, rrn, upi_reference, cheque_number, counterparty_name,
+              currency, reconciliation_status, fingerprint, raw_data, created_at, is_ignored
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, FALSE)`,
+            [
+              txId,
+              orgId,
+              targetBankAccountId,
+              importId,
+              tx.transactionDate,
+              tx.valueDate || null,
+              tx.amount,
+              tx.direction,
+              tx.runningBalance ?? null,
+              tx.narration,
+              tx.reference || null,
+              tx.transactionType || null,
+              tx.utr || null,
+              tx.rrn || null,
+              tx.upiReference || null,
+              tx.chequeNumber || null,
+              tx.counterpartyName || null,
+              parsed.currency || 'INR',
+              status,
+              tx.fingerprint,
+              JSON.stringify(tx.rawData || {}),
+              importDate,
+            ]
+          );
+
+          await client.query(
+            `INSERT INTO bank_statement_import_observations (id, organization_id, statement_import_id, statement_transaction_id, row_number, raw_data)
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [newId('obs'), orgId, importId, txId, rowNumber, JSON.stringify(tx.rawData || {})]
+          );
+
+          fpToTxId.set(tx.fingerprint!, txId);
+          existingTxs.push({ id: txId, fingerprint: tx.fingerprint!, transaction_date: tx.transactionDate, amount: tx.amount, direction: tx.direction });
+        }
+      }
+
+      await client.query(
+        `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state)
+         VALUES ($1, $2, $3, 'BANK_STATEMENT_CONFIRMED', 'BankStatementImport', $4, $5)`,
+        [
+          newId('aud'),
+          orgId,
+          userId || 'system',
+          importId,
+          JSON.stringify({
+            bankAccountId: targetBankAccountId,
+            filename,
+            totalRows: parsed.transactions.length,
+            newTransactionsCount,
+            exactDuplicatesCount,
+            possibleDuplicatesCount,
+          }),
+        ]
+      );
+
+      return {
+        success: true,
+        bankAccountId: targetBankAccountId!,
+        importId,
+        newTransactionsCount,
+        exactDuplicatesCount,
+        possibleDuplicatesCount,
+        discrepancy: parsed.discrepancy || 0,
+      };
+    });
+  }
+
+  public static async getWorkspace(
+    orgId: string,
+    bankAccountId: string,
+    options: { tab?: string; search?: string; limit?: number; offset?: number } = {}
+  ): Promise<any> {
+    const accRes = await db.query(
+      `SELECT * FROM bank_accounts WHERE organization_id = $1 AND id = $2 AND is_active = TRUE`,
+      [orgId, bankAccountId]
+    );
+    if (accRes.rows.length === 0) throw new Error('Bank account not found');
+    const accountProfile = this.formatBankAccount(accRes.rows[0]);
+
+    const impRes = await db.query(
+      `SELECT * FROM bank_statement_imports WHERE organization_id = $1 AND bank_account_id = $2 ORDER BY statement_to DESC NULLS LAST, imported_at DESC LIMIT 1`,
+      [orgId, bankAccountId]
+    );
+    const latestImp = impRes.rows[0];
+
+    const statementBalance = latestImp ? Number(latestImp.closing_balance || 0) : null;
+    let lastStatementDate: string | null = null;
+    if (latestImp?.statement_to instanceof Date) {
+      lastStatementDate = latestImp.statement_to.toISOString().split('T')[0];
+    } else if (latestImp?.statement_to) {
+      const parsedD = new Date(latestImp.statement_to);
+      lastStatementDate = !isNaN(parsedD.getTime()) ? parsedD.toISOString().split('T')[0] : String(latestImp.statement_to).slice(0, 10);
+    } else if (latestImp?.imported_at instanceof Date) {
+      lastStatementDate = latestImp.imported_at.toISOString().split('T')[0];
+    } else if (latestImp?.imported_at) {
+      const parsedD = new Date(latestImp.imported_at);
+      lastStatementDate = !isNaN(parsedD.getTime()) ? parsedD.toISOString().split('T')[0] : String(latestImp.imported_at).slice(0, 10);
+    }
+
+    let bookBalance: number | null = null;
+    if (accountProfile.ledgerAccountId && lastStatementDate) {
+      const glRes = await db.query(
+        `SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) AS balance
+         FROM journal_lines jl
+         JOIN journal_entries je ON je.id = jl.journal_entry_id
+         WHERE je.organization_id = $1 AND je.status = 'Posted'
+           AND je.date <= $2 AND jl.account_id = $3`,
+        [orgId, lastStatementDate, accountProfile.ledgerAccountId]
+      );
+      bookBalance = Number(glRes.rows[0]?.balance || 0);
+    } else {
+      bookBalance = Number(accountProfile.currentBalance || 0);
+    }
+
+    const difference = statementBalance !== null && bookBalance !== null
+      ? Number((statementBalance - bookBalance).toFixed(2))
+      : null;
+
+    const countRes = await db.query(
+      `SELECT reconciliation_status, is_ignored, COUNT(*) as count
+       FROM bank_statement_transactions
+       WHERE organization_id = $1 AND bank_account_id = $2
+       GROUP BY reconciliation_status, is_ignored`,
+      [orgId, bankAccountId]
+    );
+
+    let allCount = 0;
+    let toReviewCount = 0;
+    let recognizedCount = 0;
+    let matchedCount = 0;
+    let categorizedCount = 0;
+    let possibleDuplicatesCount = 0;
+    let reconciledCount = 0;
+
+    for (const r of countRes.rows) {
+      const cnt = Number(r.count || 0);
+      allCount += cnt;
+      const st = r.reconciliation_status;
+      const ignored = Boolean(r.is_ignored);
+
+      if (st === 'RECONCILED') reconciledCount += cnt;
+      else if (st === 'MATCHED') matchedCount += cnt;
+      else if (st === 'CATEGORIZED') categorizedCount += cnt;
+      else if (st === 'RECOGNIZED') recognizedCount += cnt;
+      else if (st === 'POSSIBLE_DUPLICATE') possibleDuplicatesCount += cnt;
+      else if (['UNMATCHED', 'TO_REVIEW'].includes(st) && !ignored) toReviewCount += cnt;
+    }
+
+    const tab = (options.tab || 'ALL').toUpperCase();
+    let filterClause = '';
+    const params: any[] = [orgId, bankAccountId];
+    let pIdx = 3;
+
+    if (tab === 'TO_REVIEW') {
+      filterClause += ` AND reconciliation_status IN ('UNMATCHED', 'TO_REVIEW') AND COALESCE(is_ignored, FALSE) = FALSE`;
+    } else if (tab === 'RECOGNIZED') {
+      filterClause += ` AND reconciliation_status = 'RECOGNIZED'`;
+    } else if (tab === 'MATCHED') {
+      filterClause += ` AND reconciliation_status = 'MATCHED'`;
+    } else if (tab === 'CATEGORIZED') {
+      filterClause += ` AND reconciliation_status = 'CATEGORIZED'`;
+    } else if (tab === 'POSSIBLE_DUPLICATES') {
+      filterClause += ` AND reconciliation_status = 'POSSIBLE_DUPLICATE'`;
+    } else if (tab === 'RECONCILED') {
+      filterClause += ` AND reconciliation_status = 'RECONCILED'`;
+    }
+
+    if (options.search?.trim()) {
+      filterClause += ` AND (narration ILIKE $${pIdx} OR reference ILIKE $${pIdx} OR utr ILIKE $${pIdx} OR counterparty_name ILIKE $${pIdx})`;
+      params.push(`%${options.search.trim()}%`);
+      pIdx++;
+    }
+
+    const limit = options.limit || 50;
+    const offset = options.offset || 0;
+
+    const txRes = await db.query(
+      `SELECT * FROM bank_statement_transactions
+       WHERE organization_id = $1 AND bank_account_id = $2 ${filterClause}
+       ORDER BY transaction_date DESC, created_at DESC
+       LIMIT $${pIdx++} OFFSET $${pIdx++}`,
+      [...params, limit, offset]
+    );
+
+    const transactions = txRes.rows.map((row) => {
+      const tx = this.formatTransaction(row);
+      return {
+        ...tx,
+        moneyIn: tx.direction === 'CREDIT' ? tx.amount : undefined,
+        moneyOut: tx.direction === 'DEBIT' ? tx.amount : undefined,
+        matchDetails: row.categorization_data || undefined,
+      };
+    });
+
+    return {
+      accountProfile,
+      balances: {
+        bookBalance,
+        statementBalance,
+        difference,
+        reconciledThroughDate: accRes.rows[0].reconciled_through_date ? String(accRes.rows[0].reconciled_through_date).split('T')[0] : null,
+        lastStatementDate,
+      },
+      latestImport: latestImp ? {
+        id: latestImp.id,
+        originalFilename: latestImp.original_filename,
+        importedAt: latestImp.imported_at,
+        statementFrom: latestImp.statement_from,
+        statementTo: latestImp.statement_to,
+        transactionCount: latestImp.transaction_count,
+      } : null,
+      statusCounts: {
+        all: allCount,
+        toReview: toReviewCount,
+        recognized: recognizedCount,
+        matched: matchedCount,
+        categorized: categorizedCount,
+        possibleDuplicates: possibleDuplicatesCount,
+        reconciled: reconciledCount,
+      },
+      reconciliationState: {
+        isBalanced: difference !== null && Math.abs(difference) < 0.01,
+        unmatchedCount: toReviewCount,
+        difference: difference || 0,
+      },
+      transactions,
+      totalTransactions: allCount,
+    };
+  }
+
+  public static async categorizeTransaction(
+    orgId: string,
+    statementTxId: string,
+    payload: {
+      ledgerAccountId: string;
+      counterpartyId?: string;
+      counterpartyName?: string;
+      projectId?: string;
+      gstTreatment?: string;
+      tdsAmount?: number;
+      notes?: string;
+      reference?: string;
+      createRule?: boolean;
+      ruleName?: string;
+    },
+    userId: string
+  ): Promise<any> {
+    const txResult = await db.query(
+      `SELECT * FROM bank_statement_transactions WHERE organization_id = $1 AND id = $2`,
+      [orgId, statementTxId]
+    );
+    if (!txResult.rows || txResult.rows.length === 0) {
+      throw new Error(`Statement transaction ${statementTxId} not found`);
+    }
+    const statementTx = this.formatTransaction(txResult.rows[0]);
+    if (statementTx.reconciliationStatus === 'RECONCILED') {
+      throw new Error('Reconciled transactions cannot be recategorized unless reconciliation is reopened.');
+    }
+
+    const bankAccs = await this.getBankAccounts(orgId);
+    const bankAcc = bankAccs.find((b) => b.id === statementTx.bankAccountId);
+    const bankLedgerAccId = bankAcc?.ledgerAccountId || `acc-bank-${statementTx.bankAccountId}`;
+
+    return db.transaction(async (client) => {
+      const entryNum = `JE-${Date.now().toString().slice(-6)}`;
+      const date = (statementTx.transactionDate as any) instanceof Date
+        ? (statementTx.transactionDate as any as Date).toISOString().slice(0, 10)
+        : String(statementTx.transactionDate).slice(0, 10);
+      const ref = payload.reference || statementTx.reference || statementTx.utr || 'Bank-Categorized';
+      const desc = payload.notes || statementTx.narration;
+      const isDebit = statementTx.direction === 'DEBIT'; // Money Out
+
+      const jrnId = newId('jrn');
+      await client.query(
+        `INSERT INTO journal_entries (id, organization_id, entry_number, date, reference, description, status, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, 'Posted', CURRENT_TIMESTAMP)`,
+        [jrnId, orgId, entryNum, date, ref, `[Created from bank statement] ${desc}`]
+      );
+
+      if (isDebit) {
+        await client.query(
+          `INSERT INTO journal_lines (id, organization_id, journal_entry_id, account_id, debit, credit, description)
+           VALUES ($1, $2, $3, $4, $5, 0.00, $6), ($7, $2, $3, $8, 0.00, $5, $6)`,
+          [newId('jrl'), orgId, jrnId, payload.ledgerAccountId, statementTx.amount, desc, newId('jrl'), bankLedgerAccId]
+        );
+      } else {
+        await client.query(
+          `INSERT INTO journal_lines (id, organization_id, journal_entry_id, account_id, debit, credit, description)
+           VALUES ($1, $2, $3, $4, $5, 0.00, $6), ($7, $2, $3, $8, 0.00, $5, $6)`,
+          [newId('jrl'), orgId, jrnId, bankLedgerAccId, statementTx.amount, desc, newId('jrl'), payload.ledgerAccountId]
+        );
+      }
+
+      const balanceDelta = isDebit ? -statementTx.amount : statementTx.amount;
+      await client.query(
+        `UPDATE bank_accounts SET current_balance = current_balance + $1, updated_at = CURRENT_TIMESTAMP WHERE organization_id = $2 AND id = $3`,
+        [balanceDelta, orgId, statementTx.bankAccountId]
+      );
+
+      const matchId = newId('match');
+      await client.query(
+        `INSERT INTO bank_reconciliation_matches (id, organization_id, statement_transaction_id, accounting_transaction_type, accounting_transaction_id, matched_amount, match_confidence, match_reasons, matched_by, status)
+         VALUES ($1, $2, $3, 'journal', $4, $5, 100, $6, $7, 'MATCHED')`,
+        [
+          matchId,
+          orgId,
+          statementTxId,
+          jrnId,
+          statementTx.amount,
+          JSON.stringify([{ code: 'EXPLICIT_CATEGORIZATION', description: 'Explicitly categorized by user' }]),
+          userId || 'System',
+        ]
+      );
+
+      const catData = {
+        ledgerAccountId: payload.ledgerAccountId,
+        counterpartyId: payload.counterpartyId,
+        counterpartyName: payload.counterpartyName,
+        projectId: payload.projectId,
+        notes: payload.notes,
+        journalEntryId: jrnId,
+        categorizedAt: new Date().toISOString(),
+      };
+
+      await client.query(
+        `UPDATE bank_statement_transactions
+         SET reconciliation_status = 'CATEGORIZED', categorization_data = $1
+         WHERE organization_id = $2 AND id = $3`,
+        [JSON.stringify(catData), orgId, statementTxId]
+      );
+
+      if (payload.createRule) {
+        const pattern = (payload.counterpartyName || statementTx.counterpartyName || statementTx.narration).trim();
+        await client.query(
+          `INSERT INTO bank_reconciliation_rules (id, organization_id, rule_name, priority, narration_pattern, direction, suggested_account_id, is_enabled)
+           VALUES ($1, $2, $3, 1, $4, $5, $6, TRUE)`,
+          [
+            newId('rule'),
+            orgId,
+            payload.ruleName || `Auto-Rule for ${pattern.slice(0, 30)}`,
+            pattern,
+            statementTx.direction,
+            payload.ledgerAccountId,
+          ]
+        );
+      }
+
+      await client.query(
+        `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state)
+         VALUES ($1, $2, $3, 'BANK_TRANSACTION_CATEGORIZED', 'BankStatementTransaction', $4, $5)`,
+        [newId('aud'), orgId, userId || 'System', statementTxId, JSON.stringify({ journalEntryId: jrnId, ...catData })]
+      );
+
+      return {
+        success: true,
+        journalEntryId: jrnId,
+        transaction: {
+          ...statementTx,
+          reconciliationStatus: 'CATEGORIZED',
+        },
+      };
+    });
+  }
+
+  public static async ignoreTransaction(
+    orgId: string,
+    statementTxId: string,
+    isIgnored: boolean,
+    userId: string
+  ): Promise<boolean> {
+    const status = isIgnored ? 'IGNORED' : 'TO_REVIEW';
+    await db.query(
+      `UPDATE bank_statement_transactions SET is_ignored = $1, reconciliation_status = $2 WHERE organization_id = $3 AND id = $4`,
+      [isIgnored, status, orgId, statementTxId]
+    );
+    await db.query(
+      `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state)
+       VALUES ($1, $2, $3, 'BANK_TRANSACTION_IGNORED', 'BankStatementTransaction', $4, $5)`,
+      [newId('aud'), orgId, userId || 'System', statementTxId, JSON.stringify({ isIgnored, status })]
+    );
+    return true;
+  }
+
+  public static async reopenReconciliation(
+    orgId: string,
+    bankAccountId: string,
+    userId: string
+  ): Promise<boolean> {
+    await db.query(
+      `UPDATE bank_statement_transactions
+       SET reconciliation_status = 'MATCHED'
+       WHERE organization_id = $1 AND bank_account_id = $2 AND reconciliation_status = 'RECONCILED'`,
+      [orgId, bankAccountId]
+    );
+    await db.query(
+      `UPDATE bank_accounts SET reconciled_through_date = NULL WHERE organization_id = $1 AND id = $2`,
+      [orgId, bankAccountId]
+    );
+    await db.query(
+      `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state)
+       VALUES ($1, $2, $3, 'BANK_RECONCILIATION_REOPENED', 'BankAccount', $4, $5)`,
+      [newId('aud'), orgId, userId || 'System', bankAccountId, JSON.stringify({ reopenedBy: userId })]
+    );
+    return true;
+  }
+
 }

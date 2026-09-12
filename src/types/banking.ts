@@ -1,4 +1,4 @@
-export type BankStatementSourceFormat = 'CSV' | 'XLSX' | 'OFX' | 'MT940' | 'CAMT053';
+export type BankStatementSourceFormat = 'CSV' | 'XLSX' | 'XLS' | 'OFX' | 'MT940' | 'CAMT053';
 
 export type BankTransactionDirection = 'CREDIT' | 'DEBIT';
 
@@ -9,7 +9,11 @@ export type BankReconciliationStatus =
   | 'MATCHED'
   | 'RECONCILED'
   | 'IGNORED'
-  | 'NEEDS_REVIEW';
+  | 'NEEDS_REVIEW'
+  | 'TO_REVIEW'
+  | 'RECOGNIZED'
+  | 'CATEGORIZED'
+  | 'POSSIBLE_DUPLICATE';
 
 export type AccountingTransactionType =
   | 'invoice'
@@ -186,5 +190,125 @@ export interface ParsedStatementResult {
   statementTo?: string;
   currency: string;
   transactions: ParsedTransactionLine[];
-  discrepancy?: number; // non-zero if Opening + Credits - Debits !== Closing
+  discrepancy?: number;
+  detectedBankName?: string;
+  detectedAccountNumber?: string;
+  statementHealthWarning?: string;
+}
+
+export type BankStatementSourceFormat = 'CSV' | 'XLSX' | 'XLS' | 'OFX' | 'MT940' | 'CAMT053';
+
+export interface BankStatementImportObservation {
+  id: string;
+  organizationId: string;
+  statementImportId: string;
+  statementTransactionId: string;
+  rowNumber: number;
+  rawData?: Record<string, any>;
+  createdAt: string;
+}
+
+export interface BankingAccountOverviewItem {
+  id: string;
+  organizationId: string;
+  ledgerAccountId?: string;
+  accountName: string;
+  accountNumber: string;
+  maskedAccountNumber: string;
+  bankName: string;
+  accountType: string;
+  currency: string;
+  currentBalance: number;
+  bookBalance: number | null;
+  statementBalance: number | null;
+  difference: number | null;
+  toReviewCount: number;
+  lastStatementDate: string | null;
+  status: 'RECONCILED' | 'NEEDS_REVIEW' | 'STATEMENT_NEEDED' | 'NO_STATEMENT';
+  hasStatement: boolean;
+  reconciledThroughDate?: string | null;
+  isActive: boolean;
+  isArchived: boolean;
+}
+
+export interface BankingHealthSummary {
+  totalToReview: number;
+  totalPossibleDuplicates: number;
+  staleStatementAccountsCount: number;
+  reconciliationDifferenceAccountsCount: number;
+}
+
+export interface BankingOverviewResponse {
+  accounts: BankingAccountOverviewItem[];
+  health: BankingHealthSummary;
+}
+
+export interface StatementImportPreviewResponse {
+  fileHash: string;
+  filename: string;
+  sourceFormat: string;
+  detectedBankName?: string;
+  detectedAccountNumber?: string;
+  currency: string;
+  statementFrom?: string;
+  statementTo?: string;
+  openingBalance: number;
+  closingBalance: number;
+  totalRows: number;
+  exactDuplicatesCount: number;
+  newRowsCount: number;
+  possibleDuplicatesCount: number;
+  statementHealthWarning?: string | null;
+  discrepancy: number;
+  previewRows: Array<{
+    date: string;
+    narration: string;
+    reference?: string;
+    moneyIn?: number;
+    moneyOut?: number;
+    runningBalance?: number;
+    status: 'NEW' | 'EXACT_DUPLICATE' | 'POSSIBLE_DUPLICATE';
+    ruleMatch?: string;
+  }>;
+}
+
+export interface BankWorkspaceResponse {
+  accountProfile: BankAccount;
+  balances: {
+    bookBalance: number | null;
+    statementBalance: number | null;
+    difference: number | null;
+    reconciledThroughDate: string | null;
+    lastStatementDate: string | null;
+  };
+  latestImport: {
+    id: string;
+    originalFilename: string;
+    importedAt: string;
+    statementFrom?: string;
+    statementTo?: string;
+    transactionCount: number;
+  } | null;
+  statusCounts: {
+    all: number;
+    toReview: number;
+    recognized: number;
+    matched: number;
+    categorized: number;
+    possibleDuplicates: number;
+    reconciled: number;
+  };
+  reconciliationState: {
+    isBalanced: boolean;
+    unmatchedCount: number;
+    difference: number;
+  };
+  transactions: Array<BankStatementTransaction & {
+    moneyIn?: number;
+    moneyOut?: number;
+    matchDetails?: any;
+    ruleMatchName?: string;
+  }>;
+  totalTransactions: number;
+  discrepancyWarnings?: string[];
 }

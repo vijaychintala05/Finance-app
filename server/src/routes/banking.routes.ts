@@ -7,6 +7,17 @@ import { BankFeedSyncService } from '../banking/BankFeedSyncService';
 
 const router = Router();
 
+
+// Statement-First Zoho-Style Banking Endpoints
+router.get('/accounts/overview', requirePermission('banking.view'), BankingController.getAccountsOverview);
+router.post('/imports/preview', requirePermission('banking.import'), requireTrustedFinanceFeature('bank-statement-import'), BankingController.previewImport);
+router.post('/imports/confirm', requirePermission('banking.import'), requireTrustedFinanceFeature('bank-statement-import'), BankingController.confirmImport);
+router.get('/workspace', requirePermission('banking.view'), BankingController.getWorkspace);
+router.get('/transactions/:id/suggestions', requirePermission('banking.view'), BankingController.getTransactionSuggestions);
+router.post('/transactions/:id/categorize', requirePermission('banking.reconcile'), requireTrustedFinanceFeature('bank-reconciliation'), BankingController.categorizeTransaction);
+router.post('/transactions/:id/ignore', requirePermission('banking.reconcile'), BankingController.ignoreTransaction);
+router.post('/reconciliation/reopen', requirePermission('banking.unreconcile'), requireTrustedFinanceFeature('bank-reconciliation'), BankingController.reopenReconciliation);
+
 // Accounts
 router.get('/accounts', requirePermission('banking.view'), BankingController.getAccounts);
 router.post('/accounts', requirePermission('settings.manage_accounts'), BankingController.createAccount);

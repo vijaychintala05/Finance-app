@@ -9,7 +9,7 @@ import apiApp, { initDatabase } from "./server/src/index";
 import { db } from "./server/src/database/db";
 
 async function startServer() {
-  const PORT = Number(process.env.PORT) || 3000;
+  const PORT = Number(process.env.PORT) || Number(process.env.APP_PORT) || 3000;
 
   // Initialize Database before accepting requests (with retry loop for container cold-start)
   const maxAttempts = process.env.NODE_ENV === 'production' ? 10 : 3;
@@ -18,6 +18,11 @@ async function startServer() {
       console.log(`[Server] Initializing database migrations (attempt ${attempt}/${maxAttempts})...`);
       await initDatabase();
       console.log('[Server] Database initialization succeeded.');
+      if (process.env.NODE_ENV !== 'production') {
+        const { DevEnvironmentService } = await import('./server/src/services/DevEnvironmentService');
+        await DevEnvironmentService.ensureDevEnvironment();
+        console.log('[Server] Dev environment & demo data ready for instant UI testing.');
+      }
       break;
     } catch (err) {
       console.error(`[Server] Database migration initialization attempt ${attempt} failed:`, err);
@@ -83,7 +88,13 @@ async function startServer() {
   }
 
   const server = apiApp.listen(PORT, "0.0.0.0", () => {
-    console.log(`Finance Application & Server running on http://0.0.0.0:${PORT}`);
+    console.log(`\n============================================================`);
+    console.log(`⚡ FirmBooks Local Test & Development Environment`);
+    console.log(`• Local UI URL:    http://localhost:${PORT}`);
+    console.log(`• Network UI URL:  http://0.0.0.0:${PORT}`);
+    console.log(`• Zero-Auth Mode:  Active (Auto-login enabled)`);
+    console.log(`• Instant HMR:     Active (Vite live reload)`);
+    console.log(`============================================================\n`);
   });
 
   const shutdown = async (signal: string) => {

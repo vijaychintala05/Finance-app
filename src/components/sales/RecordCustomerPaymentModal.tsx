@@ -22,13 +22,17 @@ export const RecordCustomerPaymentModal: React.FC<RecordCustomerPaymentModalProp
   const { invoices, accounts, refreshAccounts, settings, addPaymentReceived } = useBooks();
 
   const clientInvoices = useMemo(() => {
-    return invoices.filter(
+    const list = invoices.filter(
       (inv) =>
         inv.balanceDue > 0 &&
         !['Draft', 'Void'].includes(inv.status) &&
         (clientId ? inv.clientId === clientId : true)
     );
-  }, [invoices, clientId]);
+    if (targetInvoice && !list.some((inv) => inv.id === targetInvoice.id)) {
+      return [targetInvoice, ...list];
+    }
+    return list;
+  }, [invoices, clientId, targetInvoice]);
 
   const depositAccounts = useMemo(() => {
     return accounts.filter(
@@ -146,7 +150,7 @@ export const RecordCustomerPaymentModal: React.FC<RecordCustomerPaymentModalProp
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-fade-in">
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-fade-in">
       <div className="w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl dark:border-slate-800 dark:bg-slate-900 space-y-5">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-slate-800">

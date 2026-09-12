@@ -155,6 +155,12 @@ describe('Expense Payment Voucher PDF Generation & Security Tests', () => {
     expect(expRes.status).toBe(201);
     const expenseId = expRes.body.id;
 
+    const journalRes = await db.query(
+      `SELECT entry_number FROM journal_entries WHERE id = $1`,
+      [expRes.body.journalEntryId]
+    );
+    expect(journalRes.rows[0]?.entry_number).toBe(`JRN-${expRes.body.expenseNumber}`);
+
     const pdfRes = await getPdfResponse(`/api/v1/finance/expenses/${expenseId}/pdf`, authHeaderA);
 
     expect(pdfRes.status).toBe(200);
@@ -165,6 +171,50 @@ describe('Expense Payment Voucher PDF Generation & Security Tests', () => {
     expect(parsed.numpages).toBeGreaterThanOrEqual(2);
     expect(parsed.text).toContain('ANNEXURE: ATTACHED DIGITAL RECEIPTS');
     expect(parsed.text).toContain('taxi_receipt_01.png');
+  });
+
+  it('adds receipt evidence after posting without changing the journal entry', async () => {
+    const samplePngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+    const expRes = await request(app)
+      .post('/api/v1/finance/expenses')
+      .set(authHeaderA)
+      .send({
+        expenseAccountId: expenseAccountIdA,
+        paidFromAccountId: bankAccountIdA,
+        date: '2026-08-11',
+        amount: 900,
+        description: 'Receipt added after posting',
+      });
+    expect(expRes.status).toBe(201);
+
+    const journalBefore = await db.query(
+      `SELECT id, debit, credit FROM journal_lines WHERE journal_entry_id = $1 ORDER BY id`,
+      [expRes.body.journalEntryId]
+    );
+    const appendRes = await request(app)
+      .post(`/api/v1/finance/expenses/${expRes.body.id}/receipts`)
+      .set(authHeaderA)
+      .send({ receiptImages: [{ name: 'late-receipt.png', mimeType: 'image/png', dataBase64: samplePngBase64 }] });
+    expect(appendRes.status).toBe(201);
+    expect(appendRes.body.attachments).toHaveLength(1);
+
+    const journalAfter = await db.query(
+      `SELECT id, debit, credit FROM journal_lines WHERE journal_entry_id = $1 ORDER BY id`,
+      [expRes.body.journalEntryId]
+    );
+    expect(journalAfter.rows).toEqual(journalBefore.rows);
+
+    const audit = await db.query(
+      `SELECT action FROM audit_logs WHERE organization_id = $1 AND entity_id = $2 AND action = 'EXPENSE_RECEIPTS_ATTACHED'`,
+      [orgIdA, expRes.body.id]
+    );
+    expect(audit.rows).toHaveLength(1);
+
+    const crossTenant = await request(app)
+      .post(`/api/v1/finance/expenses/${expRes.body.id}/receipts`)
+      .set(authHeaderB)
+      .send({ receiptImages: [{ name: 'other-org.png', mimeType: 'image/png', dataBase64: samplePngBase64 }] });
+    expect(crossTenant.status).toBe(404);
   });
 
   it('3. Enforces strict tenant isolation and authentication boundaries', async () => {

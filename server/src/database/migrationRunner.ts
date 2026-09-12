@@ -5,9 +5,10 @@ import { applyIdentitySchema } from './identitySchema';
 import { applyEnterpriseHardeningSchema } from './enterpriseHardeningSchema';
 import { applyUsabilitySchema } from './usabilitySchema';
 import { applyPaymentAccountingSchema } from './paymentAccountingSchema';
+import { applyBankingStatementSchema } from './bankingStatementSchema';
 import type { DbQueryResult } from './db';
 
-export const CURRENT_SCHEMA_VERSION = '2026.09.10-v10-employee-reimbursements';
+export const CURRENT_SCHEMA_VERSION = '2026.09.12-v11-statement-first-banking';
 
 export class MigrationRunner {
   public static async runMigrations(queryClient?: { query: (text: string, params?: any[]) => Promise<DbQueryResult> }): Promise<void> {
@@ -480,7 +481,9 @@ export class MigrationRunner {
         expense_number VARCHAR(64) NOT NULL,
         expense_account_id VARCHAR(64) NOT NULL,
         paid_from_account_id VARCHAR(64) NOT NULL,
+        vendor_id VARCHAR(64),
         vendor_name VARCHAR(255),
+        vendor_invoice_number VARCHAR(128),
         date DATE NOT NULL,
         amount NUMERIC(15, 2) NOT NULL,
         tax_rate NUMERIC(5, 2) DEFAULT 0.00,
@@ -1029,6 +1032,8 @@ export class MigrationRunner {
       `ALTER TABLE vendors ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE`,
       `ALTER TABLE vendors ADD COLUMN IF NOT EXISTS opening_balance NUMERIC(15, 2) DEFAULT 0.00`,
       `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS journal_entry_id VARCHAR(64)`,
+      `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS vendor_id VARCHAR(64)`,
+      `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS vendor_invoice_number VARCHAR(128)`,
       `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS project_id VARCHAR(64)`,
       `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS client_id VARCHAR(64)`,
       `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS is_billable BOOLEAN NOT NULL DEFAULT FALSE`,
@@ -1955,6 +1960,7 @@ export class MigrationRunner {
     await applyPaymentAccountingSchema(queryClient);
     await applyEnterpriseHardeningSchema(queryClient);
     await applyUsabilitySchema(queryClient);
+    await applyBankingStatementSchema(queryClient);
 
     await queryClient.query(
       `INSERT INTO schema_migrations (version, description)

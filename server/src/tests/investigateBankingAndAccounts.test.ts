@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import app from '../index';
 import { MigrationRunner } from '../database/migrationRunner';
+import { db } from '../database/db';
 
 describe('Investigate Banking and Accounts data reflection & expense adjustments', () => {
   beforeAll(async () => MigrationRunner.runMigrations());
@@ -130,5 +131,33 @@ describe('Investigate Banking and Accounts data reflection & expense adjustments
     const finalBankAcc = await request(app).get('/api/v1/banking/accounts').set(auth);
     const finalBankProfile = finalBankAcc.body.data.find((b: any) => b.ledgerAccountId === bankAcc.id);
     expect(finalBankProfile.currentBalance).toBe(650);
+  });
+
+  it('derives banking balances from posted journals instead of stale balance caches', async () => {
+    const { auth, orgId } = await setupTenant('bank-balance-authority');
+    const accountResponse = await request(app).get('/api/v1/finance/accounts').set(auth);
+    const bankAccount = accountResponse.body.find((account: any) => account.code === '1000');
+    const expenseAccount = accountResponse.body.find((account: any) => account.code === '6000');
+
+    const expense = await request(app).post('/api/v1/finance/expenses').set(auth).send({
+      expenseAccountId: expenseAccount.id,
+      paidFromAccountId: bankAccount.id,
+      amount: 250,
+      date: '2026-09-11',
+      description: 'Authoritative banking balance test',
+    });
+    expect(expense.status).toBe(201);
+
+    // Simulate an old deployment whose denormalized balance caches drifted.
+    await db.query('UPDATE accounts SET balance = 99999 WHERE organization_id = $1 AND id = $2', [orgId, bankAccount.id]);
+    await db.query('UPDATE bank_accounts SET current_balance = 99999 WHERE organization_id = $1 AND ledger_account_id = $2', [orgId, bankAccount.id]);
+
+    const accounts = await request(app).get('/api/v1/finance/accounts').set(auth);
+    const returnedBank = accounts.body.find((account: any) => account.id === bankAccount.id);
+    expect(Number(returnedBank.balance)).toBe(-250);
+
+    const banking = await request(app).get('/api/v1/banking/accounts').set(auth);
+    const returnedProfile = banking.body.data.find((account: any) => account.ledgerAccountId === bankAccount.id);
+    expect(Number(returnedProfile.currentBalance)).toBe(-250);
   });
 });

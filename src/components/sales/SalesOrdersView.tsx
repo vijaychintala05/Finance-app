@@ -306,10 +306,12 @@ export const SalesOrdersView: React.FC<SalesOrdersViewProps> = ({
       />
 
       {/* Converted Invoice Preview Modal */}
-      <InvoicePreviewModal
-        invoice={previewInvoice}
-        onClose={() => setPreviewInvoice(null)}
-      />
+      {previewInvoice && (
+        <InvoicePreviewModal
+          invoice={previewInvoice}
+          onClose={() => setPreviewInvoice(null)}
+        />
+      )}
     </div>
   );
 };

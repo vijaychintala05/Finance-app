@@ -20,4 +20,9 @@ router.post('/refresh', authMiddleware, AuthController.refresh);
 router.post('/change-password', authMiddleware, AuthController.changePassword);
 router.post('/forgot-password', persistentRateLimit('forgot-password', 5, 60 * 60), AuthController.forgotPassword);
 
+if (process.env.NODE_ENV !== 'production') {
+  router.post('/dev-login', AuthController.devLogin);
+  router.post('/dev-seed', AuthController.devSeed);
+}
+
 export default protectAsyncRoutes(router);

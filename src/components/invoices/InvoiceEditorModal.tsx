@@ -16,6 +16,7 @@ interface InvoiceEditorModalProps {
   defaultClientId?: string;
   initialClientId?: string;
   initialEstimate?: Estimate | null;
+  clonedInvoice?: Invoice | null;
 }
 
 export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
@@ -28,6 +29,7 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
   defaultClientId,
   initialClientId,
   initialEstimate,
+  clonedInvoice,
 }) => {
   const { clients, projects, accounts, refreshAccounts, settings, salespersons, addInvoice, updateInvoice } = useBooks();
 
@@ -153,6 +155,31 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
       setItems(
         initialEstimate.items && initialEstimate.items.length > 0
           ? initialEstimate.items.map((it, idx) => ({ ...it, id: `item-${Date.now()}-${idx + 1}` }))
+          : [
+              {
+                id: `item-${Date.now()}-1`,
+                description: 'Service',
+                accountId: revenueAccounts[0]?.id || '',
+                quantity: 1,
+                unitPrice: 0,
+                taxRate: settings.defaultTaxRate,
+                amount: 0,
+              },
+            ]
+      );
+      setEditReason('');
+    } else if (clonedInvoice) {
+      setClientId(clonedInvoice.clientId || clients[0]?.id || '');
+      setProjectId(clonedInvoice.projectId || '');
+      setSalespersonId(clonedInvoice.salespersonId || '');
+      setIssueDate(new Date().toISOString().split('T')[0]);
+      setDueDate(new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0]);
+      setDiscount(String(clonedInvoice.discount || 0));
+      setNotes(clonedInvoice.notes || 'Thank you for your business.');
+      setTerms(clonedInvoice.terms || 'Net 30. Please remit payment via bank transfer.');
+      setItems(
+        clonedInvoice.items && clonedInvoice.items.length > 0
+          ? clonedInvoice.items.map((it, idx) => ({ ...it, id: `item-${Date.now()}-${idx + 1}` }))
           : [
               {
                 id: `item-${Date.now()}-1`,

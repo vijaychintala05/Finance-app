@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ArrowLeft,
+  BookOpen,
   Building2,
   Calendar,
   CheckCircle2,
@@ -9,6 +10,8 @@ import {
   Download,
   FileText,
   FolderKanban,
+  ImagePlus,
+  LoaderCircle,
   MoreVertical,
   Paperclip,
   Printer,
@@ -22,6 +25,7 @@ import { Expense } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate } from '../../utils/formatters';
 import { apiClient } from '../../api/client';
+import { compressReceiptImage, MAX_RECEIPT_IMAGES } from './receiptUpload';
 
 interface ExpenseDetailsModalProps {
   isOpen: boolean;
@@ -30,33 +34,114 @@ interface ExpenseDetailsModalProps {
   onEdit?: (expense: Expense) => void;
 }
 
+interface VoucherPreviewProps {
+  expense: Expense;
+  currencySymbol: string;
+  journal?: { entryNumber: string; date: string; lines: Array<{ id: string; accountCode?: string; accountName: string; debit: number; credit: number }> };
+  receiptUrls: Record<string, string>;
+}
+
+const VoucherPreview: React.FC<VoucherPreviewProps> = ({ expense, currencySymbol, journal, receiptUrls }) => {
+  const lines = journal?.lines || [
+    { id: 'expense-debit', accountCode: '', accountName: expense.accountName || 'Expense account', debit: expense.amount, credit: 0 },
+    { id: 'expense-credit', accountCode: '', accountName: expense.paidFromAccountName || 'Paid-through account', debit: 0, credit: expense.amount },
+  ];
+  const totalDebit = lines.reduce((total, line) => total + Number(line.debit || 0), 0);
+  const totalCredit = lines.reduce((total, line) => total + Number(line.credit || 0), 0);
+
+  return (
+    <div role="tabpanel" aria-label="Voucher view" className="mx-auto max-w-3xl rounded-lg border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-900">
+      <div className="border-b-4 border-blue-600 px-5 py-5 sm:px-7">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <p className="text-[11px] font-bold uppercase tracking-wide text-blue-700 dark:text-blue-300">Expense payment voucher</p>
+            <h4 className="mt-1 text-xl font-bold text-slate-950 dark:text-white">{expense.referenceNumber}</h4>
+            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Posted on {formatDate(expense.date)}</p>
+          </div>
+          <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300">
+            {expense.status || 'POSTED'}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-px bg-slate-200 sm:grid-cols-2 dark:bg-slate-700">
+        <div className="bg-white p-5 dark:bg-slate-900">
+          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Paid to</p>
+          <p className="mt-1 text-sm font-semibold text-slate-900 dark:text-white">{expense.vendorName || 'Direct expense / petty cash'}</p>
+          {expense.invoiceNumber && <p className="mt-1 text-xs font-mono text-slate-500">Ref: {expense.invoiceNumber}</p>}
+        </div>
+        <div className="bg-white p-5 dark:bg-slate-900 sm:text-right">
+          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Total disbursed</p>
+          <p className="mt-1 font-mono text-xl font-bold text-slate-950 dark:text-white">{formatCurrency(expense.amount, currencySymbol)}</p>
+          <p className="mt-1 text-xs text-slate-500">From {expense.paidFromAccountName || 'paid-through account'}</p>
+        </div>
+      </div>
+
+      <div className="p-5 sm:p-7">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h5 className="text-sm font-bold text-slate-900 dark:text-white">Posting details</h5>
+          {journal && <span className="text-xs font-medium text-slate-500">Posted journal</span>}
+        </div>
+        <div className="mt-3 overflow-x-auto rounded-md border border-slate-200 dark:border-slate-700">
+          <table className="min-w-full text-left text-xs">
+            <thead className="bg-slate-50 text-[10px] font-bold uppercase tracking-wide text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+              <tr><th className="px-3 py-2.5">Account</th><th className="px-3 py-2.5 text-right">Debit</th><th className="px-3 py-2.5 text-right">Credit</th></tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+              {lines.map((line) => <tr key={line.id}>
+                <td className="px-3 py-3 font-medium text-slate-800 dark:text-slate-100">{line.accountCode ? `${line.accountCode} - ` : ''}{line.accountName}</td>
+                <td className="px-3 py-3 text-right font-mono text-slate-700 dark:text-slate-200">{line.debit ? formatCurrency(line.debit, currencySymbol) : '-'}</td>
+                <td className="px-3 py-3 text-right font-mono text-slate-700 dark:text-slate-200">{line.credit ? formatCurrency(line.credit, currencySymbol) : '-'}</td>
+              </tr>)}
+            </tbody>
+            <tfoot className="border-t border-slate-200 bg-slate-50 font-bold dark:border-slate-700 dark:bg-slate-800">
+              <tr><td className="px-3 py-3 text-slate-700 dark:text-slate-200">Balanced posting</td><td className="px-3 py-3 text-right font-mono">{formatCurrency(totalDebit, currencySymbol)}</td><td className="px-3 py-3 text-right font-mono">{formatCurrency(totalCredit, currencySymbol)}</td></tr>
+            </tfoot>
+          </table>
+        </div>
+
+        {expense.description && <div className="mt-5 border-t border-slate-100 pt-4 dark:border-slate-800"><p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Memo</p><p className="mt-1 whitespace-pre-wrap text-sm text-slate-700 dark:text-slate-200">{expense.description}</p></div>}
+        {expense.receiptAttachments?.length ? <div className="mt-5 border-t border-slate-100 pt-4 dark:border-slate-800"><p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Attached evidence</p><div className="mt-3 flex flex-wrap gap-2">{expense.receiptAttachments.map((attachment) => <a key={attachment.id} href={receiptUrls[attachment.id]} target="_blank" rel="noreferrer" className="block h-16 w-16 overflow-hidden rounded-md border border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800">{receiptUrls[attachment.id] ? <img src={receiptUrls[attachment.id]} alt={attachment.fileName} className="h-full w-full object-cover" /> : <Paperclip className="m-5 h-5 w-5 text-slate-400" />}</a>)}</div></div> : null}
+      </div>
+    </div>
+  );
+};
+
 export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
   isOpen,
   onClose,
   expense,
   onEdit,
 }) => {
-  const { settings, deleteExpense, convertExpenseToInvoice } = useBooks();
+  const { settings, deleteExpense, convertExpenseToInvoice, attachExpenseReceipts, journalEntries = [] } = useBooks();
   const [currentExpense, setCurrentExpense] = useState<Expense | null>(expense);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
   const [receiptUrls, setReceiptUrls] = useState<Record<string, string>>({});
   const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
   const [isConvertingToInvoice, setIsConvertingToInvoice] = useState(false);
+  const [showJournal, setShowJournal] = useState(false);
+  const [viewMode, setViewMode] = useState<'details' | 'voucher'>('details');
+  const [isAttachingReceipts, setIsAttachingReceipts] = useState(false);
+  const [isReceiptDragActive, setIsReceiptDragActive] = useState(false);
+  const receiptInputRef = useRef<HTMLInputElement>(null);
+  const activeExpenseForReceipts = currentExpense || expense;
 
   useEffect(() => {
     setCurrentExpense(expense);
+    setShowJournal(false);
+    setViewMode('details');
   }, [expense]);
 
   useEffect(() => {
     let active = true;
     const urls: string[] = [];
     const loadReceipts = async () => {
-      if (!isOpen || !expense?.receiptAttachments?.length) {
+      if (!isOpen || !activeExpenseForReceipts?.receiptAttachments?.length) {
         setReceiptUrls({});
         return;
       }
-      const loaded = await Promise.all(expense.receiptAttachments.map(async (attachment) => {
-        const response = await apiClient.getBlob(`/finance/expenses/${expense.id}/receipts/${attachment.id}`);
+      const loaded = await Promise.all(activeExpenseForReceipts.receiptAttachments.map(async (attachment) => {
+        const response = await apiClient.getBlob(`/finance/expenses/${activeExpenseForReceipts.id}/receipts/${attachment.id}`);
         if (!response.data) return null;
         const url = URL.createObjectURL(response.data);
         urls.push(url);
@@ -69,10 +154,13 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
       active = false;
       urls.forEach((url) => URL.revokeObjectURL(url));
     };
-  }, [expense?.id, expense?.receiptAttachments, isOpen]);
+  }, [activeExpenseForReceipts?.id, activeExpenseForReceipts?.receiptAttachments, isOpen]);
 
   if (!isOpen || !expense) return null;
   const activeExpense = currentExpense || expense;
+  const postingJournal = activeExpense.journalEntryId
+    ? journalEntries.find((journal) => journal.id === activeExpense.journalEntryId)
+    : undefined;
 
   const handleConvertToInvoice = async () => {
     if (!activeExpense?.id) return;
@@ -126,9 +214,63 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
     }
   };
 
+  const handlePrintVoucher = async () => {
+    if (!activeExpense?.id) return;
+    const printWindow = window.open('', '_blank');
+    try {
+      setIsDownloadingPdf(true);
+      setShowMoreMenu(false);
+      const response = await apiClient.getBlob(`/finance/expenses/${activeExpense.id}/pdf`);
+      if (!response.data) throw new Error(response.error || 'Voucher PDF could not be generated');
+      const url = URL.createObjectURL(new Blob([response.data], { type: 'application/pdf' }));
+      if (printWindow) {
+        printWindow.location.href = url;
+        window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      } else {
+        URL.revokeObjectURL(url);
+        throw new Error('Your browser blocked the print window. Allow pop-ups and try again.');
+      }
+    } catch (error: any) {
+      printWindow?.close();
+      window.alert('Failed to open print-ready voucher: ' + (error.message || 'Unknown error'));
+    } finally {
+      setIsDownloadingPdf(false);
+    }
+  };
+
+  const handleReceiptSelection = async (files: FileList | null) => {
+    if (!files?.length || !activeExpense?.id) return;
+    const currentCount = activeExpense.receiptAttachments?.length || 0;
+    const selected = Array.from(files);
+    if (currentCount + selected.length > MAX_RECEIPT_IMAGES) {
+      window.alert(`This expense can have up to ${MAX_RECEIPT_IMAGES} receipt images. ${MAX_RECEIPT_IMAGES - currentCount} slot(s) remain.`);
+      return;
+    }
+    try {
+      setIsAttachingReceipts(true);
+      const attachments = await attachExpenseReceipts(activeExpense.id, await Promise.all(selected.map(compressReceiptImage)));
+      setCurrentExpense((current) => current ? {
+        ...current,
+        receiptAttachments: [...(current.receiptAttachments || []), ...attachments],
+        receiptFileName: current.receiptFileName || attachments[0]?.fileName,
+      } : current);
+    } catch (error: any) {
+      window.alert('Receipt images could not be attached: ' + (error.message || 'Unknown error'));
+    } finally {
+      setIsAttachingReceipts(false);
+      if (receiptInputRef.current) receiptInputRef.current.value = '';
+    }
+  };
+
+  const handleReceiptDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setIsReceiptDragActive(false);
+    void handleReceiptSelection(event.dataTransfer.files);
+  };
+
   return (
     <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 z-50 animate-fade-in overflow-y-auto">
-      <div className="bg-white dark:bg-slate-900 rounded-3xl max-w-lg w-full overflow-hidden shadow-2xl border border-slate-200 dark:border-slate-800 my-auto">
+      <div className="bg-white dark:bg-slate-900 rounded-lg max-w-5xl w-full overflow-hidden shadow-2xl border border-slate-200 dark:border-slate-800 my-auto">
         {/* TOP BAR */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 sticky top-0 z-10">
           <div className="flex items-center space-x-3">
@@ -138,12 +280,21 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
             >
               <ArrowLeft className="w-5 h-5" />
             </button>
-            <h3 className="text-base font-bold text-slate-900 dark:text-slate-100">
-              Expense details
-            </h3>
+            <div>
+              <h3 className="text-base font-bold text-slate-900 dark:text-slate-100">Expense details</h3>
+              <p className="mt-0.5 text-[11px] font-mono text-slate-500 dark:text-slate-400">{activeExpense.referenceNumber}</p>
+            </div>
           </div>
 
           <div className="flex items-center space-x-2 relative">
+            <input
+              ref={receiptInputRef}
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              multiple
+              className="hidden"
+              onChange={(event) => void handleReceiptSelection(event.target.files)}
+            />
             {activeExpense.isBillable && !activeExpense.isBilled && activeExpense.status !== 'VOIDED' && (
               <button
                 type="button"
@@ -154,6 +305,19 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
               >
                 <Send className="w-3.5 h-3.5" />
                 <span>{isConvertingToInvoice ? 'Converting...' : 'Convert to Invoice'}</span>
+              </button>
+            )}
+
+            {activeExpense.status !== 'VOIDED' && (activeExpense.receiptAttachments?.length || 0) < MAX_RECEIPT_IMAGES && (
+              <button
+                type="button"
+                onClick={() => receiptInputRef.current?.click()}
+                disabled={isAttachingReceipts}
+                className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+                title="Attach receipt images without changing this expense"
+              >
+                {isAttachingReceipts ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <ImagePlus className="h-3.5 w-3.5" />}
+                <span>{isAttachingReceipts ? 'Adding...' : 'Add receipt'}</span>
               </button>
             )}
 
@@ -206,14 +370,11 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
                 )}
 
                 <button
-                  onClick={() => {
-                    setShowMoreMenu(false);
-                    window.print();
-                  }}
+                  onClick={handlePrintVoucher}
                   className="w-full text-left px-4 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 flex items-center space-x-2"
                 >
                   <Printer className="w-4 h-4 text-slate-500" />
-                  <span>Print Details</span>
+                  <span>Print voucher</span>
                 </button>
 
                 {activeExpense.status !== 'VOIDED' && (
@@ -235,10 +396,20 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
           </div>
         </div>
 
+        <div className="flex items-center justify-between gap-3 border-b border-slate-100 bg-slate-50/60 px-5 py-2.5 dark:border-slate-800 dark:bg-slate-900/60">
+          <div role="tablist" aria-label="Expense display mode" className="inline-flex rounded-md border border-slate-200 bg-white p-0.5 dark:border-slate-700 dark:bg-slate-800">
+            <button type="button" role="tab" aria-selected={viewMode === 'details'} onClick={() => setViewMode('details')} className={`rounded px-3 py-1.5 text-xs font-semibold transition-colors ${viewMode === 'details' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-700'}`}>Details</button>
+            <button type="button" role="tab" aria-selected={viewMode === 'voucher'} onClick={() => setViewMode('voucher')} className={`rounded px-3 py-1.5 text-xs font-semibold transition-colors ${viewMode === 'voucher' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-700'}`}>Voucher view</button>
+          </div>
+          <p className="hidden text-xs text-slate-500 sm:block">Evidence can be added without correcting the posted record.</p>
+        </div>
+
+        {viewMode === 'voucher' && <div className="max-h-[80vh] overflow-y-auto bg-slate-50 p-5 dark:bg-slate-950"><VoucherPreview expense={activeExpense} currencySymbol={settings.currencySymbol} journal={postingJournal} receiptUrls={receiptUrls} /></div>}
+
         {/* DETAILS BODY */}
-        <div className="p-5 space-y-6 max-h-[80vh] overflow-y-auto">
+        <div className={`p-5 space-y-5 max-h-[80vh] overflow-y-auto ${viewMode === 'voucher' ? 'hidden' : ''}`}>
           {/* AMOUNT & RECEIPT SECTION */}
-          <div className="flex items-start justify-between gap-4">
+          <div className="flex items-start justify-between gap-4 border-b border-slate-100 pb-5 dark:border-slate-800">
             <div>
               <p className="text-xs font-medium text-slate-400 dark:text-slate-500">
                 Expense Amount
@@ -250,6 +421,16 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
               <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mt-1">
                 on {formatDate(activeExpense.date)} • Ref #{activeExpense.referenceNumber}
               </p>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                <span className={`inline-flex items-center rounded-md border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${activeExpense.status === 'VOIDED' ? 'border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-300' : 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300'}`}>
+                  {activeExpense.status === 'VOIDED' ? 'Voided' : 'Posted'}
+                </span>
+                {activeExpense.invoiceNumber && (
+                  <span className="inline-flex max-w-full break-all rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] font-mono font-semibold text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
+                    Vendor ref {activeExpense.invoiceNumber}
+                  </span>
+                )}
+              </div>
               {activeExpense.status === 'VOIDED' && <p className="mt-2 text-xs font-bold uppercase text-slate-500">Voided by audited reversal</p>}
             </div>
 
@@ -269,32 +450,10 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
             </div>
           </div>
 
-          {activeExpense.receiptAttachments && activeExpense.receiptAttachments.length > 0 && (
-            <section>
-              <p className="mb-2 text-xs font-semibold text-slate-500 dark:text-slate-400">Receipt images</p>
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                {activeExpense.receiptAttachments.map((attachment) => (
-                  <a
-                    key={attachment.id}
-                    href={receiptUrls[attachment.id] || undefined}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="block overflow-hidden rounded-xl border border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800"
-                  >
-                    {receiptUrls[attachment.id] ? (
-                      <img src={receiptUrls[attachment.id]} alt={attachment.fileName} className="aspect-square w-full object-cover" />
-                    ) : (
-                      <div className="grid aspect-square place-items-center text-xs text-slate-400">Loading receipt…</div>
-                    )}
-                    <span className="block truncate px-2 py-1.5 text-[10px] font-medium text-slate-600 dark:text-slate-300">{attachment.fileName}</span>
-                  </a>
-                ))}
-              </div>
-            </section>
-          )}
-
+          <div className="grid gap-5 lg:grid-cols-[minmax(0,1.2fr)_minmax(19rem,0.8fr)]">
+            <div className="space-y-5">
           {/* BILLABLE / NON-BILLABLE SECTION (ZOHO BOOKS RECOVERABLE WORKFLOW) */}
-          <div className="rounded-2xl border p-4 transition-all duration-200 bg-white dark:bg-slate-800/60 shadow-xs border-slate-200 dark:border-slate-700">
+          <div className="rounded-lg border p-4 transition-all duration-200 bg-white dark:bg-slate-800/60 shadow-xs border-slate-200 dark:border-slate-700">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-2">
                 {activeExpense.isBillable ? (
@@ -351,7 +510,7 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
           </div>
 
           {/* CATEGORY / ACCOUNT HIGHLIGHT PILL */}
-          <div className="bg-sky-50/80 dark:bg-sky-950/40 border border-sky-100 dark:border-sky-900 rounded-xl p-3">
+          <div className="bg-sky-50/80 dark:bg-sky-950/40 border border-sky-100 dark:border-sky-900 rounded-lg p-3">
             <p className="text-[10px] uppercase font-bold text-sky-600 dark:text-sky-400 tracking-wider">
               Expense Account / Category
             </p>
@@ -366,8 +525,8 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
                   Item Breakdown ({activeExpense.items.length} items)
                 </p>
                 {activeExpense.items.map((it, idx) => (
-                  <div key={idx} className="flex justify-between text-xs text-sky-900 dark:text-sky-200 font-medium">
-                    <span>{it.description || `Item #${idx + 1}`} ({it.quantity} x {formatCurrency(it.unitPrice, settings.currencySymbol)})</span>
+                  <div key={idx} className="flex justify-between gap-3 text-xs text-sky-900 dark:text-sky-200 font-medium">
+                    <span className="min-w-0 break-words">{it.description || it.accountName || `Item #${idx + 1}`}</span>
                     <span className="font-bold">{formatCurrency(it.amount, settings.currencySymbol)}</span>
                   </div>
                 ))}
@@ -375,8 +534,117 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
             )}
           </div>
 
+          <section className="rounded-lg border border-slate-200 dark:border-slate-700">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3 dark:border-slate-800">
+              <div>
+                <p className="text-xs font-bold text-slate-900 dark:text-white">Accounting impact</p>
+                <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">Posted as a balanced journal entry.</p>
+              </div>
+              {postingJournal && (
+                <button
+                  type="button"
+                  onClick={() => setShowJournal((current) => !current)}
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400"
+                >
+                  <BookOpen className="h-3.5 w-3.5" />
+                  <span>{showJournal ? 'Hide journal' : 'Display journal'}</span>
+                </button>
+              )}
+            </div>
+            <div className="grid gap-3 px-4 py-3 sm:grid-cols-2">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Debit</p>
+                <p className="mt-0.5 text-xs font-semibold text-slate-800 dark:text-slate-200">{activeExpense.accountName || 'Expense category'}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Credit</p>
+                <p className="mt-0.5 text-xs font-semibold text-slate-800 dark:text-slate-200">{activeExpense.paidFromAccountName || 'Paid-through account'}</p>
+              </div>
+            </div>
+            {showJournal && postingJournal && (
+              <div className="border-t border-slate-100 dark:border-slate-800">
+                <div className="flex items-center justify-between px-4 py-2 text-[11px] text-slate-500 dark:text-slate-400">
+                  <span className="font-semibold">Posted journal</span>
+                  <span>{formatDate(postingJournal.date)}</span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500 dark:bg-slate-800/60 dark:text-slate-400">
+                      <tr><th className="px-4 py-2">Account</th><th className="px-4 py-2 text-right">Debit</th><th className="px-4 py-2 text-right">Credit</th></tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                      {postingJournal.lines.map((line) => (
+                        <tr key={line.id}>
+                          <td className="px-4 py-2 text-slate-700 dark:text-slate-200">{line.accountCode ? `${line.accountCode} - ` : ''}{line.accountName}</td>
+                          <td className="px-4 py-2 text-right font-mono">{line.debit ? formatCurrency(line.debit, settings.currencySymbol) : '—'}</td>
+                          <td className="px-4 py-2 text-right font-mono">{line.credit ? formatCurrency(line.credit, settings.currencySymbol) : '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </section>
+            </div>
+
           {/* METADATA FIELDS GRID */}
-          <div className="space-y-4 pt-1">
+          <aside className="space-y-4 border-l-0 pt-1 lg:border-l lg:border-slate-100 lg:pl-5 lg:dark:border-slate-800">
+            <section className="rounded-lg border border-slate-200 bg-slate-50/60 p-3 dark:border-slate-700 dark:bg-slate-800/30">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-bold text-slate-800 dark:text-slate-100">Receipt images</p>
+                  <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">Supporting evidence</p>
+                </div>
+                <span className="rounded-full bg-white px-2 py-1 text-[11px] font-semibold text-slate-500 shadow-xs dark:bg-slate-800 dark:text-slate-300">{activeExpense.receiptAttachments?.length || 0} / {MAX_RECEIPT_IMAGES}</span>
+              </div>
+              {activeExpense.receiptAttachments && activeExpense.receiptAttachments.length > 0 && (
+                <div className="mb-3 grid grid-cols-3 gap-2">
+                  {activeExpense.receiptAttachments.map((attachment) => (
+                    <a key={attachment.id} href={receiptUrls[attachment.id] || undefined} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-md border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800">
+                      {receiptUrls[attachment.id] ? <img src={receiptUrls[attachment.id]} alt={attachment.fileName} className="aspect-square w-full object-cover" /> : <div className="grid aspect-square place-items-center text-[10px] text-slate-400">Loading...</div>}
+                      <span className="block truncate px-1.5 py-1 text-[9px] font-medium text-slate-600 dark:text-slate-300">{attachment.fileName}</span>
+                    </a>
+                  ))}
+                </div>
+              )}
+              {activeExpense.status !== 'VOIDED' && (activeExpense.receiptAttachments?.length || 0) < MAX_RECEIPT_IMAGES && (
+                <div
+                  role="button"
+                  tabIndex={0}
+                  aria-label="Drag and drop receipt images or choose images"
+                  onClick={() => receiptInputRef.current?.click()}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      receiptInputRef.current?.click();
+                    }
+                  }}
+                  onDragEnter={(event) => {
+                    event.preventDefault();
+                    setIsReceiptDragActive(true);
+                  }}
+                  onDragOver={(event) => event.preventDefault()}
+                  onDragLeave={(event) => {
+                    if (event.currentTarget === event.target) setIsReceiptDragActive(false);
+                  }}
+                  onDrop={handleReceiptDrop}
+                  className={`flex min-h-56 cursor-pointer flex-col items-center justify-center rounded-md border-2 border-dashed px-4 py-6 text-center transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-slate-900 ${
+                    isReceiptDragActive
+                      ? 'border-blue-500 bg-blue-50 text-blue-800 dark:border-blue-400 dark:bg-blue-950/40 dark:text-blue-200'
+                      : 'border-blue-200 bg-white text-slate-700 hover:border-blue-400 hover:bg-blue-50 dark:border-blue-900 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-blue-700'
+                  }`}
+                >
+                  {isAttachingReceipts ? <LoaderCircle className="h-7 w-7 animate-spin text-blue-600" /> : <ImagePlus className="h-7 w-7 text-blue-600 dark:text-blue-400" />}
+                  <p className="mt-3 text-sm font-semibold">{isAttachingReceipts ? 'Adding receipt images...' : 'Drag and drop receipts here'}</p>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">or tap to choose images</p>
+                  <p className="mt-3 text-[11px] text-slate-400 dark:text-slate-500">JPEG, PNG, or WebP. {MAX_RECEIPT_IMAGES - (activeExpense.receiptAttachments?.length || 0)} slot{MAX_RECEIPT_IMAGES - (activeExpense.receiptAttachments?.length || 0) === 1 ? '' : 's'} remaining.</p>
+                </div>
+              )}
+            </section>
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Payment & attribution</p>
+            </div>
             {/* Paid Through */}
             <div>
               <p className="text-xs text-slate-400 dark:text-slate-500 font-medium">Paid Through</p>
@@ -394,6 +662,7 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
                   <Building2 className="w-4 h-4 text-slate-400" />
                   <span>{activeExpense.vendorName}</span>
                 </p>
+                {activeExpense.invoiceNumber && <p className="mt-1 break-all text-xs font-mono text-slate-500 dark:text-slate-400">Invoice / receipt # {activeExpense.invoiceNumber}</p>}
               </div>
             )}
 
@@ -425,7 +694,7 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
             {activeExpense.description && (
               <div>
                 <p className="text-xs text-slate-400 dark:text-slate-500 font-medium">Notes / Memo</p>
-                <div className="mt-1 p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-100 dark:border-slate-700/60 flex items-start gap-2.5">
+                <div className="mt-1 p-3 bg-slate-50 dark:bg-slate-800/60 rounded-lg border border-slate-100 dark:border-slate-700/60 flex items-start gap-2.5">
                   <FileText className="w-4 h-4 text-slate-400 mt-0.5 shrink-0" />
                   <p className="text-xs text-slate-700 dark:text-slate-300 whitespace-pre-wrap leading-relaxed">
                     {activeExpense.description}
@@ -433,6 +702,7 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
                 </div>
               </div>
             )}
+          </aside>
           </div>
         </div>
       </div>

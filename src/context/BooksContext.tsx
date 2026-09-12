@@ -8,6 +8,8 @@ import {
   DeliveryChallan,
   Estimate,
   Expense,
+  ExpenseReceiptAttachment,
+  ExpenseReceiptUpload,
   FirmSettings,
   Invoice,
   InvoiceItem,
@@ -105,17 +107,40 @@ const upsertAccount = (accounts: Account[], account: Account): Account[] => {
 };
 
 const normalizeInvoiceForUi = (record: any): Invoice => {
-  const rawStatus = String(record.status || '').trim().toUpperCase().replaceAll(' ', '_');
-  const hasBalance = Number(record.balanceDue || 0) > 0;
-  const isOverdue = hasBalance && /^\d{4}-\d{2}-\d{2}$/.test(String(record.dueDate || '')) && record.dueDate < new Date().toISOString().split('T')[0];
+  const rawStatus = String(record?.status || '').trim().toUpperCase().replaceAll(' ', '_');
+  const subtotal = Number(record?.subtotal || 0);
+  const taxTotal = Number(record?.taxTotal || 0);
+  const discount = Number(record?.discount || 0);
+  const totalAmount = Number(record?.totalAmount ?? (subtotal + taxTotal - discount));
+  const paidAmount = Number(record?.paidAmount || 0);
+  const balanceDue = Number(record?.balanceDue ?? Math.max(0, totalAmount - paidAmount));
+  const hasBalance = balanceDue > 0;
+  const isOverdue = hasBalance && /^\d{4}-\d{2}-\d{2}$/.test(String(record?.dueDate || '')) && record.dueDate < new Date().toISOString().split('T')[0];
   let status: Invoice['status'];
   if (['VOID', 'VOIDED'].includes(rawStatus)) status = 'Void';
   else if (rawStatus === 'PAID' || !hasBalance) status = 'Paid';
   else if (isOverdue) status = 'Overdue';
-  else if (rawStatus === 'PARTIALLY_PAID' || Number(record.paidAmount || 0) > 0) status = 'Partially Paid';
+  else if (rawStatus === 'PARTIALLY_PAID' || paidAmount > 0) status = 'Partially Paid';
   else if (rawStatus === 'DRAFT') status = 'Draft';
   else status = 'Sent';
-  return { ...record, status } as Invoice;
+
+  const items = Array.isArray(record?.items)
+    ? record.items
+    : Array.isArray(record?.lineItems)
+    ? record.lineItems
+    : [];
+
+  return {
+    ...record,
+    subtotal,
+    taxTotal,
+    discount,
+    totalAmount,
+    paidAmount,
+    balanceDue,
+    items,
+    status,
+  } as Invoice;
 };
 
 const normalizeBillForUi = (record: any): Bill => {
@@ -246,6 +271,7 @@ interface BooksContextType {
   correctExpense: (id: string, expense: Omit<Expense, 'id' | 'createdAt' | 'referenceNumber'>, reason: string) => Promise<void>;
   deleteExpense: (id: string) => Promise<void>;
   convertExpenseToInvoice: (expenseId: string, issueDate?: string, dueDate?: string) => Promise<any>;
+  attachExpenseReceipts: (expenseId: string, receiptImages: ExpenseReceiptUpload[]) => Promise<ExpenseReceiptAttachment[]>;
 
   journalEntries: JournalEntry[];
   addJournalEntry: (entry: Omit<JournalEntry, 'id' | 'createdAt' | 'entryNumber'>) => Promise<boolean>;
@@ -274,6 +300,7 @@ interface BooksContextType {
 
   paymentsReceived: PaymentReceipt[];
   addPaymentReceived: (payment: Omit<PaymentReceipt, 'id'> & { invoiceId?: string; clientId?: string; depositToAccountId?: string }) => Promise<PaymentReceipt>;
+  updatePaymentReceived: (id: string, payment: Partial<PaymentReceipt> & { invoiceId?: string; clientId?: string; depositToAccountId?: string; reason?: string }) => Promise<PaymentReceipt>;
   deletePaymentReceived: (id: string) => Promise<void>;
 
   recurringInvoices: RecurringInvoiceProfile[];
@@ -1165,16 +1192,15 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const addExpense = async (expenseData: Omit<Expense, 'id' | 'createdAt' | 'referenceNumber'>): Promise<void> => {
 
-    if (expenseData.invoiceNumber) {
-      throw new Error('Vendor references are not enabled until their server workflow is certified.');
-    }
     if (expenseData.currency && expenseData.currency !== settings.currencyCode) {
       throw new Error('Foreign-currency expenses require a server-verified exchange-rate workflow.');
     }
     const response = await apiClient.post<any>('/finance/expenses', {
       expenseAccountId: expenseData.accountId,
       paidFromAccountId: expenseData.paidFromAccountId,
+      vendorId: expenseData.vendorId,
       vendorName: expenseData.vendorName,
+      vendorInvoiceNumber: expenseData.invoiceNumber,
       date: expenseData.date,
       amount: expenseData.amount,
       taxRate: expenseData.taxRate,
@@ -1216,7 +1242,9 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       reason,
       expenseAccountId: expenseData.accountId,
       paidFromAccountId: expenseData.paidFromAccountId,
+      vendorId: expenseData.vendorId,
       vendorName: expenseData.vendorName,
+      vendorInvoiceNumber: expenseData.invoiceNumber,
       date: expenseData.date,
       amount: expenseData.amount,
       taxRate: expenseData.taxRate,
@@ -1249,6 +1277,13 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (!response.data) throw new Error(response.error || 'Failed to convert expense to invoice');
     await refreshAfterCommittedWrite();
     return response.data;
+  };
+
+  const attachExpenseReceipts = async (expenseId: string, receiptImages: ExpenseReceiptUpload[]): Promise<ExpenseReceiptAttachment[]> => {
+    const response = await apiClient.post<{ attachments: ExpenseReceiptAttachment[] }>(`/finance/expenses/${expenseId}/receipts`, { receiptImages });
+    if (!response.data) throw new Error(response.error || 'Receipt images could not be attached');
+    await refreshAfterCommittedWrite();
+    return response.data.attachments;
   };
 
   const addJournalEntry = (
@@ -1465,6 +1500,36 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     await refreshAfterCommittedWrite(['payments-received', 'invoices', 'accounts', 'clients', 'journals']);
     return newPayment;
   };
+  const updatePaymentReceived = async (
+    id: string,
+    paymentData: Partial<PaymentReceipt> & {
+      invoiceId?: string;
+      clientId?: string;
+      depositToAccountId?: string;
+      paymentMode?: string;
+      reference?: string;
+      notes?: string;
+      reason?: string;
+    }
+  ): Promise<PaymentReceipt> => {
+    const response = await apiClient.put<any>(`/finance/payments-received/${id}`, {
+      clientId: paymentData.clientId,
+      clientName: paymentData.clientName,
+      paymentDate: paymentData.paymentDate,
+      amount: paymentData.amount,
+      paymentMode: (paymentData as any).paymentMode || paymentData.paymentMethod,
+      depositToAccountId: paymentData.depositToAccountId,
+      invoiceId: paymentData.invoiceId,
+      reference: (paymentData as any).reference !== undefined ? (paymentData as any).reference : paymentData.referenceNumber,
+      notes: paymentData.notes,
+      reason: paymentData.reason || 'Payment corrected',
+    });
+    if (!response.data) throw new Error(response.error || 'Payment could not be updated');
+    const updatedPayment: PaymentReceipt = response.data.payment || response.data;
+    await refreshAfterCommittedWrite(['payments-received', 'invoices', 'accounts', 'clients', 'journals']);
+    return updatedPayment;
+  };
+
   const deletePaymentReceived = async (id: string): Promise<void> => {
     const reason = window.prompt('Reason for reversing this payment (required for the audit trail):')?.trim();
     if (!reason) return;
@@ -1768,6 +1833,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       correctExpense,
       deleteExpense,
       convertExpenseToInvoice,
+      attachExpenseReceipts,
       journalEntries,
       addJournalEntry,
       periodLocks,
@@ -1789,6 +1855,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       deleteCreditNote,
       paymentsReceived,
       addPaymentReceived,
+      updatePaymentReceived,
       deletePaymentReceived,
       recurringInvoices,
       addRecurringInvoice,

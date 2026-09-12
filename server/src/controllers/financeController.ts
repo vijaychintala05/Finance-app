@@ -36,12 +36,14 @@ import { isIsoCalendarDate } from '../utils/date';
 import { ExpensePostingService } from '../services/ExpensePostingService';
 import { ExpenseReceiptService } from '../services/ExpenseReceiptService';
 import { ExpensePdfService } from '../services/ExpensePdfService';
+import { InvoicePdfService } from '../services/InvoicePdfService';
 import { GSTComplianceService } from '../services/GSTComplianceService';
 import { DrillDownService } from '../services/DrillDownService';
 import { ReportExportService } from '../services/ReportExportService';
 import { ApprovalWorkflowService } from '../approvals/ApprovalWorkflowService';
 import { TreasuryTransactionService } from '../services/TreasuryTransactionService';
 import { EmployeeReimbursementService } from '../services/EmployeeReimbursementService';
+import { EmailOutboxService } from '../services/EmailOutboxService';
 
 export class FinanceController {
   private static employeeClaimErrorStatus(message: string): number {
@@ -105,14 +107,23 @@ export class FinanceController {
   // --- ACCOUNTS ---
   public static async getAccounts(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
-    // PostgreSQL RLS uses app.current_org_id, which only exists for the lifetime
-    // of a tenant-scoped transaction. Without this, a just-created account can
-    // be hidden on the verification refresh even though the write committed.
-    const result = await db.transaction(
-      (client) => client.query('SELECT * FROM accounts WHERE organization_id = $1 ORDER BY code ASC', [orgId]),
-      { organizationId: orgId }
-    );
-    res.json(result.rows.map((r: any) => ({ ...r, balance: Number(r.balance || 0) })));
+    // Posted journal lines are authoritative. The accounts.balance column is a
+    // compatibility cache and can be stale after a legacy import or older release.
+    const accounts = await db.transaction(async (client) => {
+      const result = await client.query('SELECT * FROM accounts WHERE organization_id = $1 ORDER BY code ASC', [orgId]);
+      if (result.rows.length === 0) return [];
+      const ledgerBalances = await LedgerQueryService.getAccountBalances(
+        orgId,
+        { accountIds: result.rows.map((account: any) => account.id) },
+        client
+      );
+      const balanceByAccountId = new Map(ledgerBalances.map((balance) => [balance.id, balance.netBalance]));
+      return result.rows.map((account: any) => ({
+        ...account,
+        balance: Number(balanceByAccountId.get(account.id) ?? 0),
+      }));
+    }, { organizationId: orgId });
+    res.json(accounts);
   }
 
   public static async getAccountingDefaults(req: AuthenticatedRequest, res: Response): Promise<void> {
@@ -994,6 +1005,7 @@ export class FinanceController {
       paidAmount: Number(invoice.paid_amount),
       balanceDue: Number(invoice.balance_due),
       status: invoice.status,
+      journalEntryId: invoice.journal_entry_id || undefined,
       notes: invoice.notes || '',
       createdAt: invoice.created_at,
     }));
@@ -1056,12 +1068,154 @@ export class FinanceController {
           paidAmount: Number(inv.paid_amount || 0),
           balanceDue: Number(inv.balance_due || 0),
           status: inv.status,
+          journalEntryId: inv.journal_entry_id || undefined,
           lineItems,
           notes: inv.notes || '',
         },
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to get invoice' });
+    }
+  }
+
+  public static async getInvoicePdf(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const orgId = req.auth!.organizationId;
+      const { id } = req.params;
+      const pdfBuffer = await InvoicePdfService.generateInvoicePdf(db, orgId, id);
+
+      const invNumRes = await db.query('SELECT invoice_number FROM invoices WHERE organization_id = $1 AND id = $2', [orgId, id]);
+      const invNum = invNumRes.rows[0]?.invoice_number || id;
+      const filename = `Invoice-${invNum}.pdf`;
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Length', String(pdfBuffer.length));
+      res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+      res.send(pdfBuffer);
+    } catch (err: any) {
+      console.error('GENERATE_INVOICE_PDF_ERROR:', err);
+      if (err.message && err.message.includes('not found')) {
+        res.status(404).json({ error: err.message });
+      } else {
+        res.status(500).json({ error: err.message || 'Failed to generate invoice PDF' });
+      }
+    }
+  }
+
+  public static async sendInvoiceEmail(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const orgId = req.auth!.organizationId;
+      const { id } = req.params;
+      const { recipientEmail, subject, message } = req.body || {};
+
+      const invRes = await db.query('SELECT * FROM invoices WHERE organization_id = $1 AND id = $2', [orgId, id]);
+      if (invRes.rows.length === 0) {
+        res.status(404).json({ error: `Invoice ${id} not found` });
+        return;
+      }
+      const inv = invRes.rows[0];
+      const targetEmail = recipientEmail || inv.client_email;
+      if (!targetEmail) {
+        res.status(400).json({ error: 'Recipient email address is required' });
+        return;
+      }
+
+      if (String(inv.status).toUpperCase() === 'DRAFT') {
+        await db.query(`UPDATE invoices SET status = 'POSTED' WHERE organization_id = $1 AND id = $2`, [orgId, id]);
+      }
+
+      await EmailOutboxService.enqueueEmail(
+        targetEmail,
+        'INVOICE_REMINDER',
+        {
+          invoiceNumber: inv.invoice_number,
+          customerName: inv.client_name,
+          amountDue: Number(inv.balance_due ?? inv.total_amount ?? 0),
+          dueDate: inv.due_date,
+          subject: subject || `Invoice ${inv.invoice_number}`,
+          customMessage: message || '',
+        },
+        orgId
+      );
+
+      res.json({
+        success: true,
+        message: `Invoice ${inv.invoice_number} successfully dispatched to ${targetEmail}`,
+      });
+    } catch (err: any) {
+      console.error('SEND_INVOICE_EMAIL_ERROR:', err);
+      res.status(500).json({ error: err.message || 'Failed to send invoice email' });
+    }
+  }
+
+  public static async sendInvoiceReminder(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const orgId = req.auth!.organizationId;
+      const { id } = req.params;
+      const { recipientEmail } = req.body || {};
+
+      const invRes = await db.query('SELECT * FROM invoices WHERE organization_id = $1 AND id = $2', [orgId, id]);
+      if (invRes.rows.length === 0) {
+        res.status(404).json({ error: `Invoice ${id} not found` });
+        return;
+      }
+      const inv = invRes.rows[0];
+      const targetEmail = recipientEmail || inv.client_email;
+      if (!targetEmail) {
+        res.status(400).json({ error: 'Recipient email address is required for payment reminder' });
+        return;
+      }
+
+      await EmailOutboxService.enqueueInvoiceReminder(orgId, targetEmail, {
+        invoiceNumber: inv.invoice_number,
+        customerName: inv.client_name,
+        amountDue: Number(inv.balance_due ?? inv.total_amount ?? 0),
+        dueDate: inv.due_date,
+      });
+
+      res.json({
+        success: true,
+        message: `Payment reminder successfully scheduled for ${targetEmail}`,
+      });
+    } catch (err: any) {
+      console.error('SEND_INVOICE_REMINDER_ERROR:', err);
+      res.status(500).json({ error: err.message || 'Failed to send invoice reminder' });
+    }
+  }
+
+  public static async getInvoiceJournal(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const orgId = req.auth!.organizationId;
+      const { id } = req.params;
+
+      const invRes = await db.query('SELECT * FROM invoices WHERE organization_id = $1 AND id = $2', [orgId, id]);
+      if (invRes.rows.length === 0) {
+        res.status(404).json({ error: `Invoice ${id} not found` });
+        return;
+      }
+      const inv = invRes.rows[0];
+      let journalEntryId = inv.journal_entry_id;
+
+      if (!journalEntryId && inv.invoice_number) {
+        const jeRes = await db.query(
+          'SELECT id FROM journal_entries WHERE organization_id = $1 AND reference = $2 LIMIT 1',
+          [orgId, inv.invoice_number]
+        );
+        if (jeRes.rows.length > 0) {
+          journalEntryId = jeRes.rows[0].id;
+        }
+      }
+
+      if (!journalEntryId) {
+        res.status(404).json({ error: `No accounting journal entry found for invoice ${inv.invoice_number}` });
+        return;
+      }
+
+      const drillDown = await DrillDownService.getDrillDown(orgId, journalEntryId);
+      res.json(drillDown);
+    } catch (err: any) {
+      console.error('GET_INVOICE_JOURNAL_ERROR:', err);
+      res.status(500).json({ error: err.message || 'Failed to get invoice journal entry' });
     }
   }
 
@@ -1184,8 +1338,9 @@ export class FinanceController {
   public static async getPaymentsReceived(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
     const result = await db.query(
-      `SELECT pr.id AS payment_id, pr.payment_number, pr.client_name, pr.payment_date,
-              pr.payment_mode, pr.reference, pr.amount, pr.unallocated_amount, pr.status,
+      `SELECT pr.id AS payment_id, pr.payment_number, pr.client_id, pr.client_name, pr.payment_date,
+              pr.payment_mode, pr.deposit_to_account_id, pr.reference, pr.notes, pr.amount, pr.unallocated_amount, pr.status,
+              allocation.invoice_id,
               invoice.invoice_number
          FROM payments_received pr
          LEFT JOIN payment_received_allocations allocation
@@ -1201,11 +1356,15 @@ export class FinanceController {
       const existing = payments.get(row.payment_id) || {
         id: row.payment_id,
         paymentNumber: row.payment_number,
+        clientId: row.client_id,
         clientName: row.client_name,
+        invoiceId: row.invoice_id,
         invoiceNumbers: new Set<string>(),
         paymentDate: row.payment_date,
         paymentMethod: row.payment_mode,
+        depositToAccountId: row.deposit_to_account_id,
         referenceNumber: row.reference || '',
+        notes: row.notes || '',
         amount: Number(row.amount),
         unallocatedAmount: Number(row.unallocated_amount || 0),
         status: row.status,
@@ -1291,7 +1450,9 @@ export class FinanceController {
     const attachmentsByExpense = await ExpenseReceiptService.listForExpenses(db, orgId);
     res.json(result.rows.map((expense) => ({
       id: expense.id, organizationId: expense.organization_id, referenceNumber: expense.expense_number,
+      vendorId: expense.vendor_id || undefined,
       vendorName: expense.vendor_name || undefined, accountId: expense.expense_account_id,
+      invoiceNumber: expense.vendor_invoice_number || undefined,
       accountName: expense.expense_account_name || '',
       paidFromAccountId: expense.paid_from_account_id,
       paidFromAccountName: expense.paid_from_account_name || '',
@@ -1334,7 +1495,14 @@ export class FinanceController {
       res.status(201).json(result);
     } catch (error: any) {
       const message = error.message || 'Expense could not be posted';
-      res.status(message.startsWith('EXPENSE_INPUT_INVALID:') || message.startsWith('EXPENSE_RECEIPT_INVALID:') || message.startsWith('EXPENSE_CUSTOMER') ? 400 : 422).json({ error: message });
+      res.status(
+        message.startsWith('EXPENSE_INPUT_INVALID:') ||
+        message.startsWith('EXPENSE_RECEIPT_INVALID:') ||
+        message.startsWith('EXPENSE_CUSTOMER') ||
+        message.startsWith('EXPENSE_VENDOR_INVALID:')
+          ? 400
+          : 422
+      ).json({ error: message });
     }
   }
 
@@ -1369,6 +1537,36 @@ export class FinanceController {
     res.setHeader('Content-Length', String(receipt.content.length));
     res.setHeader('Content-Disposition', `inline; filename="${receipt.fileName.replaceAll('"', '')}"`);
     res.send(receipt.content);
+  }
+
+  public static async attachExpenseReceipts(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const organizationId = req.auth!.organizationId;
+      const attachments = await db.transaction(async (client) => {
+        const created = await ExpenseReceiptService.appendToExpense(
+          client,
+          organizationId,
+          req.params.id,
+          req.body?.receiptImages
+        );
+        await FinanceController.logAudit(
+          organizationId,
+          req.auth!.userId,
+          'EXPENSE_RECEIPTS_ATTACHED',
+          'Expense',
+          req.params.id,
+          { attachmentIds: created.map((attachment) => attachment.id), attachmentCount: created.length },
+          client,
+          true
+        );
+        return created;
+      }, { organizationId });
+      res.status(201).json({ attachments });
+    } catch (error: any) {
+      const message = error.message || 'Receipt images could not be attached';
+      const status = message.startsWith('EXPENSE_NOT_FOUND') ? 404 : 400;
+      res.status(status).json({ error: message });
+    }
   }
 
   public static async voidExpense(req: AuthenticatedRequest, res: Response): Promise<void> {
@@ -3123,8 +3321,9 @@ export class FinanceController {
   public static async updateCustomerPayment(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const orgId = req.organizationId || req.auth?.organizationId!;
-      const payment = await SalesEngine.updateCustomerPayment(orgId, req.params.id, req.body);
-      res.json({ payment });
+      const userId = req.auth?.userId!;
+      const result = await SalesEngine.updateOrCorrectCustomerPayment(orgId, userId, req.params.id, req.body);
+      res.json(result);
     } catch (error: any) {
       res.status(400).json({ error: error.message || 'Customer payment could not be updated' });
     }

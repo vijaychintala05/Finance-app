@@ -154,6 +154,41 @@ describe('BooksContext State Management & Financial Mutations', () => {
     expect(paymentCreated?.id).toBe('pay-rec-1');
   });
 
+  it('5b. updatePaymentReceived sends PUT request to server and refreshes', async () => {
+    const updatedMockPayment = {
+      id: 'pay-rec-1',
+      paymentNumber: 'PAY-001',
+      clientId: 'client-1',
+      clientName: 'Acme Global',
+      paymentDate: '2026-08-18',
+      amount: 650,
+      paymentMode: 'UPI',
+      depositToAccountId: 'acc-bank-1',
+      notes: 'Updated note',
+    };
+
+    vi.spyOn(apiClient, 'put').mockResolvedValueOnce({ data: { payment: updatedMockPayment }, error: null, status: 200 });
+    vi.spyOn(apiClient, 'get').mockResolvedValue({ data: [], error: null, status: 200 });
+
+    const { result } = renderHook(() => useBooks(), { wrapper });
+
+    let paymentUpdated: PaymentReceipt | undefined;
+    await act(async () => {
+      paymentUpdated = await result.current.updatePaymentReceived('pay-rec-1', {
+        clientId: 'client-1',
+        clientName: 'Acme Global',
+        paymentDate: '2026-08-18',
+        amount: 650,
+        paymentMethod: 'UPI' as any,
+        depositToAccountId: 'acc-bank-1',
+        notes: 'Updated note',
+      });
+    });
+
+    expect(paymentUpdated).toBeDefined();
+    expect(paymentUpdated?.amount).toBe(650);
+  });
+
   it('6. updateSettings updates userPreferences state immediately', () => {
     const { result } = renderHook(() => useBooks(), { wrapper });
 

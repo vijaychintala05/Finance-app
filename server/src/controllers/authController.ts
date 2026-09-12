@@ -378,4 +378,35 @@ export class AuthController {
       error: 'Password recovery is unavailable until verified email delivery and one-time reset completion are configured.',
     });
   }
+
+  public static async devLogin(req: Request, res: Response): Promise<void> {
+    if (process.env.NODE_ENV === 'production') {
+      res.status(403).json({ error: 'Dev authentication is prohibited in production.' });
+      return;
+    }
+    try {
+      const { DevEnvironmentService } = await import('../services/DevEnvironmentService');
+      const role = typeof req.body?.role === 'string' ? req.body.role : 'Owner';
+      const devAuth = await DevEnvironmentService.devLogin(role);
+      setAuthCookie(req, res, devAuth.token);
+      res.json(devAuth);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to complete dev login' });
+    }
+  }
+
+  public static async devSeed(req: Request, res: Response): Promise<void> {
+    if (process.env.NODE_ENV === 'production') {
+      res.status(403).json({ error: 'Dev seeding is prohibited in production.' });
+      return;
+    }
+    try {
+      const { DevEnvironmentService } = await import('../services/DevEnvironmentService');
+      await DevEnvironmentService.seedDemoData();
+      res.json({ message: 'Demo data successfully seeded for local testing' });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to seed dev demo data' });
+    }
+  }
 }
+

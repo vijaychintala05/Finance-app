@@ -160,19 +160,47 @@ export class CsvXlsxParser {
       }
     }
 
+    // Detect metadata from statement header/preamble
+    let detectedBankName: string | undefined;
+    let detectedAccountNumber: string | undefined;
+    const preambleText = lines.slice(0, Math.max(15, headerIdx + 1)).join(' ');
+    if (/hdfc/i.test(preambleText)) detectedBankName = 'HDFC Bank';
+    else if (/icici/i.test(preambleText)) detectedBankName = 'ICICI Bank';
+    else if (/state\s*bank\s*of\s*india|sbi/i.test(preambleText)) detectedBankName = 'State Bank of India';
+    else if (/axis/i.test(preambleText)) detectedBankName = 'Axis Bank';
+    else if (/kotak/i.test(preambleText)) detectedBankName = 'Kotak Mahindra Bank';
+    else if (/bank\s*of\s*baroda|bob/i.test(preambleText)) detectedBankName = 'Bank of Baroda';
+    else if (/punjab\s*national|pnb/i.test(preambleText)) detectedBankName = 'Punjab National Bank';
+    else if (/indusind/i.test(preambleText)) detectedBankName = 'IndusInd Bank';
+    else if (/canara/i.test(preambleText)) detectedBankName = 'Canara Bank';
+    else if (/idfc/i.test(preambleText)) detectedBankName = 'IDFC FIRST Bank';
+
+    const accMatch = preambleText.match(/(?:account\s*(?:no|number)|a\/c\s*(?:no|number)?)\s*[:\-]?\s*([0-9Xx\s]{6,24})/i);
+    if (accMatch && accMatch[1]) {
+      detectedAccountNumber = accMatch[1].replace(/\s+/g, '').trim();
+    }
+
     const totalCredits = transactions.filter(t => t.direction === 'CREDIT').reduce((s, t) => s + t.amount, 0);
     const totalDebits = transactions.filter(t => t.direction === 'DEBIT').reduce((s, t) => s + t.amount, 0);
     const calculatedClosing = Number((openingBalance + totalCredits - totalDebits).toFixed(2));
     const discrepancy = closingBalance ? Number((closingBalance - calculatedClosing).toFixed(2)) : 0;
+    const currency = (mapping as any)?.currency || 'INR';
+
+    const statementHealthWarning = Math.abs(discrepancy) >= 0.01 && (openingBalance !== 0 || closingBalance !== 0)
+      ? `Opening balance + Money In - Money Out differs from closing balance by ${currency} ${Math.abs(discrepancy).toFixed(2)}`
+      : undefined;
 
     return {
       openingBalance,
       closingBalance: closingBalance || calculatedClosing,
       statementFrom: transactions[0]?.transactionDate,
       statementTo: transactions[transactions.length - 1]?.transactionDate,
-      currency: (mapping as any)?.currency || 'INR',
+      currency,
       transactions,
       discrepancy,
+      detectedBankName,
+      detectedAccountNumber,
+      statementHealthWarning,
     };
   }
 

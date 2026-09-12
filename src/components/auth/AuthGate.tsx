@@ -142,6 +142,47 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
           <p className="text-sm font-semibold text-indigo-600">FirmBooks</p>
           <h1 className="text-2xl font-bold text-slate-900">{mode === 'login' ? 'Sign in' : 'Create your firm'}</h1>
         </div>
+
+        {import.meta.env.DEV && auth.devLogin && (
+          <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold uppercase tracking-wider text-amber-800 flex items-center gap-1.5">
+                <span>⚡</span> Local Test Mode (Zero-Auth)
+              </span>
+              <span className="text-[11px] text-amber-700 font-medium">Bypass Login</span>
+            </div>
+            <p className="text-xs text-amber-900 leading-relaxed">
+              Instantly enter the workspace without typing credentials or MFA challenges:
+            </p>
+            <div className="grid grid-cols-1 gap-1.5 pt-1">
+              <button
+                type="button"
+                onClick={() => auth.devLogin?.('Owner')}
+                className="w-full py-2 px-3 text-xs font-semibold rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm transition flex items-center justify-between"
+              >
+                <span>Enter as Developer Admin (Owner)</span>
+                <span className="opacity-75">→</span>
+              </button>
+              <div className="flex gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => auth.devLogin?.('Accountant')}
+                  className="flex-1 py-1.5 px-2 text-xs font-medium rounded-lg bg-white border border-amber-300 text-slate-700 hover:bg-amber-100 transition text-center"
+                >
+                  Dev Accountant
+                </button>
+                <button
+                  type="button"
+                  onClick={() => auth.devLogin?.('Viewer')}
+                  className="flex-1 py-1.5 px-2 text-xs font-medium rounded-lg bg-white border border-amber-300 text-slate-700 hover:bg-amber-100 transition text-center"
+                >
+                  Dev Auditor
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {mode === 'register' && (
           <>
             <input

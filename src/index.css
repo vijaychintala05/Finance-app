@@ -79,21 +79,43 @@
 }
 
 @media print {
-  /* Hide non-printable app layout elements */
-  header, nav, aside, .print\:hidden {
-    display: none !important;
+  @page {
+    size: A4 portrait;
+    margin: 10mm;
   }
 
   body {
     background-color: #ffffff !important;
-    color: #000000 !important;
+    color: #0f172a !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
 
-  /* Reset fixed overlay for full-page print */
+  /* Hide navigation, sidebar, headers and explicitly hidden elements */
+  header, nav, aside, .print\:hidden {
+    display: none !important;
+  }
+
+  /* When printing an invoice/bill modal, isolate it and hide workspace tables and lists */
+  body:has(#printable-bill-area) main > div:not(:has(#printable-bill-area)) {
+    display: none !important;
+  }
+
+  /* The printable invoice itself uses `space-y-6`; do not hide its document sections. */
+  body:has(#printable-bill-area) .space-y-6:not(#printable-bill-area) > *:not(:has(#printable-bill-area)) {
+    display: none !important;
+  }
+
+  body:has(#printable-bill-area) div:has(> #printable-bill-area) > *:not(#printable-bill-area) {
+    display: none !important;
+  }
+
+  /* Reset fixed modal overlay for clean full-page flow */
   .fixed.inset-0 {
     position: static !important;
     background: transparent !important;
     padding: 0 !important;
+    margin: 0 !important;
     overflow: visible !important;
     display: block !important;
   }
@@ -107,5 +129,20 @@
   .overflow-y-auto {
     overflow: visible !important;
   }
-}
 
+  #printable-bill-area {
+    padding: 0 !important;
+    margin: 0 !important;
+    overflow: visible !important;
+    background-color: #ffffff !important;
+    color: #0f172a !important;
+  }
+
+  /* Avoid breaking critical financial sections across pages */
+  #printable-bill-area table,
+  #printable-bill-area tr,
+  #printable-bill-area .grid {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+}

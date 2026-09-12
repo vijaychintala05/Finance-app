@@ -318,6 +318,10 @@ export interface Invoice {
   terms?: string;
   createdAt: string;
   editHistory?: InvoiceEditHistory[];
+  journalEntryId?: string;
+  remindersCount?: number;
+  expectedPaymentDate?: string;
+  remindersPaused?: boolean;
 }
 
 export type EstimateStatus = 'Draft' | 'Sent' | 'Accepted' | 'Declined' | 'Converted';
@@ -843,11 +847,15 @@ export interface PaymentReceipt {
   id: string;
   paymentNumber: string;
   clientName: string;
+  clientId?: string;
+  invoiceId?: string;
   invoiceNumber: string;
   paymentDate: string;
   paymentMethod: string;
   referenceNumber: string;
   amount: number;
+  depositToAccountId?: string;
+  notes?: string;
   status?: 'ALLOCATED' | 'PARTIALLY_ALLOCATED' | 'REVERSED';
 }
 

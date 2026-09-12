@@ -1,4 +1,7 @@
 import {
+  BankingOverviewResponse,
+  StatementImportPreviewResponse,
+  BankWorkspaceResponse,
   AccountingTransactionType,
   BankAccount,
   BankReconciliationMatch,
@@ -203,4 +206,88 @@ export class BankingService {
   ): Promise<{ statementTransactionId: string; reversalJournalEntryId: string }> {
     return this.apiCall(`/transactions/${encodeURIComponent(statementTransactionId)}/reverse-created-transaction`, 'POST', { reason });
   }
+
+  // --- STATEMENT-FIRST ZOHO-STYLE BANKING WORKFLOWS ---
+
+  public static getOverview(): Promise<BankingOverviewResponse> {
+    return this.apiCall<BankingOverviewResponse>('/accounts/overview', 'GET');
+  }
+
+  public static previewImport(payload: {
+    fileContent: string;
+    filename: string;
+    bankAccountId?: string;
+    mapping?: CSVColumnMapping;
+  }): Promise<StatementImportPreviewResponse> {
+    return this.apiCall<StatementImportPreviewResponse>('/imports/preview', 'POST', payload);
+  }
+
+  public static confirmImport(payload: {
+    fileContent: string;
+    filename: string;
+    mode: 'USE_EXISTING' | 'CREATE_NEW';
+    bankAccountId?: string;
+    newBankData?: {
+      bankName: string;
+      accountName: string;
+      accountNumber: string;
+      currency?: string;
+      ledgerAccountId?: string;
+    };
+    mapping?: CSVColumnMapping;
+  }): Promise<{
+    success: boolean;
+    bankAccountId: string;
+    importId: string;
+    newTransactionsCount: number;
+    exactDuplicatesCount: number;
+    possibleDuplicatesCount: number;
+    discrepancy: number;
+  }> {
+    return this.apiCall('/imports/confirm', 'POST', payload);
+  }
+
+  public static getWorkspace(
+    bankAccountId: string,
+    options: { tab?: string; search?: string; limit?: number; offset?: number } = {}
+  ): Promise<BankWorkspaceResponse> {
+    const params = new URLSearchParams();
+    params.append('bankAccountId', bankAccountId);
+    if (options.tab) params.append('tab', options.tab);
+    if (options.search) params.append('search', options.search);
+    if (options.limit) params.append('limit', String(options.limit));
+    if (options.offset) params.append('offset', String(options.offset));
+    return this.apiCall<BankWorkspaceResponse>(`/workspace?${params.toString()}`, 'GET');
+  }
+
+  public static getTransactionSuggestions(transactionId: string, candidates?: any[]): Promise<MatchSuggestion[]> {
+    return this.apiCall<MatchSuggestion[]>(`/transactions/${transactionId}/suggestions`, 'GET');
+  }
+
+  public static categorizeTransaction(
+    transactionId: string,
+    payload: {
+      ledgerAccountId: string;
+      counterpartyId?: string;
+      counterpartyName?: string;
+      projectId?: string;
+      gstTreatment?: string;
+      tdsAmount?: number;
+      notes?: string;
+      reference?: string;
+      createRule?: boolean;
+      ruleName?: string;
+    }
+  ): Promise<{ success: boolean; journalEntryId: string; transaction: BankStatementTransaction }> {
+    return this.apiCall(`/transactions/${transactionId}/categorize`, 'POST', payload);
+  }
+
+  public static ignoreTransaction(transactionId: string, isIgnored: boolean): Promise<{ isIgnored: boolean }> {
+    return this.apiCall(`/transactions/${transactionId}/ignore`, 'POST', { isIgnored });
+  }
+
+  public static reopenReconciliation(bankAccountId: string): Promise<{ reopened: boolean }> {
+    return this.apiCall('/reconciliation/reopen', 'POST', { bankAccountId });
+  }
+
 }

@@ -1183,10 +1183,12 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
         </div>
       </div>
 
-      <InvoicePreviewModal
-        invoice={previewInvoice}
-        onClose={() => setPreviewInvoice(null)}
-      />
+      {previewInvoice && (
+        <InvoicePreviewModal
+          invoice={previewInvoice}
+          onClose={() => setPreviewInvoice(null)}
+        />
+      )}
 
       <InvoiceEditorModal
         isOpen={isCreateInvoiceOpen}

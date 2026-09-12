@@ -14,6 +14,7 @@ import { TransferFundsModal } from './TransferFundsModal';
 import { TreasuryTransactionModal } from './TreasuryTransactionModal';
 import { BankingService } from '../../services/bankingService';
 import { BankAccount } from '../../types/banking';
+import { displayJournalNumber } from '../../utils/journalDisplay';
 
 interface BankingViewProps {
   autoOpenReconcile?: boolean;
@@ -251,14 +252,15 @@ export const BankingView: React.FC<BankingViewProps> = ({
     const list: BankTransactionItem[] = [];
 
     // 1. From Journal Entries
-    journalEntries.forEach((jrn) => {
+    const postedJournals = journalEntries.filter((journal) => String(journal.status || '').toUpperCase() === 'POSTED');
+    postedJournals.forEach((jrn) => {
       jrn.lines.forEach((line) => {
         if (line.accountId === activeAccount.id) {
           if (line.debit > 0) {
             list.push({
               id: `jrn-${jrn.id}-${line.id}`,
               date: jrn.date,
-              ref: jrn.entryNumber || jrn.reference || 'JRN',
+              ref: displayJournalNumber(jrn.entryNumber, jrn.reference),
               description: line.description || jrn.description || 'Journal Deposit',
               type: 'DEBIT',
               amount: line.debit,
@@ -274,7 +276,7 @@ export const BankingView: React.FC<BankingViewProps> = ({
             list.push({
               id: `jrn-${jrn.id}-${line.id}`,
               date: jrn.date,
-              ref: jrn.entryNumber || jrn.reference || 'JRN',
+              ref: displayJournalNumber(jrn.entryNumber, jrn.reference),
               description: line.description || jrn.description || 'Journal Payment',
               type: 'CREDIT',
               amount: line.credit,
@@ -293,7 +295,7 @@ export const BankingView: React.FC<BankingViewProps> = ({
     // 2. Legacy expenses without a certified journal. Every current expense
     // posts a journal atomically, so rendering both sources would duplicate
     // its bank movement.
-    const postedJournalIds = new Set(journalEntries.map((journal) => journal.id));
+    const postedJournalIds = new Set(postedJournals.map((journal) => journal.id));
     expenses.forEach((exp) => {
       if (exp.paidFromAccountId === activeAccount.id) {
         const isRepresentedByJournal = Boolean(exp.journalEntryId && postedJournalIds.has(exp.journalEntryId));

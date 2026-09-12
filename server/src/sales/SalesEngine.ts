@@ -3690,7 +3690,7 @@ export class SalesEngine {
   public static async updateCustomerPayment(
     orgId: string,
     paymentId: string,
-    data: { reference?: string; notes?: string; paymentDate?: string },
+    data: { reference?: string; referenceNumber?: string; notes?: string; paymentDate?: string; paymentMode?: string; paymentMethod?: string },
     transactionClient?: any
   ): Promise<any> {
     const execute = async (client: any) => {
@@ -3711,16 +3711,205 @@ export class SalesEngine {
         'Document modified after submission'
       );
 
-      const ref = data.reference !== undefined ? data.reference : pmt.reference;
+      const ref = data.reference !== undefined ? data.reference : (data.referenceNumber !== undefined ? data.referenceNumber : pmt.reference);
       const notes = data.notes !== undefined ? data.notes : pmt.notes;
       const paymentDate = data.paymentDate || pmt.payment_date;
+      const paymentMode = data.paymentMode || data.paymentMethod || pmt.payment_mode;
 
       await client.query(
-        `UPDATE payments_received SET reference = $1, notes = $2, payment_date = $3 WHERE organization_id = $4 AND id = $5`,
-        [ref, notes, paymentDate, orgId, paymentId]
+        `UPDATE payments_received SET reference = $1, notes = $2, payment_date = $3, payment_mode = $4 WHERE organization_id = $5 AND id = $6`,
+        [ref, notes, paymentDate, paymentMode, orgId, paymentId]
       );
 
-      return { ...pmt, reference: ref, notes, paymentDate };
+      const updated = {
+        ...pmt,
+        reference: ref,
+        referenceNumber: ref,
+        notes,
+        paymentDate,
+        payment_date: paymentDate,
+        paymentMode,
+        paymentMethod: paymentMode,
+      };
+
+      return {
+        ...updated,
+        payment: updated,
+      };
+    };
+
+    return transactionClient ? await execute(transactionClient) : await db.transaction(execute);
+  }
+
+  public static async correctCustomerPayment(
+    orgId: string,
+    userId: string,
+    paymentId: string,
+    data: {
+      customerId?: string;
+      customerName?: string;
+      clientId?: string;
+      clientName?: string;
+      invoiceId?: string;
+      paymentDate?: string;
+      amount?: number;
+      paymentMode?: string;
+      paymentMethod?: string;
+      depositToAccountId?: string;
+      depositAccountId?: string;
+      reference?: string;
+      referenceNumber?: string;
+      notes?: string;
+      allocations?: { invoiceId: string; amount: number }[];
+      reason?: string;
+    },
+    transactionClient?: any
+  ): Promise<{ success: boolean; payment: any; correction: any }> {
+    const execute = async (client: any) => {
+      const origRes = await client.query(
+        `SELECT * FROM payments_received WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, paymentId]
+      );
+      if (origRes.rows.length === 0) throw new Error('CUSTOMER_PAYMENT_NOT_FOUND: Payment received not found');
+      const original = origRes.rows[0];
+      if (String(original.status).toUpperCase() === 'REVERSED') throw new Error('Cannot correct an already reversed payment');
+
+      const reason = data.reason || 'Customer payment correction';
+
+      // 1. Reverse original payment atomically within the transaction
+      // FinancialDestructiveActionsService.reversePaymentReceived handles reversing the journal,
+      // unallocating invoices and restoring their balance/status, and updating customer balances.
+      await FinancialDestructiveActionsService.reversePaymentReceived(orgId, paymentId, userId, reason);
+
+      // 2. Fetch original allocations if none provided
+      let allocations = data.allocations;
+      let targetInvoiceId = data.invoiceId;
+      if (!allocations && !targetInvoiceId) {
+        const origAlloc = await client.query(
+          `SELECT invoice_id, amount FROM payment_received_allocations WHERE organization_id = $1 AND payment_id = $2`,
+          [orgId, paymentId]
+        );
+        if (origAlloc.rows.length > 0) {
+          allocations = origAlloc.rows.map((r: any) => ({ invoiceId: r.invoice_id, amount: Number(r.amount) }));
+        }
+      }
+
+      // 3. Prepare replacement payload
+      const finalAmount = data.amount !== undefined ? Number(data.amount) : Number(original.amount);
+      const rawPaymentDate = data.paymentDate || original.payment_date;
+      const finalPaymentDate = typeof rawPaymentDate === 'string'
+        ? rawPaymentDate.slice(0, 10)
+        : new Date(rawPaymentDate).toISOString().slice(0, 10);
+      const finalPaymentMode = data.paymentMode || data.paymentMethod || original.payment_mode;
+      const finalDepositAccountId = data.depositToAccountId || data.depositAccountId || original.deposit_to_account_id;
+      const finalReference = data.reference !== undefined ? data.reference : (data.referenceNumber !== undefined ? data.referenceNumber : original.reference);
+      const finalNotes = data.notes !== undefined ? data.notes : original.notes;
+      const finalCustomerId = data.customerId || data.clientId || original.client_id;
+      const finalCustomerName = data.customerName || data.clientName || original.client_name;
+
+      if (allocations && allocations.length === 1 && data.amount !== undefined) {
+        allocations = [{ invoiceId: allocations[0].invoiceId, amount: finalAmount }];
+      }
+
+      const replacement = await SalesEngine.recordPayment(orgId, {
+        customerId: finalCustomerId,
+        customerName: finalCustomerName,
+        paymentDate: finalPaymentDate,
+        amount: finalAmount,
+        paymentMode: finalPaymentMode,
+        depositToAccountId: finalDepositAccountId,
+        reference: finalReference,
+        notes: finalNotes,
+        invoiceId: targetInvoiceId,
+        allocations,
+      }, client);
+
+      await client.query(
+        `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state, after_state)
+         VALUES ($1, $2, $3, 'CUSTOMER_PAYMENT_CORRECTED', 'PaymentReceived', $4, $5, $6)`,
+        [
+          newId('aud'),
+          orgId,
+          userId,
+          paymentId,
+          JSON.stringify({ paymentNumber: original.payment_number, amount: original.amount, date: original.payment_date, journalEntryId: original.journal_entry_id }),
+          JSON.stringify({ replacementPaymentId: replacement.id, replacementPaymentNumber: replacement.paymentNumber, amount: finalAmount, reason })
+        ]
+      );
+
+      const returnedPayment = {
+        ...replacement,
+        id: replacement.id,
+        paymentNumber: replacement.paymentNumber,
+        clientName: finalCustomerName,
+        clientId: finalCustomerId,
+        paymentDate: finalPaymentDate,
+        paymentMethod: finalPaymentMode,
+        paymentMode: finalPaymentMode,
+        depositToAccountId: finalDepositAccountId,
+        referenceNumber: finalReference,
+        reference: finalReference,
+        notes: finalNotes,
+        amount: finalAmount,
+      };
+
+      return {
+        success: true,
+        payment: returnedPayment,
+        correction: {
+          voidedPaymentId: paymentId,
+          reversalReason: reason,
+          replacement: returnedPayment,
+        },
+      };
+    };
+
+    return transactionClient ? await execute(transactionClient) : await db.transaction(execute);
+  }
+
+  public static async updateOrCorrectCustomerPayment(
+    orgId: string,
+    userId: string,
+    paymentId: string,
+    data: any,
+    transactionClient?: any
+  ): Promise<any> {
+    const execute = async (client: any) => {
+      const res = await client.query(
+        `SELECT * FROM payments_received WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, paymentId]
+      );
+      if (res.rows.length === 0) throw new Error('CUSTOMER_PAYMENT_NOT_FOUND: Payment received not found');
+      const pmt = res.rows[0];
+      if (String(pmt.status).toUpperCase() === 'REVERSED') throw new Error('Cannot update a reversed payment');
+
+      const dateStr = data.paymentDate ? (typeof data.paymentDate === 'string' ? data.paymentDate.slice(0, 10) : new Date(data.paymentDate).toISOString().slice(0, 10)) : null;
+      const pmtDateStr = pmt.payment_date ? (typeof pmt.payment_date === 'string' ? pmt.payment_date.slice(0, 10) : new Date(pmt.payment_date).toISOString().slice(0, 10)) : null;
+
+      const hasAmountChange = data.amount !== undefined && Number(data.amount) !== Number(pmt.amount);
+      const hasDateChange = dateStr !== null && dateStr !== pmtDateStr;
+      const resolvedDepositId = data.depositToAccountId || data.depositAccountId;
+      const hasAccountChange = resolvedDepositId !== undefined && resolvedDepositId !== pmt.deposit_to_account_id;
+
+      let hasAllocationChange = false;
+      if (data.invoiceId !== undefined || data.allocations !== undefined) {
+        const currentAllocRes = await client.query(
+          `SELECT invoice_id, amount FROM payment_received_allocations WHERE organization_id = $1 AND payment_id = $2`,
+          [orgId, paymentId]
+        );
+        const currentInvoiceId = currentAllocRes.rows[0]?.invoice_id;
+        if (data.invoiceId && currentInvoiceId && data.invoiceId !== currentInvoiceId) {
+          hasAllocationChange = true;
+        }
+      }
+
+      const hasFinancialChanges = hasAmountChange || hasDateChange || hasAccountChange || hasAllocationChange;
+
+      if (hasFinancialChanges) {
+        return await SalesEngine.correctCustomerPayment(orgId, userId, paymentId, data, client);
+      }
+
+      return await SalesEngine.updateCustomerPayment(orgId, paymentId, data, client);
     };
 
     return transactionClient ? await execute(transactionClient) : await db.transaction(execute);

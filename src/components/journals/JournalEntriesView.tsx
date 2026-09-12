@@ -4,6 +4,7 @@ import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate } from '../../utils/formatters';
 import { JournalModal } from './JournalModal';
 import { EmptyStateCard } from '../common/EmptyStateCard';
+import { displayJournalNumber, isInternalExpenseJournalNumber } from '../../utils/journalDisplay';
 
 interface JournalEntriesViewProps {
   autoOpenCreateModal?: boolean;
@@ -87,6 +88,7 @@ export const JournalEntriesView: React.FC<JournalEntriesViewProps> = ({
         ) : (
           filteredJournals.map((jrn) => {
             const totalDebit = jrn.lines.reduce((s, l) => s + (l.debit || 0), 0);
+            const isLegacyExpenseJournal = isInternalExpenseJournalNumber(jrn.entryNumber);
             return (
               <div
                 key={jrn.id}
@@ -94,11 +96,11 @@ export const JournalEntriesView: React.FC<JournalEntriesViewProps> = ({
               >
                 <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-2 pb-2 border-b border-slate-100 dark:border-slate-800">
                   <div className="flex items-center space-x-3">
-                    <span className="font-mono text-xs font-bold text-blue-600 dark:text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded border border-blue-500/20">
-                      {jrn.entryNumber}
-                    </span>
+                    {!isLegacyExpenseJournal && <span className="font-mono text-xs font-bold text-blue-600 dark:text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded border border-blue-500/20">
+                      {displayJournalNumber(jrn.entryNumber, jrn.reference)}
+                    </span>}
                     <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
-                      {jrn.reference}
+                      {jrn.reference || displayJournalNumber(jrn.entryNumber, jrn.reference)}
                     </span>
                     <span className="text-xs text-slate-500">• {formatDate(jrn.date)}</span>
                   </div>

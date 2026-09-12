@@ -74,6 +74,9 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
   const [filterReceipt, setFilterReceipt] = useState<'ALL' | 'WITH_RECEIPT' | 'WITHOUT_RECEIPT'>('ALL');
   const [filterBillable, setFilterBillable] = useState<'ALL' | 'BILLABLE' | 'UNBILLED' | 'BILLED' | 'NON_BILLABLE'>('ALL');
   const [filterType, setFilterType] = useState<'ALL' | 'ITEMIZED' | 'SINGLE'>('ALL');
+  const [filterExpenseAccountId, setFilterExpenseAccountId] = useState('ALL');
+  const [filterPaidFromAccountId, setFilterPaidFromAccountId] = useState('ALL');
+  const [filterVendorName, setFilterVendorName] = useState('ALL');
 
   // Pagination states
   const [currentPage, setCurrentPage] = useState(1);
@@ -126,8 +129,26 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
     setFilterReceipt('ALL');
     setFilterBillable('ALL');
     setFilterType('ALL');
+    setFilterExpenseAccountId('ALL');
+    setFilterPaidFromAccountId('ALL');
+    setFilterVendorName('ALL');
     setCurrentPage(1);
   };
+
+  const expenseAccountOptions = useMemo(
+    () => Array.from(new Map<string, string>(expenses.map((expense): [string, string] => [expense.accountId, getExpenseAccountName(expense)])).entries())
+      .sort(([, left], [, right]) => left.localeCompare(right)),
+    [expenses, accountMap]
+  );
+  const paidFromAccountOptions = useMemo(
+    () => Array.from(new Map<string, string>(expenses.map((expense): [string, string] => [expense.paidFromAccountId, getPaidFromAccountName(expense)])).entries())
+      .sort(([, left], [, right]) => left.localeCompare(right)),
+    [expenses, accountMap]
+  );
+  const vendorOptions = useMemo(
+    () => Array.from(new Set<string>(expenses.map((expense) => expense.vendorName || 'Unassigned vendor'))).sort((left, right) => left.localeCompare(right)),
+    [expenses]
+  );
 
   // Enhanced Smart Multi-Field Tokenized Search & Filtering
   const filteredExpenses = useMemo(() => {
@@ -155,6 +176,10 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
       // Filter type
       if (filterType === 'ITEMIZED' && !e.isItemized) return false;
       if (filterType === 'SINGLE' && e.isItemized) return false;
+
+      if (filterExpenseAccountId !== 'ALL' && e.accountId !== filterExpenseAccountId) return false;
+      if (filterPaidFromAccountId !== 'ALL' && e.paidFromAccountId !== filterPaidFromAccountId) return false;
+      if (filterVendorName !== 'ALL' && (e.vendorName || 'Unassigned vendor') !== filterVendorName) return false;
 
       if (searchTokens.length === 0) return true;
 
@@ -195,6 +220,9 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
     filterReceipt,
     filterBillable,
     filterType,
+    filterExpenseAccountId,
+    filterPaidFromAccountId,
+    filterVendorName,
     accountMap,
     settings.currencySymbol,
   ]);
@@ -202,7 +230,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
   // Reset page to 1 whenever search, filters, or page size changes
   useEffect(() => {
     setCurrentPage(1);
-  }, [deferredSearch, filterStatus, filterReceipt, filterBillable, filterType, pageSize]);
+  }, [deferredSearch, filterStatus, filterReceipt, filterBillable, filterType, filterExpenseAccountId, filterPaidFromAccountId, filterVendorName, pageSize]);
 
   // Pagination computations
   const totalItems = filteredExpenses.length;
@@ -216,13 +244,18 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
     (acc, e) => acc + (e.status === 'VOIDED' ? 0 : (e.amount || 0)),
     0
   );
+  const missingEvidence = filteredExpenses.filter((expense) => expense.status !== 'VOIDED' && !expense.receiptFileName);
+  const recoverableExpenses = filteredExpenses.filter((expense) => expense.status !== 'VOIDED' && expense.isBillable && !expense.isBilled);
 
   const isAnyFilterActive =
     search.trim() !== '' ||
     filterStatus !== 'ALL' ||
     filterReceipt !== 'ALL' ||
     filterBillable !== 'ALL' ||
-    filterType !== 'ALL';
+    filterType !== 'ALL' ||
+    filterExpenseAccountId !== 'ALL' ||
+    filterPaidFromAccountId !== 'ALL' ||
+    filterVendorName !== 'ALL';
 
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-7xl mx-auto">
@@ -231,10 +264,10 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
         <div>
           <h2 className="text-xl font-extrabold text-slate-900 dark:text-white flex items-center space-x-2">
             <Receipt className="w-6 h-6 text-blue-600" />
-            <span>Record Expenses & Vendor Bills</span>
+            <span>Expenses</span>
           </h2>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 font-medium">
-            Log vendor payments, attach receipts, manage itemized breakdowns & customer billable costs
+            Record paid business costs with evidence, vendor references, and recoverable customer charges.
           </p>
         </div>
 
@@ -275,10 +308,11 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
 
         <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs flex items-center justify-between">
           <div>
-            <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Receipts Attached</p>
-            <p className="text-lg font-black text-emerald-600 dark:text-emerald-400 mt-0.5">
-              {filteredExpenses.filter((e) => e.receiptFileName).length} Receipts
+            <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Evidence Follow-up</p>
+            <p className="text-lg font-black text-rose-600 dark:text-rose-400 mt-0.5">
+              {missingEvidence.length} Missing
             </p>
+            <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">{formatCurrency(missingEvidence.reduce((sum, expense) => sum + expense.amount, 0), settings.currencySymbol)} needs a receipt</p>
           </div>
           <div className="w-10 h-10 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 flex items-center justify-center font-bold">
             <Paperclip className="w-5 h-5" />
@@ -287,10 +321,11 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
 
         <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs flex items-center justify-between">
           <div>
-            <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Customer Billable</p>
+            <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Awaiting Customer Billing</p>
             <p className="text-lg font-black text-amber-600 dark:text-amber-400 mt-0.5">
-              {filteredExpenses.filter((e) => e.isBillable).length} Billable
+              {formatCurrency(recoverableExpenses.reduce((sum, expense) => sum + expense.amount, 0), settings.currencySymbol)}
             </p>
+            <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">{recoverableExpenses.length} recoverable expense{recoverableExpenses.length === 1 ? '' : 's'}</p>
           </div>
           <div className="w-10 h-10 rounded-xl bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400 flex items-center justify-center font-bold">
             <User className="w-5 h-5" />
@@ -331,6 +366,45 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
               <span>Reset Filters</span>
             </button>
           )}
+        </div>
+
+        <div className="grid gap-2 border-t border-slate-100 pt-3 dark:border-slate-800 sm:grid-cols-3">
+          <label className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+            Expense category
+            <select
+              aria-label="Filter by expense category"
+              value={filterExpenseAccountId}
+              onChange={(event) => setFilterExpenseAccountId(event.target.value)}
+              className="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-xs font-medium text-slate-700 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+            >
+              <option value="ALL">All categories</option>
+              {expenseAccountOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+            </select>
+          </label>
+          <label className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+            Paid through
+            <select
+              aria-label="Filter by payment account"
+              value={filterPaidFromAccountId}
+              onChange={(event) => setFilterPaidFromAccountId(event.target.value)}
+              className="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-xs font-medium text-slate-700 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+            >
+              <option value="ALL">All payment accounts</option>
+              {paidFromAccountOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+            </select>
+          </label>
+          <label className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+            Vendor
+            <select
+              aria-label="Filter by vendor"
+              value={filterVendorName}
+              onChange={(event) => setFilterVendorName(event.target.value)}
+              className="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-xs font-medium text-slate-700 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+            >
+              <option value="ALL">All vendors</option>
+              {vendorOptions.map((name) => <option key={name} value={name}>{name}</option>)}
+            </select>
+          </label>
         </div>
 
         {/* Quick Filter Chips */}
@@ -495,7 +569,12 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                   <span className="bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold px-2 py-0.5 rounded-md">
                     Vendor: {exp.vendorName || 'General'}
                   </span>
-                  <span className="bg-slate-50 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400 px-2 py-0.5 rounded-md border border-slate-200 dark:border-slate-700">
+                  {exp.invoiceNumber && (
+                    <span className="max-w-full break-words bg-slate-50 dark:bg-slate-800/60 text-slate-600 dark:text-slate-300 px-2 py-0.5 rounded-md border border-slate-200 dark:border-slate-700">
+                      Ref: {exp.invoiceNumber}
+                    </span>
+                  )}
+                  <span className="max-w-full break-words bg-slate-50 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400 px-2 py-0.5 rounded-md border border-slate-200 dark:border-slate-700">
                     Via: {paidFromName}
                   </span>
                   {exp.isItemized && (
@@ -540,8 +619,9 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                 <th className="p-3 pl-4">Ref # & Date</th>
                 <th className="p-3">Expense Category</th>
                 <th className="p-3">Vendor / Invoice#</th>
+                <th className="p-3">Paid Through</th>
                 <th className="p-3">Customer / Project</th>
-                <th className="p-3">Receipt</th>
+                <th className="p-3">Evidence</th>
                 <th className="p-3">Amount</th>
                 <th className="p-3 text-right pr-4">Status</th>
               </tr>
@@ -549,7 +629,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {paginatedExpenses.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="p-8 text-center text-slate-400">
+                  <td colSpan={8} className="p-8 text-center text-slate-400">
                     <Receipt className="w-10 h-10 mx-auto mb-2 text-slate-300 dark:text-slate-600" />
                     <p className="font-semibold text-xs text-slate-700 dark:text-slate-300">
                       No expenses recorded matching criteria
@@ -592,9 +672,6 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
 
                       <td className="p-3">
                         <div className="font-bold text-slate-800 dark:text-slate-100 text-xs">{accName}</div>
-                        <div className="text-[10px] text-slate-500 dark:text-slate-400">
-                          Paid via: {paidFromName}
-                        </div>
                         {exp.description && (
                           <div
                             className="text-[10px] text-slate-400 dark:text-slate-500 truncate max-w-xs mt-0.5"
@@ -620,6 +697,11 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                             Inv#: {exp.invoiceNumber}
                           </div>
                         )}
+                      </td>
+
+                      <td className="p-3">
+                        <div className="text-xs font-semibold text-slate-800 dark:text-slate-200">{paidFromName}</div>
+                        <div className="mt-0.5 text-[10px] text-slate-400 dark:text-slate-500">Paid account</div>
                       </td>
 
                       <td className="p-3">
@@ -650,11 +732,13 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
 
                       <td className="p-3">
                         {exp.receiptFileName ? (
-                          <span className="inline-flex items-center gap-1 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 px-2 py-1 rounded-lg text-[10px] font-bold border border-emerald-200 dark:border-emerald-800">
-                            <Paperclip className="w-3 h-3" /> Receipt
+                          <span className="inline-flex items-center gap-1 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 px-2 py-1 rounded-md text-[10px] font-bold border border-emerald-200 dark:border-emerald-800">
+                            <Paperclip className="w-3 h-3" /> Attached
                           </span>
                         ) : (
-                          <span className="text-slate-300 dark:text-slate-600 text-[11px]">—</span>
+                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 dark:text-amber-300">
+                            Missing
+                          </span>
                         )}
                       </td>
 

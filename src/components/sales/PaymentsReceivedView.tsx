@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Plus, Receipt, Search, ShieldCheck, X } from 'lucide-react';
+import { Pencil, Plus, Receipt, Search, ShieldCheck, X } from 'lucide-react';
 import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate } from '../../utils/formatters';
 import { PaymentReceipt } from '../../types';
@@ -18,7 +18,7 @@ export const PaymentsReceivedView: React.FC<PaymentsReceivedViewProps> = ({
   selectedEntityId,
   onSelectedEntityClosed,
 }) => {
-  const { paymentsReceived, addPaymentReceived, invoices, accounts, settings } = useBooks();
+  const { paymentsReceived, addPaymentReceived, updatePaymentReceived, invoices, accounts, settings } = useBooks();
   const outstandingInvoices = useMemo(
     () => invoices.filter((invoice) => invoice.balanceDue > 0 && !['Draft', 'Void'].includes(invoice.status)),
     [invoices]
@@ -40,24 +40,80 @@ export const PaymentsReceivedView: React.FC<PaymentsReceivedViewProps> = ({
 
   const [search, setSearch] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingPayment, setEditingPayment] = useState<PaymentReceipt | null>(null);
   const [viewingPayment, setViewingPayment] = useState<PaymentReceipt | null>(null);
   const [invoiceId, setInvoiceId] = useState('');
   const [depositAccountId, setDepositAccountId] = useState('');
   const [paymentDate, setPaymentDate] = useState(new Date().toISOString().slice(0, 10));
   const [paymentMethod, setPaymentMethod] = useState('Bank Transfer');
   const [referenceNumber, setReferenceNumber] = useState('');
+  const [notes, setNotes] = useState('');
+  const [correctionReason, setCorrectionReason] = useState('Adjusted payment details');
   const [amount, setAmount] = useState('');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  const availableInvoices = useMemo(() => {
+    if (!editingPayment) return outstandingInvoices;
+    const editingInvId =
+      editingPayment.invoiceId ||
+      invoices.find((inv) => inv.invoiceNumber === editingPayment.invoiceNumber)?.id;
+    if (!editingInvId) return outstandingInvoices;
+    const matchingInv = invoices.find((inv) => inv.id === editingInvId);
+    if (matchingInv && !outstandingInvoices.some((inv) => inv.id === matchingInv.id)) {
+      return [
+        {
+          ...matchingInv,
+          balanceDue: Math.round((Number(matchingInv.balanceDue || 0) + Number(editingPayment.amount || 0)) * 100) / 100,
+        },
+        ...outstandingInvoices,
+      ];
+    }
+    return outstandingInvoices.map((inv) => {
+      if (inv.id === editingInvId) {
+        return {
+          ...inv,
+          balanceDue: Math.round((Number(inv.balanceDue || 0) + Number(editingPayment.amount || 0)) * 100) / 100,
+        };
+      }
+      return inv;
+    });
+  }, [invoices, outstandingInvoices, editingPayment]);
+
   const openCreateModal = () => {
+    setEditingPayment(null);
     const invoice = outstandingInvoices[0];
     setInvoiceId(invoice?.id || '');
     setDepositAccountId(depositAccounts[0]?.id || '');
     setPaymentDate(new Date().toISOString().slice(0, 10));
     setPaymentMethod('Bank Transfer');
     setReferenceNumber('');
+    setNotes('');
+    setCorrectionReason('Adjusted payment details');
     setAmount(invoice ? invoice.balanceDue.toFixed(2) : '');
+    setError('');
+    setIsSubmitting(false);
+    setIsModalOpen(true);
+  };
+
+  const openEditModal = (payment: PaymentReceipt) => {
+    setEditingPayment(payment);
+    const matchedInvoice = invoices.find(
+      (inv) => inv.id === payment.invoiceId || inv.invoiceNumber === payment.invoiceNumber
+    );
+    setInvoiceId(matchedInvoice?.id || payment.invoiceId || '');
+    setDepositAccountId(payment.depositToAccountId || depositAccounts[0]?.id || '');
+    const dateStr = payment.paymentDate
+      ? payment.paymentDate.includes('T')
+        ? payment.paymentDate.split('T')[0]
+        : payment.paymentDate.slice(0, 10)
+      : new Date().toISOString().slice(0, 10);
+    setPaymentDate(dateStr);
+    setPaymentMethod(payment.paymentMethod || 'Bank Transfer');
+    setReferenceNumber(payment.referenceNumber || '');
+    setNotes(payment.notes || '');
+    setCorrectionReason('Corrected payment details');
+    setAmount(String(payment.amount || ''));
     setError('');
     setIsSubmitting(false);
     setIsModalOpen(true);
@@ -91,7 +147,7 @@ export const PaymentsReceivedView: React.FC<PaymentsReceivedViewProps> = ({
     if (found) setViewingPayment(found);
   }, [selectedEntityId, paymentsReceived]);
 
-  const selectedInvoice = outstandingInvoices.find((invoice) => invoice.id === invoiceId);
+  const selectedInvoice = availableInvoices.find((invoice) => invoice.id === invoiceId);
   const filtered = paymentsReceived.filter((payment) => {
     const query = search.toLowerCase();
     return (
@@ -106,7 +162,7 @@ export const PaymentsReceivedView: React.FC<PaymentsReceivedViewProps> = ({
 
   const handleInvoiceChange = (nextInvoiceId: string) => {
     setInvoiceId(nextInvoiceId);
-    const invoice = outstandingInvoices.find((candidate) => candidate.id === nextInvoiceId);
+    const invoice = availableInvoices.find((candidate) => candidate.id === nextInvoiceId);
     setAmount(invoice ? invoice.balanceDue.toFixed(2) : '');
     const issueDateOnly = normalizeDate(invoice?.issueDate);
     if (issueDateOnly && paymentDate < issueDateOnly) setPaymentDate(issueDateOnly);
@@ -115,11 +171,11 @@ export const PaymentsReceivedView: React.FC<PaymentsReceivedViewProps> = ({
   const handleRecordPayment = async (event: React.FormEvent) => {
     event.preventDefault();
     setError('');
-    const invoice = outstandingInvoices.find((candidate) => candidate.id === invoiceId);
+    const invoice = availableInvoices.find((candidate) => candidate.id === invoiceId);
     const depositAccount = depositAccounts.find((account) => account.id === depositAccountId);
     const parsedAmount = Number(amount);
     if (!invoice || !depositAccount) {
-      setError('Select an outstanding invoice and an active deposit account.');
+      setError('Select an invoice and an active deposit account.');
       return;
     }
     if (!Number.isFinite(parsedAmount) || parsedAmount <= 0 || Math.abs(parsedAmount * 100 - Math.round(parsedAmount * 100)) > 1e-7) {
@@ -134,24 +190,42 @@ export const PaymentsReceivedView: React.FC<PaymentsReceivedViewProps> = ({
 
     setIsSubmitting(true);
     try {
-      await addPaymentReceived({
-        paymentNumber: '',
-        clientName: invoice.clientName,
-        invoiceNumber: invoice.invoiceNumber,
-        paymentDate,
-        paymentMethod,
-        referenceNumber: referenceNumber.trim(),
-        amount: parsedAmount,
-        invoiceId: invoice.id,
-        clientId: invoice.clientId,
-        depositToAccountId: depositAccount.id,
-      });
+      if (editingPayment) {
+        await updatePaymentReceived(editingPayment.id, {
+          clientId: invoice.clientId,
+          clientName: invoice.clientName,
+          invoiceId: invoice.id,
+          invoiceNumber: invoice.invoiceNumber,
+          paymentDate,
+          paymentMethod,
+          depositToAccountId: depositAccount.id,
+          referenceNumber: referenceNumber.trim(),
+          amount: parsedAmount,
+          notes: notes.trim(),
+          reason: correctionReason.trim() || 'Payment details updated',
+        });
+      } else {
+        await addPaymentReceived({
+          paymentNumber: '',
+          clientName: invoice.clientName,
+          invoiceNumber: invoice.invoiceNumber,
+          paymentDate,
+          paymentMethod,
+          referenceNumber: referenceNumber.trim(),
+          amount: parsedAmount,
+          invoiceId: invoice.id,
+          clientId: invoice.clientId,
+          depositToAccountId: depositAccount.id,
+          notes: notes.trim(),
+        });
+      }
       setIsModalOpen(false);
+      setEditingPayment(null);
     } catch (submissionError) {
       setError(
         submissionError instanceof Error
           ? submissionError.message
-          : 'Payment could not be recorded. No financial data was changed.'
+          : 'Payment could not be saved. No financial data was changed.'
       );
     } finally {
       setIsSubmitting(false);
@@ -191,11 +265,11 @@ export const PaymentsReceivedView: React.FC<PaymentsReceivedViewProps> = ({
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
             <thead className="border-b border-slate-200 bg-slate-50 text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:border-slate-800 dark:bg-slate-800/80">
-              <tr><th className="p-3 pl-4">Payment #</th><th className="p-3">Customer</th><th className="p-3">Allocated invoice</th><th className="p-3">Date</th><th className="p-3">Method</th><th className="p-3">Reference</th><th className="p-3 pr-4 text-right">Amount</th></tr>
+              <tr><th className="p-3 pl-4">Payment #</th><th className="p-3">Customer</th><th className="p-3">Allocated invoice</th><th className="p-3">Date</th><th className="p-3">Method</th><th className="p-3">Reference</th><th className="p-3 text-right">Amount</th><th className="p-3 pr-4 text-right">Actions</th></tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {filtered.length === 0 ? (
-                <tr><td colSpan={7} className="p-10 text-center text-sm text-slate-500">No authoritative payment records found.</td></tr>
+                <tr><td colSpan={8} className="p-10 text-center text-sm text-slate-500">No authoritative payment records found.</td></tr>
               ) : filtered.map((payment) => (
                 <tr key={payment.id} onClick={() => setViewingPayment(payment)} className="cursor-pointer transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/50">
                   <td className="p-3 pl-4 font-mono font-bold text-teal-600">{payment.paymentNumber}{payment.status === 'REVERSED' ? ' · Reversed' : ''}</td>
@@ -204,7 +278,19 @@ export const PaymentsReceivedView: React.FC<PaymentsReceivedViewProps> = ({
                   <td className="p-3 text-slate-500">{formatDate(payment.paymentDate)}</td>
                   <td className="p-3 font-medium text-slate-700 dark:text-slate-300">{payment.paymentMethod}</td>
                   <td className="p-3 font-mono text-slate-500">{payment.referenceNumber || '—'}</td>
-                  <td className="p-3 pr-4 text-right font-mono text-sm font-extrabold text-teal-700">{formatCurrency(payment.amount, settings.currencySymbol)}</td>
+                  <td className="p-3 text-right font-mono text-sm font-extrabold text-teal-700">{formatCurrency(payment.amount, settings.currencySymbol)}</td>
+                  <td className="p-3 pr-4 text-right" onClick={(e) => e.stopPropagation()}>
+                    {payment.status !== 'REVERSED' && (
+                      <button
+                        type="button"
+                        onClick={() => openEditModal(payment)}
+                        title="Edit payment"
+                        className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-blue-600 dark:hover:bg-slate-800 dark:hover:text-blue-400"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -216,7 +302,7 @@ export const PaymentsReceivedView: React.FC<PaymentsReceivedViewProps> = ({
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs" onClick={() => !isSubmitting && setIsModalOpen(false)}>
           <div className="w-full max-w-md space-y-4 rounded-2xl border border-slate-200 bg-white p-6 shadow-xl dark:border-slate-800 dark:bg-slate-900" onClick={(event) => event.stopPropagation()}>
             <div className="flex items-start justify-between">
-              <div><h3 className="flex items-center gap-2 text-base font-bold text-slate-900 dark:text-white"><Receipt className="h-5 w-5 text-teal-600" />Record payment received</h3><p className="mt-1 text-xs text-slate-500">Payment number and ledger entry are assigned by the server.</p></div>
+              <div><h3 className="flex items-center gap-2 text-base font-bold text-slate-900 dark:text-white"><Receipt className="h-5 w-5 text-teal-600" />{editingPayment ? 'Edit payment received' : 'Record payment received'}</h3><p className="mt-1 text-xs text-slate-500">{editingPayment ? 'Adjust payment details, allocation, or deposit account.' : 'Payment number and ledger entry are assigned by the server.'}</p></div>
               <button type="button" onClick={() => setIsModalOpen(false)} disabled={isSubmitting} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100"><X className="h-4 w-4" /></button>
             </div>
 
@@ -224,7 +310,7 @@ export const PaymentsReceivedView: React.FC<PaymentsReceivedViewProps> = ({
             {error && <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs font-semibold text-rose-800 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-200">{error}</div>}
 
             <form onSubmit={handleRecordPayment} className="space-y-3">
-              <label className="block space-y-1 text-xs font-bold text-slate-700 dark:text-slate-300"><span>Outstanding invoice</span><select required value={invoiceId} onChange={(event) => handleInvoiceChange(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white p-2.5 font-medium dark:border-slate-700 dark:bg-slate-800 dark:text-white"><option value="">Select invoice</option>{outstandingInvoices.map((invoice) => <option key={invoice.id} value={invoice.id}>{invoice.invoiceNumber} — {invoice.clientName} — {formatCurrency(invoice.balanceDue, settings.currencySymbol)} due</option>)}</select></label>
+              <label className="block space-y-1 text-xs font-bold text-slate-700 dark:text-slate-300"><span>Outstanding invoice</span><select required value={invoiceId} onChange={(event) => handleInvoiceChange(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white p-2.5 font-medium dark:border-slate-700 dark:bg-slate-800 dark:text-white"><option value="">Select invoice</option>{availableInvoices.map((invoice) => <option key={invoice.id} value={invoice.id}>{invoice.invoiceNumber} — {invoice.clientName} — {formatCurrency(invoice.balanceDue, settings.currencySymbol)} due</option>)}</select></label>
               <label className="block space-y-1 text-xs font-bold text-slate-700 dark:text-slate-300"><span>Deposit account</span><select required value={depositAccountId} onChange={(event) => setDepositAccountId(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white p-2.5 font-medium dark:border-slate-700 dark:bg-slate-800 dark:text-white"><option value="">Select account</option>{depositAccounts.map((account) => <option key={account.id} value={account.id}>{account.code} — {account.name}</option>)}</select></label>
               <div className="grid grid-cols-2 gap-3">
                 <label className="space-y-1 text-xs font-bold text-slate-700 dark:text-slate-300"><span>Payment date</span><input required type="date" min={normalizeDate(selectedInvoice?.issueDate) || undefined} value={paymentDate} onChange={(event) => setPaymentDate(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white p-2.5 font-medium dark:border-slate-700 dark:bg-slate-800 dark:text-white" /></label>
@@ -232,13 +318,42 @@ export const PaymentsReceivedView: React.FC<PaymentsReceivedViewProps> = ({
               </div>
               <label className="block space-y-1 text-xs font-bold text-slate-700 dark:text-slate-300"><span>Payment method</span><select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white p-2.5 font-medium dark:border-slate-700 dark:bg-slate-800 dark:text-white"><option>Bank Transfer</option><option>Cheque</option><option>Cash</option><option>Card Processor</option><option>UPI</option></select></label>
               <label className="block space-y-1 text-xs font-bold text-slate-700 dark:text-slate-300"><span>External reference (optional)</span><input maxLength={255} value={referenceNumber} onChange={(event) => setReferenceNumber(event.target.value)} placeholder="Bank, cheque, processor, or UPI reference" className="w-full rounded-lg border border-slate-300 bg-white p-2.5 font-mono font-medium dark:border-slate-700 dark:bg-slate-800 dark:text-white" /></label>
-              <div className="flex justify-end gap-2 pt-2"><button type="button" onClick={() => setIsModalOpen(false)} disabled={isSubmitting} className="rounded-lg border border-slate-300 px-4 py-2 text-xs font-bold text-slate-600 disabled:opacity-50">Cancel</button><button type="submit" disabled={isSubmitting} className="rounded-lg bg-blue-600 px-4 py-2 text-xs font-bold text-white hover:bg-blue-700 disabled:opacity-50">{isSubmitting ? 'Posting…' : 'Post receipt'}</button></div>
+              {editingPayment && (
+                <label className="block space-y-1 text-xs font-bold text-slate-700 dark:text-slate-300">
+                  <span>Correction reason</span>
+                  <input
+                    required
+                    minLength={3}
+                    value={correctionReason}
+                    onChange={(event) => setCorrectionReason(event.target.value)}
+                    placeholder="Reason for payment modification"
+                    className="w-full rounded-lg border border-slate-300 bg-white p-2.5 text-xs font-medium dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                  />
+                </label>
+              )}
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => { setIsModalOpen(false); setEditingPayment(null); }}
+                  disabled={isSubmitting}
+                  className="rounded-lg border border-slate-300 px-4 py-2 text-xs font-bold text-slate-600 disabled:opacity-50 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="rounded-lg bg-blue-600 px-4 py-2 text-xs font-bold text-white hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {isSubmitting ? (editingPayment ? 'Updating…' : 'Posting…') : (editingPayment ? 'Save changes' : 'Post receipt')}
+                </button>
+              </div>
             </form>
           </div>
         </div>
       )}
 
-      <PaymentReceivedDetailsModal isOpen={Boolean(viewingPayment)} onClose={() => { setViewingPayment(null); onSelectedEntityClosed?.(); }} payment={viewingPayment} />
+      <PaymentReceivedDetailsModal isOpen={Boolean(viewingPayment)} onClose={() => { setViewingPayment(null); onSelectedEntityClosed?.(); }} payment={viewingPayment} onEdit={(pmt) => openEditModal(pmt)} />
     </div>
   );
 };

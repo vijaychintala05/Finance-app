@@ -20,6 +20,7 @@ interface AuthContextValue {
   cancelMfa(): void;
   register(input: RegistrationInput): Promise<boolean>;
   logout(): Promise<void>;
+  devLogin?(role?: string): Promise<boolean>;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -39,7 +40,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let active = true;
-    apiClient.get<{ user: AuthUser; organizations: Array<{ id: string }> }>('/auth/me').then((response) => {
+    apiClient.get<{ user: AuthUser; organizations: Array<{ id: string }> }>('/auth/me').then(async (response) => {
       if (!active) return;
       if (response.data?.user) {
         localStorage.setItem('firmbooks_authenticated', 'true');
@@ -49,8 +50,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (!permitted && response.data.organizations[0]?.id) {
           localStorage.setItem('active_organization_id', response.data.organizations[0].id);
         }
+        setLoading(false);
+      } else if (import.meta.env.DEV) {
+        // Zero-Auth Dev Mode: Auto-login immediately so UI changes can be previewed without authentication hurdles
+        try {
+          const devRes = await apiClient.post<{
+            user: AuthUser;
+            token: string;
+            organizationId: string;
+          }>('/auth/dev-login', { role: 'Owner' });
+          if (!active) return;
+          if (devRes.data?.user && devRes.data.token) {
+            storeSession(devRes.data.token, devRes.data.organizationId);
+            setUser(devRes.data.user);
+          }
+        } catch {
+          // Dev auto-login fallback
+        }
+        setLoading(false);
+      } else {
+        setLoading(false);
       }
-      setLoading(false);
     });
     return () => { active = false; };
   }, []);
@@ -144,8 +164,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setMfaTicket(null);
   };
 
+  const devLogin = async (role: string = 'Owner'): Promise<boolean> => {
+    setError(null);
+    try {
+      const response = await apiClient.post<{
+        user: AuthUser;
+        token: string;
+        organizationId: string;
+      }>('/auth/dev-login', { role });
+
+      if (response.data?.user && response.data.token) {
+        storeSession(response.data.token, response.data.organizationId);
+        setUser(response.data.user);
+        return true;
+      }
+      setError(response.error || 'Dev login failed');
+      return false;
+    } catch (err: any) {
+      setError(err?.message || 'Dev login failed');
+      return false;
+    }
+  };
+
   const value = useMemo(
-    () => ({ user, loading, error, mfaRequired, login, verifyMfa, cancelMfa, register, logout }),
+    () => ({ user, loading, error, mfaRequired, login, verifyMfa, cancelMfa, register, logout, devLogin }),
     [user, loading, error, mfaRequired, mfaTicket]
   );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

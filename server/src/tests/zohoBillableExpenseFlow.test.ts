@@ -131,6 +131,72 @@ describe('Zoho Books Customer-Billable Recoverable Expenses', () => {
     expect(item.invoiceId).toBeUndefined();
   });
 
+  it('persists a validated vendor identity and vendor reference for the expense register', async () => {
+    const f = await fixture('vendor-reference');
+    const vendorRes = await request(app)
+      .post('/api/v1/finance/vendors')
+      .set(f.auth)
+      .send({ name: 'Woodcraft Supplies', companyName: 'Woodcraft Supplies Pvt Ltd' });
+    expect(vendorRes.status).toBe(201);
+
+    const expenseRes = await request(app)
+      .post('/api/v1/finance/expenses')
+      .set(f.auth)
+      .send({
+        expenseAccountId: f.expenseAccountId,
+        paidFromAccountId: f.paidFromAccountId,
+        vendorId: vendorRes.body.id,
+        vendorName: 'Untrusted vendor name',
+        vendorInvoiceNumber: 'WC-2026-091',
+        date: '2026-08-18',
+        amount: 12500,
+        description: 'Plywood purchased for project work',
+      });
+
+    expect(expenseRes.status).toBe(201);
+    const record = await db.query(
+      `SELECT vendor_id, vendor_name, vendor_invoice_number
+         FROM expenses WHERE organization_id = $1 AND id = $2`,
+      [f.orgId, expenseRes.body.id]
+    );
+    expect(record.rows[0]).toMatchObject({
+      vendor_id: vendorRes.body.id,
+      vendor_name: 'Woodcraft Supplies Pvt Ltd',
+      vendor_invoice_number: 'WC-2026-091',
+    });
+
+    const listRes = await request(app).get('/api/v1/finance/expenses').set(f.auth);
+    const item = listRes.body.find((expense: any) => expense.id === expenseRes.body.id);
+    expect(item).toMatchObject({
+      vendorId: vendorRes.body.id,
+      vendorName: 'Woodcraft Supplies Pvt Ltd',
+      invoiceNumber: 'WC-2026-091',
+    });
+  });
+
+  it('rejects an expense vendor from another organization', async () => {
+    const f1 = await fixture('vendor-tenant-one');
+    const f2 = await fixture('vendor-tenant-two');
+    const foreignVendor = await request(app)
+      .post('/api/v1/finance/vendors')
+      .set(f2.auth)
+      .send({ name: 'Other organization vendor' });
+
+    const expenseRes = await request(app)
+      .post('/api/v1/finance/expenses')
+      .set(f1.auth)
+      .send({
+        expenseAccountId: f1.expenseAccountId,
+        paidFromAccountId: f1.paidFromAccountId,
+        vendorId: foreignVendor.body.id,
+        date: '2026-08-18',
+        amount: 500,
+      });
+
+    expect(expenseRes.status).toBe(400);
+    expect(expenseRes.body.error).toContain('EXPENSE_VENDOR_INVALID');
+  });
+
   it('4. converts unbilled billable expense into an authoritative customer invoice', async () => {
     const f = await fixture('convert-invoice');
 

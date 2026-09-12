@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
+    "dev:test": "tsx server.ts",
+    "dev:ui": "tsx server.ts",
     "build": "vite build --configLoader native && node scripts/build-server.mjs",
     "start": "tsx server.ts",
     "start:prod": "node dist/server.cjs",
@@ -49,7 +51,8 @@
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
     "recharts": "^3.10.1",
-    "vite": "^6.2.3"
+    "vite": "^6.2.3",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",

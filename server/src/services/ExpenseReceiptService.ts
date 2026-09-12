@@ -79,6 +79,45 @@ export class ExpenseReceiptService {
     return receipts.map(({ id, fileName, mimeType, byteSize }) => ({ id, fileName, mimeType, byteSize }));
   }
 
+  /** Adds evidence only. It never changes the expense or its posted journal. */
+  public static async appendToExpense(
+    client: DbQueryClient,
+    organizationId: string,
+    expenseId: string,
+    input: unknown
+  ): Promise<ExpenseReceiptMetadata[]> {
+    const receipts = this.validateUploads(input);
+    if (receipts.length === 0) {
+      throw new Error('EXPENSE_RECEIPT_INVALID: Select at least one receipt image.');
+    }
+
+    const expense = await client.query(
+      `SELECT status FROM expenses WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+      [organizationId, expenseId]
+    );
+    if (expense.rows.length === 0) throw new Error('EXPENSE_NOT_FOUND: Expense not found');
+    if (String(expense.rows[0].status || '').toUpperCase() === 'VOIDED') {
+      throw new Error('EXPENSE_RECEIPT_INVALID: Receipt images cannot be attached to a voided expense.');
+    }
+
+    const existing = await client.query(
+      `SELECT COUNT(*)::int AS count, COALESCE(SUM(byte_size), 0)::int AS total_bytes
+         FROM expense_receipt_attachments
+        WHERE organization_id = $1 AND expense_id = $2`,
+      [organizationId, expenseId]
+    );
+    const existingCount = Number(existing.rows[0].count || 0);
+    const existingBytes = Number(existing.rows[0].total_bytes || 0);
+    const incomingBytes = receipts.reduce((total, receipt) => total + receipt.byteSize, 0);
+    if (existingCount + receipts.length > MAX_RECEIPTS_PER_EXPENSE) {
+      throw new Error(`EXPENSE_RECEIPT_INVALID: This expense already has ${existingCount} receipt image(s); a maximum of three is allowed.`);
+    }
+    if (existingBytes + incomingBytes > MAX_TOTAL_RECEIPT_BYTES) {
+      throw new Error('EXPENSE_RECEIPT_INVALID: Receipt images together must be under 2 MB.');
+    }
+    return this.attachToExpense(client, organizationId, expenseId, receipts);
+  }
+
   public static async listForExpenses(client: DbQueryClient, organizationId: string): Promise<Map<string, ExpenseReceiptMetadata[]>> {
     const result = await client.query(
       `SELECT id, expense_id, file_name, mime_type, byte_size

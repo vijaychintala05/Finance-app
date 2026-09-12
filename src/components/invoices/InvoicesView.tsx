@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   CheckCircle,
+  CreditCard,
   Edit3,
   Eye,
   FileSpreadsheet,
@@ -16,6 +17,8 @@ import { formatCurrency, formatDate, getStatusBadgeStyle } from '../../utils/for
 import { EmptyStateCard } from '../common/EmptyStateCard';
 import { InvoiceEditorModal } from './InvoiceEditorModal';
 import { InvoicePreviewModal } from './InvoicePreviewModal';
+import { RecordCustomerPaymentModal } from '../sales/RecordCustomerPaymentModal';
+import { invoiceApi } from '../../services/invoiceApi';
 
 interface InvoicesViewProps {
   autoOpenCreateModal?: boolean;
@@ -37,7 +40,36 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
 
   const [isEditorOpen, setIsEditorOpen] = useState(autoOpenCreateModal);
   const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null);
+  const [clonedInvoice, setClonedInvoice] = useState<Invoice | null>(null);
   const [previewInvoice, setPreviewInvoice] = useState<Invoice | null>(null);
+  const [payingInvoice, setPayingInvoice] = useState<Invoice | null>(null);
+  const [downloadingPdfId, setDownloadingPdfId] = useState<string | null>(null);
+
+  const activePreviewInvoice = useMemo(() => {
+    if (!previewInvoice) return null;
+    return invoices.find((i) => i.id === previewInvoice.id) || previewInvoice;
+  }, [invoices, previewInvoice]);
+
+  const handleDownloadPdf = async (inv: Invoice) => {
+    if (!inv.id || downloadingPdfId) return;
+    try {
+      setDownloadingPdfId(inv.id);
+      const blob = await invoiceApi.getInvoicePdf(inv.id);
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Invoice-${inv.invoiceNumber || 'INV'}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } catch (err: any) {
+      console.error('Invoice PDF download error:', err);
+      window.alert(err.message || 'Failed to download invoice PDF');
+    } finally {
+      setDownloadingPdfId(null);
+    }
+  };
 
   useEffect(() => {
     if (autoOpenCreateModal) {
@@ -218,11 +250,27 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
                   <span className="text-[10px] text-slate-400 font-medium block">Balance Due</span>
                   <span className="font-bold font-mono text-amber-600 dark:text-amber-400">{formatCurrency(inv.balanceDue, settings.currencySymbol)}</span>
                 </div>
+                <div className="col-span-2 border-t border-slate-200 pt-2 dark:border-slate-700">
+                  <span className="text-[10px] text-slate-400 font-medium block">Payments Received</span>
+                  <span className="font-bold font-mono text-emerald-600 dark:text-emerald-400">{formatCurrency(inv.paidAmount, settings.currencySymbol)}</span>
+                </div>
               </div>
 
               <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 pt-1 border-t border-slate-100 dark:border-slate-800">
                 <span>Issued: {formatDate(inv.issueDate)}</span>
                 <div className="flex items-center space-x-2">
+                  {inv.balanceDue > 0 && !['Draft', 'Void'].includes(inv.status) && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setPayingInvoice(inv);
+                      }}
+                      className="p-1.5 text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/80 rounded-lg cursor-pointer"
+                      title="Record Payment"
+                    >
+                      <CreditCard className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
@@ -250,6 +298,7 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
                 <th className="p-3">Project</th>
                 <th className="p-3">Issue / Due Date</th>
                 <th className="p-3 text-right">Total Amount</th>
+                <th className="p-3 text-right">Payments Received</th>
                 <th className="p-3 text-right">Balance Due</th>
                 <th className="p-3">Status</th>
                 <th className="p-3 text-right pr-4">Actions</th>
@@ -258,7 +307,7 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {filteredInvoices.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="p-8">
+                  <td colSpan={9} className="p-8">
                     <EmptyStateCard
                       icon={FileSpreadsheet}
                       title={search || statusFilter !== 'All' ? 'No matching invoices found' : 'No invoices created yet'}
@@ -324,6 +373,10 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
                       {formatCurrency(inv.totalAmount, settings.currencySymbol)}
                     </td>
 
+                    <td className="p-3 text-right font-bold font-mono text-emerald-600 dark:text-emerald-400">
+                      {formatCurrency(inv.paidAmount, settings.currencySymbol)}
+                    </td>
+
                     <td className="p-3 text-right font-bold font-mono text-amber-600 dark:text-amber-400">
                       {formatCurrency(inv.balanceDue, settings.currencySymbol)}
                     </td>
@@ -339,6 +392,18 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
                     </td>
 
                     <td className="p-3 pr-4 text-right space-x-1">
+                      {inv.balanceDue > 0 && !['Draft', 'Void'].includes(inv.status) && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setPayingInvoice(inv);
+                          }}
+                          className="p-1.5 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 dark:hover:bg-slate-700 rounded-lg cursor-pointer transition-colors"
+                          title="Record Customer Payment"
+                        >
+                          <CreditCard className="w-4 h-4" />
+                        </button>
+                      )}
                       {inv.status !== 'Void' && (
                         <button
                           onClick={(e) => {
@@ -386,28 +451,52 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
       <InvoiceEditorModal
         isOpen={isEditorOpen}
         editingInvoice={editingInvoice}
+        clonedInvoice={clonedInvoice}
         onClose={() => {
           setIsEditorOpen(false);
           setEditingInvoice(null);
+          setClonedInvoice(null);
           if (onModalClosed) onModalClosed();
         }}
-        onInvoiceCreated={(createdInvoice) => setPreviewInvoice(createdInvoice)}
+        onInvoiceCreated={(createdInvoice) => {
+          setIsEditorOpen(false);
+          setEditingInvoice(null);
+          setClonedInvoice(null);
+          setPreviewInvoice(createdInvoice);
+        }}
         onInvoiceUpdated={(updatedInvoice) => {
           setEditingInvoice(null);
+          setClonedInvoice(null);
           setPreviewInvoice(updatedInvoice);
         }}
       />
-      <InvoicePreviewModal
-        invoice={previewInvoice}
-        onClose={() => {
-          setPreviewInvoice(null);
-          if (onSelectedEntityClosed) onSelectedEntityClosed();
-        }}
-        onEdit={(inv) => {
-          setEditingInvoice(inv);
-          setIsEditorOpen(true);
-        }}
-      />
+      {activePreviewInvoice && (
+        <InvoicePreviewModal
+          invoice={activePreviewInvoice}
+          onClose={() => {
+            setPreviewInvoice(null);
+            if (onSelectedEntityClosed) onSelectedEntityClosed();
+          }}
+          onEdit={(inv) => {
+            setEditingInvoice(inv);
+            setClonedInvoice(null);
+            setIsEditorOpen(true);
+          }}
+          onClone={(inv) => {
+            setEditingInvoice(null);
+            setClonedInvoice(inv);
+            setIsEditorOpen(true);
+          }}
+        />
+      )}
+      {payingInvoice && (
+        <RecordCustomerPaymentModal
+          isOpen={Boolean(payingInvoice)}
+          onClose={() => setPayingInvoice(null)}
+          targetInvoice={payingInvoice}
+          clientId={payingInvoice.clientId}
+        />
+      )}
     </div>
   );
 };

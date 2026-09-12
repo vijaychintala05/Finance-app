@@ -59,15 +59,20 @@ router.post('/delivery-challans', requirePermission(['delivery_challans.create',
 // Invoices
 router.get('/invoices', requirePermission(['invoices.view']), FinanceController.getInvoices);
 router.get('/invoices/:id', requirePermission(['invoices.view']), FinanceController.getInvoice);
+router.get('/invoices/:id/pdf', requirePermission(['invoices.view']), FinanceController.getInvoicePdf);
 router.post('/invoices', requirePermission(['invoices.create']), FinanceController.createInvoice);
 router.put('/invoices/:id', requirePermission(['invoices.edit', 'invoices.create']), FinanceController.updateInvoice);
 router.post('/invoices/:id/post-approved', requirePermission(['invoices.create', 'accounting.post']), FinanceController.postApprovedInvoice);
+router.post('/invoices/:id/send-email', requirePermission(['invoices.view', 'invoices.create']), FinanceController.sendInvoiceEmail);
+router.post('/invoices/:id/reminder', requirePermission(['invoices.view', 'invoices.create']), FinanceController.sendInvoiceReminder);
+router.get('/invoices/:id/journal', requirePermission(['invoices.view']), FinanceController.getInvoiceJournal);
 
 // Payments Received & Advances
 router.get('/payments-received', requirePermission(['customer_payments.view', 'invoices.view']), FinanceController.getPaymentsReceived);
 router.post('/payments-received', requirePermission(['customer_payments.create', 'invoices.receive_payment']), FinanceController.recordPaymentReceived);
 router.post('/payments-received/:id/post-approved', requirePermission(['customer_payments.create', 'invoices.receive_payment', 'accounting.post']), FinanceController.postApprovedPaymentReceived);
 router.post('/payments-received/:id/reverse', requirePermission(['customer_payments.reverse', 'invoices.receive_payment']), FinanceController.reversePaymentReceived);
+router.post('/payments-received/:id/correct', requirePermission(['customer_payments.create', 'invoices.receive_payment']), FinanceController.updateCustomerPayment);
 router.put('/payments-received/:id', requirePermission(['customer_payments.create', 'invoices.receive_payment']), FinanceController.updateCustomerPayment);
 router.get('/customer-advances', requirePermission(['customer_payments.view', 'invoices.view']), requireTrustedFinanceFeature('customer-advance-application'), FinanceController.getCustomerAdvances);
 router.post('/customer-advances', requirePermission(['customer_payments.create', 'invoices.receive_payment']), requireTrustedFinanceFeature('customer-advance-application'), FinanceController.recordCustomerAdvance);
@@ -175,6 +180,7 @@ router.post('/saved-reports/:id/favorite', requirePermission(['reports.view']), 
 // Expenses
 router.get('/expenses', requirePermission(['expenses.view']), FinanceController.getExpenses);
 router.post('/expenses', requirePermission(['expenses.create']), FinanceController.createExpense);
+router.post('/expenses/:id/receipts', requirePermission(['expenses.attach_receipt']), FinanceController.attachExpenseReceipts);
 router.get('/expenses/:id/receipts/:receiptId', requirePermission(['expenses.view', 'expenses.attach_receipt']), FinanceController.getExpenseReceipt);
 router.get('/expenses/:id/pdf', requirePermission(['expenses.view']), FinanceController.getExpensePdf);
 router.post('/expenses/:id/void', requirePermission(['expenses.void', 'expenses.create']), FinanceController.voidExpense);

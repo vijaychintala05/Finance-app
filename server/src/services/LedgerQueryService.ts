@@ -1,4 +1,4 @@
-import { db } from '../database/db';
+import { db, type DbQueryClient } from '../database/db';
 import { centsToSafeNumber, databaseMoneyToCents } from '../utils/money';
 
 export class LedgerQueryService {
@@ -130,47 +130,65 @@ export class LedgerQueryService {
 
   public static async getAccountBalances(
     orgId: string,
-    options: { fromDate?: string; toDate?: string; accountIds?: string[] } = {}
+    options: { fromDate?: string; toDate?: string; accountIds?: string[] } = {},
+    queryClient: DbQueryClient = db
   ) {
     if (options.fromDate && !/^\d{4}-\d{2}-\d{2}$/.test(options.fromDate)) throw new Error('Invalid account balance start date');
     if (options.toDate && !/^\d{4}-\d{2}-\d{2}$/.test(options.toDate)) throw new Error('Invalid account balance end date');
     if (options.fromDate && options.toDate && options.fromDate > options.toDate) throw new Error('Account balance start date cannot be after end date');
     const params: any[] = [orgId];
-    let postedJournalJoin = `jl.journal_entry_id = je.id AND je.organization_id = a.organization_id AND UPPER(je.status) = 'POSTED'`;
+    let postedJournalWhere = `je.organization_id = $1 AND UPPER(je.status) = 'POSTED'`;
     if (options.fromDate) {
       params.push(options.fromDate);
-      postedJournalJoin += ` AND je.date >= $${params.length}`;
+      postedJournalWhere += ` AND je.date >= $${params.length}`;
     }
     if (options.toDate) {
       params.push(options.toDate);
-      postedJournalJoin += ` AND je.date <= $${params.length}`;
+      postedJournalWhere += ` AND je.date <= $${params.length}`;
     }
 
     let sql = `
+      WITH posted_totals AS (
+        SELECT
+          jl.account_id,
+          COALESCE(SUM(jl.debit), 0) AS total_debit,
+          COALESCE(SUM(jl.credit), 0) AS total_credit
+        FROM journal_lines jl
+        JOIN journal_entries je ON je.id = jl.journal_entry_id
+        JOIN accounts posting_account ON posting_account.id = jl.account_id
+          AND posting_account.organization_id = je.organization_id
+        WHERE posting_account.organization_id = $1 AND ${postedJournalWhere}
+        GROUP BY jl.account_id
+      )
       SELECT 
-        a.id, a.code, a.name, a.type,
-        COALESCE(SUM(CASE WHEN je.id IS NOT NULL THEN jl.debit ELSE 0 END), 0) as total_debit,
-        COALESCE(SUM(CASE WHEN je.id IS NOT NULL THEN jl.credit ELSE 0 END), 0) as total_credit
+        a.id, a.code, a.name, a.type, a.normal_balance, a.normal_balance_is_explicit,
+        COALESCE(pt.total_debit, 0) AS total_debit,
+        COALESCE(pt.total_credit, 0) AS total_credit
       FROM accounts a
-      LEFT JOIN journal_lines jl ON a.id = jl.account_id
-      LEFT JOIN journal_entries je ON ${postedJournalJoin}
+      LEFT JOIN posted_totals pt ON pt.account_id = a.id
       WHERE a.organization_id = $1
     `;
     if (options.accountIds) {
       if (!Array.isArray(options.accountIds) || options.accountIds.length === 0 || options.accountIds.some((id) => typeof id !== 'string' || !id)) {
         throw new Error('Account balance account IDs are invalid');
       }
-      params.push(options.accountIds);
-      sql += ` AND a.id = ANY($${params.length}::text[])`;
+      const placeholders = options.accountIds.map((accountId) => {
+        params.push(accountId);
+        return `$${params.length}`;
+      });
+      sql += ` AND a.id IN (${placeholders.join(', ')})`;
     }
 
-    sql += ` GROUP BY a.id, a.code, a.name, a.type ORDER BY a.code ASC`;
+    sql += ` ORDER BY a.code ASC`;
 
-    const res = await db.query(sql, params);
+    const res = await queryClient.query(sql, params);
     return res.rows.map((r: any) => {
       const debCents = databaseMoneyToCents(r.total_debit, `Account balance debit for ${r.code}`);
       const credCents = databaseMoneyToCents(r.total_credit, `Account balance credit for ${r.code}`);
-      const normalDebit = ['ASSET', 'EXPENSE', 'COST OF GOODS SOLD', 'OTHER EXPENSE'].includes(r.type?.toUpperCase());
+      const hasExplicitNormalBalance = r.normal_balance_is_explicit === true || String(r.normal_balance_is_explicit).toLowerCase() === 'true';
+      const normalDebit = hasExplicitNormalBalance
+        ? String(r.normal_balance).toUpperCase() === 'DEBIT'
+        : ['ASSET', 'EXPENSE', 'COST OF GOODS SOLD', 'OTHER EXPENSE'].includes(r.type?.toUpperCase());
       return {
         id: r.id,
         code: r.code,

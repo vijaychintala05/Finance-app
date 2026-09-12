@@ -77,6 +77,27 @@ export class ExpensePdfService {
     const expenseAccountName = accountMap.get(exp.expense_account_id) || 'Operating Expense';
     const paidFromAccountName = accountMap.get(exp.paid_from_account_id) || 'Operating Bank Account';
 
+    // The voucher must mirror the immutable ledger, rather than recreate a
+    // simplified version of the posting from the expense form.
+    const journalRes = exp.journal_entry_id
+      ? await client.query(
+          `SELECT je.entry_number, je.date, jl.id, jl.account_code, jl.account_name,
+                  jl.description, jl.debit, jl.credit
+             FROM journal_entries je
+             JOIN journal_lines jl ON jl.journal_entry_id = je.id
+            WHERE je.organization_id = $1 AND je.id = $2
+            ORDER BY jl.id ASC`,
+          [organizationId, exp.journal_entry_id]
+        )
+      : { rows: [] as any[] };
+    const postedLines = journalRes.rows.map((line: any) => ({
+      id: String(line.id),
+      accountName: String(line.account_name || line.account_code || 'Ledger account'),
+      description: String(line.description || exp.description || 'Expense posting'),
+      debit: Number(line.debit || 0),
+      credit: Number(line.credit || 0),
+    }));
+
     // 5. Fetch Attached Receipt Images
     const receiptsRes = await client.query(
       `SELECT id, file_name, mime_type, byte_size, content_base64
@@ -90,7 +111,9 @@ export class ExpensePdfService {
     const primaryColor = '#0284c7'; // Professional slate-cyan
     const amount = Number(exp.amount || 0);
     const taxAmount = Number(exp.tax_amount || 0);
-    const totalAmount = Number(exp.total_amount ?? (amount + taxAmount));
+    const totalAmount = postedLines.length
+      ? postedLines.reduce((total, line) => total + line.credit, 0)
+      : (Boolean(exp.is_tax_inclusive) ? amount : amount + taxAmount);
     const words = amountToWords(totalAmount, currencySymbol);
     const voucherNumber = exp.expense_number || `EXP-${exp.id.slice(0, 8).toUpperCase()}`;
 
@@ -139,8 +162,8 @@ export class ExpensePdfService {
         rightY += 13;
         doc.text(`Payment Method: ${exp.payment_method || 'Bank / Cash'}`, 320, rightY, { width: 235, align: 'right' });
         rightY += 13;
-        if (exp.reference_number) {
-          doc.text(`Ref / Chq #: ${exp.reference_number}`, 320, rightY, { width: 235, align: 'right' });
+        if (exp.vendor_invoice_number) {
+          doc.text(`Vendor ref: ${exp.vendor_invoice_number}`, 320, rightY, { width: 235, align: 'right' });
           rightY += 13;
         }
         if (exp.project_id) {
@@ -181,66 +204,29 @@ export class ExpensePdfService {
 
         curY = tableHeaderY + 24;
 
-        let rowCount = 0;
-
-        if (exp.is_itemized && itemsList.length > 0) {
-          // Render itemized lines
-          for (const item of itemsList) {
-            rowCount++;
-            const itAccName = accountMap.get(item.accountId) || 'Operating Expense';
-            doc.fontSize(8.5).font('Helvetica').fillColor('#475569').text(String(rowCount), 46, curY);
-            doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#0f172a').text(itAccName, 70, curY, { width: 170 });
-            doc.fontSize(8).font('Helvetica').fillColor('#475569').text(item.description || exp.description || 'Expense item', 245, curY, { width: 160 });
-            doc.fontSize(8.5).font('Helvetica').fillColor('#0f172a').text(this.formatAmount(Number(item.amount), currencySymbol), 410, curY, { width: 65, align: 'right' });
-            doc.text('-', 485, curY, { width: 65, align: 'right' });
-
-            curY += 22;
-            doc.moveTo(40, curY - 2).lineTo(555, curY - 2).strokeColor('#e2e8f0').lineWidth(0.5).stroke();
-          }
-        } else {
-          // Row 1: Single Expense Account Debit
-          rowCount++;
-          doc.fontSize(8.5).font('Helvetica').fillColor('#475569').text(String(rowCount), 46, curY);
-          doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#0f172a').text(expenseAccountName, 70, curY, { width: 170 });
-          doc.fontSize(8).font('Helvetica').fillColor('#475569').text(exp.description || 'Expense distribution', 245, curY, { width: 160 });
-          doc.fontSize(8.5).font('Helvetica').fillColor('#0f172a').text(this.formatAmount(amount, currencySymbol), 410, curY, { width: 65, align: 'right' });
-          doc.text('-', 485, curY, { width: 65, align: 'right' });
-
+        const voucherLines = postedLines.length ? postedLines : [
+          { id: 'expense', accountName: expenseAccountName, description: exp.description || 'Expense distribution', debit: amount, credit: 0 },
+          { id: 'payment', accountName: paidFromAccountName, description: 'Payment disbursement', debit: 0, credit: totalAmount },
+        ];
+        for (let index = 0; index < voucherLines.length; index++) {
+          const line = voucherLines[index];
+          doc.fontSize(8.5).font('Helvetica').fillColor('#475569').text(String(index + 1), 46, curY);
+          doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#0f172a').text(line.accountName, 70, curY, { width: 170 });
+          doc.fontSize(8).font('Helvetica').fillColor('#475569').text(line.description, 245, curY, { width: 160 });
+          doc.fontSize(8.5).font('Helvetica').fillColor('#0f172a').text(line.debit ? this.formatAmount(line.debit, currencySymbol) : '-', 410, curY, { width: 65, align: 'right' });
+          doc.text(line.credit ? this.formatAmount(line.credit, currencySymbol) : '-', 485, curY, { width: 65, align: 'right' });
           curY += 22;
           doc.moveTo(40, curY - 2).lineTo(555, curY - 2).strokeColor('#e2e8f0').lineWidth(0.5).stroke();
         }
-
-        // Row: Input Tax Debit (if tax applied)
-        if (taxAmount > 0) {
-          rowCount++;
-          doc.fontSize(8.5).font('Helvetica').fillColor('#475569').text(String(rowCount), 46, curY);
-          doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#0f172a').text('Input GST / Tax Paid', 70, curY, { width: 170 });
-          doc.fontSize(8).font('Helvetica').fillColor('#475569').text('Tax on Expense', 245, curY, { width: 160 });
-          doc.fontSize(8.5).font('Helvetica').fillColor('#0f172a').text(this.formatAmount(taxAmount, currencySymbol), 410, curY, { width: 65, align: 'right' });
-          doc.text('-', 485, curY, { width: 65, align: 'right' });
-
-          curY += 22;
-          doc.moveTo(40, curY - 2).lineTo(555, curY - 2).strokeColor('#e2e8f0').lineWidth(0.5).stroke();
-        }
-
-        // Credit Row: Paid From Account Credit
-        rowCount++;
-        doc.fontSize(8.5).font('Helvetica').fillColor('#475569').text(String(rowCount), 46, curY);
-        doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#0f172a').text(paidFromAccountName, 70, curY, { width: 170 });
-        doc.fontSize(8).font('Helvetica').fillColor('#475569').text('Payment Disbursement', 245, curY, { width: 160 });
-        doc.fontSize(8.5).font('Helvetica').fillColor('#0f172a').text('-', 410, curY, { width: 65, align: 'right' });
-        doc.text(this.formatAmount(totalAmount, currencySymbol), 485, curY, { width: 65, align: 'right' });
-
-        curY += 22;
         doc.moveTo(40, curY - 2).lineTo(555, curY - 2).strokeColor('#cbd5e1').lineWidth(0.75).stroke();
 
         // Totals Box
         curY += 6;
         doc.fontSize(9).font('Helvetica-Bold').fillColor('#475569');
-        doc.text(`Net Expense: ${this.formatAmount(amount, currencySymbol)}`, 320, curY, { width: 235, align: 'right' });
+        doc.text(`Expense amount: ${this.formatAmount(amount, currencySymbol)}`, 320, curY, { width: 235, align: 'right' });
         curY += 14;
         doc.fontSize(10).font('Helvetica-Bold').fillColor('#0f172a');
-        doc.text(`Total Disbursed: ${this.formatAmount(totalAmount, currencySymbol)}`, 320, curY, { width: 235, align: 'right' });
+        doc.text(`Balanced posting: ${this.formatAmount(totalAmount, currencySymbol)}`, 320, curY, { width: 235, align: 'right' });
 
         // Amount in Words Box
         curY += 18;
@@ -250,16 +236,16 @@ export class ExpensePdfService {
 
         curY += 46;
 
-        // Signatures & Approvals Section
+        // Audit and approval are separate workflows. Do not claim approval if none exists.
         doc.roundedRect(40, curY, 245, 65, 3).strokeColor('#e2e8f0').stroke();
-        doc.fontSize(7.5).font('Helvetica-Bold').fillColor('#64748b').text('RECORDED / PREPARED BY', 48, curY + 8);
+        doc.fontSize(7.5).font('Helvetica-Bold').fillColor('#64748b').text('RECORDED DOCUMENT', 48, curY + 8);
         doc.fontSize(8.5).font('Helvetica').fillColor('#334155').text(exp.created_by || 'System User', 48, curY + 22);
         doc.fontSize(7.5).font('Helvetica').fillColor('#94a3b8').text(`Date: ${exp.date || new Date().toISOString().split('T')[0]}`, 48, curY + 46);
 
         doc.roundedRect(310, curY, 245, 65, 3).strokeColor('#e2e8f0').stroke();
-        doc.fontSize(7.5).font('Helvetica-Bold').fillColor('#64748b').text('VERIFIED & APPROVED BY', 318, curY + 8);
-        doc.fontSize(8.5).font('Helvetica').fillColor('#334155').text('Authorized Approver', 318, curY + 22);
-        doc.fontSize(7.5).font('Helvetica').fillColor('#94a3b8').text('Signature _______________________', 318, curY + 46);
+        doc.fontSize(7.5).font('Helvetica-Bold').fillColor('#64748b').text('POSTING TRACE', 318, curY + 8);
+        doc.fontSize(8.5).font('Helvetica').fillColor('#334155').text(`Expense reference: ${voucherNumber}`, 318, curY + 22);
+        doc.fontSize(7.5).font('Helvetica').fillColor('#94a3b8').text('See the journal lines above for the complete audit trail.', 318, curY + 46, { width: 225 });
 
         // --- PAGE 2+: RECEIPT ATTACHMENTS DOSSIER ---
         if (receipts.length > 0) {
@@ -280,7 +266,7 @@ export class ExpensePdfService {
             // Receipt Box
             doc.roundedRect(40, receiptY, 515, 25, 3).fillAndStroke('#f1f5f9', '#cbd5e1');
             doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#0f172a').text(`Receipt ${i + 1}: ${r.file_name}`, 50, receiptY + 7);
-            doc.fontSize(7.5).font('Helvetica').fillColor('#64748b').text(`${r.mime_type} ? ${Math.round(r.byte_size / 1024)} KB`, 380, receiptY + 8, { width: 165, align: 'right' });
+            doc.fontSize(7.5).font('Helvetica').fillColor('#64748b').text(`${r.mime_type} | ${Math.round(r.byte_size / 1024)} KB`, 380, receiptY + 8, { width: 165, align: 'right' });
 
             receiptY += 32;
 
@@ -308,7 +294,7 @@ export class ExpensePdfService {
         for (let i = 0; i < pageRange.count; i++) {
           doc.switchToPage(i);
           doc.fontSize(7).font('Helvetica').fillColor('#94a3b8').text(
-            `Certified Expense Payment Voucher ? Generated by FirmBooks ? Page ${i + 1} of ${pageRange.count}`,
+            `FirmBooks | Expense payment voucher | Page ${i + 1} of ${pageRange.count}`,
             40,
             800,
             { align: 'center', width: 515 }

@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Check, ChevronDown, ImagePlus, Layers, Plus, Receipt, RefreshCw, Search, ShieldCheck, Trash2, X } from 'lucide-react';
 import { useBooks } from '../../context/BooksContext';
-import { Account, Expense, ExpenseReceiptUpload } from '../../types';
+import { Account, Expense } from '../../types';
 import { AccountModal } from '../coa/AccountModal';
 import { QuickAddAccountModal } from '../common/QuickAddAccountModal';
+import { compressReceiptImage, MAX_RECEIPT_IMAGES } from './receiptUpload';
 
 interface ExpenseModalProps {
   isOpen: boolean;
@@ -26,9 +27,6 @@ function toDateInputValue(value?: string): string {
   const match = value?.match(/^\d{4}-\d{2}-\d{2}/);
   return match ? match[0] : today();
 }
-
-const MAX_RECEIPT_IMAGES = 3;
-const MAX_RECEIPT_BYTES = 900 * 1024;
 
 interface SearchableAccountPickerProps {
   accounts: Account[];
@@ -155,52 +153,6 @@ const SearchableAccountPicker: React.FC<SearchableAccountPickerProps> = ({
   );
 };
 
-async function compressReceiptImage(file: File): Promise<ExpenseReceiptUpload> {
-  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
-    throw new Error(`${file.name} is not a supported image. Use JPEG, PNG, or WebP.`);
-  }
-  const imageUrl = URL.createObjectURL(file);
-  try {
-    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const element = new Image();
-      element.onload = () => resolve(element);
-      element.onerror = () => reject(new Error(`Could not read ${file.name}.`));
-      element.src = imageUrl;
-    });
-    const longestSide = Math.max(image.naturalWidth, image.naturalHeight);
-    const scale = Math.min(1, 1600 / Math.max(1, longestSide));
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
-    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
-    const context = canvas.getContext('2d');
-    if (!context) throw new Error('Image compression is unavailable in this browser.');
-    context.fillStyle = '#ffffff';
-    context.fillRect(0, 0, canvas.width, canvas.height);
-    context.drawImage(image, 0, 0, canvas.width, canvas.height);
-    let quality = 0.88;
-    let blob: Blob | null = null;
-    while (quality >= 0.45) {
-      blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality));
-      if (blob && blob.size <= MAX_RECEIPT_BYTES) break;
-      quality -= 0.1;
-      await new Promise((r) => setTimeout(r, 0));
-    }
-    if (!blob || blob.size > MAX_RECEIPT_BYTES) throw new Error(`${file.name} is too detailed to compress under 900 KB.`);
-    const dataBase64 = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const result = reader.result as string;
-        resolve(result.split(',')[1] || '');
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(blob!);
-    });
-    return { name: file.name.replace(/\.[^.]+$/, '') + '.jpg', mimeType: 'image/jpeg', dataBase64 };
-  } finally {
-    URL.revokeObjectURL(imageUrl);
-  }
-}
-
 export const ExpenseModal: React.FC<ExpenseModalProps> = ({
   isOpen,
   onClose,
@@ -243,6 +195,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
   const [expenseAccountId, setExpenseAccountId] = useState('');
   const [paidFromAccountId, setPaidFromAccountId] = useState('');
   const [vendorId, setVendorId] = useState('');
+  const [vendorInvoiceNumber, setVendorInvoiceNumber] = useState('');
   const [amount, setAmount] = useState('');
   const [description, setDescription] = useState('');
   const [projectId, setProjectId] = useState(defaultProjectId || '');
@@ -361,6 +314,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
       setExpenseAccountId(expenseToEdit?.accountId || expenseAccounts[0]?.id || '');
       setPaidFromAccountId(expenseToEdit?.paidFromAccountId || paymentAccounts[0]?.id || '');
       setVendorId(expenseToEdit?.vendorId || '');
+      setVendorInvoiceNumber(expenseToEdit?.invoiceNumber || '');
       setAmount(expenseToEdit ? String(expenseToEdit.amount) : '');
       setDescription(expenseToEdit?.description || '');
       setProjectId(expenseToEdit?.projectId || defaultProjectId || '');
@@ -480,6 +434,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
       const expenseInput = {
         vendorId: vendor?.id,
         vendorName: vendor?.companyName || vendor?.name,
+        invoiceNumber: vendorInvoiceNumber.trim() || undefined,
         accountId: expenseAccount.id,
         accountName: expenseAccount.name,
         paidFromAccountId: paymentAccount.id,
@@ -816,6 +771,17 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                           ))}
                         </select>
                       </div>
+
+                      <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200">
+                        <span>Vendor invoice / receipt #</span>
+                        <input
+                          value={vendorInvoiceNumber}
+                          onChange={(event) => setVendorInvoiceNumber(event.target.value)}
+                          maxLength={128}
+                          placeholder="Optional reference number"
+                          className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal text-slate-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                        />
+                      </label>
 
                       <div className="space-y-1.5">
                         <div className="flex items-center justify-between">

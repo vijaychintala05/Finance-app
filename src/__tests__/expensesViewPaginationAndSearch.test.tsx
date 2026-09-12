@@ -22,6 +22,7 @@ describe('ExpensesView Pagination & Smart Search', () => {
       date: `2026-09-${String(Math.min(num, 28)).padStart(2, '0')}`,
       amount: num === 5 ? 450 : num * 100,
       vendorName: num === 5 ? 'AWS Cloud Hosting' : num % 3 === 0 ? 'Delta Airlines' : 'Office Depot',
+      invoiceNumber: num === 5 ? 'AWS-2026-450' : undefined,
       description: num === 5 ? 'Monthly cloud computing infrastructure' : `Business expense notes ${num}`,
       isBillable: num % 4 === 0,
       isItemized: num % 5 === 0,
@@ -120,6 +121,10 @@ describe('ExpensesView Pagination & Smart Search', () => {
     fireEvent.change(searchInput, { target: { value: 'AWS 450' } });
     expect(screen.getAllByText('EXP-005').length).toBeGreaterThan(0);
 
+    // Search by the vendor-issued reference displayed in the register
+    fireEvent.change(searchInput, { target: { value: 'AWS-2026-450' } });
+    expect(screen.getAllByText('EXP-005').length).toBeGreaterThan(0);
+
     // Clear search with X button
     const clearBtn = screen.getByRole('button', { name: 'Clear search' });
     fireEvent.click(clearBtn);
@@ -192,5 +197,21 @@ describe('ExpensesView Pagination & Smart Search', () => {
     expect(screen.getAllByText('EXP-005').length).toBeGreaterThan(0);
     expect(screen.getAllByText('EXP-010').length).toBeGreaterThan(0);
     expect(screen.queryByText('EXP-001')).toBeNull();
+  });
+
+  it('filters the register by category and vendor without losing the operational columns', () => {
+    render(<ExpensesView />);
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Filter by expense category' }), {
+      target: { value: 'acc-travel' },
+    });
+    expect(screen.getByText(/Showing/).textContent).toContain('Showing 1 to 10 of 13 expenses');
+    expect(screen.getByText('Paid Through')).toBeTruthy();
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Filter by vendor' }), {
+      target: { value: 'AWS Cloud Hosting' },
+    });
+    expect(screen.getByText(/Showing/).textContent).toContain('Showing 1 to 1 of 1 expenses');
+    expect(screen.getAllByText(/AWS-2026-450/).length).toBeGreaterThan(0);
   });
 });

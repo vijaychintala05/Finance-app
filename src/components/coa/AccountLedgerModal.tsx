@@ -21,6 +21,7 @@ import {
 import { Account } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate } from '../../utils/formatters';
+import { displayJournalNumber } from '../../utils/journalDisplay';
 
 interface AccountLedgerModalProps {
   account: Account | null;
@@ -163,7 +164,7 @@ export const AccountLedgerModal: React.FC<AccountLedgerModalProps> = ({
           id: `jrn-${jrn.id}-${line.id}`,
           date: jrn.date,
           type: 'Journal Entry',
-          reference: jrn.entryNumber,
+          reference: displayJournalNumber(jrn.entryNumber, jrn.reference),
           entityName: jrn.reference || 'Manual Adjustment',
           description: line.description || jrn.description,
           debit: line.debit,

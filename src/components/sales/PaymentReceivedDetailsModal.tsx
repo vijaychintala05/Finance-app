@@ -4,6 +4,7 @@ import {
   Calendar,
   CreditCard,
   MoreVertical,
+  Pencil,
   Printer,
   Receipt,
   Trash2,
@@ -18,12 +19,14 @@ interface PaymentReceivedDetailsModalProps {
   isOpen: boolean;
   onClose: () => void;
   payment: PaymentReceipt | null;
+  onEdit?: (payment: PaymentReceipt) => void;
 }
 
 export const PaymentReceivedDetailsModal: React.FC<PaymentReceivedDetailsModalProps> = ({
   isOpen,
   onClose,
   payment,
+  onEdit,
 }) => {
   const { settings, deletePaymentReceived } = useBooks();
   const [showMoreMenu, setShowMoreMenu] = useState(false);
@@ -56,6 +59,19 @@ export const PaymentReceivedDetailsModal: React.FC<PaymentReceivedDetailsModalPr
           </div>
 
           <div className="flex items-center space-x-1 relative">
+            {payment.status !== 'REVERSED' && onEdit && (
+              <button
+                onClick={() => {
+                  onClose();
+                  onEdit(payment);
+                }}
+                title="Edit payment"
+                className="p-2.5 rounded-full hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 cursor-pointer transition-colors"
+              >
+                <Pencil className="w-4 h-4" />
+              </button>
+            )}
+
             <button
               onClick={() => setShowMoreMenu(!showMoreMenu)}
               className="p-2.5 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 cursor-pointer transition-colors"
@@ -65,6 +81,20 @@ export const PaymentReceivedDetailsModal: React.FC<PaymentReceivedDetailsModalPr
 
             {showMoreMenu && (
               <div className="absolute right-0 top-12 w-48 bg-white dark:bg-slate-800 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-700 py-2 z-20">
+                {payment.status !== 'REVERSED' && onEdit && (
+                  <button
+                    onClick={() => {
+                      setShowMoreMenu(false);
+                      onClose();
+                      onEdit(payment);
+                    }}
+                    className="w-full text-left px-4 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 flex items-center space-x-2"
+                  >
+                    <Pencil className="w-4 h-4 text-blue-500" />
+                    <span>Edit Payment</span>
+                  </button>
+                )}
+
                 <button
                   onClick={() => {
                     setShowMoreMenu(false);

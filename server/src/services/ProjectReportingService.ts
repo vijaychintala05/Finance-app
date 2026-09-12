@@ -125,7 +125,7 @@ export class ProjectReportingService {
             AND je.date >= $3 AND je.date <= $4
             AND UPPER(COALESCE(a.type, '')) IN ('INCOME', 'REVENUE', 'OTHER INCOME')
           GROUP BY COALESCE(jl.project_id, i.project_id), a.id, a.code, a.name
-          ORDER BY jl.project_id, a.code`,
+          ORDER BY COALESCE(jl.project_id, i.project_id), a.code`,
         [organizationId, projectIds, fromDate, toDate],
       ),
       db.query(

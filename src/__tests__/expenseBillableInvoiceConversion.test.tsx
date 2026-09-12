@@ -62,6 +62,7 @@ const mockProjects: Project[] = [
 
 const mockAddExpense = vi.fn().mockResolvedValue(undefined);
 const mockDeleteExpense = vi.fn().mockResolvedValue(undefined);
+const mockAttachExpenseReceipts = vi.fn().mockResolvedValue([]);
 const mockConvertExpenseToInvoice = vi.fn().mockResolvedValue({
   invoice: {
     id: 'inv-999',
@@ -79,6 +80,7 @@ const mockConvertExpenseToInvoice = vi.fn().mockResolvedValue({
 });
 
 let mockExpenses: Expense[] = [];
+let mockJournalEntries: any[] = [];
 
 vi.mock('../context/BooksContext', () => ({
   useBooks: () => ({
@@ -88,8 +90,10 @@ vi.mock('../context/BooksContext', () => ({
     clients: mockClients,
     projects: mockProjects,
     expenses: mockExpenses,
+    journalEntries: mockJournalEntries,
     addExpense: mockAddExpense,
     deleteExpense: mockDeleteExpense,
+    attachExpenseReceipts: mockAttachExpenseReceipts,
     convertExpenseToInvoice: mockConvertExpenseToInvoice,
     settings: { currencyCode: 'INR', currencySymbol: '₹' },
   }),
@@ -103,6 +107,7 @@ describe('Zoho Books Billable Expense & Invoice Conversion UI', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockExpenses = [];
+    mockJournalEntries = [];
   });
 
   afterEach(() => {
@@ -291,5 +296,41 @@ describe('Zoho Books Billable Expense & Invoice Conversion UI', () => {
         'Failed to convert expense to invoice: Server error: Customer credit limit reached'
       );
     });
+  });
+
+  it('7. displays the balanced posting journal from an expense detail view', () => {
+    mockJournalEntries = [{
+      id: 'jrnl-exp-1',
+      entryNumber: 'JRN-EXP-exp-09e19f15-909c-419c-b35c-e4eb20ba9605',
+      date: '2026-08-16',
+      reference: 'EXP-101',
+      description: 'Flight tickets for onsite deployment',
+      status: 'Posted',
+      createdAt: '2026-08-16T10:00:00Z',
+      lines: [
+        { id: 'line-1', accountId: 'acc-exp-1', accountCode: '6010', accountName: 'Travel & Lodging', debit: 1200, credit: 0 },
+        { id: 'line-2', accountId: 'acc-bank-1', accountCode: '1010', accountName: 'HDFC Current Bank', debit: 0, credit: 1200 },
+      ],
+    }];
+    const expense: Expense = {
+      id: 'exp-1', referenceNumber: 'EXP-101', accountId: 'acc-exp-1', accountName: 'Travel & Lodging',
+      paidFromAccountId: 'acc-bank-1', paidFromAccountName: 'HDFC Current Bank', vendorName: 'Airline Services',
+      invoiceNumber: 'AIR-091', amount: 1200, taxAmount: 0, date: '2026-08-16', description: 'Flight tickets for onsite deployment',
+      isBillable: false, paymentStatus: 'Paid', journalEntryId: 'jrnl-exp-1', createdAt: '2026-08-16T10:00:00Z',
+    };
+
+    render(<ExpenseDetailsModal isOpen={true} onClose={vi.fn()} expense={expense} />);
+
+    expect(screen.getByText('Accounting impact')).toBeDefined();
+    expect(screen.getByText('Drag and drop receipts here')).toBeDefined();
+    expect(screen.getByText('Vendor ref AIR-091')).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'Display journal' }));
+    expect(screen.queryByText('JRN-EXP-exp-09e19f15-909c-419c-b35c-e4eb20ba9605')).toBeNull();
+    expect(screen.getAllByText('Posted journal').length).toBeGreaterThan(0);
+    expect(screen.getByText('6010 - Travel & Lodging')).toBeDefined();
+    expect(screen.getByText('1010 - HDFC Current Bank')).toBeDefined();
+    fireEvent.click(screen.getByRole('tab', { name: 'Voucher view' }));
+    expect(screen.getByRole('tabpanel', { name: 'Voucher view' })).toBeDefined();
+    expect(screen.getByText('Expense payment voucher')).toBeDefined();
   });
 });

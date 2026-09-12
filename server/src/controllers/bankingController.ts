@@ -345,4 +345,149 @@ export class BankingController {
       res.status(400).json({ success: false, error: e.message });
     }
   }
+
+  // GET /api/v1/banking/accounts/overview
+  public static async getAccountsOverview(req: Request, res: Response) {
+    try {
+      const orgId = getOrgId(req);
+      const result = await BankReconciliationService.getBankingOverview(orgId);
+      res.json({ success: true, data: result, ...result });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: sanitizeError(e) });
+    }
+  }
+
+  // POST /api/v1/banking/imports/preview
+  public static async previewImport(req: Request, res: Response) {
+    try {
+      const orgId = getOrgId(req);
+      const { content, fileContent, filename, fileName, bankAccountId, mapping } = req.body || {};
+      const rawContent = content || fileContent;
+      if (!rawContent) {
+        return res.status(400).json({ success: false, error: 'Statement file content is required' });
+      }
+      const result = await BankReconciliationService.previewStatementImport(orgId, {
+        fileContent: rawContent,
+        filename: filename || fileName || 'statement.csv',
+        bankAccountId,
+        mapping,
+      });
+      res.json({ success: true, data: result, ...result });
+    } catch (e: any) {
+      const msg = e instanceof Error ? e.message : 'Statement preview failed';
+      res.status(400).json({ success: false, error: msg });
+    }
+  }
+
+  // POST /api/v1/banking/imports/confirm
+  public static async confirmImport(req: Request, res: Response) {
+    try {
+      const orgId = getOrgId(req);
+      const { content, fileContent, filename, fileName, mode, bankAccountId, newBankData, mapping } = req.body || {};
+      const rawContent = content || fileContent;
+      if (!rawContent) {
+        return res.status(400).json({ success: false, error: 'Statement file content is required' });
+      }
+      const result = await BankReconciliationService.confirmStatementImport(
+        orgId,
+        {
+          fileContent: rawContent,
+          filename: filename || fileName || 'statement.csv',
+          mode: mode || (bankAccountId ? 'USE_EXISTING' : 'CREATE_NEW'),
+          bankAccountId,
+          newBankData,
+          mapping,
+        },
+        (req as any).auth?.userId
+      );
+      res.status(201).json({ success: true, data: result, ...result });
+    } catch (e: any) {
+      const msg = e instanceof Error ? e.message : 'Statement import confirmation failed';
+      res.status(400).json({ success: false, error: msg });
+    }
+  }
+
+  // GET /api/v1/banking/workspace
+  public static async getWorkspace(req: Request, res: Response) {
+    try {
+      const orgId = getOrgId(req);
+      const bankAccountId = (req.query.bankAccountId || req.query.id) as string;
+      if (!bankAccountId) {
+        return res.status(400).json({ success: false, error: 'bankAccountId is required' });
+      }
+      const result = await BankReconciliationService.getWorkspace(orgId, bankAccountId, {
+        tab: req.query.tab as string,
+        search: req.query.search as string,
+        limit: req.query.limit ? parseInt(req.query.limit as string, 10) : undefined,
+        offset: req.query.offset ? parseInt(req.query.offset as string, 10) : undefined,
+      });
+      res.json({ success: true, data: result, ...result });
+    } catch (e: any) {
+      const msg = e instanceof Error ? e.message : 'Failed to fetch bank workspace';
+      res.status(msg.includes('not found') ? 404 : 500).json({ success: false, error: msg });
+    }
+  }
+
+  // GET /api/v1/banking/transactions/:id/suggestions
+  public static async getTransactionSuggestions(req: Request, res: Response) {
+    try {
+      const orgId = getOrgId(req);
+      const transactionId = req.params.id || req.params.transactionId;
+      const suggestions = await BankReconciliationService.getMatchingSuggestions(orgId, transactionId, req.body?.candidates || []);
+      res.json({ success: true, data: suggestions });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: sanitizeError(e) });
+    }
+  }
+
+  // POST /api/v1/banking/transactions/:id/categorize
+  public static async categorizeTransaction(req: Request, res: Response) {
+    try {
+      const orgId = getOrgId(req);
+      const transactionId = req.params.id || req.params.transactionId;
+      const { ledgerAccountId, counterpartyId, counterpartyName, projectId, gstTreatment, tdsAmount, notes, reference, createRule, ruleName } = req.body || {};
+      if (!ledgerAccountId) {
+        return res.status(400).json({ success: false, error: 'ledgerAccountId is required for categorization' });
+      }
+      const result = await BankReconciliationService.categorizeTransaction(
+        orgId,
+        transactionId,
+        { ledgerAccountId, counterpartyId, counterpartyName, projectId, gstTreatment, tdsAmount, notes, reference, createRule, ruleName },
+        (req as any).auth?.userId
+      );
+      res.status(201).json({ success: true, data: result });
+    } catch (e: any) {
+      const msg = e instanceof Error ? e.message : 'Transaction categorization failed';
+      res.status(msg.includes('not found') ? 404 : 400).json({ success: false, error: msg });
+    }
+  }
+
+  // POST /api/v1/banking/transactions/:id/ignore
+  public static async ignoreTransaction(req: Request, res: Response) {
+    try {
+      const orgId = getOrgId(req);
+      const transactionId = req.params.id || req.params.transactionId;
+      const isIgnored = req.body?.isIgnored !== false;
+      await BankReconciliationService.ignoreTransaction(orgId, transactionId, isIgnored, (req as any).auth?.userId);
+      res.json({ success: true, data: { isIgnored } });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: sanitizeError(e) });
+    }
+  }
+
+  // POST /api/v1/banking/reconciliation/reopen
+  public static async reopenReconciliation(req: Request, res: Response) {
+    try {
+      const orgId = getOrgId(req);
+      const bankAccountId = req.body?.bankAccountId;
+      if (!bankAccountId) {
+        return res.status(400).json({ success: false, error: 'bankAccountId is required' });
+      }
+      await BankReconciliationService.reopenReconciliation(orgId, bankAccountId, (req as any).auth?.userId);
+      res.json({ success: true, data: { reopened: true } });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: sanitizeError(e) });
+    }
+  }
+
 }

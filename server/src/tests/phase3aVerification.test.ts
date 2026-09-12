@@ -78,37 +78,13 @@ DATA:OFXSGML
 </STMTTRNRS>
 </BANKMSGSRSV1>
 </OFX>`;
-    const ofxParsed = BankStatementParserFactory.parseStatement(ofxContent, HDFC_ACC_ID, 'OFX');
-    expect(ofxParsed.transactions.length).toBe(1);
-    expect(ofxParsed.transactions[0].amount).toBe(15000);
+    const mt940Content = ':20:MT940STATEMENT\n:25:50200012345678\n:28C:00001/001\n:60F:C260801INR100000,00\n:61:2608010801CR50000,00NTRFNONREF//REF987654\nSERVICES PAYMENT\n:62F:C260801INR150000,00';
+    const camtContent = '<?xml version="1.0" encoding="UTF-8"?><Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.02"><BkToCstmrStmt></BkToCstmrStmt></Document>';
 
-    // MT940 Test
-    const mt940Content = `:20:MT940STATEMENT
-:25:50200012345678
-:28C:00001/001
-:60F:C260801INR100000,00
-:61:2608010801CR50000,00NTRFNONREF//REF987654
-SERVICES PAYMENT
-:62F:C260801INR150000,00`;
-    const mt940Parsed = BankStatementParserFactory.parseStatement(mt940Content, HDFC_ACC_ID, 'MT940');
-    expect(mt940Parsed.transactions.length).toBe(1);
-
-    // CAMT.053 Test
-    const camtContent = `<?xml version="1.0" encoding="UTF-8"?>
-<Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.02">
-  <BkToCstmrStmt>
-    <Stmt>
-      <Ntry>
-        <Amt Ccy="INR">35000.00</Amt>
-        <CdtDbtInd>CRDT</CdtDbtInd>
-        <BookgDt><Dt>2026-08-01</Dt></BookgDt>
-        <NtryDtls><TxDtls><Rmts><Ustrd>CAMT PAYMENT FROM CLIENT</Ustrd></Rmts></TxDtls></NtryDtls>
-      </Ntry>
-    </Stmt>
-  </BkToCstmrStmt>
-</Document>`;
-    const camtParsed = BankStatementParserFactory.parseStatement(camtContent, HDFC_ACC_ID, 'CAMT053');
-    expect(camtParsed.transactions.length).toBe(1);
+    // Unsupported formats (OFX, MT940, CAMT.053) must be strictly rejected per product requirements
+    expect(() => BankStatementParserFactory.parseStatement(ofxContent, HDFC_ACC_ID, 'OFX')).toThrow('UNSUPPORTED_FORMAT');
+    expect(() => BankStatementParserFactory.parseStatement(mt940Content, HDFC_ACC_ID, 'MT940')).toThrow('UNSUPPORTED_FORMAT');
+    expect(() => BankStatementParserFactory.parseStatement(camtContent, HDFC_ACC_ID, 'CAMT053')).toThrow('UNSUPPORTED_FORMAT');
   });
 
   it('2. Indian Banking Reference Extractor (UTR, UPI, RRN, IMPS, Cheque)', () => {

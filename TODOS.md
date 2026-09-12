@@ -57,3 +57,14 @@ These items were intentionally excluded from the Point-1 workflow-certification 
 - **Context:** AI may advise later but must never bypass accounting controls.
 - **Effort:** L
 - **Priority:** P3
+
+## Legacy Finance UI Migration
+
+- **What:** Migrate remaining legacy finance screens to the workspace visual tokens, calmer data-canvas hierarchy, accessible text sizes, and consistent status treatment.
+- **Why deferred:** The command-platform implementation should improve the workspaces it touches without turning into a risky app-wide visual rewrite.
+- **Pros:** Prevents card-grid and tiny-text drift from returning; gives future work a clear, reusable design target.
+- **Cons:** Requires incremental visual regression and accessibility checks for each legacy workspace.
+- **Context:** The banking, document, and Operations Center workspaces define the new baseline. Older screens migrate when their workflow is next changed.
+- **Depends on / blocked by:** The workspace token primitives and responsive patterns defined in the unified financial command-platform plan.
+- **Effort:** L
+- **Priority:** P2

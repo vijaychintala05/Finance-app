@@ -48,7 +48,7 @@ export const TransactionMatchDrawer: React.FC<TransactionMatchDrawerProps> = ({
 
   if (!isOpen || !transaction) return null;
 
-  const txAmount = Number(transaction.amount || transaction.moneyIn || transaction.moneyOut || 0);
+  const txAmount = Math.abs(Number(transaction.amount || transaction.moneyIn || transaction.moneyOut || 0));
   const isDeposit = transaction.type === 'CREDIT' || transaction.type === 'DEPOSIT' || Boolean(transaction.moneyIn && !transaction.moneyOut);
 
   const handleConfirmMatch = async () => {

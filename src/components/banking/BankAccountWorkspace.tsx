@@ -60,16 +60,39 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
   >('ALL');
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Fetch statement rows for this bank account
+  const [workspaceBalances, setWorkspaceBalances] = useState<{
+    bookBalance: number | null;
+    statementBalance: number | null;
+    difference: number | null;
+  } | null>(null);
+
+  // Fetch statement rows and live balances for this bank account
   const loadWorkspaceTransactions = React.useCallback(async () => {
-    if (!bankAccount || typeof BankingService.getTransactions !== 'function') return;
+    if (!bankAccount) return;
     setIsLoading(true);
     try {
-      const rows = await BankingService.getTransactions({
-        bankAccountId: bankAccount.id,
-        limit: 100,
-      });
-      setStatementRows(rows || []);
+      if (typeof BankingService.getWorkspace === 'function') {
+        try {
+          const ws = await BankingService.getWorkspace(bankAccount.id);
+          if (ws?.transactions) {
+            setStatementRows(ws.transactions);
+            if (ws.balances) {
+              setWorkspaceBalances(ws.balances);
+            }
+            return;
+          }
+        } catch (wsErr) {
+          console.warn('Workspace endpoint failed, falling back to getTransactions:', wsErr);
+        }
+      }
+
+      if (typeof BankingService.getTransactions === 'function') {
+        const rows = await BankingService.getTransactions({
+          bankAccountId: bankAccount.id,
+          limit: 100,
+        });
+        setStatementRows(rows || []);
+      }
     } catch (err) {
       console.warn('Could not load bank statement transactions:', err);
     } finally {
@@ -165,10 +188,19 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
     return list;
   }, [mergedTransactions, activeTab, searchQuery]);
 
-  // Workspace Balances
-  const bookBalance = Number(account.balance || 0);
-  const statementBalance = bankAccount?.currentBalance ?? null;
-  const difference = statementBalance !== null ? statementBalance - bookBalance : null;
+  // Workspace Balances (prioritize live server reconciliation response)
+  const bookBalance =
+    workspaceBalances?.bookBalance !== undefined && workspaceBalances?.bookBalance !== null
+      ? workspaceBalances.bookBalance
+      : Number(account.balance || 0);
+  const statementBalance =
+    workspaceBalances?.statementBalance !== undefined && workspaceBalances?.statementBalance !== null
+      ? workspaceBalances.statementBalance
+      : (bankAccount?.currentBalance ?? null);
+  const difference =
+    workspaceBalances?.difference !== undefined && workspaceBalances?.difference !== null
+      ? workspaceBalances.difference
+      : (statementBalance !== null ? statementBalance - bookBalance : null);
   const isBalanced = difference === 0;
 
   const toReviewCount = mergedTransactions.filter(
@@ -405,7 +437,8 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
                 </tr>
               ) : (
                 filteredTransactions.map((tx) => {
-                  const isUnmatched = tx.status === 'UNMATCHED' || tx.status === 'TO_REVIEW';
+                  const isUnmatched =
+                    tx.status === 'UNMATCHED' || tx.status === 'TO_REVIEW' || tx.status === 'POSTED';
                   const isMatched = tx.status === 'MATCHED';
                   const isCategorized = tx.status === 'CATEGORIZED';
                   const isReconciled = tx.status === 'RECONCILED';
@@ -489,22 +522,26 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
                       {/* 6. ACTIONS */}
                       <td className="py-3.5 px-5 text-right" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center justify-end space-x-1.5">
-                          <button
-                            type="button"
-                            onClick={() => onOpenMatch(tx.rawTx)}
-                            className="px-2.5 py-1 text-xs font-bold text-blue-600 hover:text-blue-700 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40 rounded-lg transition-colors cursor-pointer inline-flex items-center space-x-1"
-                          >
-                            <Link2 className="w-3.5 h-3.5" />
-                            <span>Match</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => onOpenCategorize(tx.rawTx)}
-                            className="px-2.5 py-1 text-xs font-bold text-purple-600 hover:text-purple-700 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-950/40 rounded-lg transition-colors cursor-pointer inline-flex items-center space-x-1"
-                          >
-                            <FileCheck2 className="w-3.5 h-3.5" />
-                            <span>Categorize</span>
-                          </button>
+                          {isUnmatched && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => onOpenMatch(tx.rawTx)}
+                                className="px-2.5 py-1 text-xs font-bold text-blue-600 hover:text-blue-700 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40 rounded-lg transition-colors cursor-pointer inline-flex items-center space-x-1"
+                              >
+                                <Link2 className="w-3.5 h-3.5" />
+                                <span>Match</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => onOpenCategorize(tx.rawTx)}
+                                className="px-2.5 py-1 text-xs font-bold text-purple-600 hover:text-purple-700 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-950/40 rounded-lg transition-colors cursor-pointer inline-flex items-center space-x-1"
+                              >
+                                <FileCheck2 className="w-3.5 h-3.5" />
+                                <span>Categorize</span>
+                              </button>
+                            </>
+                          )}
                           <button
                             type="button"
                             onClick={() => onSelectTxDetails(tx.rawTx)}

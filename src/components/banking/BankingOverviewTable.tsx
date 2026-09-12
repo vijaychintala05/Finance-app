@@ -62,7 +62,12 @@ export const BankingOverviewTable: React.FC<BankingOverviewTableProps> = ({
         );
         const bookBalance = Number(acc.balance || 0);
         const statementBalance = item?.statementBalance ?? null;
-        const diff = statementBalance !== null ? statementBalance - bookBalance : null;
+        const diff =
+          item?.difference !== undefined && item?.difference !== null
+            ? item.difference
+            : statementBalance !== null
+            ? statementBalance - bookBalance
+            : null;
 
         return {
           account: acc,

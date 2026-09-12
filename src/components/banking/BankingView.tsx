@@ -173,11 +173,13 @@ export const BankingView: React.FC<BankingViewProps> = ({
           currencySymbol={settings.currencySymbol}
           onSelectAccount={(accId) => setSelectedAccountId(accId)}
           onImportStatement={(acc) => {
-            if (acc) setSelectedAccountId(acc.id);
+            const target = acc || accounts.find((a) => a.type === 'Bank' || a.subType === 'Bank') || accounts[0] || null;
+            if (target) setSelectedAccountId(target.id);
             setIsImportStatementOpen(true);
           }}
           onReconcile={(acc) => {
-            if (acc) setSelectedAccountId(acc.id);
+            const target = acc || accounts.find((a) => a.type === 'Bank' || a.subType === 'Bank') || accounts[0] || null;
+            if (target) setSelectedAccountId(target.id);
             setIsReconcileOpen(true);
           }}
           onTransferFunds={() => setIsTransferOpen(true)}
@@ -304,7 +306,7 @@ export const BankingView: React.FC<BankingViewProps> = ({
       {isImportStatementOpen && (
         <ImportStatementModal
           isOpen={isImportStatementOpen}
-          account={activeAccount}
+          account={activeAccount || accounts.find((a) => a.type === 'Bank' || a.subType === 'Bank') || accounts[0] || null}
           bankAccount={activeBankAccount}
           onClose={() => setIsImportStatementOpen(false)}
           onImported={async () => {

@@ -60,14 +60,17 @@ export const TransactionCategorizeDrawer: React.FC<TransactionCategorizeDrawerPr
     setCreateRule(false);
     setRuleName(transaction.description ? `Rule for ${transaction.description.slice(0, 24)}` : '');
 
-    // Default select first logical category
-    const defaultAcc = eligibleAccounts[0];
+    // Pre-select suggested account if available, otherwise default to first eligible category
+    const suggested = transaction.suggestedAccountId
+      ? eligibleAccounts.find((a) => a.id === transaction.suggestedAccountId)
+      : null;
+    const defaultAcc = suggested || eligibleAccounts[0];
     setSelectedAccountId(defaultAcc ? defaultAcc.id : '');
   }, [isOpen, transaction, eligibleAccounts]);
 
   if (!isOpen || !transaction) return null;
 
-  const txAmount = Number(transaction.amount || transaction.moneyIn || transaction.moneyOut || 0);
+  const txAmount = Math.abs(Number(transaction.amount || transaction.moneyIn || transaction.moneyOut || 0));
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

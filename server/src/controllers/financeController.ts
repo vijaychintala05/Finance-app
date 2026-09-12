@@ -1965,6 +1965,28 @@ export class FinanceController {
     res.json(result.rows);
   }
 
+  public static async getFinancialCommand(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const organizationId = req.auth!.organizationId;
+    const command = await db.query(
+      `SELECT id, command_type, schema_version, status, result, result_version, error_code, created_at, completed_at
+         FROM financial_commands
+        WHERE organization_id = $1 AND id = $2`,
+      [organizationId, req.params.id]
+    );
+    if (command.rows.length === 0) {
+      res.status(404).json({ error: 'Financial command not found' });
+      return;
+    }
+    const events = await db.query(
+      `SELECT event_type, aggregate_type, aggregate_id, status, created_at, completed_at
+         FROM financial_outbox_events
+        WHERE organization_id = $1 AND command_id = $2
+        ORDER BY created_at ASC`,
+      [organizationId, req.params.id]
+    );
+    res.json({ data: { ...command.rows[0], events: events.rows }, freshness: 'transactional' });
+  }
+
   // --- PHASE 4: CUSTOMERS & VENDORS ---
   public static async getCustomers(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;

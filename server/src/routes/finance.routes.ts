@@ -226,5 +226,6 @@ router.post('/period-locks', requirePermission(['periods.lock', 'settings.close_
 
 // Audit Logs
 router.get('/audit', requirePermission(['audit.view', 'reports.audit']), FinanceController.getAuditLogs);
+router.get('/financial-commands/:id', requirePermission(['accounting.view', 'audit.view', 'reports.audit']), FinanceController.getFinancialCommand);
 
 export default protectAsyncRoutes(router);

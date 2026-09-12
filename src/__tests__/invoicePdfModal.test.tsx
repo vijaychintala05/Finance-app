@@ -39,6 +39,7 @@ describe('Invoice Preview Modal & PDF UI Tests', () => {
     clientEmail: 'tcs.procurement@tata.com',
     issueDate: '2026-09-01',
     dueDate: '2026-09-30',
+    createdAt: '2026-09-01T10:00:00.000Z',
     subtotal: 50000,
     taxTotal: 9000,
     discount: 0,

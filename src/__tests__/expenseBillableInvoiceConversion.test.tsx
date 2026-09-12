@@ -69,6 +69,7 @@ const mockProjects: Project[] = [
     startDate: '2026-08-01',
     manager: 'Sarah Connor',
     status: 'Active',
+    createdAt: '2026-08-01T00:00:00.000Z',
   },
 ];
 

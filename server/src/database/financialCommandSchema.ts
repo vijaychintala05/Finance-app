@@ -1,4 +1,4 @@
-import { DbQueryClient } from './db';
+import { db, DbQueryClient } from './db';
 
 /**
  * Durable command receipts and the transactional outbox are additive. They do
@@ -12,15 +12,15 @@ export async function applyFinancialCommandSchema(client: DbQueryClient): Promis
       organization_id VARCHAR(64) NOT NULL,
       actor_user_id VARCHAR(64),
       command_type VARCHAR(100) NOT NULL,
-      schema_version INT NOT NULL DEFAULT 1,
+      schema_version INT DEFAULT 1,
       idempotency_key VARCHAR(128),
-      payload JSONB NOT NULL,
-      payload_hash VARCHAR(128) NOT NULL,
-      status VARCHAR(20) NOT NULL DEFAULT 'PROCESSING',
+      payload JSONB,
+      payload_hash VARCHAR(128),
+      status VARCHAR(20) DEFAULT 'PROCESSING',
       result JSONB,
       result_version INT,
       error_code VARCHAR(100),
-      created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
       completed_at TIMESTAMP WITH TIME ZONE
     )`,
     `CREATE UNIQUE INDEX IF NOT EXISTS uk_financial_command_idempotency
@@ -36,8 +36,8 @@ export async function applyFinancialCommandSchema(client: DbQueryClient): Promis
       relation_type VARCHAR(100) NOT NULL,
       target_type VARCHAR(100) NOT NULL,
       target_id VARCHAR(64) NOT NULL,
-      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-      created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      metadata JSONB,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
       CONSTRAINT uk_financial_evidence_relation UNIQUE
         (organization_id, command_id, source_type, source_id, relation_type, target_type, target_id)
     )`,
@@ -52,14 +52,14 @@ export async function applyFinancialCommandSchema(client: DbQueryClient): Promis
       event_type VARCHAR(120) NOT NULL,
       aggregate_type VARCHAR(100) NOT NULL,
       aggregate_id VARCHAR(64) NOT NULL,
-      payload JSONB NOT NULL,
-      status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
-      attempt_count INT NOT NULL DEFAULT 0,
-      available_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      payload JSONB,
+      status VARCHAR(20) DEFAULT 'PENDING',
+      attempt_count INT DEFAULT 0,
+      available_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
       claimed_at TIMESTAMP WITH TIME ZONE,
       completed_at TIMESTAMP WITH TIME ZONE,
       last_error TEXT,
-      created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
       CONSTRAINT uk_outbox_command_event UNIQUE (command_id, event_type, aggregate_id)
     )`,
     `CREATE INDEX IF NOT EXISTS idx_financial_outbox_ready
@@ -69,12 +69,20 @@ export async function applyFinancialCommandSchema(client: DbQueryClient): Promis
       projection_name VARCHAR(100) NOT NULL,
       last_event_id VARCHAR(64),
       last_projected_at TIMESTAMP WITH TIME ZONE,
-      updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (organization_id, projection_name)
     )`,
   ];
 
   for (const sql of statements) {
-    await client.query(sql);
+    try {
+      await client.query(sql);
+    } catch (err) {
+      if (!db.isMemoryMode() || process.env.NODE_ENV === 'production') {
+        throw err;
+      }
+      console.warn('[Migration Warning (Memory Mode)]', err instanceof Error ? err.message : err);
+    }
   }
 }
+

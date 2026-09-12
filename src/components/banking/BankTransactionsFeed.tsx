@@ -248,24 +248,23 @@ export const BankTransactionsFeed: React.FC<BankTransactionsFeedProps> = ({
           </div>
         </div>
 
-        {/* TRANSACTIONS TABLE */}
+        {/* TRANSACTIONS TABLE - ZOHO BOOKS BANKING COLUMNS */}
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs border-collapse">
             <thead>
               <tr className="bg-slate-100/70 dark:bg-slate-800/50 text-slate-500 dark:text-slate-400 font-extrabold uppercase text-[10px] tracking-wider border-b border-slate-200/80 dark:border-slate-800">
                 <th className="py-3 px-4">Date</th>
-                <th className="py-3 px-4">Reference</th>
-                <th className="py-3 px-4">Description / Particulars</th>
-                <th className="py-3 px-4">Type</th>
-                <th className="py-3 px-4">Source Status</th>
-                <th className="py-3 px-4 text-right">Amount</th>
+                <th className="py-3 px-4">Particulars / Description</th>
+                <th className="py-3 px-4 text-right">Withdrawals (DR)</th>
+                <th className="py-3 px-4 text-right">Deposits (CR)</th>
+                <th className="py-3 px-4 text-center">Status</th>
                 <th className="py-3 px-4 text-center">Details</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {accountTransactions.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-12 text-center text-slate-400">
+                  <td colSpan={6} className="py-12 text-center text-slate-400">
                     <History className="w-8 h-8 mx-auto mb-2 text-slate-300" />
                     <p className="font-bold text-slate-600 dark:text-slate-400">
                       No recorded transactions for {activeAccount.name}
@@ -277,7 +276,7 @@ export const BankTransactionsFeed: React.FC<BankTransactionsFeedProps> = ({
                 </tr>
               ) : (
                 accountTransactions.map((tx) => {
-                  const isDebit = tx.type === 'DEBIT';
+                  const isDebit = tx.type === 'DEBIT'; // money in / deposit in accounting terms for Bank asset
 
                   return (
                     <tr
@@ -288,34 +287,39 @@ export const BankTransactionsFeed: React.FC<BankTransactionsFeedProps> = ({
                       <td className="py-3 px-4 font-mono text-slate-500 dark:text-slate-400 whitespace-nowrap">
                         {formatDate(tx.date)}
                       </td>
-                      <td className="py-3 px-4 font-mono font-bold text-blue-600 dark:text-blue-400 whitespace-nowrap">
-                        {tx.ref}
-                      </td>
                       <td className="py-3 px-4">
                         <div className="font-semibold text-slate-900 dark:text-slate-100">{tx.description}</div>
-                        {tx.partyName && (
-                          <div className="text-[10px] text-slate-400 mt-0.5">{tx.partyName}</div>
-                        )}
-                      </td>
-                      <td className="py-3 px-4 whitespace-nowrap">
-                        <span
-                          className={`text-[10px] px-2 py-0.5 rounded font-bold uppercase ${
-                            isDebit
-                              ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
-                              : 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300'
-                          }`}
-                        >
-                          {isDebit ? 'Debit' : 'Credit'}
-                        </span>
-                      </td>
-                      <td className="py-3 px-4 whitespace-nowrap">
-                        <span className="text-[10px] px-2 py-0.5 rounded font-bold uppercase border bg-slate-50 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700">
-                          {tx.status || 'Posted'}
-                        </span>
+                        <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-slate-400">
+                          <span className="font-mono text-blue-600 dark:text-blue-400 font-semibold">{tx.ref}</span>
+                          {tx.partyName && (
+                            <>
+                              <span>•</span>
+                              <span>{tx.partyName}</span>
+                            </>
+                          )}
+                        </div>
                       </td>
                       <td className="py-3 px-4 text-right font-mono font-bold whitespace-nowrap">
-                        <span className="text-slate-900 dark:text-white">
-                          {formatCurrency(tx.amount, currencySymbol)}
+                        {!isDebit ? (
+                          <span className="text-slate-900 dark:text-slate-100">
+                            {formatCurrency(tx.amount, currencySymbol)}
+                          </span>
+                        ) : (
+                          <span className="text-slate-300 dark:text-slate-600">—</span>
+                        )}
+                      </td>
+                      <td className="py-3 px-4 text-right font-mono font-bold whitespace-nowrap">
+                        {isDebit ? (
+                          <span className="text-emerald-600 dark:text-emerald-400">
+                            +{formatCurrency(tx.amount, currencySymbol)}
+                          </span>
+                        ) : (
+                          <span className="text-slate-300 dark:text-slate-600">—</span>
+                        )}
+                      </td>
+                      <td className="py-3 px-4 text-center whitespace-nowrap">
+                        <span className="text-[10px] px-2 py-0.5 rounded font-bold uppercase border bg-slate-50 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700">
+                          {tx.status || 'Posted'}
                         </span>
                       </td>
                       <td className="py-3 px-4 text-center">

@@ -17,6 +17,9 @@ const RECOVERY_BY_CODE: Record<string, { status: number; recovery: string }> = {
   EXPENSE_RECEIPT_INVALID: { status: 400, recovery: 'Use a supported receipt image within the permitted size and try again.' },
   EXPENSE_AMOUNT_MISMATCH: { status: 400, recovery: 'Make the expense total equal the sum of its itemized lines.' },
   EXPENSE_ITEM_INVALID: { status: 400, recovery: 'Give every item a valid account and a positive amount.' },
+  EXPENSE_CUSTOMER_REQUIRED: { status: 400, recovery: 'Choose the customer that will be billed before recording this recoverable expense.' },
+  EXPENSE_CUSTOMER_INVALID: { status: 400, recovery: 'Choose a customer that belongs to this organization before posting.' },
+  EXPENSE_VENDOR_INVALID: { status: 400, recovery: 'Choose a vendor that belongs to this organization before posting.' },
   ACCOUNT_NOT_FOUND: { status: 404, recovery: 'Reload the page and choose an active account from this organization.' },
   ACCOUNT_INACTIVE: { status: 422, recovery: 'Choose an active account or reactivate it before posting.' },
   UNAUTHORIZED: { status: 403, recovery: 'Ask an organization owner or accountant for the required permission.' },
@@ -30,6 +33,9 @@ function codeFromError(error: unknown): string {
 
 function messageFromError(error: unknown, code: string): string {
   const message = error instanceof Error ? error.message : String(error || '');
+  if (['EXPENSE_CUSTOMER_REQUIRED', 'EXPENSE_CUSTOMER_INVALID', 'EXPENSE_VENDOR_INVALID'].includes(code)) {
+    return message.trim();
+  }
   const withoutCode = message.replace(new RegExp(`^${code}:\\s*`), '').trim();
   return withoutCode || 'This financial action could not be completed.';
 }

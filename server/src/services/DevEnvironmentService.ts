@@ -245,7 +245,7 @@ export class DevEnvironmentService {
             },
           ],
           discount: 0,
-          roundOff: 0,
+          roundOffAmount: 0,
           notes: 'Thank you for your business. Net 30 terms.',
         });
 
@@ -266,7 +266,7 @@ export class DevEnvironmentService {
             },
           ],
           discount: 0,
-          roundOff: 0,
+          roundOffAmount: 0,
           notes: 'Please remit payment to Silicon Valley Bank checking account.',
         });
       } catch (invoiceErr) {

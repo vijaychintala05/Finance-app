@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { BankReconciliationService } from '../banking/BankReconciliationService';
+import { FinancialCommandService } from '../accounting/FinancialCommandService';
 
 function getOrgId(req: Request): string {
   const orgId = (req as any).auth?.organizationId;
@@ -388,19 +389,39 @@ export class BankingController {
       if (!rawContent) {
         return res.status(400).json({ success: false, error: 'Statement file content is required' });
       }
-      const result = await BankReconciliationService.confirmStatementImport(
-        orgId,
-        {
-          fileContent: rawContent,
-          filename: filename || fileName || 'statement.csv',
-          mode: mode || (bankAccountId ? 'USE_EXISTING' : 'CREATE_NEW'),
-          bankAccountId,
-          newBankData,
-          mapping,
-        },
-        (req as any).auth?.userId
-      );
-      res.status(201).json({ success: true, data: result, ...result });
+      const importPayload = {
+        fileContent: rawContent,
+        filename: filename || fileName || 'statement.csv',
+        mode: mode || (bankAccountId ? 'USE_EXISTING' : 'CREATE_NEW'),
+        bankAccountId,
+        newBankData,
+        mapping,
+      } as const;
+      const command = await FinancialCommandService.execute({
+        organizationId: orgId,
+        actorUserId: (req as any).auth?.userId,
+        commandType: 'bank.statement.import',
+        payload: importPayload,
+        idempotencyKey: req.header('idempotency-key') || undefined,
+        execute: () => BankReconciliationService.confirmStatementImport(
+          orgId,
+          importPayload,
+          (req as any).auth?.userId
+        ),
+        events: (result) => [{
+          eventType: 'bank.statement.imported',
+          aggregateType: 'BankStatementImport',
+          aggregateId: result.importId,
+          payload: {
+            bankAccountId: result.bankAccountId,
+            importId: result.importId,
+            newTransactionsCount: result.newTransactionsCount,
+            exactDuplicatesCount: result.exactDuplicatesCount,
+            possibleDuplicatesCount: result.possibleDuplicatesCount,
+          },
+        }],
+      });
+      res.status(201).json({ success: true, data: command.result, ...command.result, commandId: command.commandId });
     } catch (e: any) {
       const msg = e instanceof Error ? e.message : 'Statement import confirmation failed';
       res.status(400).json({ success: false, error: msg });

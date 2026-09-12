@@ -6,9 +6,10 @@ import { applyEnterpriseHardeningSchema } from './enterpriseHardeningSchema';
 import { applyUsabilitySchema } from './usabilitySchema';
 import { applyPaymentAccountingSchema } from './paymentAccountingSchema';
 import { applyBankingStatementSchema } from './bankingStatementSchema';
+import { applyFinancialCommandSchema } from './financialCommandSchema';
 import type { DbQueryResult } from './db';
 
-export const CURRENT_SCHEMA_VERSION = '2026.09.12-v11-statement-first-banking';
+export const CURRENT_SCHEMA_VERSION = '2026.09.12-v12-financial-command-platform';
 
 export class MigrationRunner {
   public static async runMigrations(queryClient?: { query: (text: string, params?: any[]) => Promise<DbQueryResult> }): Promise<void> {
@@ -1961,12 +1962,13 @@ export class MigrationRunner {
     await applyEnterpriseHardeningSchema(queryClient);
     await applyUsabilitySchema(queryClient);
     await applyBankingStatementSchema(queryClient);
+    await applyFinancialCommandSchema(queryClient);
 
     await queryClient.query(
       `INSERT INTO schema_migrations (version, description)
        VALUES ($1, $2)
        ON CONFLICT (version) DO NOTHING`,
-      [CURRENT_SCHEMA_VERSION, 'FirmBooks v6 enterprise PostgreSQL fortress with RLS, hash-chaining, and integrity views']
+      [CURRENT_SCHEMA_VERSION, 'FirmBooks v12 financial command receipts, transactional outbox, and projection checkpoints']
     );
 
     console.log('[Migration] All PostgreSQL tables initialized successfully.');

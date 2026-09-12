@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { db } from '../database/db';
+import { db, type DbQueryClient } from '../database/db';
 import {
   AccountingTransactionType,
   BankAccount,
@@ -32,6 +32,35 @@ import { LedgerQueryService } from '../services/LedgerQueryService';
  * General Ledger at any time using rebuildBankBalancesFromGL(orgId).
  */
 export class BankReconciliationService {
+  private static async loadStatementImportCandidates(
+    client: DbQueryClient,
+    orgId: string,
+    bankAccountId: string | undefined,
+    transactions: Array<{ transactionDate: string }>
+  ): Promise<Array<{ id: string; fingerprint: string; transaction_date: string; amount: number; direction: string }>> {
+    if (!bankAccountId || transactions.length === 0) return [];
+
+    const timestamps = transactions
+      .map((transaction) => new Date(transaction.transactionDate).getTime())
+      .filter(Number.isFinite);
+    if (timestamps.length === 0) return [];
+
+    const earliest = new Date(Math.min(...timestamps));
+    const latest = new Date(Math.max(...timestamps));
+    earliest.setUTCDate(earliest.getUTCDate() - 3);
+    latest.setUTCDate(latest.getUTCDate() + 3);
+
+    const result = await client.query<{ id: string; fingerprint: string; transaction_date: string; amount: number; direction: string }>(
+      `SELECT id, fingerprint, transaction_date, amount, direction
+         FROM bank_statement_transactions
+        WHERE organization_id = $1
+          AND bank_account_id = $2
+          AND transaction_date BETWEEN $3 AND $4`,
+      [orgId, bankAccountId, earliest.toISOString().slice(0, 10), latest.toISOString().slice(0, 10)]
+    );
+    return result.rows;
+  }
+
   // --- 1. BANK ACCOUNTS ---
   public static async getBankAccounts(orgId: string): Promise<BankAccount[]> {
     const rows = await db.transaction(
@@ -1676,9 +1705,12 @@ export class BankReconciliationService {
       filename
     );
 
-    const existingTxs = payload.bankAccountId
-      ? await this.getTransactions(orgId, { bankAccountId: payload.bankAccountId, limit: 100000 })
-      : await this.getTransactions(orgId, { limit: 100000 });
+    const existingTxs = await this.loadStatementImportCandidates(
+      db,
+      orgId,
+      payload.bankAccountId,
+      parsed.transactions
+    );
 
     const existingFingerprints = new Set(existingTxs.map((t) => t.fingerprint));
     const rules = await this.getRules(orgId);
@@ -1700,8 +1732,8 @@ export class BankReconciliationService {
       } else {
         const txDate = new Date(tx.transactionDate).getTime();
         const isPossibleDuplicate = existingTxs.some((et) => {
-          if (et.amount !== tx.amount || et.direction !== tx.direction) return false;
-          const etDate = new Date(et.transactionDate).getTime();
+          if (Number(et.amount) !== Number(tx.amount) || String(et.direction) !== String(tx.direction)) return false;
+          const etDate = new Date(et.transaction_date).getTime();
           const diffDays = Math.abs(txDate - etDate) / (1000 * 60 * 60 * 24);
           return diffDays <= 3;
         });
@@ -1864,12 +1896,12 @@ export class BankReconciliationService {
         ]
       );
 
-      const existingTxsRes = await client.query(
-        `SELECT id, fingerprint, transaction_date, amount, direction FROM bank_statement_transactions
-         WHERE organization_id = $1 AND bank_account_id = $2`,
-        [orgId, targetBankAccountId]
+      const existingTxs = await this.loadStatementImportCandidates(
+        client,
+        orgId,
+        targetBankAccountId,
+        parsed.transactions
       );
-      const existingTxs = existingTxsRes.rows;
       const fpToTxId = new Map<string, string>();
       for (const et of existingTxs) {
         fpToTxId.set(et.fingerprint, et.id);

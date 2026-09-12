@@ -20,7 +20,6 @@ import { Account, JournalEntry } from '../../types';
 import { BankAccount, BankStatementTransaction } from '../../types/banking';
 import { BankingService } from '../../services/bankingService';
 import { formatCurrency, formatDate } from '../../utils/formatters';
-import { displayJournalNumber } from '../../utils/journalDisplay';
 
 interface BankAccountWorkspaceProps {
   account: Account;
@@ -104,61 +103,25 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
     void loadWorkspaceTransactions();
   }, [loadWorkspaceTransactions]);
 
-  // If no statement rows uploaded yet, generate fallback rows from posted GL journals
+  // Bank workspaces show statement evidence only. Ledger movements remain in
+  // the accounting workspace until an explicit bank match links the two.
   const mergedTransactions = useMemo(() => {
-    if (statementRows.length > 0) {
-      return statementRows.map((tx) => {
-        const isCredit = tx.type === 'CREDIT' || tx.type === 'DEPOSIT';
-        return {
-          id: tx.id,
-          date: tx.transactionDate,
-          description: tx.description || 'Statement Transaction',
-          particulars: tx.description,
-          reference: tx.referenceNumber || tx.utr || tx.chequeNumber || '—',
-          counterparty: tx.counterpartyName,
-          withdrawal: isCredit ? null : Math.abs(tx.amount),
-          deposit: isCredit ? Math.abs(tx.amount) : null,
-          status: tx.reconciliationStatus, // 'UNMATCHED' | 'MATCHED' | 'CATEGORIZED' | 'RECONCILED'
-          rawTx: tx,
-        };
-      });
-    }
-
-    // Fallback to posted journals on this ledger account
-    const fallbackList: any[] = [];
-    const postedJournals = journalEntries.filter(
-      (j) => String(j.status || '').toUpperCase() === 'POSTED'
-    );
-    postedJournals.forEach((jrn) => {
-      jrn.lines.forEach((line) => {
-        if (line.accountId === account.id) {
-          const isDebit = line.debit > 0;
-          fallbackList.push({
-            id: `jrn-${jrn.id}-${line.id}`,
-            date: jrn.date,
-            description: line.description || jrn.description || 'GL Movement',
-            particulars: line.description || jrn.description,
-            reference: displayJournalNumber(jrn.entryNumber, jrn.reference),
-            counterparty: undefined,
-            withdrawal: line.credit > 0 ? line.credit : null,
-            deposit: line.debit > 0 ? line.debit : null,
-            status: 'POSTED',
-            rawTx: {
-              id: `jrn-${jrn.id}-${line.id}`,
-              date: jrn.date,
-              description: line.description || jrn.description,
-              amount: isDebit ? line.debit : line.credit,
-              type: isDebit ? 'CREDIT' : 'DEBIT',
-            },
-          });
-        }
-      });
+    return statementRows.map((tx) => {
+      const isCredit = tx.type === 'CREDIT' || tx.type === 'DEPOSIT';
+      return {
+        id: tx.id,
+        date: tx.transactionDate,
+        description: tx.description || 'Statement Transaction',
+        particulars: tx.description,
+        reference: tx.referenceNumber || tx.utr || tx.chequeNumber || '—',
+        counterparty: tx.counterpartyName,
+        withdrawal: isCredit ? null : Math.abs(tx.amount),
+        deposit: isCredit ? Math.abs(tx.amount) : null,
+        status: tx.reconciliationStatus,
+        rawTx: tx,
+      };
     });
-
-    return fallbackList.sort(
-      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
-    );
-  }, [statementRows, journalEntries, account.id]);
+  }, [statementRows]);
 
   // Tab Filtering
   const filteredTransactions = useMemo(() => {
@@ -431,7 +394,7 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
                       No transactions found for this filter
                     </p>
                     <p className="text-[11px] text-slate-400 mt-1">
-                      Upload a statement or record a manual transaction to populate feeds.
+                      Import a CSV or spreadsheet statement to see bank evidence here. General-ledger activity stays separate until you explicitly match it.
                     </p>
                   </td>
                 </tr>

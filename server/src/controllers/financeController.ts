@@ -34,6 +34,7 @@ import { DocumentNumberingEngine } from '../services/DocumentNumberingEngine';
 import { FinancialDestructiveActionsService } from '../accounting/FinancialDestructiveActionsService';
 import { isIsoCalendarDate } from '../utils/date';
 import { ExpensePostingService } from '../services/ExpensePostingService';
+import { FinancialCommandService } from '../accounting/FinancialCommandService';
 import { ExpenseReceiptService } from '../services/ExpenseReceiptService';
 import { ExpensePdfService } from '../services/ExpensePdfService';
 import { InvoicePdfService } from '../services/InvoicePdfService';
@@ -1487,12 +1488,30 @@ export class FinanceController {
 
   public static async createExpense(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
-      const result = await ExpensePostingService.createAndPost(
-        req.auth!.organizationId,
-        req.auth!.userId,
-        req.body
-      );
-      res.status(201).json(result);
+      const command = await FinancialCommandService.execute({
+        organizationId: req.auth!.organizationId,
+        actorUserId: req.auth!.userId,
+        commandType: 'expense.post',
+        payload: req.body,
+        idempotencyKey: req.header('idempotency-key') || undefined,
+        execute: (client) => ExpensePostingService.createAndPost(
+          req.auth!.organizationId,
+          req.auth!.userId,
+          req.body,
+          client
+        ),
+        events: (result) => [{
+          eventType: 'expense.posted',
+          aggregateType: 'Expense',
+          aggregateId: result.id,
+          payload: {
+            expenseId: result.id,
+            expenseNumber: result.expenseNumber,
+            journalEntryId: result.journalEntryId,
+          },
+        }],
+      });
+      res.status(201).json({ ...command.result, commandId: command.commandId });
     } catch (error: any) {
       const message = error.message || 'Expense could not be posted';
       res.status(

@@ -1230,20 +1230,41 @@ export class FinanceController {
       return;
     }
     try {
-      const invoice = await SalesEngine.createAndPostInvoice(orgId, {
-        customerId: clientId,
-        customerName: clientName,
-        customerEmail: clientEmail,
-        projectId,
-        issueDate,
-        dueDate,
-        discount: Number(discount || 0),
-        lineItems: items,
-        notes,
-        status: 'POSTED',
-        createdBy: req.auth!.userId,
-        approvedDraftId: req.body.approvedDraftId,
-      } as any);
+      const command = await FinancialCommandService.execute({
+        organizationId: orgId,
+        actorUserId: req.auth!.userId,
+        commandType: 'invoice.post',
+        payload: req.body,
+        idempotencyKey: req.header('idempotency-key') || undefined,
+        execute: (client) => SalesEngine.createAndPostInvoice(orgId, {
+          customerId: clientId,
+          customerName: clientName,
+          customerEmail: clientEmail,
+          projectId,
+          issueDate,
+          dueDate,
+          discount: Number(discount || 0),
+          lineItems: items,
+          notes,
+          status: 'POSTED',
+          createdBy: req.auth!.userId,
+          approvedDraftId: req.body.approvedDraftId,
+        } as any, req.auth!.userId, client),
+        events: (result) => [{
+          eventType: 'invoice.posted',
+          aggregateType: 'Invoice',
+          aggregateId: result.id,
+          payload: { invoiceId: result.id, invoiceNumber: result.invoiceNumber, journalEntryId: result.journalEntryId },
+        }],
+        evidenceLinks: (result) => result.journalEntryId ? [{
+          sourceType: 'Invoice',
+          sourceId: result.id,
+          relationType: 'POSTED_TO',
+          targetType: 'JournalEntry',
+          targetId: result.journalEntryId,
+        }] : [],
+      });
+      const invoice = command.result;
       res.status(201).json({
         id: invoice.id,
         invoiceNumber: invoice.invoiceNumber,
@@ -1252,6 +1273,7 @@ export class FinanceController {
         balanceDue: invoice.balanceDue,
         status: invoice.status,
         journalEntryId: invoice.journalEntryId,
+        commandId: command.commandId,
       });
     } catch (error: any) {
       const message = error?.message || 'Invoice could not be posted';
@@ -1259,7 +1281,8 @@ export class FinanceController {
         res.status(409).json({ error: 'Invoice number or source document has already been used' });
         return;
       }
-      res.status(422).json({ error: message });
+      const commandError = toFinancialCommandError(error);
+      res.status(commandError.status).json(commandError.body);
     }
   }
 
@@ -1395,7 +1418,13 @@ export class FinanceController {
       const finalCustomerName = customerName || clientName;
       const resolvedDepositAccountId = depositToAccountId || depositAccountId;
 
-      const result = await db.transaction(async (client) => {
+      const command = await FinancialCommandService.execute({
+        organizationId: orgId,
+        actorUserId: req.auth!.userId,
+        commandType: 'customer-payment.record',
+        payload: req.body,
+        idempotencyKey: req.header('idempotency-key') || undefined,
+        execute: async (client) => {
         const payment = await SalesEngine.recordPayment(orgId, {
           customerId: finalCustomerId,
           clientId: finalCustomerId,
@@ -1409,15 +1438,31 @@ export class FinanceController {
           amount: parsedAmount,
           allocations: invoiceId ? [{ invoiceId, amount: parsedAmount }] : undefined,
           actorId: req.auth!.userId,
-        } as any, client);
+        } as any, req.auth!.userId, client);
 
         await FinanceController.logAudit(orgId, req.auth!.userId, 'PAYMENT_RECORDED', 'PaymentReceived', payment.id, payment, client);
         return payment;
+        },
+        events: (result) => [{
+          eventType: 'customer-payment.recorded',
+          aggregateType: 'PaymentReceived',
+          aggregateId: result.id,
+          payload: { paymentId: result.id, paymentNumber: result.paymentNumber, journalEntryId: result.journalEntryId },
+        }],
+        evidenceLinks: (result) => [{
+          sourceType: 'PaymentReceived',
+          sourceId: result.id,
+          relationType: 'POSTED_TO',
+          targetType: 'JournalEntry',
+          targetId: result.journalEntryId,
+        }],
       });
+      const result = command.result;
 
-      res.status(201).json({ id: result.id, paymentNumber: result.paymentNumber, amount: parsedAmount, status: 'Recorded', ...result });
+      res.status(201).json({ id: result.id, paymentNumber: result.paymentNumber, amount: parsedAmount, status: 'Recorded', ...result, commandId: command.commandId });
     } catch (error: any) {
-      res.status(422).json({ error: error.message || 'Payment could not be posted' });
+      const commandError = toFinancialCommandError(error);
+      res.status(commandError.status).json(commandError.body);
     }
   }
 

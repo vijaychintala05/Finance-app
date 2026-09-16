@@ -24,8 +24,14 @@ try {
     await page.locator('main').first().waitFor({ state: 'visible', timeout: 15000 });
     await page.waitForFunction(() => {
       const text = document.querySelector('main')?.textContent?.trim() || '';
-      return text.length > 20 && !text.includes('Loading workspace…');
+      return text.length > 20 && !text.includes('Loading workspace…') && !text.includes('Checking availability');
     }, undefined, { timeout: 15000 });
+    if (route === 'dashboard') {
+      await page.waitForFunction(() => {
+        const text = document.querySelector('main')?.textContent || '';
+        return text.includes('Cash Flow') || text.includes('Needs your attention') || text.includes('Live Financial Totals Unavailable');
+      }, undefined, { timeout: 15000 });
+    }
     const result = await page.evaluate(() => {
       const main = document.querySelector('main');
       const heading = main?.querySelector('h1,h2,h3')?.textContent?.trim() || '';
@@ -34,7 +40,12 @@ try {
         .filter((element) => {
           const rect = element.getBoundingClientRect();
           const style = getComputedStyle(element);
-          return style.display !== 'none' && style.position !== 'fixed' && rect.right > viewport + 2 && rect.width < 2000;
+          if (style.display === 'none' || style.position === 'fixed' || rect.right <= viewport + 2 || rect.width >= 2000) return false;
+          if (element.closest('table.mobile-record-table thead')) return false;
+          for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+            if (['auto', 'scroll', 'hidden'].includes(getComputedStyle(parent).overflowX)) return false;
+          }
+          return true;
         })
         .slice(0, 4)
         .map((element) => `${element.tagName.toLowerCase()}.${String(element.className).slice(0, 45)}`);
@@ -45,13 +56,14 @@ try {
         documentWidth: document.documentElement.scrollWidth,
         tables: main?.querySelectorAll('table').length || 0,
         mobileCardTables: main?.querySelectorAll('table.mobile-record-table').length || 0,
+        recordRows: main?.querySelectorAll('table.mobile-record-table tbody tr:not(:has(td[colspan]))').length || 0,
         unlabeledCells: main?.querySelectorAll('table.mobile-record-table tbody td:not([colspan]):not([data-mobile-label])').length || 0,
         overflowing,
       };
     });
     results.push({ route, ...result });
     if (screenshotDir && ['dashboard', 'invoices', 'bills', 'banking', 'reports', 'settings'].includes(route)) {
-      await page.screenshot({ path: `${screenshotDir}/${route}.png`, fullPage: true });
+      await page.screenshot({ path: `${screenshotDir}/${route}.png` });
     }
   }
   console.log(JSON.stringify(results, null, 2));

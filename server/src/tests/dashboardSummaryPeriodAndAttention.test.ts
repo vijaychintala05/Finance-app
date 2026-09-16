@@ -83,5 +83,12 @@ describe('DashboardSummaryService - Period Bounds & Attention Contract', () => {
         DashboardSummaryService.getDashboard('org-1', [], 'close-controls', '2026-09-16')
       ).rejects.toThrow('DASHBOARD_VIEW_FORBIDDEN');
     });
+
+    it.each(['today', 'mtd', 'qtd', 'ytd'] as const)('generates valid period bounds for preset %s', (preset) => {
+      const bounds = calculatePeriodBounds('2026-09-16', preset);
+      expect(bounds.periodStart <= '2026-09-16').toBe(true);
+      expect(bounds.periodEnd >= '2026-09-16').toBe(true);
+      expect(bounds.label).toBeDefined();
+    });
   });
 });

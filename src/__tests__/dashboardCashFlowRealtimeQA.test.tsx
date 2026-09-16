@@ -117,6 +117,7 @@ describe('DashboardView & Cash Flow Real-Data QA Tests', () => {
     });
 
     // Verify Cash Flow Chart title and verified badge
+    expect(screen.getAllByText(/Cash Flow/i).length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText(/Income & Expense Activity/i)).toBeTruthy();
     expect(screen.getByText(/Posted Journals/i)).toBeTruthy();
 

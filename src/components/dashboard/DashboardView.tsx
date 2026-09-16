@@ -1,4 +1,5 @@
 import { CashBalanceWidget } from './widgets/CashBalanceWidget';
+import { CashFlowWidget } from './widgets/CashFlowWidget';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
@@ -464,7 +465,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       )}
 
       {/* Loading Skeleton */}
-      {loading && (
+      {loading && !dashboard && (
         <div className="space-y-6">
           <MetricCardSkeleton count={4} />
           <TableSkeleton rows={5} columns={4} />
@@ -472,7 +473,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       )}
 
       {/* Error Banner */}
-      {!loading && error && (
+      {!loading && error && !dashboard && (
         <div
           role="alert"
           className="flex items-start gap-3.5 rounded-xl border border-rose-200 bg-rose-50/90 p-5 text-sm text-rose-900 shadow-xs dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-100"
@@ -488,7 +489,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       )}
 
       {/* VIEW 1: EXECUTIVE OVERVIEW */}
-      {!loading && dashboard && view === 'overview' && (
+      {dashboard && view === 'overview' && (
         <div className="space-y-6">
           {/* SECTION 1: ACTION QUEUE (LEFT) + CASH & POSITION CONTEXT (RIGHT) */}
           <section className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
@@ -774,216 +775,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
           {/* SECTION 3: BANK & CASH ACCOUNTS (AUTHORITATIVE ACCOUNT DETAIL) */}
           <BankAccountsWidget />
 
-          {/* SECTION 4: INCOME & EXPENSE ACTIVITY (8 cols) & TOP EXPENSES (4 cols) */}
+          {/* SECTION 4: CASH FLOW (8 cols) & TOP EXPENSES (4 cols) */}
           <section className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-            {/* Left: Income & Expense Activity */}
-            <div className="lg:col-span-8 rounded-2xl border border-slate-200/90 bg-white p-5 sm:p-6 shadow-xs dark:border-slate-800/90 dark:bg-slate-900 flex flex-col justify-between">
-              <div>
-                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-4 dark:border-slate-800">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h2 className="text-base font-extrabold tracking-tight text-slate-900 dark:text-white">
-                        Income & Expense Activity
-                      </h2>
-                      <span className="rounded-full bg-blue-50 px-2.5 py-0.5 text-[10px] font-bold text-blue-700 dark:bg-blue-950/60 dark:text-blue-400">
-                        Posted Journals
-                      </span>
-                    </div>
-                    <p className="mt-0.5 text-xs text-slate-400">
-                      Income versus expenditures for {dashboard.commandCenter?.period?.label || 'selected period'}.
-                    </p>
-                  </div>
-
-                  {/* Real Dynamic Totals in Chart Legend */}
-                  <div className="flex items-center gap-4 text-xs font-semibold">
-                    <div className="flex items-center gap-1.5 text-slate-700 dark:text-slate-300">
-                      <span className="h-2 w-2 rounded-full bg-blue-600" />
-                      <span>Income: <strong className="font-financial text-slate-900 dark:text-white">{money(chartTotals.totalIncome)}</strong></span>
-                    </div>
-                    <div className="flex items-center gap-1.5 text-slate-700 dark:text-slate-300">
-                      <span className="h-2 w-2 rounded-full bg-rose-500" />
-                      <span>Expenses: <strong className="font-financial text-slate-900 dark:text-white">{money(chartTotals.totalExpenses)}</strong></span>
-                    </div>
-                    <div className="flex items-center gap-1.5 text-slate-700 dark:text-slate-300">
-                      <span className="h-0.5 w-3 bg-emerald-500" />
-                      <span>Net: <strong className={'font-financial ' + (chartTotals.totalNet >= 0 ? 'text-emerald-600' : 'text-rose-600')}>{money(chartTotals.totalNet)}</strong></span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => onNavigate('reports')}
-                      className="inline-flex items-center gap-1 text-xs font-bold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
-                    >
-                      <span>P&L Report</span>
-                      <ArrowRight className="h-3 w-3" />
-                    </button>
-                  </div>
-                </div>
-
-                {/* State A: Single-point Table Summary (when exactly 1 date exists) */}
-                {timelinePoints.length === 1 && (
-                  <div className="mt-6 rounded-xl border border-slate-100 bg-slate-50/60 p-4 dark:border-slate-800 dark:bg-slate-800/40">
-                    <p className="text-xs font-semibold text-slate-500 mb-3 dark:text-slate-400">
-                      Single-date summary (no trend interpolation):
-                    </p>
-                    <div className="grid grid-cols-4 gap-2 text-center">
-                      <div className="p-2 rounded-lg bg-white dark:bg-slate-900">
-                        <span className="text-[11px] text-slate-400">Date</span>
-                        <p className="text-xs font-bold text-slate-900 dark:text-white">{timelinePoints[0].date}</p>
-                      </div>
-                      <div className="p-2 rounded-lg bg-white dark:bg-slate-900">
-                        <span className="text-[11px] text-slate-400">Income</span>
-                        <p className="font-financial text-xs font-bold text-blue-600 dark:text-blue-400">{money(timelinePoints[0].income)}</p>
-                      </div>
-                      <div className="p-2 rounded-lg bg-white dark:bg-slate-900">
-                        <span className="text-[11px] text-slate-400">Expenses</span>
-                        <p className="font-financial text-xs font-bold text-rose-600 dark:text-rose-400">{money(timelinePoints[0].expenses)}</p>
-                      </div>
-                      <div className="p-2 rounded-lg bg-white dark:bg-slate-900">
-                        <span className="text-[11px] text-slate-400">Net</span>
-                        <p className={'font-financial text-xs font-bold ' + (timelinePoints[0].net >= 0 ? 'text-emerald-600' : 'text-rose-600')}>{money(timelinePoints[0].net)}</p>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* State B: SVG Combo Chart (Bar + Dynamic Net Spline curve) when >= 2 points */}
-                {timelinePoints.length >= 2 && (
-                  <div className="mt-6 relative h-64 w-full">
-                    <svg viewBox="0 0 700 220" className="w-full h-full" preserveAspectRatio="none">
-                      {/* Dynamic Y-Axis Grid Lines and Labels based on real peak */}
-                      {chartScale.yTicks.map((grid, i) => (
-                        <g key={i}>
-                          <text x="0" y={grid.y + 3} className="text-[9px] fill-slate-400 font-semibold" textAnchor="start">
-                            {grid.label}
-                          </text>
-                          <line x1="32" y1={grid.y} x2="690" y2={grid.y} stroke="#e2e8f0" strokeDasharray="3 3" strokeWidth="1" opacity="0.7" />
-                        </g>
-                      ))}
-
-                      <text x="0" y="10" className="text-[9px] font-bold fill-slate-400">{settings.currencySymbol || 'USD'}</text>
-
-                      {/* Bars for Real Timeline Points */}
-                      {timelinePoints.map((pt, idx) => {
-                        const colWidth = 640 / Math.max(1, timelinePoints.length);
-                        const xCenter = 42 + idx * colWidth + colWidth / 2;
-
-                        const incomeH = pt.income > 0 ? (pt.income / chartScale.maxVal) * 105 : 0;
-                        const expenseH = pt.expenses > 0 ? (pt.expenses / chartScale.maxVal) * 90 : 0;
-
-                        return (
-                          <g
-                            key={idx}
-                            className="cursor-pointer"
-                            onMouseEnter={() => setHoveredPoint(pt)}
-                            onMouseLeave={() => setHoveredPoint(null)}
-                          >
-                            {incomeH > 0 && (
-                              <rect
-                                x={xCenter - 14}
-                                y={125 - incomeH}
-                                width="12"
-                                height={Math.max(2, incomeH)}
-                                rx="2"
-                                fill="#2563eb"
-                                className="transition-all hover:opacity-80"
-                              >
-                                <title>{`${pt.date}: Income ${money(pt.income)}`}</title>
-                              </rect>
-                            )}
-                            {expenseH > 0 && (
-                              <rect
-                                x={xCenter + 2}
-                                y={125}
-                                width="12"
-                                height={Math.max(2, expenseH)}
-                                rx="2"
-                                fill="#ef4444"
-                                className="transition-all hover:opacity-80"
-                              >
-                                <title>{`${pt.date}: Expense ${money(pt.expenses)}`}</title>
-                              </rect>
-                            )}
-                          </g>
-                        );
-                      })}
-
-                      {/* Net income Smooth Spline Curve computed from REAL points */}
-                      {(() => {
-                        const netPoints = timelinePoints.map((pt, idx) => {
-                          const colWidth = 640 / Math.max(1, timelinePoints.length);
-                          const x = 42 + idx * colWidth + colWidth / 2;
-                          const y = pt.net >= 0
-                            ? 125 - (pt.net / chartScale.maxVal) * 105
-                            : 125 + (Math.abs(pt.net) / chartScale.maxVal) * 90;
-                          return { x, y, net: pt.net, pt };
-                        });
-
-                        let pathD = '';
-                        netPoints.forEach((pt, i) => {
-                          if (i === 0) {
-                            pathD = 'M' + pt.x + ',' + pt.y;
-                          } else {
-                            const prev = netPoints[i - 1];
-                            const cX = prev.x + (pt.x - prev.x) / 2;
-                            pathD += ' C' + cX + ',' + prev.y + ' ' + cX + ',' + pt.y + ' ' + pt.x + ',' + pt.y;
-                          }
-                        });
-
-                        return (
-                          <g>
-                            <path
-                              d={pathD}
-                              fill="none"
-                              stroke="#10b981"
-                              strokeWidth="2.5"
-                            />
-                            {netPoints.map((pt, idx) => (
-                              <circle
-                                key={idx}
-                                cx={pt.x}
-                                cy={pt.y}
-                                r="4"
-                                fill="#10b981"
-                                stroke="#ffffff"
-                                strokeWidth="2"
-                                className="cursor-pointer transition-transform hover:scale-125"
-                              >
-                                <title>{`${pt.pt.date}: Net income ${money(pt.net)}`}</title>
-                              </circle>
-                            ))}
-                          </g>
-                        );
-                      })()}
-                    </svg>
-
-                    {/* X-Axis Date Labels from REAL data */}
-                    <div className="flex justify-between text-xs font-semibold text-slate-400 px-8 pt-1">
-                      {timelinePoints.map((pt, idx) => (
-                        <span key={idx}>{pt.date}</span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* State C: Empty state when no points exist */}
-                {timelinePoints.length === 0 && (
-                  <div className="py-16 text-center text-xs text-slate-400">
-                    <Clock className="mx-auto h-8 w-8 text-slate-300 dark:text-slate-600 mb-2" />
-                    <p className="font-semibold text-slate-600 dark:text-slate-400">No posted journal activity in this period</p>
-                    <p className="text-[11px] text-slate-400 mt-0.5">Recorded revenues and expenses will plot here</p>
-                  </div>
-                )}
-              </div>
-
-              {/* Status Notice */}
-              <div className="mt-5 rounded-xl border border-slate-100 bg-slate-50/70 px-4 py-2.5 text-center text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-400 flex items-center justify-center gap-1.5">
-                <span className="text-slate-400">ⓘ</span>
-                <span>
-                  {timelinePoints.length > 0
-                    ? `Displaying ${timelinePoints.length} verified posted journal timeline point${timelinePoints.length === 1 ? '' : 's'}.`
-                    : 'No posted journal transactions recorded for the selected timeline.'}
-                </span>
-              </div>
+            {/* Left: Cash Flow */}
+            <div className="lg:col-span-8">
+              <CashFlowWidget
+                timelinePoints={timelinePoints}
+                performanceTotals={dashboard.commandCenter?.performance}
+                periodLabel={dashboard.commandCenter?.period?.label}
+                currencySymbol={settings.currencySymbol}
+                onNavigate={onNavigate}
+                selectedPreset={selectedPreset}
+              />
             </div>
 
             {/* Right: Top Expense Categories (Ranked List - No Donut) */}
@@ -1177,7 +980,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       )}
 
       {/* VIEW 2: CASH & LIQUIDITY */}
-      {!loading && dashboard && view === 'cash-operations' && (
+      {dashboard && view === 'cash-operations' && (
         <div className="space-y-6">
           <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <Metric
@@ -1234,7 +1037,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       )}
 
       {/* VIEW 3: INTEGRITY & PERIOD CLOSE */}
-      {!loading && dashboard && view === 'close-controls' && (
+      {dashboard && view === 'close-controls' && (
         <div className="space-y-6">
           <section className="grid gap-4 sm:grid-cols-2">
             <div className="rounded-2xl border border-slate-200/90 bg-white p-5 sm:p-6 shadow-xs dark:border-slate-800/90 dark:bg-slate-900 space-y-4">

@@ -223,11 +223,21 @@ export class DashboardSummaryService {
     const payables = databaseMoney(documents.payables_total, 'Dashboard payables');
     const bankAccounts = bankRes.rows.map((row: any) => ({ name: String(row.name), balance: databaseMoney(row.balance, `Dashboard bank balance for ${row.name}`) }));
     const bankBalance = bankAccounts.reduce((total, account) => total + account.balance, 0);
-    const activityTrend = activityTrendRes.rows.map((row: any) => ({
-      date: String(row.activity_date).slice(0, 10),
-      income: databaseMoney(row.income, `Dashboard activity income for ${row.activity_date}`),
-      expenses: databaseMoney(row.expenses, `Dashboard activity expense for ${row.activity_date}`),
-    }));
+    const activityTrend = activityTrendRes.rows.map((row: any) => {
+      const rawDate = row.activity_date;
+      const formattedDate = rawDate instanceof Date
+        ? isoDate(rawDate)
+        : (/^\d{4}-\d{2}-\d{2}/.test(String(rawDate))
+          ? String(rawDate).slice(0, 10)
+          : (!isNaN(new Date(String(rawDate)).getTime())
+            ? isoDate(new Date(String(rawDate)))
+            : String(rawDate).slice(0, 10)));
+      return {
+        date: formattedDate,
+        income: databaseMoney(row.income, `Dashboard activity income for ${row.activity_date}`),
+        expenses: databaseMoney(row.expenses, `Dashboard activity expense for ${row.activity_date}`),
+      };
+    });
     const salesThisMonth = activityTrend.reduce((total, point) => total + point.income, 0);
     const expensesThisMonth = activityTrend.reduce((total, point) => total + point.expenses, 0);
     const overview = {
@@ -244,7 +254,13 @@ export class DashboardSummaryService {
 
     let closeControls: DashboardResponse['closeControls'] = { available: false, periodClose: null, integrity: null };
     if (canSeeControls) {
-      const [integrity, closeStatus] = await Promise.all([AccountingIntegrityService.verifyOrganizationIntegrity(organizationId), PeriodCloseService.validatePeriodClose(organizationId, asOfDate.slice(0, 7), periodStart, periodEnd)]);
+      const closeMonth = asOfDate.slice(0, 7);
+      const closeMonthStart = `${closeMonth}-01`;
+      const closeMonthEnd = endOfMonth(new Date(`${asOfDate}T00:00:00Z`));
+      const [integrity, closeStatus] = await Promise.all([
+        AccountingIntegrityService.verifyOrganizationIntegrity(organizationId),
+        PeriodCloseService.validatePeriodClose(organizationId, closeMonth, closeMonthStart, closeMonthEnd),
+      ]);
       closeControls = { available: true, periodClose: { status: closeStatus.status, blockingFailuresCount: closeStatus.blockingFailuresCount, warningsCount: closeStatus.warningsCount }, integrity: { isHealthy: integrity.isHealthy, trialBalanceBalanced: integrity.checks.trialBalance.isBalanced, accountsReceivableBalanced: integrity.checks.accountsReceivable.isBalanced, accountsPayableBalanced: integrity.checks.accountsPayable.isBalanced } };
     }
 

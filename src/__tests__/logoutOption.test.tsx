@@ -107,6 +107,25 @@ describe('Log Out Option & User Profile Accessibility Test Suite', () => {
     expect(mockLogout).toHaveBeenCalledTimes(1);
   });
 
+  it('5a. Mobile module drawer exposes the app routes and section headers only expand', () => {
+    const onClose = vi.fn();
+    const setActiveTab = vi.fn();
+    render(<MobileNav isOpen={true} onClose={onClose} activeTab="dashboard" setActiveTab={setActiveTab} />);
+
+    // Sales starts expanded, including the modules previously absent on phones.
+    expect(screen.getByRole('button', { name: 'Estimates' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Sales Orders' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Delivery Challans' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Sales' }));
+    expect(setActiveTab).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Banking & Cash' }));
+    expect(screen.getByRole('button', { name: 'Bank Reconciliation' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Bank Reconciliation' }));
+    expect(setActiveTab).toHaveBeenCalledWith('bank_reconciliation');
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('6. IdentitySettings displays Active Session card with Log Out button', () => {
     render(<IdentitySettings />);
 

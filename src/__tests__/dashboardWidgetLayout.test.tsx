@@ -99,8 +99,8 @@ describe('Dashboard Grid Layout Reorganization Test Suite', () => {
     render(<DashboardView onNavigate={mockOnNavigate} />);
 
     await waitFor(() => {
-      expect(screen.getByText('Total Payables')).toBeTruthy();
-      expect(screen.getByText('Total Receivables')).toBeTruthy();
+      expect(screen.getAllByText('Total Payables').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText('Total Receivables').length).toBeGreaterThanOrEqual(1);
       expect(screen.getByText('Quick Action Dock')).toBeTruthy();
     });
 

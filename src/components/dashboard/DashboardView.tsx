@@ -9,6 +9,7 @@ import {
   BookOpenCheck,
   CalendarDays,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
   CreditCard,
   FileBarChart2,
@@ -21,11 +22,14 @@ import {
   ReceiptText,
   RefreshCw,
   ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
   Star,
   TrendingDown,
   TrendingUp,
+  User,
   Wallet,
+  Zap,
 } from 'lucide-react';
 import { NavigationTab } from '../../types';
 import { useBooks } from '../../context/BooksContext';
@@ -118,6 +122,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
   const [isInvoiceEditorOpen, setIsInvoiceEditorOpen] = useState(false);
   const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
   const [isClientModalOpen, setIsClientModalOpen] = useState(false);
+  const [mobileCashFlowPeriod, setMobileCashFlowPeriod] = useState<'fiscal' | 'year' | 'quarter' | 'month'>('fiscal');
+  const [mobileHoverPoint, setMobileHoverPoint] = useState<{ month: string; amount: number } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -490,8 +496,272 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
       {/* VIEW 1: EXECUTIVE OVERVIEW */}
       {dashboard && view === 'overview' && (
-        <div className="space-y-6">
-          {/* ROW 1: TOTAL PAYABLES, TOTAL RECEIVABLES, QUICK ACTIONS */}
+        <>
+          {/* MOBILE VIEW (LIGHT MODE) - MATCHING USER SCREENSHOT */}
+          <div className="block lg:hidden space-y-4">
+            {/* 1. PRIMARY OVERVIEW CARDS */}
+            <div className="grid grid-cols-12 gap-2.5 sm:gap-3">
+              {/* Left Column: Royal Blue Card (Total Receivables + Total Payables) */}
+              <div className="col-span-7 sm:col-span-8 rounded-2xl bg-gradient-to-br from-blue-700 via-blue-600 to-indigo-700 text-white p-3.5 sm:p-4 shadow-sm flex flex-col justify-between">
+                {/* Total Receivables */}
+                <div
+                  onClick={() => onNavigate('invoices')}
+                  className="cursor-pointer group"
+                >
+                  <span className="text-[11px] font-medium text-blue-100/90 block">Total Receivables</span>
+                  <div className="mt-1 flex items-center gap-1">
+                    <span className="font-financial text-lg sm:text-2xl font-black text-white truncate">
+                      {money(dashboard.overview?.receivables ?? 0)}
+                    </span>
+                    <ChevronDown className="w-3.5 h-3.5 text-blue-200 shrink-0 group-hover:translate-y-0.5 transition-transform" />
+                  </div>
+                </div>
+
+                {/* Subtle Divider */}
+                <div className="my-2.5 sm:my-3 border-t border-blue-500/40" />
+
+                {/* Total Payables */}
+                <div
+                  onClick={() => onNavigate('bills')}
+                  className="cursor-pointer group"
+                >
+                  <span className="text-[11px] font-medium text-blue-100/90 block">Total Payables</span>
+                  <div className="mt-1 flex items-center gap-1">
+                    <span className="font-financial text-base sm:text-xl font-black text-white truncate">
+                      {money(dashboard.overview?.payables ?? 0)}
+                    </span>
+                    <ChevronDown className="w-3.5 h-3.5 text-blue-200 shrink-0 group-hover:translate-y-0.5 transition-transform" />
+                  </div>
+                </div>
+              </div>
+
+              {/* Right Column: 2 Stacked White Cards (Overdue Invoices & Overdue Bills) */}
+              <div className="col-span-5 sm:col-span-4 flex flex-col gap-2.5 sm:gap-3">
+                {/* Top Card: Overdue Invoices */}
+                <div
+                  onClick={() => onNavigate('invoices')}
+                  className="rounded-2xl border border-slate-200/90 bg-white p-3 sm:p-3.5 shadow-xs hover:border-slate-300 dark:border-slate-800 dark:bg-slate-900 flex flex-col justify-between cursor-pointer transition-all active:scale-98 flex-1"
+                >
+                  <div className="flex items-start justify-between">
+                    <span className="font-financial text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
+                      {dashboard.overview?.overdueInvoicesCount ?? 0}
+                    </span>
+                    <ChevronRight className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
+                  </div>
+                  <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-400 mt-1 leading-tight">
+                    Overdue Invoices
+                  </span>
+                </div>
+
+                {/* Bottom Card: Overdue Bills */}
+                <div
+                  onClick={() => onNavigate('bills')}
+                  className="rounded-2xl border border-slate-200/90 bg-white p-3 sm:p-3.5 shadow-xs hover:border-slate-300 dark:border-slate-800 dark:bg-slate-900 flex flex-col justify-between cursor-pointer transition-all active:scale-98 flex-1"
+                >
+                  <div className="flex items-start justify-between">
+                    <span className="font-financial text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
+                      {dashboard.overview?.overdueBillsCount ?? 0}
+                    </span>
+                    <ChevronRight className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
+                  </div>
+                  <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-400 mt-1 leading-tight">
+                    Overdue Bills
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* 2. QUICK CREATE SECTION */}
+            <div className="pt-1">
+              <div className="flex items-center gap-1.5 text-slate-900 dark:text-white font-bold text-xs mb-2.5">
+                <Zap className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
+                <span>Quick Create</span>
+              </div>
+
+              <div className="grid grid-cols-4 gap-2 text-center">
+                {/* 1. Customer */}
+                <button
+                  type="button"
+                  onClick={() => setIsClientModalOpen(true)}
+                  className="flex flex-col items-center gap-1.5 cursor-pointer group"
+                >
+                  <div className="w-full aspect-square max-w-[64px] rounded-2xl bg-white border border-slate-200/90 shadow-xs flex items-center justify-center text-slate-800 hover:border-blue-400 hover:bg-blue-50/40 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 transition-all active:scale-95">
+                    <User className="w-5 h-5 sm:w-6 sm:h-6 text-slate-700 dark:text-slate-200" />
+                  </div>
+                  <span className="text-[11px] font-semibold text-slate-700 dark:text-slate-300">Customer</span>
+                </button>
+
+                {/* 2. Expense */}
+                <button
+                  type="button"
+                  onClick={() => setIsExpenseModalOpen(true)}
+                  className="flex flex-col items-center gap-1.5 cursor-pointer group"
+                >
+                  <div className="w-full aspect-square max-w-[64px] rounded-2xl bg-white border border-slate-200/90 shadow-xs flex items-center justify-center text-slate-800 hover:border-blue-400 hover:bg-blue-50/40 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 transition-all active:scale-95">
+                    <Receipt className="w-5 h-5 sm:w-6 sm:h-6 text-slate-700 dark:text-slate-200" />
+                  </div>
+                  <span className="text-[11px] font-semibold text-slate-700 dark:text-slate-300">Expense</span>
+                </button>
+
+                {/* 3. Quote */}
+                <button
+                  type="button"
+                  onClick={() => setIsInvoiceEditorOpen(true)}
+                  className="flex flex-col items-center gap-1.5 cursor-pointer group"
+                >
+                  <div className="w-full aspect-square max-w-[64px] rounded-2xl bg-white border border-slate-200/90 shadow-xs flex items-center justify-center text-slate-800 hover:border-blue-400 hover:bg-blue-50/40 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 transition-all active:scale-95">
+                    <FileText className="w-5 h-5 sm:w-6 sm:h-6 text-slate-700 dark:text-slate-200" />
+                  </div>
+                  <span className="text-[11px] font-semibold text-slate-700 dark:text-slate-300">Quote</span>
+                </button>
+
+                {/* 4. Customise */}
+                <button
+                  type="button"
+                  onClick={() => onNavigate('settings')}
+                  className="flex flex-col items-center gap-1.5 cursor-pointer group"
+                >
+                  <div className="w-full aspect-square max-w-[64px] rounded-2xl border-2 border-dashed border-slate-300 bg-white/50 shadow-xs flex items-center justify-center text-slate-700 hover:border-blue-500 hover:text-blue-600 dark:border-slate-700 dark:bg-slate-900/40 dark:text-slate-200 transition-all active:scale-95">
+                    <SlidersHorizontal className="w-5 h-5 sm:w-6 sm:h-6 text-slate-700 dark:text-slate-200" />
+                  </div>
+                  <span className="text-[11px] font-semibold text-slate-700 dark:text-slate-300">Customise</span>
+                </button>
+              </div>
+            </div>
+
+            {/* 3. CASH FLOW SECTION (MOBILE LIGHT MODE) */}
+            <div className="rounded-2xl border border-slate-200/90 bg-white p-4 shadow-xs dark:border-slate-800 dark:bg-slate-900">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-slate-800">
+                <div className="flex items-center gap-2">
+                  <div className="flex h-7 w-7 items-center justify-center rounded-full bg-blue-50 text-blue-600 dark:bg-blue-950 dark:text-blue-400">
+                    <TrendingUp className="h-4 w-4" />
+                  </div>
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">Cash Flow</h3>
+                </div>
+
+                <div className="relative">
+                  <select
+                    value={mobileCashFlowPeriod}
+                    onChange={(e) => setMobileCashFlowPeriod(e.target.value as any)}
+                    className="appearance-none rounded-lg border border-slate-200 bg-slate-50 py-1 pl-2.5 pr-6 text-xs font-semibold text-slate-700 outline-none hover:border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 cursor-pointer"
+                  >
+                    <option value="fiscal">This Fiscal Year</option>
+                    <option value="year">This Calendar Year</option>
+                    <option value="quarter">This Quarter</option>
+                    <option value="month">This Month</option>
+                  </select>
+                  <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+                </div>
+              </div>
+
+              {/* Mobile SVG Chart */}
+              <div className="mt-3 relative">
+                <svg viewBox="0 0 340 140" className="w-full h-auto overflow-visible select-none">
+                  <defs>
+                    <linearGradient id="mobileAreaGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#2563eb" stopOpacity="0.28" />
+                      <stop offset="85%" stopColor="#2563eb" stopOpacity="0.02" />
+                    </linearGradient>
+                  </defs>
+
+                  {/* Horizontal Gridlines & Y-Axis Labels */}
+                  {[
+                    { y: 15, label: '75K' },
+                    { y: 48, label: '50K' },
+                    { y: 81, label: '25K' },
+                    { y: 114, label: '0' },
+                  ].map((tick) => (
+                    <g key={tick.y}>
+                      <text x="0" y={tick.y + 3} fill="#94a3b8" fontSize="9" fontWeight="600" textAnchor="start">
+                        {tick.label}
+                      </text>
+                      <line x1="28" y1={tick.y} x2="340" y2={tick.y} stroke="#e2e8f0" strokeDasharray="3 3" strokeWidth="0.8" className="dark:stroke-slate-800" />
+                    </g>
+                  ))}
+
+                  {/* Dynamic Cash Flow Trend Line / Area */}
+                  {(() => {
+                    const months = ['Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar'];
+                    const stepX = (340 - 32) / (months.length - 1);
+                    
+                    const points = months.map((m, i) => {
+                      const x = 32 + i * stepX;
+                      const matchingPoint = timelinePoints[i % Math.max(1, timelinePoints.length)];
+                      const val = matchingPoint ? matchingPoint.income - matchingPoint.expenses : 35000;
+                      const y = Math.max(16, Math.min(112, 114 - (val > 0 ? (val / 75000) * 98 : 12)));
+                      return { x, y, month: m, amount: val };
+                    });
+
+                    const linePath = `M ${points.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' L ')}`;
+                    const areaPath = `${linePath} L ${points[points.length - 1].x},114 L ${points[0].x},114 Z`;
+
+                    return (
+                      <g>
+                        <path d={areaPath} fill="url(#mobileAreaGrad)" />
+                        <path d={linePath} fill="none" stroke="#2563eb" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                        {points.map((p) => (
+                          <circle
+                            key={p.month}
+                            cx={p.x}
+                            cy={p.y}
+                            r={mobileHoverPoint?.month === p.month ? 4.5 : 2.5}
+                            fill="#2563eb"
+                            stroke="#ffffff"
+                            strokeWidth={mobileHoverPoint?.month === p.month ? 2 : 1.5}
+                            className="cursor-pointer transition-all"
+                            onClick={() => setMobileHoverPoint({ month: p.month, amount: p.amount })}
+                          />
+                        ))}
+                      </g>
+                    );
+                  })()}
+
+                  {/* Month X-Axis Ticks */}
+                  {['Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar'].map((m, i) => {
+                    const stepX = (340 - 32) / 11;
+                    const x = 32 + i * stepX;
+                    return (
+                      <text key={m} x={x} y="132" fill="#94a3b8" fontSize="8.5" fontWeight="600" textAnchor="middle">
+                        {m}
+                      </text>
+                    );
+                  })}
+                </svg>
+
+                {mobileHoverPoint && (
+                  <div className="mt-2 text-center text-xs font-bold text-blue-600 bg-blue-50/70 dark:bg-blue-950/60 dark:text-blue-400 py-1 px-2 rounded-lg border border-blue-200/60 dark:border-blue-900/60">
+                    {mobileHoverPoint.month}: Net Cash Movement {money(mobileHoverPoint.amount)}
+                  </div>
+                )}
+              </div>
+
+              {/* Bottom Mini Metrics */}
+              <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 grid grid-cols-3 gap-2 text-center">
+                <div className="p-2 rounded-xl bg-slate-50/80 dark:bg-slate-800/50">
+                  <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Total Income</span>
+                  <span className="font-financial font-bold text-xs text-blue-600 dark:text-blue-400 mt-0.5 block truncate">
+                    {money(dashboard.overview?.salesThisMonth ?? 0)}
+                  </span>
+                </div>
+                <div className="p-2 rounded-xl bg-slate-50/80 dark:bg-slate-800/50">
+                  <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Total Expenses</span>
+                  <span className="font-financial font-bold text-xs text-amber-600 dark:text-amber-400 mt-0.5 block truncate">
+                    {money(dashboard.overview?.expensesThisMonth ?? 0)}
+                  </span>
+                </div>
+                <div className="p-2 rounded-xl bg-slate-50/80 dark:bg-slate-800/50">
+                  <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Net Profit</span>
+                  <span className="font-financial font-bold text-xs text-emerald-600 dark:text-emerald-400 mt-0.5 block truncate">
+                    {money((dashboard.overview?.salesThisMonth ?? 0) - (dashboard.overview?.expensesThisMonth ?? 0))}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* DESKTOP VIEW - 100% UNCHANGED */}
+          <div className="hidden lg:block space-y-6">
+            {/* ROW 1: TOTAL PAYABLES, TOTAL RECEIVABLES, QUICK ACTIONS */}
           <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 items-stretch">
             {/* 1. Total Payables Widget */}
             <div className="rounded-2xl border border-slate-200/90 bg-white p-5 sm:p-6 shadow-xs dark:border-slate-800/90 dark:bg-slate-900 flex flex-col justify-between">
@@ -1066,7 +1336,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
               </div>
             </div>
           </section>
-        </div>
+          </div>
+        </>
       )}
 
       {/* VIEW 2: CASH & LIQUIDITY */}

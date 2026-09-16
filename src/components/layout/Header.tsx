@@ -1,6 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
+  Bell,
+  Building2,
   ChevronDown,
+  Gauge,
+  HelpCircle,
+  Megaphone,
   Menu,
   Plus,
   Sun,
@@ -120,90 +125,126 @@ export const Header: React.FC<HeaderProps> = ({
     }
   };
 
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [isAnnouncementsOpen, setIsAnnouncementsOpen] = useState(false);
+  const [isHelpOpen, setIsHelpOpen] = useState(false);
+
   return (
-    <header className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 sm:px-6 py-2.5 sticky top-0 z-30 flex items-center justify-between shadow-2xs">
-      {/* Left: Mobile Menu & Organization Brand */}
-      <div className="flex items-center space-x-3 sm:space-x-4">
-        <button
-          onClick={handleMobileToggle}
-          className="lg:hidden p-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-colors cursor-pointer"
-          aria-label="Open Mobile Menu"
-        >
-          <Menu className="w-5 h-5" />
-        </button>
-
-        {/* Organization Switcher Trigger (Single Clean Instance) */}
-        {onOpenOrgSwitcher ? (
-          <button
-            onClick={onOpenOrgSwitcher}
-            className="group flex items-center space-x-2.5 hover:bg-slate-100 dark:hover:bg-slate-800 p-1.5 pr-3 rounded-2xl transition-all cursor-pointer border border-transparent hover:border-slate-200 dark:hover:border-slate-700 active:scale-[0.98]"
-            title="Switch Organization Workspace"
-          >
-            {activeLogoUrl ? (
-              <img
-                src={activeLogoUrl}
-                alt={currentOrg.name}
-                className="w-8 h-8 rounded-xl object-contain bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-0.5 shadow-2xs shrink-0"
-              />
-            ) : (
-              <div className="w-8 h-8 bg-blue-600 text-white rounded-xl flex items-center justify-center font-extrabold text-xs shadow-2xs shrink-0">
-                {currentOrg.name ? currentOrg.name.charAt(0).toUpperCase() : 'O'}
+    <header className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 sm:px-6 py-2 sm:py-2.5 sticky top-0 z-30 shadow-2xs">
+      <div className="flex items-center justify-between">
+        {/* Left: Organization Brand & Switcher */}
+        <div className="flex items-center space-x-2 sm:space-x-4 min-w-0">
+          {/* Organization Switcher Trigger */}
+          {onOpenOrgSwitcher ? (
+            <button
+              onClick={onOpenOrgSwitcher}
+              className="group flex items-center space-x-2 sm:space-x-2.5 hover:bg-slate-100 dark:hover:bg-slate-800 p-1 sm:p-1.5 pr-2.5 sm:pr-3 rounded-2xl transition-all cursor-pointer border border-transparent hover:border-slate-200 dark:hover:border-slate-700 active:scale-[0.98] min-w-0"
+              title="Switch Organization Workspace"
+            >
+              {activeLogoUrl ? (
+                <img
+                  src={activeLogoUrl}
+                  alt={currentOrg.name}
+                  className="w-8 h-8 rounded-xl object-contain bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-0.5 shadow-2xs shrink-0"
+                />
+              ) : (
+                <div className="w-8 h-8 bg-slate-900 text-white dark:bg-slate-800 dark:text-slate-100 rounded-xl flex items-center justify-center font-extrabold text-xs shadow-2xs shrink-0 border border-slate-700/40">
+                  <Building2 className="w-4 h-4 text-white" />
+                </div>
+              )}
+              <div className="text-left min-w-0">
+                <div className="flex items-center space-x-1">
+                  <h1 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white leading-tight truncate max-w-[130px] sm:max-w-[220px]">
+                    {currentOrg.name || 'My Organization'}
+                  </h1>
+                  <ChevronDown className="w-3.5 h-3.5 text-slate-400 group-hover:text-slate-700 dark:group-hover:text-slate-200 transition-transform shrink-0" />
+                </div>
+                <span className="text-[10px] text-slate-400 font-medium block truncate max-w-[130px] sm:max-w-[220px]">
+                  {currentOrg.publicOrgId || `#${currentOrg.orgCode}`}
+                </span>
               </div>
-            )}
-            <div className="text-left min-w-0">
-              <div className="flex items-center space-x-1">
-                <h1 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white leading-tight truncate max-w-[120px] sm:max-w-[220px]">
-                  {currentOrg.name}
-                </h1>
-                <ChevronDown className="w-3.5 h-3.5 text-slate-400 group-hover:text-slate-700 dark:group-hover:text-slate-200 transition-transform shrink-0" />
-              </div>
-              <span className="text-[10px] text-slate-400 font-medium block truncate max-w-[120px] sm:max-w-[220px]">
-                {currentOrg.publicOrgId || `#${currentOrg.orgCode}`}
-              </span>
+            </button>
+          ) : (
+            <div className="flex items-center space-x-2 sm:space-x-2.5 min-w-0">
+              {activeLogoUrl ? (
+                <img
+                  src={activeLogoUrl}
+                  alt={currentOrg.name}
+                  className="w-8 h-8 rounded-xl object-contain bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-0.5 shadow-2xs shrink-0"
+                />
+              ) : (
+                <div className="w-8 h-8 bg-slate-900 text-white rounded-xl flex items-center justify-center font-extrabold text-xs shadow-2xs shrink-0">
+                  <Building2 className="w-4 h-4 text-white" />
+                </div>
+              )}
+              <h1 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white leading-tight truncate max-w-[150px] sm:max-w-[220px]">
+                {currentOrg.name || 'My Organization'}
+              </h1>
             </div>
-          </button>
-        ) : (
-          <div className="flex items-center space-x-2.5">
-            {activeLogoUrl ? (
-              <img
-                src={activeLogoUrl}
-                alt={currentOrg.name}
-                className="w-8 h-8 rounded-xl object-contain bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-0.5 shadow-2xs shrink-0"
-              />
-            ) : (
-              <div className="w-8 h-8 bg-blue-600 text-white rounded-xl flex items-center justify-center font-extrabold text-xs shadow-2xs shrink-0">
-                {currentOrg.name ? currentOrg.name.charAt(0).toUpperCase() : 'O'}
+          )}
+        </div>
+
+        {/* Center: Global Search Bar (Desktop) */}
+        <div className="hidden md:flex items-center flex-1 max-w-md mx-6">
+          <GlobalSearchBar onNavigate={(tab, opts) => onNavigate && onNavigate(tab, opts)} />
+        </div>
+
+        {/* Right: Notification Bell, Mobile Search, Global + New Dropdown & Utilities */}
+        <div className="flex items-center space-x-2 sm:space-x-2.5">
+          {/* Mobile Notification Bell */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setIsNotificationsOpen(!isNotificationsOpen)}
+              className="relative p-2 text-slate-700 hover:text-slate-900 bg-slate-50 hover:bg-slate-100 border border-slate-200/80 rounded-xl transition-colors cursor-pointer dark:bg-slate-800 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-700"
+              title="Notifications"
+              aria-label="View notifications"
+            >
+              <Bell className="w-4.5 h-4.5" />
+              <span className="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-blue-600 ring-2 ring-white dark:ring-slate-900" />
+            </button>
+
+            {isNotificationsOpen && (
+              <div className="absolute right-0 mt-2 w-72 bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 p-3 z-50 animate-fade-in text-xs">
+                <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
+                  <span className="font-bold text-slate-900 dark:text-white">Notifications</span>
+                  <span className="text-[10px] text-blue-600 font-semibold cursor-pointer">Mark read</span>
+                </div>
+                <div className="py-2 space-y-2">
+                  <div className="p-2 rounded-xl bg-blue-50/60 dark:bg-blue-950/40 border border-blue-100 dark:border-blue-900/60">
+                    <p className="font-semibold text-slate-800 dark:text-slate-200">System Ready</p>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">Authoritative double-entry ledger active and verified.</p>
+                  </div>
+                </div>
               </div>
             )}
-            <h1 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white leading-tight truncate max-w-[160px] sm:max-w-[220px]">
-              {currentOrg.name}
-            </h1>
           </div>
-        )}
-      </div>
 
-      {/* Center: Global Search Bar (Desktop) */}
-      <div className="hidden md:flex items-center flex-1 max-w-md mx-6">
-        <GlobalSearchBar onNavigate={(tab, opts) => onNavigate && onNavigate(tab, opts)} />
-      </div>
+          {installPrompt && (
+            <button
+              type="button"
+              onClick={() => void installApp()}
+              className="hidden items-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs font-bold text-blue-700 hover:bg-blue-100 sm:flex"
+              title="Install FirmBooks as an app"
+            >
+              <Download className="h-4 w-4" />
+              <span>Install</span>
+            </button>
+          )}
 
-      {/* Right: Mobile Search, Global + New Dropdown & Theme / Utilities */}
-      <div className="flex items-center space-x-2.5">
-        {installPrompt && (
+          {/* Mobile Search Trigger */}
+          <div className="md:hidden">
+            <GlobalSearchBar onNavigate={(tab, opts) => onNavigate && onNavigate(tab, opts)} isMobileTrigger={true} />
+          </div>
+
+          {/* Mobile Menu / Drawer Toggle */}
           <button
-            type="button"
-            onClick={() => void installApp()}
-            className="hidden items-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs font-bold text-blue-700 hover:bg-blue-100 sm:flex"
-            title="Install FirmBooks as an app"
+            onClick={handleMobileToggle}
+            className="lg:hidden p-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-colors cursor-pointer border border-slate-200/80 dark:border-slate-700"
+            aria-label="Open Mobile Navigation Drawer"
           >
-            <Download className="h-4 w-4" />
-            <span>Install</span>
+            <Menu className="w-4.5 h-4.5" />
           </button>
-        )}
-        {/* Mobile Search Trigger */}
-        <div className="md:hidden">
-          <GlobalSearchBar onNavigate={(tab, opts) => onNavigate && onNavigate(tab, opts)} isMobileTrigger={true} />
-        </div>
 
         {/* Global + New Dropdown Button */}
         <div className="relative" ref={newMenuRef}>
@@ -398,8 +439,116 @@ export const Header: React.FC<HeaderProps> = ({
             </div>
           )}
         </div>
-
       </div>
+    </div>
+
+      {/* Mobile Subheader Navigation Strip (Matching screenshot) */}
+      <div className="lg:hidden mt-2 pt-2 border-t border-slate-100 dark:border-slate-800/80 flex items-center space-x-6 px-1">
+        <button
+          type="button"
+          onClick={() => onNavigate && onNavigate('dashboard')}
+          className={`flex items-center gap-1.5 pb-1 text-xs font-bold transition-all border-b-2 cursor-pointer ${
+            currentTab === 'dashboard'
+              ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+              : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400'
+          }`}
+        >
+          <Gauge className="w-3.5 h-3.5" />
+          <span>Dashboard</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setIsAnnouncementsOpen(true)}
+          className="flex items-center gap-1.5 pb-1 text-xs font-semibold text-slate-500 hover:text-slate-800 dark:text-slate-400 border-b-2 border-transparent transition-all cursor-pointer"
+        >
+          <Megaphone className="w-3.5 h-3.5" />
+          <span>Announcements</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setIsHelpOpen(true)}
+          className="flex items-center gap-1.5 pb-1 text-xs font-semibold text-slate-500 hover:text-slate-800 dark:text-slate-400 border-b-2 border-transparent transition-all cursor-pointer"
+        >
+          <HelpCircle className="w-3.5 h-3.5" />
+          <span>Help</span>
+        </button>
+      </div>
+
+      {/* Announcements Modal */}
+      {isAnnouncementsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs animate-fade-in">
+          <div className="w-full max-w-sm bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 p-5">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 rounded-xl bg-blue-50 text-blue-600 dark:bg-blue-950 dark:text-blue-400">
+                  <Megaphone className="w-4 h-4" />
+                </div>
+                <h3 className="font-bold text-sm text-slate-900 dark:text-white">Announcements</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsAnnouncementsOpen(false)}
+                className="text-xs font-bold text-slate-400 hover:text-slate-600 p-1"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="mt-4 space-y-3">
+              <div className="rounded-xl border border-slate-200/80 bg-slate-50/70 p-3 dark:border-slate-800 dark:bg-slate-800/40">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-blue-600">Update</span>
+                <p className="text-xs font-bold text-slate-800 dark:text-slate-200 mt-1">Mobile Dashboard Redesign</p>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">High-converting mobile overview cards, quick create shortcuts, and light mode experience.</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsAnnouncementsOpen(false)}
+              className="mt-4 w-full py-2 bg-blue-600 text-white rounded-xl text-xs font-bold cursor-pointer hover:bg-blue-700"
+            >
+              Got it
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Help Modal */}
+      {isHelpOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs animate-fade-in">
+          <div className="w-full max-w-sm bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 p-5">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 rounded-xl bg-purple-50 text-purple-600 dark:bg-purple-950 dark:text-purple-400">
+                  <HelpCircle className="w-4 h-4" />
+                </div>
+                <h3 className="font-bold text-sm text-slate-900 dark:text-white">Help &amp; Support</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsHelpOpen(false)}
+                className="text-xs font-bold text-slate-400 hover:text-slate-600 p-1"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="mt-4 space-y-2 text-xs">
+              <p className="text-slate-600 dark:text-slate-300">Need help managing your financial books?</p>
+              <div className="p-3 bg-slate-50 dark:bg-slate-800 rounded-xl space-y-1">
+                <p className="font-bold text-slate-800 dark:text-slate-200">• Double-Entry Ledger</p>
+                <p className="text-[11px] text-slate-500">Every invoice, bill, and expense creates balancing debits &amp; credits.</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsHelpOpen(false)}
+              className="mt-4 w-full py-2 bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 rounded-xl text-xs font-bold cursor-pointer"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
     </header>
   );
 };

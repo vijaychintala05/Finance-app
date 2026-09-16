@@ -382,7 +382,7 @@ function MainAppLayout() {
           onOpenOrgWizard={() => setIsOrgWizardOpen(true)}
         />
 
-        <main className="flex-1 overflow-y-auto p-0 pb-16 lg:pb-6 focus:outline-none">
+        <main className="flex-1 overflow-y-auto p-0 pb-24 lg:pb-6 focus:outline-none">
           <Suspense fallback={<div className="p-8 text-sm text-slate-500">Loading workspace…</div>}>
             {renderActiveView()}
           </Suspense>

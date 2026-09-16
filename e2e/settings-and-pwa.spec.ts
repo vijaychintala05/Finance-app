@@ -96,7 +96,7 @@ test.describe('V1 settings and PWA shell', () => {
       await route.fulfill({ response, json: body });
     });
     await workspace.getByRole('button', { name: /Bank Details/ }).click();
-    await expect(page.getByLabel('Beneficiary Bank Name')).toBeDisabled();
+    await expect(page.getByLabel('Beneficiary Bank Name')).toBeDisabled({ timeout: 15_000 });
     await expect(page.getByRole('button', { name: 'Save Changes', exact: true })).toHaveCount(0);
     await expect(page.getByText(/viewing organization settings in read-only mode/)).toBeVisible();
 

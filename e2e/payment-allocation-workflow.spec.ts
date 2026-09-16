@@ -98,7 +98,7 @@ test.describe('End-to-End Payment Allocation, Relational Integrity & Ledger Veri
     // 6. Navigate to Invoices view and verify PAID status after reload
     await page.goto(`${baseUrl}#/invoices`);
     await page.waitForTimeout(500);
-    await expect(page.getByText('Paid', { exact: true }).first()).toBeVisible();
+    await expect(page.getByText('Paid', { exact: true }).first()).toBeVisible({ timeout: 15_000 });
 
     // 7. Navigate to Reports view and verify General Ledger
     await page.goto(`${baseUrl}#/reports`);

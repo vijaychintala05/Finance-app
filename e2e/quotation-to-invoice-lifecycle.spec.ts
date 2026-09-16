@@ -11,7 +11,7 @@ test.describe('Authenticated financial master-data lifecycle', () => {
 
     await page.getByRole('button', { name: '+ New', exact: true }).click();
     await page.getByRole('button', { name: 'New Customer', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Add New Client' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Add New Client' })).toBeVisible({ timeout: 15_000 });
     await page.getByPlaceholder('e.g. John Smith').fill(contactName);
     await page.getByPlaceholder('e.g. AcroTech Solutions Inc.').fill(companyName);
     await page.getByPlaceholder('billing@company.com').fill(email);

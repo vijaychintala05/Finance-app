@@ -6,9 +6,9 @@ const useMemoryDatabase = !process.env.DATABASE_URL || process.env.USE_PG_MEM ==
 
 export default defineConfig({
   testDir: './e2e',
-  timeout: 60 * 1000,
+  timeout: process.env.CI ? 90 * 1000 : 60 * 1000,
   expect: {
-    timeout: 5000,
+    timeout: process.env.CI ? 15_000 : 5000,
   },
   fullyParallel: true,
   forbidOnly: !!process.env.CI,

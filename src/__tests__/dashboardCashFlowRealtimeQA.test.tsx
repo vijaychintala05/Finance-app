@@ -1,4 +1,4 @@
-﻿// @vitest-environment jsdom
+// @vitest-environment jsdom
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, cleanup } from '@testing-library/react';
@@ -217,5 +217,96 @@ describe('DashboardView & Cash Flow Real-Data QA Tests', () => {
 
     // Verify Top Expenses displays no operational expenses message
     expect(screen.getByText(/No operational expenses/i)).toBeTruthy();
+
+    // Verify quiet completion state for attention queue
+    expect(screen.getByText(/Nothing needs action from the available records/i)).toBeTruthy();
+    expect(screen.queryByText(/ACTION REQUIRED/i)).toBeNull();
+  });
+
+  it('renders ranked actionable attention items at the top and single-date summary when one date exists', async () => {
+    const mockDashboardWithAttention = {
+      overview: {
+        receivables: 80000,
+        overdueReceivables: 25000,
+        outstandingInvoicesCount: 2,
+        overdueInvoicesCount: 1,
+        payables: 30000,
+        dueBillsCount: 1,
+        overduePayables: 0,
+        overdueBillsCount: 0,
+        bankBalance: 120000,
+        salesThisMonth: 80000,
+        expensesThisMonth: 20000,
+        activityTrend: [
+          { date: '2026-09-15', income: 80000, expenses: 20000 },
+        ],
+        bankReconciliationAttentionCount: 1,
+        quotationsAwaitingResponseCount: 0,
+        pendingJournalsCount: 0,
+        collections: [{ partyName: 'Acme Corp', amount: 25000, overdue: true, dueDate: '2026-09-01' }],
+        billsDue: [{ partyName: 'Cloud Services', amount: 30000, overdue: false, dueDate: '2026-09-20' }],
+        recentTransactions: [],
+      },
+      commandCenter: {
+        period: { start: '2026-09-01', end: '2026-09-16', label: 'Month to date (2026-09)' },
+        financialPosition: {
+          cashAtBank: 120000,
+          toCollect: 80000,
+          toPay: 30000,
+        },
+        performance: {
+          revenue: 80000,
+          expenses: 20000,
+          net: 60000,
+          marginPercent: 75,
+          cashMovement: [
+            { date: '2026-09-15', income: 80000, expenses: 20000 },
+          ],
+        },
+        attention: [
+          { id: 'overdue-receivables', severity: 'critical', label: 'Overdue customer invoices', count: 1, amount: 25000, destination: 'invoices' },
+          { id: 'bank-reconciliation', severity: 'due-soon', label: 'Unreconciled bank transactions', count: 1, amount: null, destination: 'bank_reconciliation' },
+        ],
+        insights: {
+          bankAccounts: [{ name: 'SVB Operating', balance: 120000 }],
+          topExpenses: [{ name: 'Cloud Hosting', amount: 20000 }],
+        },
+        scheduledCashOutlook: {
+          windowDays: 30,
+          collections: 80000,
+          bills: 30000,
+          net: 50000,
+        },
+      },
+      availableViews: ['overview', 'cash-operations', 'close-controls'],
+      asOfDate: '2026-09-16',
+      view: 'overview',
+    };
+
+    vi.mocked(apiClient.get).mockResolvedValue({
+      data: { dashboard: mockDashboardWithAttention as any },
+      error: null,
+      status: 200,
+    });
+
+    render(<DashboardView onNavigate={mockOnNavigate} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Needs Attention/i)).toBeTruthy();
+    });
+
+    // Verify attention items are rendered
+    expect(screen.getByText(/Overdue customer invoices/i)).toBeTruthy();
+    expect(screen.getByText(/Unreconciled bank transactions/i)).toBeTruthy();
+    expect(screen.getAllByText(/Take Action/i).length).toBe(2);
+
+    // Verify Receivables and Payables due next sections
+    expect(screen.getByText(/Receivables Due Next/i)).toBeTruthy();
+    expect(screen.getByText('Acme Corp')).toBeTruthy();
+    expect(screen.getByText(/Payables Due Next/i)).toBeTruthy();
+    expect(screen.getByText('Cloud Services')).toBeTruthy();
+
+    // Verify Single-date summary state for 1 timeline point
+    expect(screen.getByText(/Single-date summary/i)).toBeTruthy();
   });
 });

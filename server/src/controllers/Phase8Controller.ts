@@ -340,6 +340,8 @@ export class Phase8Controller {
         req.auth!.permissions,
         req.query.view as string | undefined,
         req.query.asOfDate as string | undefined,
+        req.query.periodPreset as string | undefined,
+        req.query.startDate as string | undefined,
       );
       res.json({ dashboard });
     } catch (err: any) {

@@ -63,6 +63,8 @@ export interface DashboardResponse {
   };
 }
 
+export type DashboardPeriodPreset = 'today' | 'mtd' | 'qtd' | 'ytd' | 'custom';
+
 const isoDate = (date: Date): string => date.toISOString().slice(0, 10);
 const isIsoDate = (value: string): boolean => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
@@ -72,12 +74,46 @@ const isIsoDate = (value: string): boolean => {
 const endOfMonth = (date: Date): string => isoDate(new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)));
 const addDays = (date: string, days: number): string => isoDate(new Date(new Date(`${date}T00:00:00Z`).getTime() + days * 86_400_000));
 
+export function calculatePeriodBounds(
+  asOfDate: string,
+  preset: DashboardPeriodPreset = 'mtd',
+  customStartDate?: string
+): { periodStart: string; periodEnd: string; label: string } {
+  const asOf = new Date(`${asOfDate}T00:00:00Z`);
+  const year = asOf.getUTCFullYear();
+  const month = asOf.getUTCMonth(); // 0-indexed: 0 = Jan, 11 = Dec
+  let periodStart = `${asOfDate.slice(0, 7)}-01`;
+  let label = `Month to date (${asOfDate.slice(0, 7)})`;
+
+  if (preset === 'today') {
+    periodStart = asOfDate;
+    label = `Today (${asOfDate})`;
+  } else if (preset === 'qtd') {
+    const quarterStartMonth = Math.floor(month / 3) * 3;
+    const qStr = String(quarterStartMonth + 1).padStart(2, '0');
+    periodStart = `${year}-${qStr}-01`;
+    const qNum = Math.floor(month / 3) + 1;
+    label = `Q${qNum} (${periodStart} to ${asOfDate})`;
+  } else if (preset === 'ytd') {
+    periodStart = `${year}-01-01`;
+    label = `Year to date (${year})`;
+  } else if (preset === 'custom' && customStartDate && isIsoDate(customStartDate) && customStartDate <= asOfDate) {
+    periodStart = customStartDate;
+    label = `${periodStart} to ${asOfDate}`;
+  }
+
+  const periodEnd = endOfMonth(asOf);
+  return { periodStart, periodEnd, label };
+}
+
 export class DashboardSummaryService {
   public static async getDashboard(
     organizationId: string,
     permissions: string[],
     requestedView: string | undefined,
     requestedAsOfDate: string | undefined,
+    requestedPeriodPreset?: string | undefined,
+    requestedStartDate?: string | undefined,
   ): Promise<DashboardResponse> {
     if (requestedView && !['overview', 'cash-operations', 'close-controls'].includes(requestedView)) {
       throw new Error('DASHBOARD_VIEW_INVALID: Unsupported dashboard view');
@@ -85,12 +121,18 @@ export class DashboardSummaryService {
     if (requestedAsOfDate && !isIsoDate(requestedAsOfDate)) {
       throw new Error('DASHBOARD_DATE_INVALID: asOfDate must use YYYY-MM-DD');
     }
+    if (requestedStartDate && !isIsoDate(requestedStartDate)) {
+      throw new Error('DASHBOARD_DATE_INVALID: startDate must use YYYY-MM-DD');
+    }
 
     const view = (requestedView || 'overview') as DashboardViewKey;
     const asOfDate = requestedAsOfDate || isoDate(new Date());
-    const asOf = new Date(`${asOfDate}T00:00:00Z`);
-    const periodStart = `${asOfDate.slice(0, 7)}-01`;
-    const periodEnd = endOfMonth(asOf);
+    const validPresets: DashboardPeriodPreset[] = ['today', 'mtd', 'qtd', 'ytd', 'custom'];
+    const preset = (validPresets.includes(requestedPeriodPreset as DashboardPeriodPreset)
+      ? requestedPeriodPreset
+      : 'mtd') as DashboardPeriodPreset;
+
+    const { periodStart, periodEnd, label: periodLabel } = calculatePeriodBounds(asOfDate, preset, requestedStartDate);
     const has = (permission: string) => permissions.includes(permission);
     const canSeeBanking = has('banking.view');
     const canSeeAccounting = has('accounting.view') || has('journals.view') || has('periods.view');
@@ -208,15 +250,35 @@ export class DashboardSummaryService {
 
     const collectionsDue30Days = databaseMoney(documents.collections_30, 'Dashboard collections due in thirty days');
     const billsDue30Days = databaseMoney(documents.bills_30, 'Dashboard bills due in thirty days');
-    const attention: DashboardResponse['commandCenter']['attention'] = [
-      { id: 'overdue-receivables', severity: overview.overdueInvoicesCount > 0 ? 'critical' : 'healthy', label: 'Overdue customer invoices', count: overview.overdueInvoicesCount, amount: overview.overdueReceivables || null, destination: 'invoices' },
-      { id: 'overdue-payables', severity: overview.overdueBillsCount > 0 ? 'critical' : 'healthy', label: 'Overdue vendor bills', count: overview.overdueBillsCount, amount: overview.overduePayables || null, destination: 'bills' },
-      ...(canSeeBanking ? [{ id: 'bank-reconciliation' as const, severity: overview.bankReconciliationAttentionCount > 0 ? 'due-soon' as const : 'healthy' as const, label: 'Unreconciled bank transactions', count: overview.bankReconciliationAttentionCount, amount: null, destination: 'bank_reconciliation' as const }] : []),
-      ...(overview.pendingJournalsCount !== null ? [{ id: 'pending-journals' as const, severity: overview.pendingJournalsCount > 0 ? 'due-soon' as const : 'healthy' as const, label: 'Draft or pending journals', count: overview.pendingJournalsCount, amount: null, destination: 'journals' as const }] : []),
-      ...(has('invoices.view') ? [{ id: 'quotations' as const, severity: overview.quotationsAwaitingResponseCount > 0 ? 'due-soon' as const : 'healthy' as const, label: 'Quotations awaiting response', count: overview.quotationsAwaitingResponseCount, amount: null, destination: 'invoices' as const }] : []),
+    const rawAttention = [
+      ...(overview.overdueInvoicesCount > 0
+        ? [{ id: 'overdue-receivables' as const, severity: 'critical' as const, label: 'Overdue customer invoices', count: overview.overdueInvoicesCount, amount: overview.overdueReceivables || null, destination: 'invoices' as const }]
+        : []),
+      ...(overview.overdueBillsCount > 0
+        ? [{ id: 'overdue-payables' as const, severity: 'critical' as const, label: 'Overdue vendor bills', count: overview.overdueBillsCount, amount: overview.overduePayables || null, destination: 'bills' as const }]
+        : []),
+      ...(canSeeBanking && overview.bankReconciliationAttentionCount > 0
+        ? [{ id: 'bank-reconciliation' as const, severity: 'due-soon' as const, label: 'Unreconciled bank transactions', count: overview.bankReconciliationAttentionCount, amount: null, destination: 'bank_reconciliation' as const }]
+        : []),
+      ...(overview.pendingJournalsCount !== null && overview.pendingJournalsCount > 0
+        ? [{ id: 'pending-journals' as const, severity: 'due-soon' as const, label: 'Draft or pending journals', count: overview.pendingJournalsCount, amount: null, destination: 'journals' as const }]
+        : []),
+      ...(has('invoices.view') && overview.quotationsAwaitingResponseCount > 0
+        ? [{ id: 'quotations' as const, severity: 'due-soon' as const, label: 'Quotations awaiting response', count: overview.quotationsAwaitingResponseCount, amount: null, destination: 'invoices' as const }]
+        : []),
     ];
+
+    const attention: DashboardResponse['commandCenter']['attention'] = rawAttention.sort((a, b) => {
+      if (a.severity === 'critical' && b.severity !== 'critical') return -1;
+      if (b.severity === 'critical' && a.severity !== 'critical') return 1;
+      if (a.severity === 'critical' && b.severity === 'critical') {
+        return (b.amount || 0) - (a.amount || 0);
+      }
+      return b.count - a.count;
+    });
+
     const commandCenter: DashboardResponse['commandCenter'] = {
-      period: { start: periodStart, end: asOfDate, label: `${periodStart} to ${asOfDate}` },
+      period: { start: periodStart, end: asOfDate, label: periodLabel },
       financialPosition: { cashAtBank: bankBalance, toCollect: receivables, toPay: payables },
       performance: { revenue: salesThisMonth, expenses: expensesThisMonth, net: salesThisMonth - expensesThisMonth, marginPercent: salesThisMonth > 0 ? Number((((salesThisMonth - expensesThisMonth) / salesThisMonth) * 100).toFixed(1)) : null, cashMovement: activityTrend },
       scheduledCashOutlook: { windowDays: 30, collections: collectionsDue30Days, bills: billsDue30Days, net: collectionsDue30Days - billsDue30Days },

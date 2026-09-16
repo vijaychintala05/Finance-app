@@ -17,23 +17,29 @@ import { createBrowserId } from '../utils/browserIds';
 
 export class BankingService {
   private static async apiCall<T>(endpoint: string, method: string = 'GET', body?: any): Promise<T> {
-    const orgId = localStorage.getItem('active_organization_id');
-    const token = import.meta.env.PROD ? null : localStorage.getItem('auth_token');
-    const hasSession = localStorage.getItem('firmbooks_authenticated') === 'true';
-    if (!orgId || (!token && !hasSession)) throw new Error('Authenticated organization context is required');
+    const orgId = typeof window !== 'undefined' ? localStorage.getItem('active_organization_id') : null;
+    const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null;
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      'X-Organization-ID': orgId,
     };
-    if (token) headers.Authorization = `Bearer ${token}`;
+    if (orgId) {
+      headers['X-Organization-ID'] = orgId;
+    }
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
     if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method.toUpperCase())) {
       headers['Idempotency-Key'] = createBrowserId('mutation');
     }
-    const response = await fetch(`/api/v1/banking${endpoint}`, {
+    const origin = typeof window !== 'undefined' && window.location?.origin && window.location.origin.startsWith('http')
+      ? window.location.origin
+      : 'http://localhost:3001';
+    const isGetOrHead = ['GET', 'HEAD'].includes(method.toUpperCase());
+    const response = await fetch(`${origin}/api/v1/banking${endpoint}`, {
       method,
       headers,
-      body: body ? JSON.stringify(body) : undefined,
+      body: isGetOrHead || !body ? undefined : JSON.stringify(body),
       credentials: 'same-origin',
     });
     const json = await response.json().catch(() => ({}));
@@ -87,7 +93,7 @@ export class BankingService {
     if (options.offset) params.append('offset', String(options.offset));
 
     const query = params.toString() ? `?${params.toString()}` : '';
-    return this.apiCall<BankStatementTransaction[]>(`/transactions${query}`, 'GET', options);
+    return this.apiCall<BankStatementTransaction[]>(`/transactions${query}`, 'GET');
   }
 
   public static getSuggestions(transactionId: string, candidates: any[]): Promise<MatchSuggestion[]> {

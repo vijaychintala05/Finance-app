@@ -1,5 +1,6 @@
 import React from 'react';
 import { ChevronRight, Search, Star } from 'lucide-react';
+import { ReportCategory } from './reportTypes';
 import { ReportItem } from './reportTypes';
 
 interface ReportCardGridProps {
@@ -21,6 +22,13 @@ export const ReportCardGrid: React.FC<ReportCardGridProps> = ({
   onSelectReport,
   onToggleFavorite,
 }) => {
+  const grouped = filteredReports.reduce((groups, report) => {
+    const current = groups.get(report.category) || [];
+    current.push(report);
+    groups.set(report.category, current);
+    return groups;
+  }, new Map<ReportCategory, ReportItem[]>());
+
   return (
     <div className="p-3 sm:p-6 space-y-4 sm:space-y-6 flex-1 flex flex-col">
       {/* Top Header & Search bar */}
@@ -56,62 +64,28 @@ export const ReportCardGrid: React.FC<ReportCardGridProps> = ({
         </div>
       </div>
 
-      {/* Responsive report catalog */}
-      <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2 lg:gap-4 lg:overflow-y-auto lg:p-1 xl:grid-cols-3">
+      <div className="grid grid-cols-1 items-start gap-x-8 gap-y-6 md:grid-cols-2 xl:grid-cols-3">
         {filteredReports.length === 0 ? (
-          <div className="p-6 text-center text-slate-400 dark:text-slate-500 italic bg-slate-50 dark:bg-slate-800/50 rounded-xl text-xs lg:col-span-full lg:p-12">
+          <div className="border border-slate-200 p-10 text-center text-xs italic text-slate-400 md:col-span-2 xl:col-span-3 dark:border-slate-800 dark:text-slate-500">
             No reports found matching your criteria.
           </div>
         ) : (
-          filteredReports.map((report) => (
-            <div
-              key={report.id}
-              onClick={() => onSelectReport(report.id)}
-              className="group flex cursor-pointer flex-col justify-between space-y-2 rounded-2xl border border-slate-200/90 bg-white p-3.5 shadow-2xs transition-all active:bg-blue-50/50 lg:p-4 lg:hover:border-blue-300 lg:hover:shadow-md dark:border-slate-800 dark:bg-slate-900 dark:active:bg-slate-800 dark:lg:hover:border-blue-700"
-            >
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="rounded border border-blue-200 bg-blue-50 px-2 py-0.5 text-[10px] font-bold text-blue-700 lg:rounded-lg lg:border-slate-200 lg:bg-slate-100 lg:font-extrabold lg:uppercase lg:text-slate-600 dark:border-blue-800 dark:bg-blue-950/80 dark:text-blue-300 dark:lg:border-slate-700 dark:lg:bg-slate-800 dark:lg:text-slate-300">
-                    {report.category}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={(e) => onToggleFavorite(report.id, e)}
-                    className="p-1 text-slate-300 hover:text-amber-500 transition-colors cursor-pointer"
-                    title="Toggle Favorite"
-                  >
-                    <Star
-                      className={`w-4 h-4 ${
-                        report.isFavorite ? 'text-amber-500 fill-amber-500' : ''
-                      }`}
-                    />
-                  </button>
-                </div>
-
-                <h3 className="text-xs font-bold leading-tight text-slate-900 transition-colors group-hover:text-blue-600 lg:text-sm dark:text-slate-100 dark:group-hover:text-blue-400">
-                  {report.name}
-                </h3>
-
-                <p className="line-clamp-2 text-[10px] leading-relaxed text-slate-500 lg:text-xs dark:text-slate-400">
-                  {report.description}
-                </p>
-              </div>
-
-              <div className="mt-1.5 flex items-center justify-between border-t border-slate-100 pt-1.5 dark:border-slate-800 lg:mt-3 lg:pt-3">
-                <span className="text-[10px] font-medium text-slate-400">
-                  <span className="lg:hidden">By {report.createdBy}</span>
-                  <span className="hidden lg:inline">Period: {dateRange}</span>
-                </span>
-                <span className="flex items-center space-x-1 rounded-lg bg-blue-50 px-2 py-1 text-[10px] font-bold text-blue-600 transition-transform group-hover:translate-x-0.5 lg:bg-transparent lg:p-0 lg:text-xs dark:bg-blue-950/80 dark:text-blue-400 dark:lg:bg-transparent">
-                  <span className="lg:hidden">View Statement</span>
-                  <span className="hidden lg:inline">Run Report</span>
-                  <ChevronRight className="w-3.5 h-3.5" />
-                </span>
-              </div>
+          Array.from(grouped.entries()).map(([category, reports]) => <section key={category} className="min-w-0">
+            <div className="mb-1 flex items-center justify-between border-b-2 border-slate-200 pb-2 dark:border-slate-700">
+              <h3 className="text-xs font-black uppercase text-slate-700 dark:text-slate-200">{category}</h3>
+              <span className="font-mono text-[10px] text-slate-400">{reports.length}</span>
             </div>
-          ))
+            <div className="divide-y divide-slate-100 dark:divide-slate-800">
+              {reports.map((report) => <div key={report.id} role="button" tabIndex={0} onClick={() => onSelectReport(report.id)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') onSelectReport(report.id); }} className="group flex w-full cursor-pointer items-start gap-2 py-3 text-left">
+                <button type="button" title={report.isFavorite ? 'Remove from favorites' : 'Add to favorites'} onClick={(event) => onToggleFavorite(report.id, event)} className="mt-0.5 cursor-pointer text-slate-300 hover:text-amber-500"><Star className={`h-3.5 w-3.5 ${report.isFavorite ? 'fill-amber-500 text-amber-500' : ''}`} /></button>
+                <span className="min-w-0 flex-1"><span className="block text-xs font-bold text-slate-900 group-hover:text-blue-600 dark:text-white dark:group-hover:text-blue-400">{report.name}</span><span className="mt-0.5 line-clamp-2 block text-[10px] leading-relaxed text-slate-500 dark:text-slate-400">{report.description}</span></span>
+                <ChevronRight className="mt-1 h-3.5 w-3.5 shrink-0 text-slate-300 transition-transform group-hover:translate-x-0.5 group-hover:text-blue-600" />
+              </div>)}
+            </div>
+          </section>)
         )}
       </div>
+      <p className="mt-auto border-t border-slate-200 pt-3 text-[10px] text-slate-400 dark:border-slate-800">Default reporting period: {dateRange}</p>
     </div>
   );
 };

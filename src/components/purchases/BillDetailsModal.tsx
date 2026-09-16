@@ -15,6 +15,7 @@ import {
 import { Bill } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate } from '../../utils/formatters';
+import { RecordVendorPaymentModal } from './RecordVendorPaymentModal';
 
 interface BillDetailsModalProps {
   isOpen: boolean;
@@ -31,12 +32,16 @@ export const BillDetailsModal: React.FC<BillDetailsModalProps> = ({
   onEdit,
   onRecordPayment,
 }) => {
-  const { settings, updateBill, deleteBill } = useBooks();
+  const { settings, deleteBill } = useBooks();
   const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
 
   if (!isOpen || !bill) return null;
 
-  const balanceDue = bill.totalAmount - bill.amountPaid;
+  const balanceDue =
+    bill.balanceDue !== undefined
+      ? bill.balanceDue
+      : Math.max(0, bill.totalAmount - (bill.amountPaid || 0));
 
   const handleDelete = () => {
     if (confirm(`Void bill #${bill.billNumber} by posting an audited reversal?`)) {
@@ -49,10 +54,10 @@ export const BillDetailsModal: React.FC<BillDetailsModalProps> = ({
   const handlePay = () => {
     if (onRecordPayment) {
       onRecordPayment(bill);
+      onClose();
     } else {
-      updateBill(bill.id, { amountPaid: bill.totalAmount, status: 'Paid' });
+      setShowPaymentModal(true);
     }
-    onClose();
   };
 
   return (
@@ -208,6 +213,16 @@ export const BillDetailsModal: React.FC<BillDetailsModalProps> = ({
           </div>
         </div>
       </div>
+      {showPaymentModal && (
+        <RecordVendorPaymentModal
+          isOpen={showPaymentModal}
+          onClose={() => {
+            setShowPaymentModal(false);
+            onClose();
+          }}
+          initialBill={bill}
+        />
+      )}
     </div>
   );
 };

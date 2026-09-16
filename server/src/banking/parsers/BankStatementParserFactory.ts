@@ -31,17 +31,25 @@ export class BankStatementParserFactory {
         } else if (/^[A-Za-z0-9+/=\r\n]+$/.test(content.trim()) && content.trim().length > 100) {
           buf = Buffer.from(content.trim(), 'base64');
         } else {
-          buf = Buffer.from(content, 'binary');
+          buf = Buffer.from(content, 'utf-8');
         }
-        const workbook = XLSX.read(buf, { type: 'buffer' });
+        const workbook = XLSX.read(buf, { type: 'buffer', cellDates: true, raw: false });
         const firstSheetName = workbook.SheetNames[0];
         if (firstSheetName && workbook.Sheets[firstSheetName]) {
-          csvContent = XLSX.utils.sheet_to_csv(workbook.Sheets[firstSheetName]);
+          csvContent = XLSX.utils.sheet_to_csv(workbook.Sheets[firstSheetName], { dateNF: 'yyyy-mm-dd' });
         }
       } catch (err: any) {
-        // If it was already raw CSV text, continue with csvContent
-        if (!csvContent.includes(',') && !csvContent.includes('\t') && !csvContent.includes(';')) {
-          throw new Error(`EXCEL_PARSE_ERROR: Failed to read Excel workbook: ${err.message}`);
+        // If reading as binary buffer failed, try utf-8 text or fallback to raw content
+        try {
+          const workbook = XLSX.read(Buffer.from(content, 'binary'), { type: 'buffer', cellDates: true, raw: false });
+          const firstSheetName = workbook.SheetNames[0];
+          if (firstSheetName && workbook.Sheets[firstSheetName]) {
+            csvContent = XLSX.utils.sheet_to_csv(workbook.Sheets[firstSheetName], { dateNF: 'yyyy-mm-dd' });
+          }
+        } catch {
+          if (!csvContent.includes(',') && !csvContent.includes('\t') && !csvContent.includes(';') && !csvContent.includes('<tr')) {
+            throw new Error(`EXCEL_PARSE_ERROR: Failed to read Excel workbook: ${err.message}`);
+          }
         }
       }
     }
@@ -52,14 +60,15 @@ export class BankStatementParserFactory {
     // If filename has bank name hints and none detected, infer from filename
     let detectedBank = result.detectedBankName;
     if (!detectedBank) {
-      if (/hdfc/i.test(filename)) detectedBank = 'HDFC Bank';
-      else if (/icici/i.test(filename)) detectedBank = 'ICICI Bank';
-      else if (/sbi|state\s*bank/i.test(filename)) detectedBank = 'State Bank of India';
+      if (/optransactionhistory/i.test(filename) || /icici/i.test(filename)) detectedBank = 'ICICI Bank';
+      else if (/state\s*bank|sbi/i.test(filename)) detectedBank = 'State Bank of India';
+      else if (/hdfc/i.test(filename)) detectedBank = 'HDFC Bank';
       else if (/axis/i.test(filename)) detectedBank = 'Axis Bank';
       else if (/kotak/i.test(filename)) detectedBank = 'Kotak Mahindra Bank';
       else if (/baroda|bob/i.test(filename)) detectedBank = 'Bank of Baroda';
       else if (/pnb/i.test(filename)) detectedBank = 'Punjab National Bank';
       else if (/indusind/i.test(filename)) detectedBank = 'IndusInd Bank';
+      else if (/canara/i.test(filename)) detectedBank = 'Canara Bank';
       else if (/federal/i.test(filename)) detectedBank = 'Federal Bank';
       else if (/idfc/i.test(filename)) detectedBank = 'IDFC FIRST Bank';
     }
@@ -74,13 +83,32 @@ export class BankStatementParserFactory {
       };
     });
 
+    // If account number detected or can be extracted from raw content or csvContent (preserve leading zeros)
+    let detectedAccount = result.detectedAccountNumber;
+    const originalText = typeof content === 'string' ? content.replace(/<[^>]*>/g, ' ') : '';
+    const origAccMatch = originalText.match(/(?:account\s*(?:no|number|num)?|a\/c\s*(?:no|number|num)?)\s*[:\-,\t\s]*([0-9Xx]{6,24})/i);
+    if (origAccMatch && origAccMatch[1]) {
+      const origNum = origAccMatch[1].replace(/[\s,]+/g, '').trim();
+      if (!detectedAccount || origNum.endsWith(detectedAccount) || detectedAccount.endsWith(origNum)) {
+        detectedAccount = origNum;
+      }
+    } else if (typeof csvContent === 'string') {
+      const csvAccMatch = csvContent.match(/(?:account\s*(?:no|number|num)?|a\/c\s*(?:no|number|num)?)\s*[:\-,\t\s]*([0-9Xx]{6,24})/i);
+      if (csvAccMatch && csvAccMatch[1]) {
+        const csvNum = csvAccMatch[1].replace(/[\s,]+/g, '').trim();
+        if (!detectedAccount || csvNum.endsWith(detectedAccount) || detectedAccount.endsWith(csvNum)) {
+          detectedAccount = csvNum;
+        }
+      }
+    }
+
     return {
       ...result,
       transactions: transactionsWithFingerprints,
       fileHash,
       parserVersion,
       detectedBankName: detectedBank,
-      detectedAccountNumber: result.detectedAccountNumber,
+      detectedAccountNumber: detectedAccount,
       statementHealthWarning: result.statementHealthWarning,
     };
   }

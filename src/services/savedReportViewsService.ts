@@ -1,16 +1,19 @@
 import { apiClient } from '../api/client';
-import { CertifiedReportId } from './authoritativeReportService';
-
 export interface SavedReportView {
   id: string;
   name: string;
-  report_type: CertifiedReportId;
+  report_type: string;
   visibility: 'PRIVATE' | 'ORGANIZATION';
   is_favorite: boolean;
   config: {
     fromDate?: string;
     toDate?: string;
     projectId?: string;
+    visibleColumns?: string[];
+    customerId?: string;
+    vendorId?: string;
+    accountId?: string;
+    status?: string;
   };
 }
 
@@ -22,17 +25,22 @@ export async function fetchSavedReportViews(): Promise<SavedReportView[]> {
 
 export async function saveReportView(input: {
   name: string;
-  reportId: CertifiedReportId;
+  reportId: string;
   fromDate: string;
   toDate: string;
   projectId?: string;
+  visibleColumns?: string[];
+  customerId?: string;
+  vendorId?: string;
+  accountId?: string;
+  status?: string;
   visibility: 'PRIVATE' | 'ORGANIZATION';
 }): Promise<void> {
   const response = await apiClient.post('/finance/saved-reports', {
     name: input.name,
     reportType: input.reportId,
     visibility: input.visibility,
-    config: { fromDate: input.fromDate, toDate: input.toDate, projectId: input.projectId },
+    config: { fromDate: input.fromDate, toDate: input.toDate, projectId: input.projectId, visibleColumns: input.visibleColumns, customerId: input.customerId, vendorId: input.vendorId, accountId: input.accountId, status: input.status },
   });
   if (response.error) throw new Error(response.error);
 }

@@ -30,54 +30,102 @@ export class CsvXlsxParser {
       dateFormat: mapping?.dateFormat || 'YYYY-MM-DD',
     };
 
-    // Header detection
+    // Header detection using multi-criteria scoring across the first 60 lines
     let headerIdx = 0;
     let headers: string[] = [];
+    let bestScore = 0;
 
-    for (let i = 0; i < Math.min(10, lines.length); i++) {
+    for (let i = 0; i < Math.min(60, lines.length); i++) {
       const parts = CsvXlsxParser.parseCsvRow(lines[i]);
-      const lower = parts.map(p => p.toLowerCase());
-      if (
-        lower.some(p => p.includes('date') || p.includes('narration') || p.includes('description') || p.includes('amount') || p.includes('debit') || p.includes('credit') || p.includes('deposit') || p.includes('withdrawal'))
-      ) {
+      const lower = parts.map((p) => p.toLowerCase());
+      let score = 0;
+      if (lower.some((p) => (p.includes('date') || p === 'dt') && !p.includes('statement') && !p.includes('period') && !p.includes('birth'))) score += 2;
+      if (lower.some((p) => p.includes('narration') || p.includes('description') || p.includes('particulars') || p.includes('remarks') || p.includes('details') || p.includes('memo'))) score += 2;
+      if (lower.some((p) => p.includes('debit') || p.includes('withdrawal') || p.includes('dr') || p.includes('paid out') || p.includes('spent'))) score += 2;
+      if (lower.some((p) => p.includes('credit') || p.includes('deposit') || p.includes('cr') || p.includes('paid in') || p.includes('received'))) score += 2;
+      if (lower.some((p) => p.includes('amount') || p.includes('balance') || p.includes('bal'))) score += 1;
+      if (lower.some((p) => p.includes('cheque') || p.includes('chq') || p.includes('ref'))) score += 1;
+
+      if (score > bestScore) {
+        bestScore = score;
         headerIdx = i;
-        headers = parts.map(p => p.trim());
-        break;
+        headers = parts.map((p) => p.trim());
+      }
+    }
+
+    if (bestScore < 3 && lines.length > 0) {
+      for (let i = 0; i < Math.min(15, lines.length); i++) {
+        const parts = CsvXlsxParser.parseCsvRow(lines[i]);
+        const lower = parts.map((p) => p.toLowerCase());
+        if (
+          lower.some((p) => p.includes('date') || p.includes('narration') || p.includes('description') || p.includes('amount') || p.includes('debit') || p.includes('credit') || p.includes('deposit') || p.includes('withdrawal'))
+        ) {
+          headerIdx = i;
+          headers = parts.map((p) => p.trim());
+          break;
+        }
       }
     }
 
     if (headers.length === 0 && lines.length > 0) {
-      headers = CsvXlsxParser.parseCsvRow(lines[0]).map(p => p.trim());
+      headers = CsvXlsxParser.parseCsvRow(lines[0]).map((p) => p.trim());
     }
 
     const findColIndex = (name: string, synonyms: string[] = []): number => {
       if (!headers.length) return -1;
 
+      // 1. Exact match with primary name
       if (name) {
         const cleanName = name.toLowerCase();
-        const exact = headers.findIndex(h => h.toLowerCase() === cleanName);
+        const exact = headers.findIndex((h) => h.toLowerCase() === cleanName);
         if (exact !== -1) return exact;
-        const partial = headers.findIndex(h => h.toLowerCase().includes(cleanName));
-        if (partial !== -1) return partial;
       }
 
+      // 2. Exact match with synonyms
       for (const syn of synonyms) {
-        const idx = headers.findIndex(h => h.toLowerCase() === syn || h.toLowerCase().includes(syn));
+        const exactSyn = headers.findIndex((h) => h.toLowerCase() === syn.toLowerCase());
+        if (exactSyn !== -1) return exactSyn;
+      }
+
+      // 3. Partial match with synonyms (in declared order of priority)
+      for (const syn of synonyms) {
+        const idx = headers.findIndex((h) => h.toLowerCase().includes(syn.toLowerCase()));
         if (idx !== -1) return idx;
+      }
+
+      // 4. Partial match with primary name
+      if (name) {
+        const cleanName = name.toLowerCase();
+        const partial = headers.findIndex((h) => h.toLowerCase().includes(cleanName));
+        if (partial !== -1) return partial;
       }
 
       return -1;
     };
 
-    const dateColIdx = findColIndex(colMap.dateColumn, ['date', 'txn date', 'transaction date']);
-    const valueDateColIdx = findColIndex(colMap.valueDateColumn || '', ['value date', 'val date']);
-    const narrationColIdx = findColIndex(colMap.narrationColumn, ['narration', 'description', 'particulars', 'remarks', 'details']);
-    const refColIdx = findColIndex(colMap.referenceColumn || '', ['ref no', 'refno', 'ref_no', 'ref.no', 'ref', 'reference', 'utr', 'rrn', 'txn id', 'transaction id', 'chq/ref no']);
-    const debitColIdx = findColIndex(colMap.debitColumn || '', ['debit', 'withdrawal', 'dr', 'out', 'paid out', 'spent', 'debit amount']);
-    const creditColIdx = findColIndex(colMap.creditColumn || '', ['credit', 'deposit', 'cr', 'in', 'paid in', 'received', 'credit amount']);
-    const amountColIdx = findColIndex(colMap.amountColumn || '', ['amount', 'net amount', 'txn amount']);
-    const balanceColIdx = findColIndex(colMap.balanceColumn || '', ['balance', 'running balance', 'closing balance']);
-    const chqColIdx = findColIndex(colMap.chequeNumberColumn || '', ['cheque no', 'chq no', 'cheque number']);
+    // Date column: prefer explicit "Transaction Date" / "Txn Date" over "Value Date"
+    let dateColIdx = findColIndex('', [
+      'transaction date', 'txn date', 'tran date', 'trans date', 'booking date', 'date', 'posting date'
+    ]);
+    if (dateColIdx === -1) {
+      dateColIdx = findColIndex(colMap.dateColumn, ['date', 'txn date', 'transaction date', 'dt']);
+    }
+    const valueDateColIdx = findColIndex(colMap.valueDateColumn || '', ['value date', 'val date', 'value dt']);
+    const narrationColIdx = findColIndex(colMap.narrationColumn, [
+      'transaction remarks', 'narration', 'description', 'particulars', 'transaction details', 'remarks', 'details', 'memo', 'transaction description'
+    ]);
+    const refColIdx = findColIndex(colMap.referenceColumn || '', [
+      'chq / ref no', 'chq/ref no', 'chq/ref.no.', 'ref no/cheque no', 'ref no.', 'ref no', 'refno', 'ref.no', 'ref_no', 'reference number', 'reference no', 'reference', 'utr', 'rrn', 'txn id', 'transaction id'
+    ]);
+    const debitColIdx = findColIndex(colMap.debitColumn || '', [
+      'withdrawal amount', 'withdrawal amt', 'withdrawal (dr)', 'withdrawal', 'debit amount', 'debit amt', 'debit', 'dr amount', 'dr.', 'dr', 'paid out', 'spent', 'out', 'payment'
+    ]);
+    const creditColIdx = findColIndex(colMap.creditColumn || '', [
+      'deposit amount', 'deposit amt', 'deposit (cr)', 'deposit', 'credit amount', 'credit amt', 'credit', 'cr amount', 'cr.', 'cr', 'paid in', 'received', 'in', 'receipt'
+    ]);
+    const amountColIdx = findColIndex(colMap.amountColumn || '', ['net amount', 'transaction amount', 'txn amount', 'amount', 'total']);
+    const balanceColIdx = findColIndex(colMap.balanceColumn || '', ['balance (inr )', 'balance (inr)', 'balance', 'running balance', 'closing balance', 'bal']);
+    const chqColIdx = findColIndex(colMap.chequeNumberColumn || '', ['cheque no', 'chq no', 'cheque number', 'chq.no']);
 
     const transactions: ParsedTransactionLine[] = [];
     let openingBalance = 0;
@@ -85,7 +133,7 @@ export class CsvXlsxParser {
 
     for (let i = headerIdx + 1; i < lines.length; i++) {
       const row = CsvXlsxParser.parseCsvRow(lines[i]);
-      if (row.length === 0 || row.every(cell => !cell.trim())) continue;
+      if (row.length === 0 || row.every((cell) => !cell.trim())) continue;
 
       const rawDate = dateColIdx !== -1 ? row[dateColIdx] : row[0];
       const parsedDate = CsvXlsxParser.normalizeDate(rawDate, colMap.dateFormat);
@@ -109,8 +157,9 @@ export class CsvXlsxParser {
       }
 
       if (debitAmount === 0 && creditAmount === 0 && amountColIdx !== -1 && row[amountColIdx]) {
-        const val = CsvXlsxParser.parseAmount(row[amountColIdx]);
-        if (val < 0) {
+        const rawAmountVal = row[amountColIdx];
+        const val = CsvXlsxParser.parseAmount(rawAmountVal);
+        if (/\b(?:dr|debit)\b/i.test(rawAmountVal) || val < 0) {
           debitAmount = Math.abs(val);
         } else {
           creditAmount = val;
@@ -160,28 +209,44 @@ export class CsvXlsxParser {
       }
     }
 
-    // Detect metadata from statement header/preamble
+    // Detect metadata from statement header/preamble (scanning strictly before transaction table rows)
     let detectedBankName: string | undefined;
     let detectedAccountNumber: string | undefined;
-    const preambleText = lines.slice(0, Math.max(15, headerIdx + 1)).join(' ');
-    if (/hdfc/i.test(preambleText)) detectedBankName = 'HDFC Bank';
-    else if (/icici/i.test(preambleText)) detectedBankName = 'ICICI Bank';
-    else if (/state\s*bank\s*of\s*india|sbi/i.test(preambleText)) detectedBankName = 'State Bank of India';
-    else if (/axis/i.test(preambleText)) detectedBankName = 'Axis Bank';
-    else if (/kotak/i.test(preambleText)) detectedBankName = 'Kotak Mahindra Bank';
-    else if (/bank\s*of\s*baroda|bob/i.test(preambleText)) detectedBankName = 'Bank of Baroda';
-    else if (/punjab\s*national|pnb/i.test(preambleText)) detectedBankName = 'Punjab National Bank';
-    else if (/indusind/i.test(preambleText)) detectedBankName = 'IndusInd Bank';
-    else if (/canara/i.test(preambleText)) detectedBankName = 'Canara Bank';
-    else if (/idfc/i.test(preambleText)) detectedBankName = 'IDFC FIRST Bank';
+    const preambleLines = lines.slice(0, Math.max(headerIdx + 1, 10));
+    const preambleText = preambleLines.join(' ');
 
-    const accMatch = preambleText.match(/(?:account\s*(?:no|number)|a\/c\s*(?:no|number)?)\s*[:\-]?\s*([0-9Xx\s]{6,24})/i);
+    if (/icici|optransactionhistory/i.test(preambleText)) detectedBankName = 'ICICI Bank';
+    else if (/state\s*bank\s*of\s*india|\bsbi\b/i.test(preambleText)) detectedBankName = 'State Bank of India';
+    else if (/\bhdfc\b/i.test(preambleText)) detectedBankName = 'HDFC Bank';
+    else if (/\baxis\b/i.test(preambleText)) detectedBankName = 'Axis Bank';
+    else if (/\bkotak\b/i.test(preambleText)) detectedBankName = 'Kotak Mahindra Bank';
+    else if (/bank\s*of\s*baroda|\bbob\b/i.test(preambleText)) detectedBankName = 'Bank of Baroda';
+    else if (/punjab\s*national|\bpnb\b/i.test(preambleText)) detectedBankName = 'Punjab National Bank';
+    else if (/\bindusind\b/i.test(preambleText)) detectedBankName = 'IndusInd Bank';
+    else if (/\bcanara\b/i.test(preambleText)) detectedBankName = 'Canara Bank';
+    else if (/\bidfc\b/i.test(preambleText)) detectedBankName = 'IDFC FIRST Bank';
+    else if (/\bfederal\b/i.test(preambleText)) detectedBankName = 'Federal Bank';
+
+    const accMatch = preambleText.match(/(?:account\s*(?:no|number|num)?|a\/c\s*(?:no|number|num)?)\s*[:\-,\t\s]*([0-9Xx]{6,24})/i);
     if (accMatch && accMatch[1]) {
-      detectedAccountNumber = accMatch[1].replace(/\s+/g, '').trim();
+      detectedAccountNumber = accMatch[1].replace(/[\s,]+/g, '').trim();
     }
 
-    const totalCredits = transactions.filter(t => t.direction === 'CREDIT').reduce((s, t) => s + t.amount, 0);
-    const totalDebits = transactions.filter(t => t.direction === 'DEBIT').reduce((s, t) => s + t.amount, 0);
+    if (!openingBalance) {
+      const openMatch = preambleText.match(/(?:opening\s*balance|open\s*bal)\s*[:\-,\t]?\s*([0-9,]+(?:\.\d{1,2})?)/i);
+      if (openMatch && openMatch[1]) {
+        openingBalance = CsvXlsxParser.parseAmount(openMatch[1]);
+      }
+    }
+    if (!closingBalance) {
+      const closeMatch = preambleText.match(/(?:closing\s*balance|close\s*bal)\s*[:\-,\t]?\s*([0-9,]+(?:\.\d{1,2})?)/i);
+      if (closeMatch && closeMatch[1]) {
+        closingBalance = CsvXlsxParser.parseAmount(closeMatch[1]);
+      }
+    }
+
+    const totalCredits = transactions.filter((t) => t.direction === 'CREDIT').reduce((s, t) => s + t.amount, 0);
+    const totalDebits = transactions.filter((t) => t.direction === 'DEBIT').reduce((s, t) => s + t.amount, 0);
     const calculatedClosing = Number((openingBalance + totalCredits - totalDebits).toFixed(2));
     const discrepancy = closingBalance ? Number((closingBalance - calculatedClosing).toFixed(2)) : 0;
     const currency = (mapping as any)?.currency || 'INR';
@@ -233,27 +298,52 @@ export class CsvXlsxParser {
 
   public static normalizeDate(raw: string, formatPreference: string = 'YYYY-MM-DD'): string | null {
     if (!raw) return null;
-    const clean = raw.trim();
+    // Strip quotes and timestamps (e.g. "13/09/2026 14:32:00" -> "13/09/2026")
+    const clean = raw.trim().replace(/^"|"$/g, '').split(/[T\s]/)[0].trim();
+    if (!clean) return null;
 
-    if (/^\d{4}-\d{2}-\d{2}/.test(clean)) {
-      return clean.substring(0, 10);
+    // 1. ISO format: YYYY-MM-DD or YYYY/MM/DD
+    if (/^\d{4}[/-]\d{1,2}[/-]\d{1,2}$/.test(clean)) {
+      const parts = clean.split(/[/-]/);
+      return `${parts[0]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
     }
 
-    const ddmmyyyy = clean.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})/);
-    if (ddmmyyyy) {
+    // 2. Day-Month-Year with 4-digit or 2-digit year (e.g. 13/09/2026, 2/9/26, 13-09-2026, 05-09-26)
+    const ddmmyyMatch = clean.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/);
+    if (ddmmyyMatch) {
+      const [, p1, p2, yr] = ddmmyyMatch;
+      const y = yr.length === 2 ? (parseInt(yr, 10) < 70 ? '20' + yr : '19' + yr) : yr;
+      const n1 = parseInt(p1, 10);
+      const n2 = parseInt(p2, 10);
+
       if (formatPreference === 'MM/DD/YYYY') {
-        const m = ddmmyyyy[1].padStart(2, '0');
-        const d = ddmmyyyy[2].padStart(2, '0');
-        const y = ddmmyyyy[3];
-        return `${y}-${m}-${d}`;
+        return `${y}-${String(n1).padStart(2, '0')}-${String(n2).padStart(2, '0')}`;
       } else {
-        const d = ddmmyyyy[1].padStart(2, '0');
-        const m = ddmmyyyy[2].padStart(2, '0');
-        const y = ddmmyyyy[3];
-        return `${y}-${m}-${d}`;
+        // Standard Indian / UK netbanking format: DD/MM/YYYY
+        if (n2 > 12 && n1 <= 12) {
+          return `${y}-${String(n1).padStart(2, '0')}-${String(n2).padStart(2, '0')}`;
+        }
+        return `${y}-${String(n2).padStart(2, '0')}-${String(n1).padStart(2, '0')}`;
       }
     }
 
+    // 3. DD-MMM-YYYY or DD-MMM-YY (e.g. 13-Sep-2026, 02-Jan-26, 15-OCT-2025)
+    const monthNames: Record<string, string> = {
+      jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
+      jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12'
+    };
+    const mmmMatch = clean.match(/^(\d{1,2})[/-]([A-Za-z]{3,9})[/-](\d{2,4})$/);
+    if (mmmMatch) {
+      const day = mmmMatch[1].padStart(2, '0');
+      const monKey = mmmMatch[2].slice(0, 3).toLowerCase();
+      const yr = mmmMatch[3];
+      const y = yr.length === 2 ? (parseInt(yr, 10) < 70 ? '20' + yr : '19' + yr) : yr;
+      if (monthNames[monKey]) {
+        return `${y}-${monthNames[monKey]}-${day}`;
+      }
+    }
+
+    // 4. Compact YYYYMMDD or YYYYMMDDHHMMSS (e.g. 20260913 or 20260810120000)
     if (/^\d{8}/.test(clean)) {
       const y = clean.substring(0, 4);
       const m = clean.substring(4, 6);
@@ -261,6 +351,7 @@ export class CsvXlsxParser {
       return `${y}-${m}-${d}`;
     }
 
+    // 5. JavaScript Date fallback
     const dateObj = new Date(clean);
     if (!isNaN(dateObj.getTime())) {
       return dateObj.toISOString().substring(0, 10);

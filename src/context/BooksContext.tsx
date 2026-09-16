@@ -144,9 +144,14 @@ const normalizeInvoiceForUi = (record: any): Invoice => {
 };
 
 const normalizeBillForUi = (record: any): Bill => {
-  const balanceDue = Math.max(0, Number(record.balanceDue ?? (Number(record.totalAmount || 0) - Number(record.amountPaid || 0))));
-  const isOverdue = balanceDue > 0 && /^\d{4}-\d{2}-\d{2}$/.test(String(record.dueDate || '')) && record.dueDate < new Date().toISOString().split('T')[0];
-  const status: Bill['status'] = balanceDue === 0
+  const isVoided = String(record.status || '').trim().toUpperCase() === 'VOIDED';
+  const balanceDue = isVoided
+    ? 0
+    : Math.max(0, Number(record.balanceDue ?? (Number(record.totalAmount || 0) - Number(record.amountPaid || 0))));
+  const isOverdue = !isVoided && balanceDue > 0 && /^\d{4}-\d{2}-\d{2}$/.test(String(record.dueDate || '')) && record.dueDate < new Date().toISOString().split('T')[0];
+  const status: Bill['status'] = isVoided
+    ? 'VOIDED'
+    : balanceDue === 0
     ? 'Paid'
     : isOverdue
     ? 'Overdue'
@@ -294,9 +299,11 @@ interface BooksContextType {
   deleteDeliveryChallan: (id: string) => Promise<void>;
 
   creditNotes: CreditNote[];
-  addCreditNote: (note: Omit<CreditNote, 'id'>) => CreditNote | null;
+  addCreditNote: (note: Omit<CreditNote, 'id'>) => CreditNote | null | Promise<CreditNote | null>;
   updateCreditNote: (id: string, updated: Partial<CreditNote>) => void;
   deleteCreditNote: (id: string) => void;
+  applyCreditNoteToInvoice: (creditNoteId: string, invoiceId: string, amountToApply: number, applyDate?: string) => Promise<any>;
+  recordCustomerRefund: (payload: { customerId: string; creditNoteId?: string; paymentId?: string; advanceId?: string; refundDate: string; amount: number; refundAccountId?: string; reference?: string; notes?: string }) => Promise<any>;
 
   paymentsReceived: PaymentReceipt[];
   addPaymentReceived: (payment: Omit<PaymentReceipt, 'id'> & { invoiceId?: string; clientId?: string; depositToAccountId?: string }) => Promise<PaymentReceipt>;
@@ -1480,6 +1487,44 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     await refreshAfterCommittedWrite(['credit-notes', 'invoices', 'accounts', 'journals']);
   };
 
+  const applyCreditNoteToInvoice = async (
+    creditNoteId: string,
+    invoiceId: string,
+    amountToApply: number,
+    applyDate?: string
+  ): Promise<any> => {
+    const response = await apiClient.post<any>('/finance/credit-notes/apply', {
+      creditNoteId,
+      invoiceId,
+      amountToApply,
+      applyDate: applyDate || new Date().toISOString().split('T')[0],
+    });
+    if (response.error || !response.data) {
+      throw new Error(response.error || 'Failed to apply credit note to invoice');
+    }
+    await refreshAfterCommittedWrite(['credit-notes', 'invoices', 'accounts', 'journals']);
+    return response.data;
+  };
+
+  const recordCustomerRefund = async (payload: {
+    customerId: string;
+    creditNoteId?: string;
+    paymentId?: string;
+    advanceId?: string;
+    refundDate: string;
+    amount: number;
+    refundAccountId?: string;
+    reference?: string;
+    notes?: string;
+  }): Promise<any> => {
+    const response = await apiClient.post<any>('/finance/refunds', payload);
+    if (response.error || !response.data) {
+      throw new Error(response.error || 'Failed to record refund');
+    }
+    await refreshAfterCommittedWrite(['credit-notes', 'invoices', 'accounts', 'journals']);
+    return response.data;
+  };
+
   const addPaymentReceived = async (paymentData: Omit<PaymentReceipt, 'id'> & { invoiceId?: string; clientId?: string; depositToAccountId?: string; paymentMode?: string; reference?: string; notes?: string }): Promise<PaymentReceipt> => {
     const response = await apiClient.post<any>('/finance/payments-received', {
       paymentNumber: paymentData.paymentNumber,
@@ -1660,12 +1705,26 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       allocations?: Array<{ billId: string; amount: number }>;
     }
   ): Promise<PaymentMade> => {
-    const targetVendor = vendors.find((v) => v.id === paymentData.vendorId || v.name === paymentData.vendorName);
+    const cleanVendorName = (paymentData.vendorName || '').trim().toLowerCase();
+    const targetVendor = vendors.find(
+      (v) =>
+        v.id === paymentData.vendorId ||
+        (cleanVendorName &&
+          ((v.name && v.name.trim().toLowerCase() === cleanVendorName) ||
+           (v.companyName && v.companyName.trim().toLowerCase() === cleanVendorName)))
+    );
     const vendorId = targetVendor?.id || paymentData.vendorId;
 
     if (!paymentData.paidFromAccountId) {
       throw new Error('Disbursement bank or cash account (paidFromAccountId) is required.');
     }
+
+    const allocations =
+      paymentData.allocations && paymentData.allocations.length > 0
+        ? paymentData.allocations
+        : paymentData.billId
+        ? [{ billId: paymentData.billId, amount: Number(paymentData.amount) }]
+        : [];
 
     const payload = {
       vendorId,
@@ -1675,7 +1734,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       paymentDate: paymentData.paymentDate || new Date().toISOString().slice(0, 10),
       paymentMode: paymentData.paymentMethod || 'Bank Wire / NEFT / RTGS',
       reference: paymentData.referenceNumber,
-      allocations: paymentData.allocations || (paymentData.billId ? [{ billId: paymentData.billId, amount: Number(paymentData.amount) }] : []),
+      allocations,
     };
 
     const response = await apiClient.post<any>('/finance/vendor-payments', payload);
@@ -1855,6 +1914,8 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       addCreditNote,
       updateCreditNote,
       deleteCreditNote,
+      applyCreditNoteToInvoice,
+      recordCustomerRefund,
       paymentsReceived,
       addPaymentReceived,
       updatePaymentReceived,

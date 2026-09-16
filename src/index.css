@@ -19,6 +19,20 @@
   --color-surface-strong: #e2e8f0;
 }
 
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/* Mobile browsers zoom focused form controls whose text is below 16px. */
+@media (max-width: 767px) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
 /* Custom sleek scrollbars */
 ::-webkit-scrollbar {
   width: 6px;

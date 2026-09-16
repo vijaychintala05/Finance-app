@@ -205,7 +205,7 @@ export class PurchasesEngine {
 
       if (!matched && (line.accountId === '2000' || line.accountId === 'acc-ap-control' || line.accountCode === '2000' || line.accountName?.toLowerCase().includes('payable'))) {
         const apRes = await queryClient.query(
-          `SELECT id, code, name FROM accounts WHERE organization_id = $1 AND (sub_type = 'Accounts Payable' OR name ILIKE '%Accounts Payable%' OR code = '2000') LIMIT 1`,
+          `SELECT id, code, name FROM accounts WHERE organization_id = $1 AND (system_role = 'AP_CONTROL' OR system_role = 'ACCOUNTS_PAYABLE' OR sub_type ILIKE '%payable%' OR name ILIKE '%Accounts Payable%' OR name ILIKE '%Payable%' OR code = '2000' OR id = 'acc-ap-control') LIMIT 1`,
           [orgId]
         );
         if (apRes.rows.length > 0) {
@@ -1656,7 +1656,7 @@ export class PurchasesEngine {
         );
 
         const updateRes = await client.query(
-          `UPDATE bills SET amount_paid = $1, balance_due = $2, status = $3 WHERE organization_id = $4 AND id = $5 AND balance_due >= $6 - 0.009`,
+          `UPDATE bills SET amount_paid = $1, balance_due = $2, status = $3 WHERE organization_id = $4 AND id = $5 AND COALESCE(balance_due, (total_amount - amount_paid - amount_debited - amount_written_off)) >= $6 - 0.009`,
           [item.newPaid, item.newBal, item.newStatus, orgId, item.billId, item.allocAmount]
         );
         if (updateRes.rowCount === 0) {

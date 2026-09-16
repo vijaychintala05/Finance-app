@@ -1808,6 +1808,7 @@ export class BankReconciliationService {
 
     return db.transaction(async (client) => {
       let targetBankAccountId = payload.bankAccountId;
+      let ledgerAccId: string | undefined = payload.newBankData?.ledgerAccountId;
 
       if (payload.mode === 'CREATE_NEW' || !targetBankAccountId) {
         if (!payload.newBankData?.bankName || !payload.newBankData?.accountNumber) {
@@ -1815,7 +1816,6 @@ export class BankReconciliationService {
         }
 
         const bnkId = newId('bnk');
-        let ledgerAccId = payload.newBankData.ledgerAccountId;
 
         if (!ledgerAccId) {
           const existingAcc = await client.query(
@@ -2012,9 +2012,16 @@ export class BankReconciliationService {
         ]
       );
 
+      let resolvedLedgerAccountId = ledgerAccId;
+      if (!resolvedLedgerAccountId && targetBankAccountId) {
+        const bnkRow = await client.query('SELECT ledger_account_id FROM bank_accounts WHERE id = $1', [targetBankAccountId]);
+        resolvedLedgerAccountId = bnkRow.rows[0]?.ledger_account_id || bnkRow.rows[0]?.ledgerAccountId;
+      }
+
       return {
         success: true,
         bankAccountId: targetBankAccountId!,
+        ledgerAccountId: resolvedLedgerAccountId,
         importId,
         newTransactionsCount,
         exactDuplicatesCount,

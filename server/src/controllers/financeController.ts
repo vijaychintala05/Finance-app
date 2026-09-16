@@ -42,6 +42,7 @@ import { InvoicePdfService } from '../services/InvoicePdfService';
 import { GSTComplianceService } from '../services/GSTComplianceService';
 import { DrillDownService } from '../services/DrillDownService';
 import { ReportExportService } from '../services/ReportExportService';
+import { ReportWorkspaceService, type WorkspaceReportFilter } from '../services/ReportWorkspaceService';
 import { ApprovalWorkflowService } from '../approvals/ApprovalWorkflowService';
 import { TreasuryTransactionService } from '../services/TreasuryTransactionService';
 import { EmployeeReimbursementService } from '../services/EmployeeReimbursementService';
@@ -2396,6 +2397,25 @@ export class FinanceController {
     res.json(result.rows);
   }
 
+  public static async getCreditNoteApplications(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const creditNoteId = req.query.creditNoteId as string | undefined;
+    let query = `
+      SELECT cna.*, i.invoice_number
+      FROM credit_note_applications cna
+      LEFT JOIN invoices i ON i.id = cna.invoice_id AND i.organization_id = cna.organization_id
+      WHERE cna.organization_id = $1
+    `;
+    const params: any[] = [orgId];
+    if (creditNoteId) {
+      query += ` AND cna.credit_note_id = $2`;
+      params.push(creditNoteId);
+    }
+    query += ` ORDER BY cna.applied_date DESC, cna.created_at DESC`;
+    const result = await db.query(query, params);
+    res.json(result.rows);
+  }
+
   public static async createCreditNote(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
     const result = await db.transaction(async (client) => {
@@ -2694,6 +2714,78 @@ export class FinanceController {
       search: req.query.search as string,
     });
     res.json(report);
+  }
+
+  public static async getWorkspaceReport(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const reportType = req.params.reportType;
+    if (!ReportWorkspaceService.isSupported(reportType)) {
+      res.status(404).json({ error: 'This report is not available' });
+      return;
+    }
+    const filter: WorkspaceReportFilter = {
+      fromDate: req.query.fromDate as string | undefined,
+      toDate: req.query.toDate as string | undefined,
+      asOfDate: req.query.asOfDate as string | undefined,
+      projectId: req.query.projectId as string | undefined,
+      customerId: req.query.customerId as string | undefined,
+      vendorId: req.query.vendorId as string | undefined,
+      accountId: req.query.accountId as string | undefined,
+      status: req.query.status as string | undefined,
+      search: req.query.search as string | undefined,
+    };
+    try {
+      res.json(await ReportWorkspaceService.run(req.auth!.organizationId, reportType, filter));
+    } catch (error: any) {
+      const message = error?.message || 'Unable to generate report';
+      res.status(message.startsWith('REPORT_DATE_INVALID') ? 400 : 500).json({ error: message.replace(/^REPORT_[A-Z_]+:\s*/, '') });
+    }
+  }
+
+  public static async exportWorkspaceReport(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const reportType = req.params.reportType;
+    const requestedFormat = String(req.query.format || 'csv').toLowerCase();
+    if (!ReportWorkspaceService.isSupported(reportType)) {
+      res.status(404).json({ error: 'This report is not available' });
+      return;
+    }
+    if (!['csv', 'xlsx', 'pdf'].includes(requestedFormat)) {
+      res.status(400).json({ error: 'Export format must be csv, xlsx, or pdf' });
+      return;
+    }
+    const filter: WorkspaceReportFilter = {
+      fromDate: req.query.fromDate as string | undefined,
+      toDate: req.query.toDate as string | undefined,
+      asOfDate: req.query.asOfDate as string | undefined,
+      projectId: req.query.projectId as string | undefined,
+      customerId: req.query.customerId as string | undefined,
+      vendorId: req.query.vendorId as string | undefined,
+      accountId: req.query.accountId as string | undefined,
+      status: req.query.status as string | undefined,
+      search: req.query.search as string | undefined,
+    };
+    try {
+      const report = await ReportWorkspaceService.run(req.auth!.organizationId, reportType, filter);
+      const dateLabel = report.period.asOfDate
+        ? `As of ${report.period.asOfDate}`
+        : `${report.period.fromDate || ''} through ${report.period.toDate || ''}`;
+      const metadata = await ReportExportService.getExportMetadata(
+        req.auth!.organizationId,
+        req.auth!.userId,
+        report.title,
+        dateLabel,
+        filter,
+      );
+      const selectedColumns = String(req.query.columns || '').split(',').filter(Boolean).slice(0, 50);
+      const format = requestedFormat as 'csv' | 'xlsx' | 'pdf';
+      const buffer = await ReportExportService.exportWorkspaceReport(report, metadata, format, selectedColumns.length ? selectedColumns : undefined);
+      const mime = format === 'pdf' ? 'application/pdf' : format === 'xlsx' ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : 'text/csv; charset=utf-8';
+      res.setHeader('Content-Type', mime);
+      res.setHeader('Content-Disposition', `attachment; filename="${reportType}_${new Date().toISOString().slice(0, 10)}.${format}"`);
+      res.send(buffer);
+    } catch (error: any) {
+      const message = error?.message || 'Unable to export report';
+      res.status(message.startsWith('REPORT_DATE_INVALID') ? 400 : 500).json({ error: message.replace(/^REPORT_[A-Z_]+:\s*/, '') });
+    }
   }
 
   public static async getAccountTransactions(req: AuthenticatedRequest, res: Response): Promise<void> {

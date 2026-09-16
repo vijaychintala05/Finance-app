@@ -64,9 +64,41 @@ export const SettlementWorkspace: React.FC<{ side: Side; initialResource?: strin
 
   const filtered = useMemo(() => rows.filter((row) => JSON.stringify(row).toLowerCase().includes(search.toLowerCase())), [rows, search]);
   const partyId = form.partyId || '';
-  const partyDocuments = documents.filter((document) => String(document.customer_id || document.client_id || document.vendor_id || '') === partyId);
-  const partyAdvances = advances.filter((advance) => String(advance.customer_id || advance.vendor_id || '') === partyId && Number(advance.unapplied_amount) > 0 && String(advance.status).toUpperCase() !== 'REVERSED');
-  const partyCredits = credits.filter((credit) => String(credit.customer_id || credit.client_id || credit.vendor_id || '') === partyId && Number(credit.remaining_credit) > 0 && String(credit.status).toUpperCase() !== 'REVERSED');
+  const partyDocuments = documents.filter((document) =>
+    String(
+      document.customer_id ||
+      document.customerId ||
+      document.client_id ||
+      document.clientId ||
+      document.vendor_id ||
+      document.vendorId ||
+      ''
+    ) === partyId
+  );
+  const partyAdvances = advances.filter((advance) =>
+    String(
+      advance.customer_id ||
+      advance.customerId ||
+      advance.vendor_id ||
+      advance.vendorId ||
+      ''
+    ) === partyId &&
+    Number(advance.unapplied_amount ?? advance.unappliedAmount ?? advance.unallocated_amount ?? advance.unallocatedAmount ?? 0) > 0 &&
+    String(advance.status).toUpperCase() !== 'REVERSED'
+  );
+  const partyCredits = credits.filter((credit) =>
+    String(
+      credit.customer_id ||
+      credit.customerId ||
+      credit.client_id ||
+      credit.clientId ||
+      credit.vendor_id ||
+      credit.vendorId ||
+      ''
+    ) === partyId &&
+    Number(credit.remaining_credit ?? credit.remainingCredit ?? credit.available_credit ?? 0) > 0 &&
+    String(credit.status).toUpperCase() !== 'REVERSED'
+  );
   const cashAccounts = accounts.filter((account) => account.type === 'Asset' && !account.is_locked && String(account.status).toLowerCase() !== 'inactive');
   const adjustmentAccounts = accounts.filter((account) => side === 'receivable' ? account.type === 'Expense' : ['Income', 'Expense'].includes(account.type));
 
@@ -137,7 +169,39 @@ export const SettlementWorkspace: React.FC<{ side: Side; initialResource?: strin
       {modal && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4" onClick={() => !busy && setModal(false)}><div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-lg bg-white p-6 shadow-xl dark:bg-slate-900" onClick={(event) => event.stopPropagation()}><div className="mb-4 flex justify-between"><div><h3 className="text-base font-bold text-slate-900 dark:text-white">New {label.toLowerCase()} transaction</h3><p className="mt-1 text-xs text-slate-500">The server assigns document and journal numbers.</p></div><button title="Close" onClick={() => setModal(false)}><X className="h-4 w-4" /></button></div><form onSubmit={submit} className="space-y-3">
         <label className="block space-y-1 text-xs font-bold"><span>Transaction type</span><select value={operation} onChange={(event) => setOperation(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white p-2.5 dark:border-slate-700 dark:bg-slate-800">{(side === 'receivable' ? [['credit','Credit note'],['apply-advance','Apply customer advance'],['refund','Customer refund'],['writeoff','Receivable write-off']] : [['payment','Vendor payment'],['advance','Vendor advance'],['apply-advance','Apply vendor advance'],['credit','Vendor credit'],['writeoff','Payable write-off']]).map(([value,text]) => <option key={value} value={value}>{text}</option>)}</select></label>
         <label className="block space-y-1 text-xs font-bold"><span>{side === 'receivable' ? 'Customer' : 'Vendor'}</span><select required value={form.partyId || ''} onChange={(event) => setForm({ ...form, partyId: event.target.value, documentId: '', advanceId: '', creditId: '' })} className="w-full rounded-lg border border-slate-300 bg-white p-2.5 dark:border-slate-700 dark:bg-slate-800"><option value="">Select</option>{parties.map((party) => <option key={party.id} value={party.id}>{party.display_name || party.name}</option>)}</select></label>
-        {['payment','credit','apply-advance','writeoff'].includes(operation) && <label className="block space-y-1 text-xs font-bold"><span>{side === 'receivable' ? 'Invoice' : 'Bill'}{operation === 'credit' || (operation === 'payment' && side === 'payable') ? ' (optional)' : ''}</span><select required={!['credit'].includes(operation) && !(operation === 'payment' && side === 'payable')} value={form.documentId || ''} onChange={(event) => setForm({ ...form, documentId: event.target.value })} className="w-full rounded-lg border border-slate-300 bg-white p-2.5 dark:border-slate-700 dark:bg-slate-800"><option value="">Unallocated</option>{partyDocuments.filter((document) => Number(document.balance_due ?? document.total_amount) > 0).map((document) => <option key={document.id} value={document.id}>{document.invoice_number || document.bill_number} · {money(document.balance_due ?? document.total_amount)}</option>)}</select></label>}
+        {['payment','credit','apply-advance','writeoff'].includes(operation) && (
+          <label className="block space-y-1 text-xs font-bold">
+            <span>{side === 'receivable' ? 'Invoice' : 'Bill'}{operation === 'credit' || (operation === 'payment' && side === 'payable') ? ' (optional)' : ''}</span>
+            <select
+              required={!['credit'].includes(operation) && !(operation === 'payment' && side === 'payable')}
+              value={form.documentId || ''}
+              onChange={(event) => {
+                const docId = event.target.value;
+                const matchedDoc = partyDocuments.find((d) => String(d.id) === docId);
+                const docBal = matchedDoc ? Number(matchedDoc.balance_due ?? matchedDoc.balanceDue ?? matchedDoc.total_amount ?? matchedDoc.totalAmount ?? 0) : 0;
+                setForm({
+                  ...form,
+                  documentId: docId,
+                  amount: docId && docBal > 0 && (!form.amount || Number(form.amount) <= 0) ? String(docBal) : form.amount,
+                });
+              }}
+              className="w-full rounded-lg border border-slate-300 bg-white p-2.5 dark:border-slate-700 dark:bg-slate-800"
+            >
+              <option value="">Unallocated</option>
+              {partyDocuments
+                .filter((document) => Number(document.balance_due ?? document.balanceDue ?? document.total_amount ?? document.totalAmount ?? 0) > 0)
+                .map((document) => {
+                  const docNum = document.invoice_number || document.invoiceNumber || document.bill_number || document.billNumber || document.id;
+                  const docBal = Number(document.balance_due ?? document.balanceDue ?? document.total_amount ?? document.totalAmount ?? 0);
+                  return (
+                    <option key={document.id} value={document.id}>
+                      {docNum} · {money(docBal)}
+                    </option>
+                  );
+                })}
+            </select>
+          </label>
+        )}
         {operation === 'apply-advance' && <label className="block space-y-1 text-xs font-bold"><span>Available advance</span><select required value={form.advanceId || ''} onChange={(event) => setForm({ ...form, advanceId: event.target.value })} className="w-full rounded-lg border border-slate-300 bg-white p-2.5 dark:border-slate-700 dark:bg-slate-800"><option value="">Select advance</option>{partyAdvances.map((advance) => <option key={advance.id} value={advance.id}>{advance.id} · {money(advance.unapplied_amount)}</option>)}</select></label>}
         {operation === 'refund' && <label className="block space-y-1 text-xs font-bold"><span>Credit note</span><select required value={form.creditId || ''} onChange={(event) => setForm({ ...form, creditId: event.target.value })} className="w-full rounded-lg border border-slate-300 bg-white p-2.5 dark:border-slate-700 dark:bg-slate-800"><option value="">Select credit</option>{partyCredits.map((credit) => <option key={credit.id} value={credit.id}>{credit.credit_note_number} · {money(credit.remaining_credit)}</option>)}</select></label>}
         <div className="grid grid-cols-2 gap-3"><label className="space-y-1 text-xs font-bold"><span>Date</span><input required type="date" value={form.date || today()} onChange={(event) => setForm({ ...form, date: event.target.value })} className="w-full rounded-lg border border-slate-300 p-2.5 dark:border-slate-700 dark:bg-slate-800" /></label><label className="space-y-1 text-xs font-bold"><span>Amount</span><input required type="number" min="0.01" step="0.01" value={form.amount || ''} onChange={(event) => setForm({ ...form, amount: event.target.value })} className="w-full rounded-lg border border-slate-300 p-2.5 font-mono dark:border-slate-700 dark:bg-slate-800" /></label></div>

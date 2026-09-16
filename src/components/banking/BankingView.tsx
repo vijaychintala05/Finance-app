@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import { CheckCircle2, X } from 'lucide-react';
 import { useBooks } from '../../context/BooksContext';
 import { Account, JournalEntry } from '../../types';
 import { QuickAddAccountModal, QuickAccountCategory } from '../common/QuickAddAccountModal';
@@ -39,6 +40,7 @@ export const BankingView: React.FC<BankingViewProps> = ({
 
   // Active view: when null, show Zoho Banking Overview table; when set, show Zoho Bank Account Workspace
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
+  const [selectedBankAccountId, setSelectedBankAccountId] = useState<string | null>(null);
 
   // Fallback / legacy filter states for compatibility
   const [activeCategoryTab, setActiveCategoryTab] = useState<
@@ -62,6 +64,13 @@ export const BankingView: React.FC<BankingViewProps> = ({
   // Zoho Match & Categorize drawers
   const [selectedTxForMatch, setSelectedTxForMatch] = useState<any | null>(null);
   const [selectedTxForCategorize, setSelectedTxForCategorize] = useState<any | null>(null);
+
+  // Statement import feedback & workspace refresh trigger
+  const [workspaceRefreshTrigger, setWorkspaceRefreshTrigger] = useState<number>(0);
+  const [importNotification, setImportNotification] = useState<{
+    type: 'success' | 'error';
+    message: string;
+  } | null>(null);
 
   const loadBankingData = React.useCallback(() => {
     if (typeof BankingService.getAccounts === 'function') {
@@ -105,24 +114,51 @@ export const BankingView: React.FC<BankingViewProps> = ({
   }, [selectedEntityId, accounts]);
 
   // Selected account for workspace
-  const activeAccount = useMemo(() => {
+  // Active bank account
+  const activeBankAccount = useMemo(() => {
+    if (selectedBankAccountId) {
+      const b = bankAccounts.find((c) => c.id === selectedBankAccountId);
+      if (b) return b;
+    }
     if (selectedAccountId) {
-      return accounts.find((a) => a.id === selectedAccountId) || null;
+      const byLedger = bankAccounts.find((candidate) => candidate.ledgerAccountId === selectedAccountId);
+      if (byLedger) return byLedger;
+
+      const byId = bankAccounts.find((candidate) => candidate.id === selectedAccountId);
+      if (byId) return byId;
+
+      const coaAcc = accounts.find((a) => a.id === selectedAccountId);
+      if (coaAcc) {
+        const byName = bankAccounts.find((candidate) => candidate.accountName.toLowerCase() === coaAcc.name.toLowerCase());
+        if (byName) return byName;
+      }
     }
     return null;
-  }, [selectedAccountId, accounts]);
+  }, [bankAccounts, selectedBankAccountId, selectedAccountId, accounts]);
 
-  const activeBankAccount = useMemo(() => {
-    if (!activeAccount) return null;
-    return (
-      bankAccounts.find(
-        (candidate) =>
-          candidate.ledgerAccountId === activeAccount.id ||
-          candidate.id === activeAccount.id ||
-          candidate.accountName.toLowerCase() === activeAccount.name.toLowerCase()
-      ) || null
-    );
-  }, [bankAccounts, activeAccount]);
+  // Selected account for workspace (with synthetic fallback if CoA is still refreshing)
+  const activeAccount = useMemo(() => {
+    if (activeBankAccount?.ledgerAccountId) {
+      const found = accounts.find((a) => a.id === activeBankAccount.ledgerAccountId);
+      if (found) return found;
+    }
+    if (selectedAccountId) {
+      const found = accounts.find((a) => a.id === selectedAccountId);
+      if (found) return found;
+    }
+    if (activeBankAccount) {
+      return {
+        id: activeBankAccount.ledgerAccountId || activeBankAccount.id,
+        name: activeBankAccount.accountName,
+        code: activeBankAccount.accountNumber ? activeBankAccount.accountNumber.slice(-4) : '1000',
+        type: 'Bank',
+        subType: 'Bank',
+        balance: activeBankAccount.currentBalance || 0,
+        status: activeBankAccount.status || 'Active',
+      } as any;
+    }
+    return null;
+  }, [selectedAccountId, accounts, activeBankAccount]);
 
   // Categorized accounts list for regression test compatibility
   const currentCategoryAccounts = useMemo(() => {
@@ -145,14 +181,40 @@ export const BankingView: React.FC<BankingViewProps> = ({
 
   return (
     <div className="p-3 sm:p-6 lg:p-8 space-y-6 max-w-7xl mx-auto">
+      {/* Visual Feedback Notification Banner */}
+      {importNotification && (
+        <div
+          className={`p-4 rounded-2xl border flex items-center justify-between shadow-xs transition-all animate-in fade-in slide-in-from-top-2 ${
+            importNotification.type === 'success'
+              ? 'bg-emerald-50 border-emerald-200 text-emerald-900 dark:bg-emerald-950/70 dark:border-emerald-800 dark:text-emerald-200'
+              : 'bg-rose-50 border-rose-200 text-rose-900 dark:bg-rose-950/70 dark:border-rose-800 dark:text-rose-200'
+          }`}
+        >
+          <div className="flex items-center gap-3">
+            <span className="text-sm font-black">{importNotification.type === 'success' ? '✓' : '⚠️'}</span>
+            <span className="text-xs font-bold">{importNotification.message}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setImportNotification(null)}
+            className="text-xs font-bold opacity-70 hover:opacity-100 cursor-pointer ml-4"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* 1. PRIMARY VIEW: ZOHO BOOKS BANK ACCOUNT WORKSPACE */}
-      {selectedAccountId && activeAccount ? (
+      {(selectedAccountId || selectedBankAccountId) && activeAccount ? (
         <BankAccountWorkspace
           account={activeAccount}
           bankAccount={activeBankAccount}
           journalEntries={journalEntries}
           currencySymbol={settings.currencySymbol}
-          onBackToOverview={() => setSelectedAccountId(null)}
+          onBackToOverview={() => {
+            setSelectedAccountId(null);
+            setSelectedBankAccountId(null);
+          }}
           onImportStatement={() => setIsImportStatementOpen(true)}
           onReconcile={() => setIsReconcileOpen(true)}
           onTransferFunds={() => setIsTransferOpen(true)}
@@ -164,6 +226,7 @@ export const BankingView: React.FC<BankingViewProps> = ({
           onOpenCategorize={(tx) => setSelectedTxForCategorize(tx)}
           onSelectTxDetails={(tx) => setSelectedTx(tx)}
           onRefresh={loadBankingData}
+          refreshTrigger={workspaceRefreshTrigger}
         />
       ) : (
         /* 2. PRIMARY VIEW: ZOHO BOOKS BANKING OVERVIEW TABLE */
@@ -171,15 +234,30 @@ export const BankingView: React.FC<BankingViewProps> = ({
           accounts={accounts}
           overviewData={overviewData}
           currencySymbol={settings.currencySymbol}
-          onSelectAccount={(accId) => setSelectedAccountId(accId)}
+          onSelectAccount={(accId) => {
+            const matchingBank = bankAccounts.find((b) => b.id === accId || b.ledgerAccountId === accId);
+            if (matchingBank) {
+              setSelectedBankAccountId(matchingBank.id);
+              setSelectedAccountId(matchingBank.ledgerAccountId || matchingBank.id);
+            } else {
+              setSelectedAccountId(accId);
+            }
+          }}
           onImportStatement={(acc) => {
-            const target = acc || accounts.find((a) => a.type === 'Bank' || a.subType === 'Bank') || accounts[0] || null;
-            if (target) setSelectedAccountId(target.id);
+            if (acc) {
+              setSelectedAccountId(acc.id);
+              const matchingBank = bankAccounts.find((b) => b.ledgerAccountId === acc.id || b.id === acc.id);
+              if (matchingBank) setSelectedBankAccountId(matchingBank.id);
+            }
             setIsImportStatementOpen(true);
           }}
           onReconcile={(acc) => {
             const target = acc || accounts.find((a) => a.type === 'Bank' || a.subType === 'Bank') || accounts[0] || null;
-            if (target) setSelectedAccountId(target.id);
+            if (target) {
+              setSelectedAccountId(target.id);
+              const matchingBank = bankAccounts.find((b) => b.ledgerAccountId === target.id || b.id === target.id);
+              if (matchingBank) setSelectedBankAccountId(matchingBank.id);
+            }
             setIsReconcileOpen(true);
           }}
           onTransferFunds={() => setIsTransferOpen(true)}
@@ -309,9 +387,44 @@ export const BankingView: React.FC<BankingViewProps> = ({
           account={activeAccount || accounts.find((a) => a.type === 'Bank' || a.subType === 'Bank') || accounts[0] || null}
           bankAccount={activeBankAccount}
           onClose={() => setIsImportStatementOpen(false)}
-          onImported={async () => {
-            await refreshAccounts();
-            loadBankingData();
+          onImported={async (result) => {
+            try {
+              // 1. Reload bank accounts immediately
+              const refreshed = await BankingService.getAccounts();
+              setBankAccounts(refreshed);
+
+              // 2. Select the specific imported bank account and ledger account
+              if (result?.bankAccountId) {
+                setSelectedBankAccountId(result.bankAccountId);
+                const bnk = refreshed.find((b) => b.id === result.bankAccountId);
+                if (bnk?.ledgerAccountId) {
+                  setSelectedAccountId(bnk.ledgerAccountId);
+                } else if (result?.ledgerAccountId) {
+                  setSelectedAccountId(result.ledgerAccountId);
+                }
+              } else if (result?.ledgerAccountId) {
+                setSelectedAccountId(result.ledgerAccountId);
+                const bnk = refreshed.find((b) => b.ledgerAccountId === result.ledgerAccountId);
+                if (bnk) setSelectedBankAccountId(bnk.id);
+              }
+
+              // 3. Increment refresh trigger to ensure workspace reloads statement rows
+              setWorkspaceRefreshTrigger((prev) => prev + 1);
+
+              // 4. Background refresh of overview and COA
+              await refreshAccounts();
+              loadBankingData();
+
+              // 5. Visual notification feedback
+              const count = result?.newTransactionsCount ?? 0;
+              setImportNotification({
+                type: 'success',
+                message: `Imported ${count} statement transaction${count === 1 ? '' : 's'} successfully.`,
+              });
+              setTimeout(() => setImportNotification(null), 6000);
+            } catch (e) {
+              console.error('Failed to load accounts after bank import:', e);
+            }
           }}
         />
       )}

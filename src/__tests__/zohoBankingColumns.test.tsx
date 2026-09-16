@@ -17,7 +17,7 @@ const mockAccount: Account = {
   id: 'bank-acc-1',
   code: '1020',
   name: 'HDFC Bank - Current Account',
-  type: 'Bank',
+  type: 'Asset',
   subType: 'Bank',
   status: 'Active',
   balance: 150000,

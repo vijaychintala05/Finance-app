@@ -67,9 +67,17 @@ export const AuthoritativeReportRenderer: React.FC<Props> = ({ reportId, data, c
   }
 
   const receivable = reportId === 'aged_receivables';
+  const agingBuckets = [
+    ['Current', data.buckets?.current],
+    ['1-30 days', data.buckets?.days1_30],
+    ['31-60 days', data.buckets?.days31_60],
+    ['61-90 days', data.buckets?.days61_90],
+    ['90+ days', data.buckets?.days90Plus],
+  ];
   return <div className="mx-auto max-w-5xl space-y-4">
     <IntegrityBanner passed={data.isReconciled === true} passedText={`${receivable ? 'Receivables' : 'Payables'} subledger equals its control account to the cent.`} failedText={`${receivable ? 'Receivables' : 'Payables'} differs from its control account by ${formatCurrency(Number(data.difference || 0), currencySymbol)}. Investigate before relying on it.`} />
     <div className="grid gap-3 sm:grid-cols-3"><div className="rounded-xl border p-3 text-xs"><span className="block text-slate-500">Open subledger</span><strong className="font-mono text-base">{formatCurrency(Number(data.totalSubledgerAmount || 0), currencySymbol)}</strong></div><div className="rounded-xl border p-3 text-xs"><span className="block text-slate-500">GL control</span><strong className="font-mono text-base">{formatCurrency(Number(data.totalGLControlAmount || 0), currencySymbol)}</strong></div><div className="rounded-xl border p-3 text-xs"><span className="block text-slate-500">Difference</span><strong className="font-mono text-base">{formatCurrency(Number(data.difference || 0), currencySymbol)}</strong></div></div>
+    <div className="grid grid-cols-2 border border-slate-200 sm:grid-cols-5 dark:border-slate-800">{agingBuckets.map(([label, amount]) => <div key={String(label)} className="border-b border-r border-slate-200 px-3 py-2.5 last:border-r-0 sm:border-b-0 dark:border-slate-800"><span className="block text-[10px] font-bold uppercase text-slate-500">{label}</span><strong className="mt-1 block font-mono text-xs">{formatCurrency(Number(amount || 0), currencySymbol)}</strong></div>)}</div>
     <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800"><table className="w-full text-left text-xs"><thead className="bg-slate-100 text-[10px] font-bold uppercase dark:bg-slate-800"><tr><th className="p-3">{receivable ? 'Customer' : 'Vendor'}</th><th className="p-3">Document</th><th className="p-3">Due date</th><th className="p-3 text-right">Balance due</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{(data.rows || []).length === 0 ? <tr><td colSpan={4} className="p-6 text-center text-slate-400">No open balances as of this date.</td></tr> : (data.rows || []).map((row: any) => <tr key={row.id}><td className="p-3">{row.name}</td><td className="p-3 font-mono">{row.invoice_number || row.bill_number}</td><td className="p-3">{formatDate(row.due_date)}</td><td className="p-3 text-right font-mono font-bold">{formatCurrency(Number(row.balance_due || 0), currencySymbol)}</td></tr>)}</tbody></table></div>
   </div>;
 };

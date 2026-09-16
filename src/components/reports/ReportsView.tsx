@@ -13,6 +13,8 @@ import {
   downloadAuthoritativeReportCsv,
   fetchAuthoritativeReport,
 } from '../../services/authoritativeReportService';
+import { downloadWorkspaceReport, fetchWorkspaceReport, isWorkspaceReportId, WorkspaceReportResult } from '../../services/reportWorkspaceService';
+import { WorkspaceReportRenderer } from './WorkspaceReportRenderer';
 import { fetchSavedReportViews, saveReportView, SavedReportView } from '../../services/savedReportViewsService';
 
 function localIsoDate(date: Date): string {
@@ -23,16 +25,21 @@ function localIsoDate(date: Date): string {
 }
 
 export const ReportsView: React.FC = () => {
-  const { settings, projects } = useBooks();
+  const { settings, projects, clients, vendors, accounts } = useBooks();
   const today = new Date();
   const [reportsCatalog, setReportsCatalog] = useState<ReportItem[]>(INITIAL_REPORTS_CATALOG);
   const [activeGroup, setActiveGroup] = useState<SidebarGroup>('home');
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedReportId, setSelectedReportId] = useState<CertifiedReportId | null>(null);
+  const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
   const [fromDate, setFromDate] = useState(() => localIsoDate(new Date(today.getFullYear(), 0, 1)));
   const [toDate, setToDate] = useState(() => localIsoDate(today));
   const [selectedProjectId, setSelectedProjectId] = useState('');
+  const [selectedCustomerId, setSelectedCustomerId] = useState('');
+  const [selectedVendorId, setSelectedVendorId] = useState('');
+  const [selectedAccountId, setSelectedAccountId] = useState('');
+  const [selectedStatus, setSelectedStatus] = useState('');
   const [reportData, setReportData] = useState<any | null>(null);
+  const [visibleColumns, setVisibleColumns] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
@@ -62,9 +69,20 @@ export const ReportsView: React.FC = () => {
     const sequence = ++requestSequence.current;
     setLoading(true);
     setError(null);
-    fetchAuthoritativeReport(selectedReportId, fromDate, toDate, {
-      projectId: selectedReportId === 'project_profitability' ? selectedProjectId || undefined : undefined,
-    })
+    const reportRequest = isWorkspaceReportId(selectedReportId)
+      ? fetchWorkspaceReport(selectedReportId, {
+          fromDate,
+          toDate,
+          projectId: selectedProjectId || undefined,
+          customerId: selectedCustomerId || undefined,
+          vendorId: selectedVendorId || undefined,
+          accountId: selectedAccountId || undefined,
+          status: selectedStatus || undefined,
+        })
+      : fetchAuthoritativeReport(selectedReportId as CertifiedReportId, fromDate, toDate, {
+          projectId: selectedReportId === 'project_profitability' ? selectedProjectId || undefined : undefined,
+        });
+    reportRequest
       .then((data) => {
         if (sequence === requestSequence.current) setReportData(data);
       })
@@ -77,7 +95,7 @@ export const ReportsView: React.FC = () => {
       .finally(() => {
         if (sequence === requestSequence.current) setLoading(false);
       });
-  }, [selectedReportId, fromDate, toDate, selectedProjectId, reloadToken, settings.currencyCode, settings.currencySymbol]);
+  }, [selectedReportId, fromDate, toDate, selectedProjectId, selectedCustomerId, selectedVendorId, selectedAccountId, selectedStatus, reloadToken, settings.currencyCode, settings.currencySymbol]);
 
   useEffect(() => {
     fetchSavedReportViews().then(setSavedViews).catch(() => setSavedViews([]));
@@ -102,8 +120,12 @@ export const ReportsView: React.FC = () => {
   });
 
   const selectedReport = reportsCatalog.find((report) => report.id === selectedReportId);
-  const categoriesList: ReportCategory[] = ['Business Overview', 'Receivables', 'Payables', 'Projects and Timesheet', 'Accountant'];
-  const periodLabel = selectedReportId && AUTHORITATIVE_REPORTS[selectedReportId].periodMode === 'as_of'
+  const categoriesList: ReportCategory[] = ['Business Overview', 'Sales', 'Receivables', 'Payments Received', 'Purchases and Expenses', 'Payables', 'Banking', 'Projects and Timesheet', 'Taxes', 'Accountant', 'Activity'];
+  const isAuthoritativeReport = Boolean(selectedReportId && selectedReportId in AUTHORITATIVE_REPORTS);
+  const periodMode = selectedReportId && isAuthoritativeReport
+    ? AUTHORITATIVE_REPORTS[selectedReportId as CertifiedReportId].periodMode
+    : ['comparative_balance_sheet', 'customer_balance_summary', 'vendor_balance_summary', 'bank_reconciliation_summary', 'fixed_asset_register'].includes(selectedReportId || '') ? 'as_of' : 'range';
+  const periodLabel = selectedReportId && periodMode === 'as_of'
     ? `As of ${toDate}`
     : `${fromDate} through ${toDate}`;
 
@@ -121,6 +143,11 @@ export const ReportsView: React.FC = () => {
         fromDate,
         toDate,
         projectId: selectedReportId === 'project_profitability' ? selectedProjectId || undefined : undefined,
+        visibleColumns,
+        customerId: selectedCustomerId || undefined,
+        vendorId: selectedVendorId || undefined,
+        accountId: selectedAccountId || undefined,
+        status: selectedStatus || undefined,
         visibility: saveVisibility,
       });
       setSavedViews(await fetchSavedReportViews());
@@ -134,16 +161,29 @@ export const ReportsView: React.FC = () => {
   };
 
   const loadSavedView = (view: SavedReportView) => {
-    if (!AUTHORITATIVE_REPORTS[view.report_type]) return;
+    if (!reportsCatalog.some((report) => report.id === view.report_type)) return;
     setFromDate(view.config?.fromDate || fromDate);
     setToDate(view.config?.toDate || toDate);
     setSelectedProjectId(view.config?.projectId || '');
+    setVisibleColumns(view.config?.visibleColumns || []);
+    setSelectedCustomerId(view.config?.customerId || '');
+    setSelectedVendorId(view.config?.vendorId || '');
+    setSelectedAccountId(view.config?.accountId || '');
+    setSelectedStatus(view.config?.status || '');
     setSelectedReportId(view.report_type);
   };
 
-  const exportCsv = () => {
+  const exportReport = async (format: 'csv' | 'xlsx' | 'pdf') => {
     if (!selectedReportId || !reportData) return;
-    downloadAuthoritativeReportCsv(selectedReportId, reportData, `${selectedReportId}_${fromDate}_${toDate}.csv`);
+    try {
+      if (isWorkspaceReportId(selectedReportId)) {
+        await downloadWorkspaceReport(selectedReportId, { fromDate, toDate, projectId: selectedProjectId || undefined, customerId: selectedCustomerId || undefined, vendorId: selectedVendorId || undefined, accountId: selectedAccountId || undefined, status: selectedStatus || undefined }, format, visibleColumns);
+      } else if (format === 'csv') {
+        downloadAuthoritativeReportCsv(selectedReportId as CertifiedReportId, reportData, `${selectedReportId}_${fromDate}_${toDate}.csv`);
+      }
+    } catch (exportError) {
+      setError(exportError instanceof Error ? exportError.message : 'Report export failed');
+    }
   };
 
   return (
@@ -153,7 +193,7 @@ export const ReportsView: React.FC = () => {
           activeGroup={activeGroup}
           setActiveGroup={setActiveGroup}
           selectedReportId={selectedReportId}
-          setSelectedReportId={(id) => setSelectedReportId(id as CertifiedReportId | null)}
+          setSelectedReportId={(id) => { setVisibleColumns([]); setSelectedReportId(id); }}
           reportsCatalog={reportsCatalog}
           categoriesList={categoriesList}
         />
@@ -166,7 +206,7 @@ export const ReportsView: React.FC = () => {
               setSearchQuery={setSearchQuery}
               filteredReports={filteredReports}
               dateRange={`${fromDate} to ${toDate}`}
-              onSelectReport={(id) => setSelectedReportId(id as CertifiedReportId)}
+              onSelectReport={(id) => { setVisibleColumns([]); setSelectedReportId(id); }}
               onToggleFavorite={handleToggleFavorite}
             />
           )}
@@ -188,7 +228,7 @@ export const ReportsView: React.FC = () => {
                       <Star className={`h-4 w-4 ${selectedReport.isFavorite ? 'fill-amber-500 text-amber-500' : ''}`} />
                     </button>
                   </div>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">Source: tenant-scoped PostgreSQL posted ledger</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">{selectedReport.description}</p>
                 </div>
                 <button
                   onClick={() => setReloadToken((value) => value + 1)}
@@ -205,25 +245,32 @@ export const ReportsView: React.FC = () => {
                 setFromDate={setFromDate}
                 toDate={toDate}
                 setToDate={setToDate}
-                onExportCSV={exportCsv}
-                periodMode={AUTHORITATIVE_REPORTS[selectedReportId].periodMode}
+                onExport={exportReport}
+                periodMode={periodMode}
                 onSaveView={() => {
                   setSaveError(null);
                   setSavedViewName(`${selectedReport.name} view`);
                   setSaveDialogOpen(true);
                 }}
                 exportDisabled={!reportData || loading}
-                projectFilter={selectedReportId === 'project_profitability' ? {
+                availableExportFormats={isWorkspaceReportId(selectedReportId) ? ['csv', 'xlsx', 'pdf'] : ['csv']}
+                projectFilter={['project_profitability', 'sales_by_customer', 'sales_by_item', 'invoice_details', 'expenses_by_project', 'expense_details', 'timesheet_details', 'comparative_profit_loss', 'business_ratio_analysis'].includes(selectedReportId) ? {
                   projectId: selectedProjectId,
                   onChange: setSelectedProjectId,
                   projects,
                 } : undefined}
+                additionalFilters={[
+                  ...(['sales_by_customer', 'invoice_details', 'payments_received', 'time_to_get_paid', 'customer_balance_summary'].includes(selectedReportId) ? [{ label: 'Customer', value: selectedCustomerId, onChange: setSelectedCustomerId, options: clients.map((client) => ({ value: client.id, label: client.name })) }] : []),
+                  ...(['expense_details', 'expenses_by_vendor', 'bill_details', 'purchases_by_vendor', 'payments_made', 'vendor_balance_summary'].includes(selectedReportId) ? [{ label: 'Vendor', value: selectedVendorId, onChange: setSelectedVendorId, options: vendors.map((vendor) => ({ value: vendor.id, label: vendor.name })) }] : []),
+                  ...(['expense_details', 'bank_transaction_details'].includes(selectedReportId) ? [{ label: selectedReportId === 'bank_transaction_details' ? 'Bank account' : 'Account', value: selectedAccountId, onChange: setSelectedAccountId, options: accounts.map((account) => ({ value: account.id, label: `${account.code} - ${account.name}` })) }] : []),
+                  ...(['invoice_details', 'payments_received', 'expense_details', 'bill_details', 'payments_made', 'bank_transaction_details', 'fixed_asset_register', 'journal_report'].includes(selectedReportId) ? [{ label: 'Status', value: selectedStatus, onChange: setSelectedStatus, options: [{ value: 'POSTED', label: 'Posted' }, { value: 'PAID', label: 'Paid' }, { value: 'PARTIALLY PAID', label: 'Partially paid' }, { value: 'UNPAID', label: 'Unpaid' }, { value: 'MATCHED', label: 'Matched' }, { value: 'UNMATCHED', label: 'Unmatched' }, { value: 'ACTIVE', label: 'Active' }] }] : []),
+                ]}
               />
 
-              <div className="min-w-0 flex-1 rounded-3xl border border-slate-200 bg-white p-4 shadow-xs sm:p-8 dark:border-slate-800 dark:bg-slate-900">
+              <div className="min-w-0 flex-1 rounded-md border border-slate-200 bg-white p-4 shadow-xs sm:p-6 dark:border-slate-800 dark:bg-slate-900">
                 <div className="mb-6 space-y-1 border-b border-slate-200 pb-6 text-center dark:border-slate-800">
                   <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[10px] font-black uppercase tracking-widest text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
-                    <ShieldCheck className="h-3 w-3" /> Posted-ledger report
+                    <ShieldCheck className="h-3 w-3" /> {isWorkspaceReportId(selectedReportId) ? String((reportData as WorkspaceReportResult | null)?.basis || 'SERVER REPORT').replaceAll('_', ' ') : 'Posted-ledger report'}
                   </span>
                   <h2 className="pt-2 text-2xl font-black text-slate-900 dark:text-white">{settings.firmName}</h2>
                   <h3 className="text-lg font-bold text-slate-700 dark:text-slate-300">{selectedReport.name}</h3>
@@ -242,11 +289,9 @@ export const ReportsView: React.FC = () => {
                   </div>
                 )}
                 {!loading && !error && reportData && (
-                  <AuthoritativeReportRenderer
-                    reportId={selectedReportId}
-                    data={reportData}
-                    currencySymbol={settings.currencySymbol}
-                  />
+                  isWorkspaceReportId(selectedReportId)
+                    ? <WorkspaceReportRenderer report={reportData as WorkspaceReportResult} currencySymbol={settings.currencySymbol} visibleColumns={visibleColumns} onVisibleColumnsChange={setVisibleColumns} />
+                    : <AuthoritativeReportRenderer reportId={selectedReportId as CertifiedReportId} data={reportData} currencySymbol={settings.currencySymbol} />
                 )}
 
                 <div className="mt-12 flex flex-col items-center justify-between gap-2 border-t border-slate-200 pt-6 text-[11px] text-slate-400 sm:flex-row dark:border-slate-800">

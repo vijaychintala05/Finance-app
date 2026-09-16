@@ -20,16 +20,16 @@ export const ReportSidebarNav: React.FC<ReportSidebarNavProps> = ({
   categoriesList,
 }) => {
   return (
-    <aside className="w-full lg:w-64 border-b lg:border-b-0 lg:border-r border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 flex flex-col shrink-0">
-      <div className="p-3 sm:p-4 space-y-4">
+    <aside className="flex w-full shrink-0 flex-col border-b border-slate-200 bg-slate-50/50 dark:border-slate-800 dark:bg-slate-900/50 lg:w-64 lg:border-b-0 lg:border-r">
+      <div className="flex gap-1 overflow-x-auto p-2 lg:block lg:space-y-4 lg:overflow-visible lg:p-4">
         {/* Navigation Shortcut Folders */}
-        <div className="space-y-1">
+        <div className="flex shrink-0 gap-1 lg:block lg:space-y-1">
           <button
             onClick={() => {
               setActiveGroup('home');
               setSelectedReportId(null);
             }}
-            className={`w-full flex items-center justify-between px-3 py-2 text-xs font-semibold rounded-xl transition-colors cursor-pointer ${
+            className={`flex w-auto shrink-0 items-center justify-between rounded-md px-3 py-2 text-xs font-semibold transition-colors lg:w-full ${
               activeGroup === 'home' && !selectedReportId
                 ? 'bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300 font-bold'
                 : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
@@ -39,7 +39,7 @@ export const ReportSidebarNav: React.FC<ReportSidebarNavProps> = ({
               <Home className="w-4 h-4 text-blue-600" />
               <span>All Reports</span>
             </div>
-            <span className="text-[10px] font-extrabold bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 px-2 py-0.5 rounded-full">
+            <span className="ml-2 hidden rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-extrabold text-slate-700 dark:bg-slate-800 dark:text-slate-300 lg:inline">
               {reportsCatalog.length}
             </span>
           </button>
@@ -49,7 +49,7 @@ export const ReportSidebarNav: React.FC<ReportSidebarNavProps> = ({
               setActiveGroup('favorites');
               setSelectedReportId(null);
             }}
-            className={`w-full flex items-center justify-between px-3 py-2 text-xs font-semibold rounded-xl transition-colors cursor-pointer ${
+            className={`flex w-auto shrink-0 items-center justify-between rounded-md px-3 py-2 text-xs font-semibold transition-colors lg:w-full ${
               activeGroup === 'favorites' && !selectedReportId
                 ? 'bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300 font-bold'
                 : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
@@ -59,7 +59,7 @@ export const ReportSidebarNav: React.FC<ReportSidebarNavProps> = ({
               <Star className="w-4 h-4 text-amber-500 fill-amber-500" />
               <span>Favorites</span>
             </div>
-            <span className="text-[10px] font-extrabold bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 px-2 py-0.5 rounded-full">
+            <span className="ml-2 hidden rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-extrabold text-slate-700 dark:bg-slate-800 dark:text-slate-300 lg:inline">
               {reportsCatalog.filter((r) => r.isFavorite).length}
             </span>
           </button>
@@ -67,12 +67,12 @@ export const ReportSidebarNav: React.FC<ReportSidebarNavProps> = ({
         </div>
 
         {/* Categorical Folders */}
-        <div className="space-y-2 pt-2 border-t border-slate-200 dark:border-slate-800">
-          <h4 className="px-3 text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
+        <div className="shrink-0 lg:space-y-2 lg:border-t lg:border-slate-200 lg:pt-2 dark:lg:border-slate-800">
+          <h4 className="hidden px-3 text-[10px] font-extrabold uppercase tracking-wider text-slate-400 dark:text-slate-500 lg:block">
             REPORT CATEGORY
           </h4>
 
-          <div className="space-y-0.5">
+          <div className="flex gap-1 lg:block lg:space-y-0.5">
             {categoriesList.map((cat) => {
               const categoryCount = reportsCatalog.filter((r) => r.category === cat).length;
               const isSelected = activeGroup === cat && !selectedReportId;
@@ -84,7 +84,7 @@ export const ReportSidebarNav: React.FC<ReportSidebarNavProps> = ({
                     setActiveGroup(cat);
                     setSelectedReportId(null);
                   }}
-                  className={`w-full flex items-center justify-between px-3 py-1.5 text-xs font-medium rounded-xl transition-colors cursor-pointer ${
+                  className={`flex w-auto shrink-0 items-center justify-between rounded-md px-3 py-2 text-xs font-medium transition-colors lg:w-full lg:py-1.5 ${
                     isSelected
                       ? 'bg-blue-600 text-white font-bold shadow-xs'
                       : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
@@ -100,7 +100,7 @@ export const ReportSidebarNav: React.FC<ReportSidebarNavProps> = ({
                   </div>
                   {categoryCount > 0 && (
                     <span
-                      className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0 ${
+                      className={`ml-2 hidden shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-bold lg:inline ${
                         isSelected
                           ? 'bg-blue-700 text-white'
                           : 'bg-slate-200 dark:bg-slate-800 text-slate-500'

@@ -10,6 +10,7 @@ import {
 import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate } from '../../utils/formatters';
 import { PaymentMade } from '../../types';
+import { RecordVendorPaymentModal } from './RecordVendorPaymentModal';
 
 interface PaymentsMadeViewProps {
   autoOpenCreateModal?: boolean;
@@ -24,7 +25,7 @@ export const PaymentsMadeView: React.FC<PaymentsMadeViewProps> = ({
   selectedEntityId,
   onSelectedEntityClosed,
 }) => {
-  const { paymentsMade, addPaymentMade, vendors, settings } = useBooks();
+  const { paymentsMade, vendors, settings } = useBooks();
 
   const [search, setSearch] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -48,13 +49,6 @@ export const PaymentsMadeView: React.FC<PaymentsMadeViewProps> = ({
     }
   }, [selectedEntityId, paymentsMade]);
 
-  // Form state
-  const [vendorName, setVendorName] = useState(vendors[0]?.name || 'AWS Cloud Services');
-  const [billNum, setBillNum] = useState('BILL-2026-003');
-  const [paymentMethod, setPaymentMethod] = useState('Bank Wire Transfer');
-  const [referenceNumber, setReferenceNumber] = useState('');
-  const [amount, setAmount] = useState('4500');
-
   const filtered = paymentsMade.filter(
     (p) =>
       p.paymentNumber.toLowerCase().includes(search.toLowerCase()) ||
@@ -71,31 +65,6 @@ export const PaymentsMadeView: React.FC<PaymentsMadeViewProps> = ({
   const handleCloseDetailModal = () => {
     setViewingPayment(null);
     if (onSelectedEntityClosed) onSelectedEntityClosed();
-  };
-
-  const handleRecordPayment = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const targetVendor = vendors.find((v) => v.name === vendorName) || vendors[0];
-    const targetVendorName = targetVendor?.name || vendorName || 'Unassigned Vendor';
-
-    try {
-      await addPaymentMade({
-        paymentNumber: `PAY-2026-00${paymentsMade.length + 1}`,
-        vendorName: targetVendorName,
-        vendorId: targetVendor?.id,
-        billNumber: billNum || 'N/A',
-        paymentDate: new Date().toISOString().split('T')[0],
-        paymentMethod,
-        referenceNumber,
-        amount: Number(amount) || 0,
-      });
-
-      setIsModalOpen(false);
-      setReferenceNumber('');
-      if (onSelectedEntityClosed) onSelectedEntityClosed();
-    } catch (err: any) {
-      alert(err.message || 'Failed to record vendor payment');
-    }
   };
 
   return (
@@ -246,94 +215,10 @@ export const PaymentsMadeView: React.FC<PaymentsMadeViewProps> = ({
 
       {/* Modal */}
       {isModalOpen && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
-          <div className="bg-white dark:bg-slate-900 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-xl border border-slate-200 dark:border-slate-800">
-            <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
-              <CreditCard className="w-5 h-5 text-emerald-600" />
-              <span>Record Payment Made</span>
-            </h3>
-
-            <form onSubmit={handleRecordPayment} className="space-y-3">
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Vendor / Payee</label>
-                <select
-                  value={vendorName}
-                  onChange={(e) => setVendorName(e.target.value)}
-                  className="w-full border border-slate-300 rounded-lg p-2 text-xs font-medium"
-                >
-                  {vendors.map((v) => (
-                    <option key={v.id} value={v.name}>
-                      {v.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Bill Reference #</label>
-                <input
-                  type="text"
-                  placeholder="e.g. BILL-2026-001"
-                  value={billNum}
-                  onChange={(e) => setBillNum(e.target.value)}
-                  className="w-full border border-slate-300 rounded-lg p-2 text-xs font-mono font-bold"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Payment Method</label>
-                <select
-                  value={paymentMethod}
-                  onChange={(e) => setPaymentMethod(e.target.value)}
-                  className="w-full border border-slate-300 rounded-lg p-2 text-xs font-medium"
-                >
-                  <option value="Bank Wire Transfer">Bank Wire Transfer</option>
-                  <option value="Corporate Credit Card">Corporate Credit Card</option>
-                  <option value="Cheque">Cheque</option>
-                  <option value="Cash">Cash</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Transaction / Reference #</label>
-                <input
-                  type="text"
-                  placeholder="e.g. WIRE-908811"
-                  value={referenceNumber}
-                  onChange={(e) => setReferenceNumber(e.target.value)}
-                  className="w-full border border-slate-300 rounded-lg p-2 text-xs font-mono font-bold"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Amount Paid ({settings.currencySymbol})</label>
-                <input
-                  type="number"
-                  value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
-                  className="w-full border border-slate-300 rounded-lg p-2 text-xs font-mono font-bold"
-                  required
-                />
-              </div>
-
-              <div className="flex justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={handleCloseCreateModal}
-                  className="px-4 py-2 border border-slate-300 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-50 cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold shadow-2xs cursor-pointer transition-colors"
-                >
-                  Save Payment
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <RecordVendorPaymentModal
+          isOpen={isModalOpen}
+          onClose={handleCloseCreateModal}
+        />
       )}
     </div>
   );

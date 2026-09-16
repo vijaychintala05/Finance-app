@@ -35,6 +35,7 @@ interface BankAccountWorkspaceProps {
   onOpenCategorize: (tx: any) => void;
   onSelectTxDetails: (tx: any) => void;
   onRefresh: () => void;
+  refreshTrigger?: number;
 }
 
 export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
@@ -51,6 +52,7 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
   onOpenCategorize,
   onSelectTxDetails,
   onRefresh,
+  refreshTrigger,
 }) => {
   const [statementRows, setStatementRows] = useState<BankStatementTransaction[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -67,12 +69,21 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
 
   // Fetch statement rows and live balances for this bank account
   const loadWorkspaceTransactions = React.useCallback(async () => {
-    if (!bankAccount) return;
+    let targetBnk = bankAccount;
+    if (!targetBnk && account && typeof BankingService.getAccounts === 'function') {
+      try {
+        const list = await BankingService.getAccounts();
+        targetBnk = list.find((b) => b.ledgerAccountId === account.id || b.id === account.id) || null;
+      } catch (e) {
+        // Fallback silently
+      }
+    }
+    if (!targetBnk) return;
     setIsLoading(true);
     try {
       if (typeof BankingService.getWorkspace === 'function') {
         try {
-          const ws = await BankingService.getWorkspace(bankAccount.id);
+          const ws = await BankingService.getWorkspace(targetBnk.id);
           if (ws?.transactions) {
             setStatementRows(ws.transactions);
             if (ws.balances) {
@@ -87,7 +98,7 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
 
       if (typeof BankingService.getTransactions === 'function') {
         const rows = await BankingService.getTransactions({
-          bankAccountId: bankAccount.id,
+          bankAccountId: targetBnk.id,
           limit: 100,
         });
         setStatementRows(rows || []);
@@ -97,27 +108,28 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
     } finally {
       setIsLoading(false);
     }
-  }, [bankAccount]);
+  }, [bankAccount, account]);
 
   useEffect(() => {
     void loadWorkspaceTransactions();
-  }, [loadWorkspaceTransactions]);
+  }, [loadWorkspaceTransactions, refreshTrigger]);
 
   // Bank workspaces show statement evidence only. Ledger movements remain in
   // the accounting workspace until an explicit bank match links the two.
   const mergedTransactions = useMemo(() => {
-    return statementRows.map((tx) => {
-      const isCredit = tx.type === 'CREDIT' || tx.type === 'DEPOSIT';
+    return statementRows.map((tx: any) => {
+      const isCredit = tx.direction === 'CREDIT' || tx.type === 'CREDIT' || tx.type === 'DEPOSIT';
+      const isDebit = tx.direction === 'DEBIT' || tx.type === 'DEBIT' || tx.type === 'WITHDRAWAL';
       return {
         id: tx.id,
         date: tx.transactionDate,
-        description: tx.description || 'Statement Transaction',
-        particulars: tx.description,
-        reference: tx.referenceNumber || tx.utr || tx.chequeNumber || '—',
+        description: tx.narration || tx.description || 'Statement Transaction',
+        particulars: tx.narration || tx.description,
+        reference: tx.reference || tx.referenceNumber || tx.utr || tx.chequeNumber || '—',
         counterparty: tx.counterpartyName,
-        withdrawal: isCredit ? null : Math.abs(tx.amount),
+        withdrawal: isDebit ? Math.abs(tx.amount) : isCredit ? null : Math.abs(tx.amount),
         deposit: isCredit ? Math.abs(tx.amount) : null,
-        status: tx.reconciliationStatus,
+        status: tx.reconciliationStatus || tx.status || 'TO_REVIEW',
         rawTx: tx,
       };
     });
@@ -128,7 +140,12 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
     let list = mergedTransactions;
     if (activeTab === 'TO_REVIEW') {
       list = list.filter(
-        (tx) => tx.status === 'UNMATCHED' || tx.status === 'TO_REVIEW' || tx.status === 'POSTED'
+        (tx) =>
+          tx.status === 'UNMATCHED' ||
+          tx.status === 'TO_REVIEW' ||
+          tx.status === 'RECOGNIZED' ||
+          tx.status === 'POSSIBLE_DUPLICATE' ||
+          tx.status === 'POSTED'
       );
     } else if (activeTab === 'MATCHED') {
       list = list.filter((tx) => tx.status === 'MATCHED');
@@ -167,7 +184,11 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
   const isBalanced = difference === 0;
 
   const toReviewCount = mergedTransactions.filter(
-    (tx) => tx.status === 'UNMATCHED' || tx.status === 'TO_REVIEW'
+    (tx) =>
+      tx.status === 'UNMATCHED' ||
+      tx.status === 'TO_REVIEW' ||
+      tx.status === 'RECOGNIZED' ||
+      tx.status === 'POSSIBLE_DUPLICATE'
   ).length;
 
   return (
@@ -359,15 +380,28 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
           </button>
         </div>
 
-        <div className="relative">
-          <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400 pointer-events-none" />
-          <input
-            type="text"
-            placeholder="Search description, reference, party..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full sm:w-64 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs font-semibold pl-9 pr-3 py-2 rounded-xl text-slate-800 dark:text-slate-200 focus:outline-hidden focus:border-blue-500"
-          />
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400 pointer-events-none" />
+            <input
+              type="text"
+              placeholder="Search description, reference, party..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full sm:w-64 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs font-semibold pl-9 pr-3 py-2 rounded-xl text-slate-800 dark:text-slate-200 focus:outline-hidden focus:border-blue-500"
+            />
+          </div>
+          <button
+            onClick={() => {
+              void loadWorkspaceTransactions();
+              onRefresh?.();
+            }}
+            disabled={isLoading}
+            className="p-2 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 rounded-xl transition-colors cursor-pointer"
+            title="Refresh transactions"
+          >
+            <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin text-blue-600' : ''}`} />
+          </button>
         </div>
       </div>
 

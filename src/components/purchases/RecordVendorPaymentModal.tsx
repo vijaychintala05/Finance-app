@@ -26,6 +26,24 @@ interface RecordVendorPaymentModalProps {
   initialBill?: Bill | null;
 }
 
+const findVendorForInitialBill = (bill: Bill | null | undefined, vList: Vendor[]): Vendor | null => {
+  if (!bill) return null;
+  if (bill.vendorId) {
+    const byId = vList.find((v) => v.id === bill.vendorId);
+    if (byId) return byId;
+  }
+  if (bill.vendorName) {
+    const clean = bill.vendorName.trim().toLowerCase();
+    const byName = vList.find(
+      (v) =>
+        (v.name && v.name.trim().toLowerCase() === clean) ||
+        (v.companyName && v.companyName.trim().toLowerCase() === clean)
+    );
+    if (byName) return byName;
+  }
+  return null;
+};
+
 export const RecordVendorPaymentModal: React.FC<RecordVendorPaymentModalProps> = ({
   isOpen,
   onClose,
@@ -34,9 +52,12 @@ export const RecordVendorPaymentModal: React.FC<RecordVendorPaymentModalProps> =
 }) => {
   const { bills, vendors, accounts, refreshAccounts, paymentsMade, addPaymentMade, addVendorAdvance, settings } = useBooks();
 
-  const [selectedVendorId, setSelectedVendorId] = useState<string>(
-    vendor?.id || (initialBill ? vendors.find((v) => v.name === initialBill.vendorName)?.id || '' : vendors[0]?.id || '')
-  );
+  const [selectedVendorId, setSelectedVendorId] = useState<string>(() => {
+    if (vendor?.id) return vendor.id;
+    const matched = findVendorForInitialBill(initialBill, vendors);
+    if (matched) return matched.id;
+    return vendors[0]?.id || '';
+  });
 
   const activeVendor = useMemo(
     () => vendors.find((v) => v.id === selectedVendorId) || vendors[0] || null,
@@ -46,20 +67,43 @@ export const RecordVendorPaymentModal: React.FC<RecordVendorPaymentModalProps> =
   // Open bills for the active vendor
   const vendorOpenBills = useMemo(() => {
     if (!activeVendor) return [];
-    return bills.filter(
-      (b) =>
-        (b.vendorName === activeVendor.name || b.vendorName === activeVendor.companyName) &&
-        b.status !== 'Paid' &&
-        b.status !== 'VOIDED'
-    );
-  }, [bills, activeVendor]);
+    const activeName = (activeVendor.name || '').trim().toLowerCase();
+    const activeComp = (activeVendor.companyName || '').trim().toLowerCase();
+
+    const openList = bills.filter((b) => {
+      const matchesVendor =
+        (b.vendorId && b.vendorId === activeVendor.id) ||
+        (b.vendorName &&
+          (b.vendorName.trim().toLowerCase() === activeName ||
+           b.vendorName.trim().toLowerCase() === activeComp));
+      const isVoided = String(b.status || '').toUpperCase() === 'VOIDED';
+      const isPaid = String(b.status || '').toLowerCase() === 'paid';
+      return matchesVendor && !isVoided && !isPaid;
+    });
+
+    if (
+      initialBill &&
+      (initialBill.vendorId === activeVendor.id ||
+        (initialBill.vendorName &&
+          (initialBill.vendorName.trim().toLowerCase() === activeName ||
+           initialBill.vendorName.trim().toLowerCase() === activeComp)))
+    ) {
+      if (!openList.some((b) => b.id === initialBill.id)) {
+        openList.unshift(initialBill);
+      }
+    }
+
+    return openList;
+  }, [bills, activeVendor, initialBill]);
 
   const [isAdvance, setIsAdvance] = useState(false);
   const [selectedBillId, setSelectedBillId] = useState<string>(initialBill?.id || vendorOpenBills[0]?.id || '');
-  const targetBill = useMemo(
-    () => vendorOpenBills.find((b) => b.id === selectedBillId) || null,
-    [vendorOpenBills, selectedBillId]
-  );
+  const targetBill = useMemo(() => {
+    if (initialBill && selectedBillId === initialBill.id) {
+      return initialBill;
+    }
+    return vendorOpenBills.find((b) => b.id === selectedBillId) || null;
+  }, [vendorOpenBills, selectedBillId, initialBill]);
 
   const targetBillBalance = targetBill
     ? targetBill.balanceDue !== undefined
@@ -71,15 +115,24 @@ export const RecordVendorPaymentModal: React.FC<RecordVendorPaymentModalProps> =
   const disbursementAccounts = useMemo(() => {
     return accounts.filter((a) => {
       const subType = String(a.subType || '').toLowerCase();
+      const accType = String(a.type || '').toLowerCase();
+      const isLiquidType =
+        ['bank', 'cash', 'asset'].includes(accType) &&
+        (a.code.startsWith('10') ||
+          a.code === '1000' ||
+          a.code === '1010' ||
+          ['bank', 'cash', 'cash & bank', 'digital wallet', 'undeposited funds', 'payment clearing', 'current asset', 'checking', 'savings'].includes(
+            subType
+          ));
+      const isCreditCard =
+        accType === 'liability' &&
+        ['credit cards', 'credit card', 'loan/credit'].includes(subType);
+
       return (
         (a.status || 'Active') === 'Active' &&
         a.allowDirectPosting !== false &&
-        ((a.type === 'Asset' &&
-          (a.code.startsWith('10') ||
-            ['bank', 'cash', 'cash & bank', 'digital wallet', 'undeposited funds', 'payment clearing'].includes(
-              subType
-            ))) ||
-          (a.type === 'Liability' && ['credit cards', 'credit card', 'loan/credit'].includes(subType)))
+        !a.isLocked &&
+        (isLiquidType || isCreditCard)
       );
     });
   }, [accounts]);
@@ -123,11 +176,13 @@ export const RecordVendorPaymentModal: React.FC<RecordVendorPaymentModalProps> =
   const [notes, setNotes] = useState<string>('');
   const [error, setError] = useState<string>('');
 
-  // Synchronize initial bill selection when modal opens
+  // Synchronize initial bill selection when modal opens or initialBill changes
   React.useEffect(() => {
     if (initialBill) {
-      const v = vendors.find((vend) => vend.name === initialBill.vendorName);
-      if (v) setSelectedVendorId(v.id);
+      const matched = findVendorForInitialBill(initialBill, vendors);
+      if (matched) {
+        setSelectedVendorId(matched.id);
+      }
       setSelectedBillId(initialBill.id);
       setIsAdvance(false);
       const bal =
@@ -191,7 +246,7 @@ export const RecordVendorPaymentModal: React.FC<RecordVendorPaymentModalProps> =
           paidFromAccountId,
           referenceNumber: referenceNumber || `REF-${Date.now().toString().slice(-6)}`,
           amount: parsedAmount,
-          allocations: targetBill ? [{ billId: targetBill.id, amount: Math.min(parsedAmount, targetBillBalance || parsedAmount) }] : [],
+          allocations: targetBill ? [{ billId: targetBill.id, amount: Math.min(parsedAmount, targetBillBalance > 0 ? targetBillBalance : parsedAmount) }] : [],
         });
       }
 
@@ -242,7 +297,7 @@ export const RecordVendorPaymentModal: React.FC<RecordVendorPaymentModalProps> =
           {/* Vendor Selection & Advance Toggle */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <label className="text-xs font-bold text-slate-700 dark:text-slate-300">Vendor / Supplier</label>
+              <label htmlFor="vendor-select" className="text-xs font-bold text-slate-700 dark:text-slate-300">Vendor / Supplier</label>
               <button
                 type="button"
                 onClick={() => setIsAdvance(!isAdvance)}
@@ -257,8 +312,37 @@ export const RecordVendorPaymentModal: React.FC<RecordVendorPaymentModalProps> =
             </div>
 
             <select
+              id="vendor-select"
               value={selectedVendorId}
-              onChange={(e) => setSelectedVendorId(e.target.value)}
+              onChange={(e) => {
+                const newVendorId = e.target.value;
+                setSelectedVendorId(newVendorId);
+                const newActiveVendor = vendors.find((v) => v.id === newVendorId);
+                if (newActiveVendor) {
+                  const activeName = (newActiveVendor.name || '').trim().toLowerCase();
+                  const activeComp = (newActiveVendor.companyName || '').trim().toLowerCase();
+                  const matchingBills = bills.filter((b) => {
+                    const matches =
+                      (b.vendorId && b.vendorId === newActiveVendor.id) ||
+                      (b.vendorName &&
+                        (b.vendorName.trim().toLowerCase() === activeName ||
+                         b.vendorName.trim().toLowerCase() === activeComp));
+                    return matches && String(b.status || '').toUpperCase() !== 'VOIDED' && String(b.status || '').toLowerCase() !== 'paid';
+                  });
+                  const firstBill = matchingBills[0];
+                  if (firstBill) {
+                    setSelectedBillId(firstBill.id);
+                    const bal =
+                      firstBill.balanceDue !== undefined
+                        ? firstBill.balanceDue
+                        : Math.max(0, firstBill.totalAmount - (firstBill.amountPaid || 0));
+                    setAmount(String(bal > 0 ? bal : firstBill.totalAmount));
+                  } else {
+                    setSelectedBillId('');
+                    setAmount('');
+                  }
+                }
+              }}
               className="w-full rounded-xl border border-slate-300 bg-white p-2.5 text-xs font-medium text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
             >
               {vendors.map((v) => (
@@ -272,13 +356,14 @@ export const RecordVendorPaymentModal: React.FC<RecordVendorPaymentModalProps> =
           {/* Target Bill Selection (if not advance) */}
           {!isAdvance && (
             <div className="space-y-1">
-              <label className="text-xs font-bold text-slate-700 dark:text-slate-300">Target Open Bill</label>
+              <label htmlFor="target-bill-select" className="text-xs font-bold text-slate-700 dark:text-slate-300">Target Open Bill</label>
               {vendorOpenBills.length === 0 ? (
                 <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-300">
                   No open bills found for this vendor. This payment will be recorded as a direct vendor settlement or advance.
                 </div>
               ) : (
                 <select
+                  id="target-bill-select"
                   value={selectedBillId}
                   onChange={(e) => {
                     setSelectedBillId(e.target.value);
@@ -312,7 +397,7 @@ export const RecordVendorPaymentModal: React.FC<RecordVendorPaymentModalProps> =
           {/* Disbursement Bank / Cash / Card Account */}
           <div className="space-y-1">
             <div className="flex items-center justify-between">
-              <label className="text-xs font-bold text-slate-700 dark:text-slate-300">
+              <label htmlFor="paid-from-account" className="text-xs font-bold text-slate-700 dark:text-slate-300">
                 Paid From (Bank / Cash / Card Account)
               </label>
               <div className="flex items-center gap-2">
@@ -337,6 +422,7 @@ export const RecordVendorPaymentModal: React.FC<RecordVendorPaymentModalProps> =
               </div>
             </div>
             <select
+              id="paid-from-account"
               value={paidFromAccountId}
               onChange={(e) => setPaidFromAccountId(e.target.value)}
               className="w-full rounded-xl border border-slate-300 bg-white p-2.5 text-xs font-medium text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
@@ -352,10 +438,11 @@ export const RecordVendorPaymentModal: React.FC<RecordVendorPaymentModalProps> =
           {/* Amount & Date Grid */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+              <label htmlFor="disbursement-amount" className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
                 Disbursement Amount ({settings.currencySymbol})
               </label>
               <input
+                id="disbursement-amount"
                 type="number"
                 step="any"
                 value={amount}

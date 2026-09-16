@@ -18,7 +18,7 @@ interface ImportStatementModalProps {
   onClose: () => void;
   account: Account | null;
   bankAccount: BankAccount | null;
-  onImported?: () => void;
+  onImported?: (result?: any) => void;
 }
 
 export const ImportStatementModal: React.FC<ImportStatementModalProps> = ({
@@ -30,13 +30,14 @@ export const ImportStatementModal: React.FC<ImportStatementModalProps> = ({
 }) => {
   const [file, setFile] = useState<File | null>(null);
   const [fileContent, setFileContent] = useState<string>('');
+  const [isReadingFile, setIsReadingFile] = useState<boolean>(false);
   const [format, setFormat] = useState<BankStatementSourceFormat>('CSV');
   const [error, setError] = useState<string>('');
   const [busy, setBusy] = useState<boolean>(false);
   const [preview, setPreview] = useState<StatementImportPreviewResponse | null>(null);
   const [step, setStep] = useState<'SELECT' | 'PREVIEW'>('SELECT');
 
-  if (!isOpen || !account) return null;
+  if (!isOpen) return null;
 
   const handleFileChange = async (selectedFile: File | null) => {
     setError('');
@@ -72,22 +73,27 @@ export const ImportStatementModal: React.FC<ImportStatementModalProps> = ({
       extension === 'xlsx' ? 'XLSX' : extension === 'xls' ? 'XLS' : 'CSV';
     setFormat(sourceFmt);
 
-    // Read content
+    // Read content safely and await completion
+    setIsReadingFile(true);
     try {
+      let content = '';
       if (sourceFmt === 'CSV') {
-        const text = await selectedFile.text();
-        setFileContent(text);
+        content = await selectedFile.text();
       } else {
-        // Read Excel as base64 data URL
-        const reader = new FileReader();
-        reader.onload = () => {
-          const result = reader.result as string;
-          setFileContent(result);
-        };
-        reader.readAsDataURL(selectedFile);
+        content = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve((reader.result as string) || '');
+          reader.onerror = () => reject(new Error('Failed to read statement file'));
+          reader.readAsDataURL(selectedFile);
+        });
       }
+      setFileContent(content);
     } catch (err: any) {
       setError('Could not read file: ' + (err?.message || 'Unknown error'));
+      setFile(null);
+      setFileContent('');
+    } finally {
+      setIsReadingFile(false);
     }
   };
 
@@ -120,28 +126,31 @@ export const ImportStatementModal: React.FC<ImportStatementModalProps> = ({
     setBusy(true);
     setError('');
     try {
+      let res: any;
       if (bankAccount) {
-        await BankingService.confirmImport({
+        res = await BankingService.confirmImport({
           fileContent,
           filename: file.name,
           mode: 'USE_EXISTING',
           bankAccountId: bankAccount.id,
         });
       } else {
-        await BankingService.confirmImport({
+        res = await BankingService.confirmImport({
           fileContent,
           filename: file.name,
           mode: 'CREATE_NEW',
           newBankData: {
-            accountName: account.name,
-            bankName: preview?.detectedBankName || 'Bank',
-            accountNumber: preview?.detectedAccountNumber || account.code || '1000',
+            accountName:
+              account?.name ||
+              (preview?.detectedBankName ? `${preview.detectedBankName} Account` : 'Imported Bank Account'),
+            bankName: preview?.detectedBankName || account?.name || 'Bank',
+            accountNumber: preview?.detectedAccountNumber || account?.code || '1000',
             currency: preview?.currency || 'INR',
-            ledgerAccountId: account.id,
+            ledgerAccountId: account?.id,
           },
         });
       }
-      onImported?.();
+      onImported?.(res);
       onClose();
     } catch (err: any) {
       setError(err?.message || 'Failed to import bank statement');
@@ -162,7 +171,7 @@ export const ImportStatementModal: React.FC<ImportStatementModalProps> = ({
             <div>
               <h3 className="text-base font-bold text-slate-900 dark:text-white">Import Bank Statement</h3>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                {account.name} (#{account.code}) • Zoho-Style Statement Feeds
+                {account ? `${account.name} (#${account.code})` : 'New Bank Account from Statement'} • Zoho-Style Statement Feeds
               </p>
             </div>
           </div>
@@ -316,11 +325,11 @@ export const ImportStatementModal: React.FC<ImportStatementModalProps> = ({
             {step === 'SELECT' ? (
               <button
                 type="button"
-                disabled={!file || busy}
+                disabled={!file || !fileContent || isReadingFile || busy}
                 onClick={handlePreview}
                 className="rounded-xl bg-blue-600 hover:bg-blue-700 px-5 py-2.5 text-xs font-bold text-white shadow-xs disabled:opacity-50 transition-colors cursor-pointer"
               >
-                {busy ? 'Reading statement…' : 'Preview Statement →'}
+                {isReadingFile ? 'Reading file…' : busy ? 'Parsing preview…' : 'Preview Statement →'}
               </button>
             ) : (
               <button

@@ -83,6 +83,7 @@ router.post('/customer-advance-applications/:id/reverse', requirePermission(['cu
 
 // Credit Notes, Refunds & Write-Offs
 router.get('/credit-notes', requirePermission(['credit_notes.view', 'invoices.view']), FinanceController.getCreditNotes);
+router.get('/credit-note-applications', requirePermission(['credit_notes.view', 'invoices.view']), FinanceController.getCreditNoteApplications);
 router.post('/credit-notes', requirePermission(['credit_notes.create', 'invoices.create']), requireTrustedFinanceFeature('credit-notes'), FinanceController.createCreditNote);
 router.post('/credit-notes/apply', requirePermission(['credit_notes.apply', 'invoices.edit']), requireTrustedFinanceFeature('credit-notes'), FinanceController.applyCreditNote);
 router.post('/credit-notes/:id/reverse', requirePermission(['credit_notes.void', 'invoices.edit']), requireTrustedFinanceFeature('credit-notes'), FinanceController.reverseCreditNote);
@@ -134,6 +135,8 @@ router.get('/reports/balance-sheet', requirePermission(['reports.financial_state
 router.get('/reports/balance-sheet/comparative', requirePermission(['reports.financial_statements', 'reports.view']), FinanceController.getComparativeBalanceSheet);
 router.get('/reports/project-profitability', requirePermission(['reports.projects', 'reports.view']), FinanceController.getProjectProfitabilityReport);
 router.get('/reports/drill-down/:journalEntryId', requirePermission(['reports.financial_statements', 'reports.view']), FinanceController.getDrillDown);
+router.get('/reports/workspace/:reportType/export', requirePermission(['reports.view']), FinanceController.exportWorkspaceReport);
+router.get('/reports/workspace/:reportType', requirePermission(['reports.view']), FinanceController.getWorkspaceReport);
 router.get('/reports/export/:reportType', requirePermission(['reports.financial_statements', 'reports.view']), FinanceController.exportReport);
 router.get('/reports/cash-flow', requirePermission(['reports.financial_statements', 'reports.view']), requireTrustedFinanceFeature('cash-flow-classification'), FinanceController.getCashFlow);
 router.get('/reports/customer-statement/:customerId', requirePermission(['reports.receivables', 'reports.view']), requireTrustedFinanceFeature('customer-statements'), FinanceController.getCustomerStatement);

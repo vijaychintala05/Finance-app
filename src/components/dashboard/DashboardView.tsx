@@ -778,7 +778,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
           {/* SECTION 4: CASH FLOW (8 cols) & TOP EXPENSES (4 cols) */}
           <section className="grid grid-cols-1 lg:grid-cols-12 gap-5">
             {/* Left: Cash Flow */}
-            <div className="lg:col-span-8">
+            <div className="lg:col-span-8 min-w-0">
               <CashFlowWidget
                 timelinePoints={timelinePoints}
                 performanceTotals={dashboard.commandCenter?.performance}
@@ -790,7 +790,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
             </div>
 
             {/* Right: Top Expense Categories (Ranked List - No Donut) */}
-            <div className="lg:col-span-4 rounded-2xl border border-slate-200/90 bg-white p-5 sm:p-6 shadow-xs dark:border-slate-800/90 dark:bg-slate-900 flex flex-col justify-between">
+            <div className="lg:col-span-4 min-w-0 rounded-2xl border border-slate-200/90 bg-white p-5 sm:p-6 shadow-xs dark:border-slate-800/90 dark:bg-slate-900 flex flex-col justify-between">
               <div>
                 <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-slate-800">
                   <div className="flex items-center gap-2">

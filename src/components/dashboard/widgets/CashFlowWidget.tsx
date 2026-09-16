@@ -189,6 +189,14 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
     return 'YTD';
   }, [internalPeriod]);
 
+  // SVG Chart Layout Metrics
+  const chartWidth = 720;
+  const chartHeight = 210;
+  const leftOffset = 42;
+  const rightMargin = 16;
+  const baselineY = 180;
+  const maxBarHeight = 150;
+
   // Compute scale and Y ticks
   const chartScale = useMemo(() => {
     const rawPeak = Math.max(
@@ -209,11 +217,11 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
     return {
       maxVal,
       ticks: [
-        { label: formatTick(maxVal), y: 20 },
-        { label: formatTick(Math.round(maxVal * 0.75)), y: 65 },
-        { label: formatTick(Math.round(maxVal * 0.5)), y: 110 },
-        { label: formatTick(Math.round(maxVal * 0.25)), y: 155 },
-        { label: `${currencySymbol}0`, y: 200 },
+        { label: formatTick(maxVal), y: 30 },
+        { label: formatTick(Math.round(maxVal * 0.75)), y: 68 },
+        { label: formatTick(Math.round(maxVal * 0.5)), y: 105 },
+        { label: formatTick(Math.round(maxVal * 0.25)), y: 142 },
+        { label: `${currencySymbol}0`, y: 180 },
       ],
     };
   }, [activeMonths, totals, currencySymbol]);
@@ -222,27 +230,20 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
     setInternalPeriod(val);
   };
 
-  const chartWidth = 740;
-  const chartHeight = 220;
-  const leftOffset = 46;
-  const rightMargin = 20;
-  const baselineY = 200;
-  const maxBarHeight = 175;
-
   const monthColumns = useMemo(() => {
     const count = activeMonths.length;
     const usableWidth = chartWidth - leftOffset - rightMargin;
     const colStep = usableWidth / count;
-    const barW = count <= 3 ? 24 : 14;
-    const bGap = count <= 3 ? 6 : 3;
+    const barW = count <= 3 ? 22 : 13;
+    const bGap = count <= 3 ? 5 : 3;
 
     return activeMonths.map((m, i) => {
       const xCenter = leftOffset + i * colStep + colStep / 2;
       const incomeH = m.income > 0 ? Math.max(8, Math.min(maxBarHeight, (m.income / chartScale.maxVal) * maxBarHeight)) : 0;
       const expenseH = m.expenses > 0 ? Math.max(8, Math.min(maxBarHeight, (m.expenses / chartScale.maxVal) * maxBarHeight)) : 0;
 
-      const netRatio = m.net / chartScale.maxVal;
-      const netY = Math.max(25, Math.min(baselineY, baselineY - netRatio * maxBarHeight));
+      const netRatio = Math.max(-0.4, Math.min(1.0, m.net / chartScale.maxVal));
+      const netY = Math.max(30, Math.min(baselineY, baselineY - netRatio * maxBarHeight));
 
       return {
         ...m,
@@ -270,7 +271,7 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
   const activeHoveredCol = hoveredIndex !== null ? monthColumns[hoveredIndex] : null;
 
   return (
-    <div className="rounded-2xl border border-slate-200/90 bg-white p-5 sm:p-6 shadow-xs dark:border-slate-800/90 dark:bg-slate-900 flex flex-col justify-between transition-all">
+    <div className="rounded-2xl border border-slate-200/90 bg-white p-5 sm:p-6 shadow-xs dark:border-slate-800/90 dark:bg-slate-900 flex flex-col justify-between transition-all overflow-hidden">
       <div>
         {/* HEADER SECTION */}
         <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 border-b border-slate-100 pb-5 dark:border-slate-800">
@@ -361,8 +362,8 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
               </div>
               <div className="flex items-center gap-1.5">
                 <span className="inline-flex items-center">
-                  <span className="h-0.5 w-3 bg-[#059669]" />
-                  <span className="h-2 w-2 rounded-full bg-[#059669] -ml-1.5" />
+                  <span className="h-0.5 w-3 bg-[#10b981]" />
+                  <span className="h-1.5 w-1.5 rounded-full bg-[#10b981] -ml-1" />
                 </span>
                 <span>Net Profit</span>
               </div>
@@ -395,10 +396,10 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
         )}
 
         {/* MAIN COMBO CHART - ALWAYS VISIBLE */}
-        <div className="mt-6 relative h-64 sm:h-72 w-full select-none">
+        <div className="mt-5 relative h-60 sm:h-64 w-full select-none">
           <svg
             viewBox={`0 0 ${chartWidth} ${chartHeight}`}
-            className="w-full h-full overflow-visible"
+            className="w-full h-full block"
             preserveAspectRatio="none"
           >
             {/* Horizontal dashed grid lines & Y-Axis Labels */}
@@ -437,7 +438,7 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
                 <rect
                   x={col.xCenter - col.barW - 4}
                   y={20}
-                  width={col.barW * 2 + 12}
+                  width={col.barW * 2 + 10}
                   height={baselineY - 20}
                   fill="transparent"
                 />
@@ -451,7 +452,7 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
                     height={col.incomeH}
                     rx="3"
                     fill="#3b82f6"
-                    className="transition-all duration-200 hover:brightness-110"
+                    className="transition-all duration-150 hover:brightness-110"
                   />
                 )}
 
@@ -464,7 +465,7 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
                     height={col.expenseH}
                     rx="3"
                     fill="#fba979"
-                    className="transition-all duration-200 hover:brightness-105"
+                    className="transition-all duration-150 hover:brightness-105"
                   />
                 )}
               </g>
@@ -475,26 +476,24 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
               <path
                 d={netPathString}
                 fill="none"
-                stroke="#059669"
-                strokeWidth="2.5"
+                stroke="#10b981"
+                strokeWidth="1.75"
                 strokeLinecap="round"
                 strokeLinejoin="round"
               />
             )}
 
-            {/* Net Profit Data Points (Green Circles with White Outline) */}
+            {/* Refined Net Profit Data Points (Subtle Green Dots with Clean White Border) */}
             {monthColumns.map((col, idx) => (
               <circle
                 key={idx}
                 cx={col.netX}
                 cy={col.netY}
-                r="4.5"
-                fill="#059669"
+                r={hoveredIndex === idx ? 4 : 2.5}
+                fill="#10b981"
                 stroke="#ffffff"
-                strokeWidth="2"
-                className={`cursor-pointer transition-transform duration-150 ${
-                  hoveredIndex === idx ? 'scale-150' : 'hover:scale-125'
-                }`}
+                strokeWidth="1.5"
+                className="cursor-pointer transition-all duration-150"
                 onMouseEnter={() => setHoveredIndex(idx)}
                 onMouseLeave={() => setHoveredIndex(null)}
               />
@@ -506,8 +505,8 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
             <div
               className="absolute z-20 pointer-events-none rounded-xl bg-white dark:bg-slate-800 p-3 shadow-xl border border-slate-100 dark:border-slate-700 min-w-[150px] transition-all duration-150 -translate-x-1/2 -translate-y-full"
               style={{
-                left: `${(activeHoveredCol.xCenter / chartWidth) * 100}%`,
-                top: `${Math.max(10, (activeHoveredCol.netY / chartHeight) * 100 - 12)}%`,
+                left: `${Math.max(12, Math.min(88, (activeHoveredCol.xCenter / chartWidth) * 100))}%`,
+                top: `${Math.max(12, Math.min(85, (activeHoveredCol.netY / chartHeight) * 100 - 10))}%`,
               }}
             >
               <div className="text-xs font-extrabold text-slate-900 dark:text-white mb-2">
@@ -532,7 +531,7 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
                 </div>
                 <div className="flex items-center justify-between gap-3 pt-1.5 border-t border-slate-100 dark:border-slate-700">
                   <span className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400">
-                    <span className="h-2 w-2 rounded-full bg-[#059669]" /> Net Profit
+                    <span className="h-2 w-2 rounded-full bg-[#10b981]" /> Net Profit
                   </span>
                   <span className="font-extrabold font-financial text-emerald-600 dark:text-emerald-400">
                     {money(activeHoveredCol.net)}
@@ -544,7 +543,7 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
 
           {/* X-Axis Month Labels */}
           <div
-            className="flex justify-between text-xs font-semibold text-slate-400 pt-2 select-none"
+            className="flex justify-between text-xs font-semibold text-slate-400 pt-1.5 select-none"
             style={{ paddingLeft: `${(leftOffset / chartWidth) * 100}%`, paddingRight: `${(rightMargin / chartWidth) * 100}%` }}
           >
             {monthColumns.map((col, idx) => (
@@ -563,7 +562,7 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
         </div>
 
         {/* Status Notice */}
-        <div className="mt-5 rounded-xl border border-slate-100 bg-slate-50/70 px-4 py-2.5 text-center text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-400 flex items-center justify-center gap-1.5">
+        <div className="mt-5 rounded-xl border border-slate-100 bg-slate-50/70 px-4 py-2 text-center text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-400 flex items-center justify-center gap-1.5">
           <span className="text-slate-400">ⓘ</span>
           <span>
             {timelinePoints.length > 0
@@ -577,7 +576,7 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
           {/* Card 1: Total Income */}
           <div className="rounded-xl border border-slate-100 dark:border-slate-800/80 bg-slate-50/60 dark:bg-slate-800/40 p-3.5 sm:p-4 flex items-center justify-between transition-all hover:bg-slate-50 dark:hover:bg-slate-800/60">
             <div className="flex items-center gap-3">
-              <div className="h-11 w-11 rounded-2xl bg-blue-50 text-blue-600 dark:bg-blue-950/60 dark:text-blue-400 flex items-center justify-center shrink-0">
+              <div className="h-10 w-10 rounded-xl bg-blue-50 text-blue-600 dark:bg-blue-950/60 dark:text-blue-400 flex items-center justify-center shrink-0">
                 <BarChart2 className="h-5 w-5" />
               </div>
               <div>
@@ -597,7 +596,7 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
           {/* Card 2: Total Expenses */}
           <div className="rounded-xl border border-slate-100 dark:border-slate-800/80 bg-slate-50/60 dark:bg-slate-800/40 p-3.5 sm:p-4 flex items-center justify-between transition-all hover:bg-slate-50 dark:hover:bg-slate-800/60">
             <div className="flex items-center gap-3">
-              <div className="h-11 w-11 rounded-2xl bg-orange-50 text-orange-500 dark:bg-orange-950/60 dark:text-orange-400 flex items-center justify-center shrink-0">
+              <div className="h-10 w-10 rounded-xl bg-orange-50 text-orange-500 dark:bg-orange-950/60 dark:text-orange-400 flex items-center justify-center shrink-0">
                 <Coins className="h-5 w-5" />
               </div>
               <div>
@@ -617,7 +616,7 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
           {/* Card 3: Net Profit */}
           <div className="rounded-xl border border-slate-100 dark:border-slate-800/80 bg-slate-50/60 dark:bg-slate-800/40 p-3.5 sm:p-4 flex items-center justify-between transition-all hover:bg-slate-50 dark:hover:bg-slate-800/60">
             <div className="flex items-center gap-3">
-              <div className="h-11 w-11 rounded-2xl bg-emerald-50 text-emerald-600 dark:bg-emerald-950/60 dark:text-emerald-400 flex items-center justify-center shrink-0">
+              <div className="h-10 w-10 rounded-xl bg-emerald-50 text-emerald-600 dark:bg-emerald-950/60 dark:text-emerald-400 flex items-center justify-center shrink-0">
                 <TrendingUp className="h-5 w-5" />
               </div>
               <div>

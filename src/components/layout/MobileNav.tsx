@@ -196,6 +196,20 @@ export const MobileNav: React.FC<MobileNavProps> = ({
     }
   }, [activeTab]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   const toggleSection = (sectionId: string) => {
@@ -206,12 +220,9 @@ export const MobileNav: React.FC<MobileNavProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 lg:hidden flex">
+    <div role="dialog" aria-modal="true" aria-label="All modules" className="fixed inset-0 z-50 lg:hidden flex">
       {/* Backdrop */}
-      <div
-        className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs transition-opacity"
-        onClick={onClose}
-      />
+      <button type="button" aria-label="Close navigation" className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs transition-opacity" onClick={onClose} />
 
       {/* Drawer */}
       <div className="relative flex-1 max-w-sm w-[min(88vw,360px)] bg-white text-slate-900 dark:bg-slate-950 dark:text-slate-100 flex flex-col z-10 shadow-xl">

@@ -126,6 +126,16 @@ describe('Log Out Option & User Profile Accessibility Test Suite', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it('5b. Mobile module drawer closes with Escape and restores page scrolling', () => {
+    const onClose = vi.fn();
+    const { unmount } = render(<MobileNav isOpen={true} onClose={onClose} activeTab="dashboard" setActiveTab={vi.fn()} />);
+    expect(document.body.style.overflow).toBe('hidden');
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    unmount();
+    expect(document.body.style.overflow).toBe('');
+  });
+
   it('6. IdentitySettings displays Active Session card with Log Out button', () => {
     render(<IdentitySettings />);
 

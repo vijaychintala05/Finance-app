@@ -1,3 +1,4 @@
+import { CashBalanceWidget } from './widgets/CashBalanceWidget';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
@@ -449,7 +450,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <div className="flex items-center gap-2">
-              <h2 className="text-sm font-bold tracking-tight text-slate-900 dark:text-white">Cash Flow & Activity Velocity</h2>
+              <h2 className="text-sm font-bold tracking-tight text-slate-900 dark:text-white">Income & Expense Activity</h2>
               <span className="inline-flex items-center rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-bold text-blue-700 dark:bg-blue-950/60 dark:text-blue-400">
                 Posted Journals
               </span>
@@ -646,57 +647,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     </section>
   );
 
-  // Bank & Liquid Accounts Widget
-  const BankAccountsWidget = () => (
-    <section className="rounded-xl border border-slate-200/90 bg-white p-5 shadow-xs dark:border-slate-800/90 dark:bg-slate-900">
-      <div className="flex items-center justify-between border-b border-slate-100 pb-3.5 dark:border-slate-800">
-        <div className="flex items-center gap-2">
-          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-blue-50 text-blue-600 dark:bg-blue-950 dark:text-blue-400">
-            <Landmark className="h-4 w-4" />
-          </div>
-          <div>
-            <h2 className="text-sm font-bold tracking-tight text-slate-900 dark:text-white">Liquid Bank & Cash Accounts</h2>
-            <p className="text-[11px] text-slate-400">Cash reserves and real-time ledger balances</p>
-          </div>
-        </div>
-        <button
-          onClick={() => onNavigate('banking')}
-          className="inline-flex items-center gap-1 text-xs font-bold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
-        >
-          <span>Bank Feeds</span>
-          <ArrowRight className="h-3.5 w-3.5" />
-        </button>
-      </div>
-
-      {liquidAccounts.length === 0 ? (
-        <div className="py-8 text-center text-xs text-slate-400">
-          No bank or cash accounts configured.
-        </div>
-      ) : (
-        <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          {liquidAccounts.slice(0, 4).map((acc) => (
-            <div
-              key={acc.name}
-              onClick={() => onNavigate('banking')}
-              className="group flex flex-col justify-between rounded-xl border border-slate-200/80 bg-slate-50/50 p-3.5 transition-all hover:border-blue-400 hover:bg-blue-50/30 dark:border-slate-800 dark:bg-slate-800/40 dark:hover:border-blue-500/60 cursor-pointer"
-            >
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] font-bold text-blue-600 dark:text-blue-400">
-                  Ledger balance
-                </span>
-              </div>
-              <div className="mt-2.5">
-                <p className="text-xs font-bold text-slate-800 dark:text-slate-200 truncate">{acc.name}</p>
-                <p className="mt-1 font-financial text-base font-extrabold text-slate-900 dark:text-white">
-                  {money(acc.balance || 0)}
-                </p>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </section>
-  );
+  const BankAccountsWidget = () => <CashBalanceWidget
+    accounts={liquidAccounts}
+    total={dashboard?.overview.bankBalance ?? 0}
+    asOfDate={dashboard?.asOfDate || asOfDate}
+    money={money}
+    unmatchedCount={dashboard?.cashOperations?.available ? dashboard.cashOperations.bankReconciliationAttentionCount : null}
+    onAccounts={() => onNavigate('banking')}
+    onReconcile={() => onNavigate('bank_reconciliation')}
+  />;
 
   const ScheduledOutlookWidget = () => (
     <section className="rounded-lg border border-slate-200/90 bg-white p-4 shadow-xs dark:border-slate-800/90 dark:bg-slate-900">
@@ -897,7 +856,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                     </span>
                   </div>
                   <span className="rounded-md border border-emerald-200/70 bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/60 dark:text-emerald-400">
-                    Reconciled
+                    Book balance
                   </span>
                 </div>
 
@@ -911,19 +870,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                 </div>
               </div>
 
-              {/* Sparkline wave decoration at bottom edge */}
-              <div className="w-full h-8 mt-2 -mb-2 -mx-5 px-0 overflow-hidden">
-                <svg viewBox="0 0 200 40" className="w-full h-full" preserveAspectRatio="none">
-                  <defs>
-                    <linearGradient id="waveGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.25" />
-                      <stop offset="100%" stopColor="#3b82f6" stopOpacity="0.0" />
-                    </linearGradient>
-                  </defs>
-                  <path d="M0,25 Q30,12 60,20 T120,15 T180,24 L200,18 L200,40 L0,40 Z" fill="url(#waveGrad)" />
-                  <path d="M0,25 Q30,12 60,20 T120,15 T180,24 L200,18" fill="none" stroke="#3b82f6" strokeWidth="2" />
-                </svg>
-              </div>
+              <p className="mt-3 text-sm text-slate-600 dark:text-slate-300">View posted account balances →</p>
             </div>
 
             {/* Card 2: ACCOUNTS RECEIVABLE (AR) */}
@@ -1085,16 +1032,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
             </div>
           </section>
 
+          {dashboard.availableViews.includes('cash-operations') && <BankAccountsWidget />}
+
           {/* Middle Row: Cash Flow Chart (8 cols) & Attention Queue + Quick Action Dock (4 cols) */}
           <section className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-            {/* Left: Cash Flow & Activity Velocity */}
+            {/* Left: Income & Expense Activity */}
             <div className="lg:col-span-8 rounded-2xl border border-slate-200/80 bg-white p-5 sm:p-6 shadow-xs dark:border-slate-800/90 dark:bg-slate-900 flex flex-col justify-between">
               <div>
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-4 dark:border-slate-800">
                   <div>
                     <div className="flex items-center gap-2">
                       <h2 className="text-base font-extrabold tracking-tight text-slate-900 dark:text-white">
-                        Cash Flow & Activity Velocity
+                        Income & Expense Activity
                       </h2>
                       <span className="rounded-full bg-blue-50 px-2.5 py-0.5 text-[10px] font-bold text-blue-700 dark:bg-blue-950/60 dark:text-blue-400">
                         Posted Journals
@@ -1190,7 +1139,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                       );
                     })}
 
-                    {/* Green Net Cash Flow Smooth Spline Curve computed from REAL points */}
+                    {/* Green Net income Smooth Spline Curve computed from REAL points */}
                     {timelinePoints.length > 0 && (() => {
                       const netPoints = timelinePoints.map((pt, idx) => {
                         const colWidth = 640 / Math.max(1, timelinePoints.length);
@@ -1231,7 +1180,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                               strokeWidth="2"
                               className="cursor-pointer transition-transform hover:scale-125"
                             >
-                              <title>{`${pt.pt.date}: Net Cash Flow ${money(pt.net)}`}</title>
+                              <title>{`${pt.pt.date}: Net income ${money(pt.net)}`}</title>
                             </circle>
                           ))}
                         </g>
@@ -1471,7 +1420,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
               subtitle={
                 dashboard.cashOperations.oldestUnmatchedDate
                   ? `Oldest feed: ${formatDate(dashboard.cashOperations.oldestUnmatchedDate)}`
-                  : 'All feeds reconciled'
+                  : 'No unmatched imported items'
               }
               badge={dashboard.overview.bankReconciliationAttentionCount > 0 ? 'Pending' : 'Healthy'}
               badgeTone={

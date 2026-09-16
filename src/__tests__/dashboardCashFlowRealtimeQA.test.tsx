@@ -117,7 +117,7 @@ describe('DashboardView & Cash Flow Real-Data QA Tests', () => {
     });
 
     // Verify Cash Flow Chart title and verified badge
-    expect(screen.getByText(/Cash Flow & Activity Velocity/i)).toBeTruthy();
+    expect(screen.getByText(/Income & Expense Activity/i)).toBeTruthy();
     expect(screen.getByText(/Posted Journals/i)).toBeTruthy();
 
     // Verify dynamic totals in legend: Income = 120,000, Expenses = 45,000, Net = 75,000

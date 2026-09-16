@@ -1,7 +1,6 @@
 import { NextFunction, Request, Response } from 'express';
 
-// This build intentionally certifies no optional financial mutation. A feature
-// must first be added here by code review; an environment variable can then
+// An optional feature must first be added here by code review; an environment variable can then
 // enable that reviewed implementation for a deployment. Configuration alone
 // can never promote prototype code into the trusted surface.
 export const CERTIFIED_OPTIONAL_FEATURES = new Set<string>([
@@ -31,12 +30,22 @@ export const CERTIFIED_OPTIONAL_FEATURES = new Set<string>([
 function enabledFeatures(): Set<string> {
   const configured = process.env.TRUSTED_FINANCE_FEATURES
     ?? (process.env.NODE_ENV === 'production' ? '' : Array.from(CERTIFIED_OPTIONAL_FEATURES).join(','));
-  return new Set(
+  const enabled = new Set(
     configured
       .split(',')
       .map((feature) => feature.trim())
       .filter((feature) => CERTIFIED_OPTIONAL_FEATURES.has(feature))
   );
+  // The capability API, navigation and existing deployments publish this
+  // umbrella as "Vendor payments, credits and advances". Honor it for the
+  // granular route guards too; otherwise the UI advertises a blocked workflow.
+  // Keep write-offs and all other optional workflows separately gated.
+  if (enabled.has('payables-settlement')) {
+    for (const feature of ['vendor-settlements', 'vendor-credits']) {
+      if (CERTIFIED_OPTIONAL_FEATURES.has(feature)) enabled.add(feature);
+    }
+  }
+  return enabled;
 }
 
 /**

@@ -24,6 +24,8 @@ export interface WorkspaceReportResult {
 }
 
 export const WORKSPACE_REPORT_IDS = [
+  'cash_flow_statement', 'comparative_profit_loss', 'comparative_balance_sheet',
+  'business_ratio_analysis', 'budget_vs_actual', 'cash_flow_forecast',
   'sales_by_customer', 'sales_by_item', 'sales_by_salesperson', 'invoice_details',
   'payments_received', 'time_to_get_paid', 'customer_balance_summary',
   'expense_details', 'expenses_by_category', 'expenses_by_vendor', 'expenses_by_project',

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { CERTIFIED_OPTIONAL_FEATURES, requireTrustedFinanceFeature } from '../middleware/trustedFeature.middleware';
 import { Request, Response } from 'express';
+import { getFinanceCapabilities } from '../capabilities/financeCapabilities';
 
 describe('trustedFeature.middleware', () => {
   const originalEnv = process.env;
@@ -11,6 +12,37 @@ describe('trustedFeature.middleware', () => {
 
   afterEach(() => {
     process.env = originalEnv;
+  });
+
+  it.each(['vendor-settlements', 'vendor-credits'])('honors the published payables capability for %s routes in production', (feature) => {
+    process.env.NODE_ENV = 'production';
+    process.env.TRUSTED_FINANCE_FEATURES = 'period-close,payables-settlement';
+    expect(getFinanceCapabilities().find((item) => item.key === 'payables-settlement')?.state).toBe('enabled');
+    const res = { status: vi.fn().mockReturnThis(), json: vi.fn() } as unknown as Response;
+    const next = vi.fn();
+    requireTrustedFinanceFeature(feature)({} as Request, res, next);
+    expect(next).toHaveBeenCalledOnce();
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  it.each(['', 'period-close', 'vendor-credits'])('does not enable vendor payments for unrelated configuration: %s', (configured) => {
+    process.env.NODE_ENV = 'production';
+    process.env.TRUSTED_FINANCE_FEATURES = configured;
+    const res = { status: vi.fn().mockReturnThis(), json: vi.fn() } as unknown as Response;
+    const next = vi.fn();
+    requireTrustedFinanceFeature('vendor-settlements')({} as Request, res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(503);
+  });
+
+  it.each(['payable-write-offs', 'cash-flow-classification'])('does not expand the payables capability to %s', (feature) => {
+    process.env.NODE_ENV = 'production';
+    process.env.TRUSTED_FINANCE_FEATURES = 'payables-settlement';
+    const res = { status: vi.fn().mockReturnThis(), json: vi.fn() } as unknown as Response;
+    const next = vi.fn();
+    requireTrustedFinanceFeature(feature)({} as Request, res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(503);
   });
 
   it('certifies accountant-overview and delivery-challans in CERTIFIED_OPTIONAL_FEATURES', () => {

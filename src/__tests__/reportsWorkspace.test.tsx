@@ -4,7 +4,8 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 import { INITIAL_REPORTS_CATALOG } from '../components/reports/reportCatalog';
 import { WorkspaceReportRenderer } from '../components/reports/WorkspaceReportRenderer';
-import type { WorkspaceReportResult } from '../services/reportWorkspaceService';
+import { AUTHORITATIVE_REPORTS } from '../services/authoritativeReportService';
+import { isWorkspaceReportId, type WorkspaceReportResult } from '../services/reportWorkspaceService';
 
 afterEach(cleanup);
 
@@ -56,5 +57,13 @@ describe('Reports workspace', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Columns' }));
     fireEvent.click(screen.getByRole('button', { name: 'Status' }));
     expect(screen.queryByRole('columnheader', { name: 'Status' })).toBeNull();
+  });
+
+  it('ensures every report in the catalog is in authoritative reports or workspace reports', () => {
+    expect(INITIAL_REPORTS_CATALOG.length).toBe(38);
+    for (const item of INITIAL_REPORTS_CATALOG) {
+      const isHandled = item.id in AUTHORITATIVE_REPORTS || isWorkspaceReportId(item.id);
+      expect(isHandled, `Report "${item.id}" (${item.name}) is missing from both AUTHORITATIVE_REPORTS and WORKSPACE_REPORT_IDS`).toBe(true);
+    }
   });
 });

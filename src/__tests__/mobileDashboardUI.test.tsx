@@ -158,12 +158,22 @@ describe('Mobile Dashboard UI (Light Mode) Test Suite', () => {
     render(<DashboardView onNavigate={mockOnNavigate} />);
 
     await waitFor(() => {
-      expect(screen.getByText('This Fiscal Year')).toBeTruthy();
+      expect(screen.getAllByText('This Fiscal Year').length).toBeGreaterThanOrEqual(1);
     });
 
     // Verify month labels on mobile chart
     expect(screen.getAllByText('Apr').length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText('Mar').length).toBeGreaterThanOrEqual(1);
+
+    // Verify Mobile Top Expenses widget
+    expect(screen.getByText('Top Expenses')).toBeTruthy();
+    expect(screen.getAllByText('Studio Rent').length).toBeGreaterThanOrEqual(1);
+
+    // Verify Mobile Banking Summary widget
+    expect(screen.getByText('Banking Summary')).toBeTruthy();
+    expect(screen.getByText('Uncategorised Transactions')).toBeTruthy();
+    expect(screen.getByText('Bank Balance')).toBeTruthy();
+    expect(screen.getByText('Cash In Hand')).toBeTruthy();
   });
 
   it('4. Floating MobileBottomNav renders Home, Customers, Invoices, Expenses, More', () => {

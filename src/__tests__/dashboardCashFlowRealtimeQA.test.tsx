@@ -127,8 +127,8 @@ describe('DashboardView & Cash Flow Real-Data QA Tests', () => {
     expect(screen.getAllByText(/75,000/).length).toBeGreaterThanOrEqual(1);
 
     // Verify Top Expenses Donut breakdown list
-    expect(screen.getByText('Payroll')).toBeTruthy();
-    expect(screen.getByText('Office Supplies')).toBeTruthy();
+    expect(screen.getAllByText('Payroll').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('Office Supplies').length).toBeGreaterThanOrEqual(1);
 
     // Verify Top 4 KPI values without fake hardcoded fallbacks
     expect(screen.getAllByText(/250,000/).length).toBeGreaterThanOrEqual(1); // Bank

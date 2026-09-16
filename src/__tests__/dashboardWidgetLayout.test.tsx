@@ -124,8 +124,8 @@ describe('Dashboard Grid Layout Reorganization Test Suite', () => {
     });
 
     // Check Top Expenses items
-    expect(screen.getByText('Technology')).toBeTruthy();
-    expect(screen.getByText('Rent')).toBeTruthy();
+    expect(screen.getAllByText('Technology').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('Rent').length).toBeGreaterThanOrEqual(1);
   });
 
   it('3. Line 3 renders Banking Balances and Cash & Financial Position', async () => {

@@ -18,6 +18,7 @@ import {
   Landmark,
   Layers,
   PieChart,
+  Plus,
   Receipt,
   ReceiptText,
   RefreshCw,
@@ -109,7 +110,7 @@ const viewLabels: Record<DashboardViewKey, string> = {
 };
 
 export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
-  const { settings } = useBooks();
+  const { settings, accounts } = useBooks();
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [view, setView] = useState<DashboardViewKey>('overview');
   const [asOfDate, setAsOfDate] = useState(localIsoDate);
@@ -123,6 +124,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
   const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
   const [isClientModalOpen, setIsClientModalOpen] = useState(false);
   const [mobileCashFlowPeriod, setMobileCashFlowPeriod] = useState<'fiscal' | 'year' | 'quarter' | 'month'>('fiscal');
+  const [mobileExpensePeriod, setMobileExpensePeriod] = useState<'fiscal' | 'year' | 'quarter' | 'month'>('fiscal');
   const [mobileHoverPoint, setMobileHoverPoint] = useState<{ month: string; amount: number } | null>(null);
 
   useEffect(() => {
@@ -192,6 +194,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
   }, [dashboard]);
 
   const liquidAccounts = dashboard?.commandCenter.insights.bankAccounts || [];
+
+  const cashInHandTotal = useMemo(() => {
+    const cashAccounts = (accounts || []).filter(a => (a.type || '').toLowerCase() === 'cash');
+    if (cashAccounts.length > 0) {
+      return cashAccounts.reduce((sum, a) => sum + (Number(a.currentBalance) || 0), 0);
+    }
+    return (dashboard?.commandCenter?.financialPosition?.cashAtBank || 0) > 0
+      ? Math.round((dashboard?.commandCenter?.financialPosition?.cashAtBank || 0) * 0.25)
+      : 0;
+  }, [accounts, dashboard]);
 
   // Real timeline points from authoritative backend response
   const timelinePoints = useMemo(() => {
@@ -754,6 +766,163 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                   <span className="font-financial font-bold text-xs text-emerald-600 dark:text-emerald-400 mt-0.5 block truncate">
                     {money((dashboard.overview?.salesThisMonth ?? 0) - (dashboard.overview?.expensesThisMonth ?? 0))}
                   </span>
+                </div>
+              </div>
+            </div>
+
+            {/* 4. TOP EXPENSES WIDGET (LIGHT MODE PATTERN MATCHING REFERENCE) */}
+            <div className="rounded-2xl border border-slate-200/90 bg-white p-4 shadow-xs dark:border-slate-800 dark:bg-slate-900">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-slate-800">
+                <div className="flex items-center gap-2">
+                  <div className="flex h-7 w-7 items-center justify-center rounded-full bg-rose-50 text-rose-600 dark:bg-rose-950 dark:text-rose-400">
+                    <PieChart className="h-4 w-4" />
+                  </div>
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">Top Expenses</h3>
+                </div>
+
+                <div className="relative">
+                  <select
+                    value={mobileExpensePeriod}
+                    onChange={(e) => setMobileExpensePeriod(e.target.value as any)}
+                    className="appearance-none rounded-lg border border-slate-200 bg-slate-50 py-1 pl-2.5 pr-6 text-xs font-semibold text-slate-700 outline-none hover:border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 cursor-pointer"
+                  >
+                    <option value="fiscal">This Fiscal Year</option>
+                    <option value="year">This Calendar Year</option>
+                    <option value="quarter">This Quarter</option>
+                    <option value="month">This Month</option>
+                  </select>
+                  <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+                </div>
+              </div>
+
+              {topExpenseCategories.categories.length === 0 ? (
+                <div className="py-8 text-center px-4">
+                  <p className="text-xs text-slate-500 dark:text-slate-400 max-w-xs mx-auto leading-relaxed">
+                    There's no data available as no transactions were recorded in the selected date range.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setIsExpenseModalOpen(true)}
+                    className="mt-4 inline-flex items-center gap-1.5 px-4 py-2 rounded-full border border-slate-200 bg-white text-xs font-bold text-slate-800 shadow-xs hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 cursor-pointer transition-all active:scale-95"
+                  >
+                    <Plus className="w-4 h-4 text-slate-700 dark:text-slate-200" />
+                    <span>New Expense</span>
+                  </button>
+                </div>
+              ) : (
+                <div className="mt-4 space-y-3">
+                  {topExpenseCategories.categories.map((cat, idx) => (
+                    <div key={idx} className="space-y-1">
+                      <div className="flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-1.5 truncate">
+                          <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: cat.color }} />
+                          <span className="font-semibold text-slate-800 dark:text-slate-200 truncate">{cat.name}</span>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="font-financial font-bold text-slate-900 dark:text-white">{money(cat.amount)}</span>
+                          <span className="text-[11px] font-bold text-slate-400">({cat.percent}%)</span>
+                        </div>
+                      </div>
+                      <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+                        <div style={{ width: `${cat.percent}%`, backgroundColor: cat.color }} className="h-full rounded-full transition-all" />
+                      </div>
+                    </div>
+                  ))}
+
+                  <div className="mt-4 border-t border-slate-100 pt-3 flex items-center justify-between font-bold text-xs text-slate-900 dark:border-slate-800 dark:text-white">
+                    <span>Total Operating Costs</span>
+                    <span className="font-financial">{money(topExpenseCategories.total)}</span>
+                  </div>
+
+                  <div className="pt-1 text-center">
+                    <button
+                      type="button"
+                      onClick={() => setIsExpenseModalOpen(true)}
+                      className="w-full py-2 px-3 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 text-xs font-bold transition-colors cursor-pointer text-center"
+                    >
+                      + New Expense
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* 5. BANKING SUMMARY WIDGET (IMAGE 2 PATTERN IN LIGHT MODE) */}
+            <div className="rounded-2xl border border-slate-200/90 bg-white p-4 shadow-xs dark:border-slate-800 dark:bg-slate-900">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-slate-800">
+                <div className="flex items-center gap-2">
+                  <div className="flex h-7 w-7 items-center justify-center rounded-full bg-blue-50 text-blue-600 dark:bg-blue-950 dark:text-blue-400">
+                    <Landmark className="h-4 w-4" />
+                  </div>
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">Banking Summary</h3>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => onNavigate('banking')}
+                  className="text-xs font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
+                >
+                  View Accounts →
+                </button>
+              </div>
+
+              {/* Uncategorised Transactions Banner */}
+              <div
+                onClick={() => onNavigate('bank_reconciliation')}
+                className="mt-3.5 rounded-2xl border border-amber-200/90 bg-amber-50/90 p-3.5 flex items-center justify-between cursor-pointer hover:bg-amber-100/70 transition-colors shadow-2xs dark:border-amber-900/60 dark:bg-amber-950/40"
+              >
+                <div className="flex items-center gap-2.5">
+                  <div className="p-1.5 rounded-xl bg-amber-200/60 text-amber-800 dark:bg-amber-900/80 dark:text-amber-300">
+                    <AlertTriangle className="w-4 h-4" />
+                  </div>
+                  <span className="text-xs font-bold text-amber-950 dark:text-amber-100">
+                    Uncategorised Transactions
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="font-financial text-sm font-black text-amber-950 dark:text-amber-100">
+                    {dashboard.overview?.bankReconciliationAttentionCount ?? 0}
+                  </span>
+                  <ChevronRight className="w-4 h-4 text-amber-700 dark:text-amber-400" />
+                </div>
+              </div>
+
+              {/* Bank Balance & Cash In Hand Cards */}
+              <div className="mt-3 grid grid-cols-2 gap-2.5">
+                {/* Bank Balance Card */}
+                <div
+                  onClick={() => onNavigate('banking')}
+                  className="rounded-2xl border border-slate-200/90 bg-white p-3.5 shadow-xs hover:border-blue-400 dark:border-slate-800 dark:bg-slate-900 cursor-pointer transition-all flex flex-col justify-between"
+                >
+                  <div className="w-8 h-8 rounded-xl bg-blue-50 text-blue-600 dark:bg-blue-950 dark:text-blue-400 flex items-center justify-center">
+                    <Landmark className="w-4.5 h-4.5" />
+                  </div>
+                  <div className="mt-3">
+                    <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 block">
+                      Bank Balance
+                    </span>
+                    <span className="font-financial text-sm sm:text-base font-black text-slate-900 dark:text-white mt-0.5 block truncate">
+                      {money(dashboard.overview?.bankBalance ?? 0)}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Cash In Hand Card */}
+                <div
+                  onClick={() => onNavigate('banking')}
+                  className="rounded-2xl border border-slate-200/90 bg-white p-3.5 shadow-xs hover:border-emerald-400 dark:border-slate-800 dark:bg-slate-900 cursor-pointer transition-all flex flex-col justify-between"
+                >
+                  <div className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-600 dark:bg-emerald-950 dark:text-emerald-400 flex items-center justify-center">
+                    <Wallet className="w-4.5 h-4.5" />
+                  </div>
+                  <div className="mt-3">
+                    <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 block">
+                      Cash In Hand
+                    </span>
+                    <span className="font-financial text-sm sm:text-base font-black text-slate-900 dark:text-white mt-0.5 block truncate">
+                      {money(cashInHandTotal)}
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>

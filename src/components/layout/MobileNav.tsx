@@ -8,6 +8,7 @@ import {
   FolderKanban,
   Landmark,
   LayoutDashboard,
+  LogOut,
   PieChart,
   Settings,
   ShoppingBag,
@@ -16,6 +17,7 @@ import {
 } from 'lucide-react';
 import { NavigationTab } from '../../types';
 import { useBooks } from '../../context/BooksContext';
+import { useOptionalAuth } from '../../context/AuthContext';
 
 interface MobileNavProps {
   isOpen: boolean;
@@ -48,7 +50,23 @@ export const MobileNav: React.FC<MobileNavProps> = ({
   onOpenQuickCreate,
   enabledCapabilities = new Set(),
 }) => {
-  const { settings } = useBooks();
+  const auth = useOptionalAuth();
+  const { settings, currentUser } = useBooks();
+
+  const displayName = auth?.user?.fullName || currentUser?.fullName || 'Account';
+  const userEmail = auth?.user?.email || currentUser?.email || '';
+  const userInitial = displayName.charAt(0).toUpperCase() || 'U';
+
+  const handleLogout = async () => {
+    if (auth?.logout) {
+      await auth.logout();
+    } else {
+      localStorage.removeItem('auth_token');
+      localStorage.removeItem('active_organization_id');
+      localStorage.removeItem('firmbooks_authenticated');
+      window.location.reload();
+    }
+  };
 
   const navSections: NavSection[] = [
     {
@@ -308,6 +326,31 @@ export const MobileNav: React.FC<MobileNavProps> = ({
             );
           })}
         </nav>
+
+        {/* Mobile User Profile & Log Out Footer */}
+        <div className="p-4 border-t border-slate-800 bg-slate-950/60 space-y-3 shrink-0">
+          <div className="flex items-center space-x-3">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 text-white flex items-center justify-center font-bold text-sm shrink-0 shadow-xs">
+              {userInitial}
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-bold text-white truncate">{displayName}</p>
+              <p className="text-[11px] text-slate-400 truncate">{userEmail || 'Active Session'}</p>
+            </div>
+          </div>
+          <button
+            onClick={async () => {
+              onClose();
+              await handleLogout();
+            }}
+            className="w-full flex items-center justify-center space-x-2 py-2.5 px-3 rounded-xl bg-rose-600/15 hover:bg-rose-600/25 border border-rose-500/30 text-rose-300 hover:text-rose-200 text-xs font-bold transition-all cursor-pointer active:scale-98"
+            title="Log Out"
+            aria-label="Log Out"
+          >
+            <LogOut className="w-4 h-4" />
+            <span>Log Out</span>
+          </button>
+        </div>
       </div>
     </div>
   );

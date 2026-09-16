@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { User, ShieldCheck, Key, Mail, CheckCircle, RefreshCw, AlertTriangle, Fingerprint, History } from 'lucide-react';
+import { User, ShieldCheck, Key, Mail, CheckCircle, RefreshCw, AlertTriangle, Fingerprint, History, LogOut } from 'lucide-react';
 import { useBooks } from '../../context/BooksContext';
 import { apiClient } from '../../api/client';
 import { useAuth } from '../../context/AuthContext';
@@ -268,6 +268,31 @@ export const IdentitySettings: React.FC = () => {
           >
             <ShieldCheck className="w-4 h-4" />
             <span>{mfaStatus?.isVerified ? 'Manage / Re-enroll Authenticator' : 'Set Up Two-Factor Authentication'}</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Session Management & Log Out */}
+      <div className="p-6 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400 shrink-0">
+              <LogOut className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-slate-800 dark:text-white">Active Session</h3>
+              <p className="text-[11px] text-slate-500">Sign out of your active FirmBooks session on this device.</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => void logout()}
+            className="px-4 py-2 bg-rose-50 dark:bg-rose-950/40 hover:bg-rose-100 dark:hover:bg-rose-900/60 text-rose-600 dark:text-rose-300 border border-rose-200 dark:border-rose-800 rounded-xl font-bold cursor-pointer transition flex items-center justify-center space-x-2 text-xs shadow-2xs self-start sm:self-auto"
+            title="Log out of FirmBooks"
+            aria-label="Log Out"
+          >
+            <LogOut className="w-4 h-4" />
+            <span>Log Out</span>
           </button>
         </div>
       </div>

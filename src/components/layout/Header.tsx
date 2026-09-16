@@ -11,9 +11,13 @@ import {
   Calculator,
   FileSpreadsheet,
   Download,
+  LogOut,
+  Settings,
+  ShieldCheck,
 } from 'lucide-react';
 import { NavigationTab } from '../../types';
 import { useBooks } from '../../context/BooksContext';
+import { useOptionalAuth } from '../../context/AuthContext';
 
 import { GlobalSearchBar } from '../common/GlobalSearchBar';
 
@@ -34,11 +38,14 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenMobileNav,
   onOpenOrgSwitcher,
 }) => {
-  const { settings, updateSettings, currentOrg } = useBooks();
+  const auth = useOptionalAuth();
+  const { settings, updateSettings, currentOrg, currentUser } = useBooks();
   const handleMobileToggle = onOpenMobileMenu || onOpenMobileNav || (() => {});
   const [isNewMenuOpen, setIsNewMenuOpen] = useState(false);
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const newMenuRef = useRef<HTMLDivElement>(null);
+  const userMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const handleInstallPrompt = (event: Event) => {
@@ -59,6 +66,9 @@ export const Header: React.FC<HeaderProps> = ({
     const handleClickOutside = (e: MouseEvent) => {
       if (newMenuRef.current && !newMenuRef.current.contains(e.target as Node)) {
         setIsNewMenuOpen(false);
+      }
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) {
+        setIsUserMenuOpen(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -91,6 +101,22 @@ export const Header: React.FC<HeaderProps> = ({
     setIsNewMenuOpen(false);
     if (onNavigate) {
       onNavigate(tab, { autoCreate });
+    }
+  };
+
+  const displayName = auth?.user?.fullName || currentUser?.fullName || 'Account';
+  const userEmail = auth?.user?.email || currentUser?.email || '';
+  const userInitial = displayName.charAt(0).toUpperCase() || 'U';
+
+  const handleLogout = async () => {
+    setIsUserMenuOpen(false);
+    if (auth?.logout) {
+      await auth.logout();
+    } else {
+      localStorage.removeItem('auth_token');
+      localStorage.removeItem('active_organization_id');
+      localStorage.removeItem('firmbooks_authenticated');
+      window.location.reload();
     }
   };
 
@@ -290,6 +316,88 @@ export const Header: React.FC<HeaderProps> = ({
             </>
           )}
         </button>
+
+        {/* User Profile & Log Out Dropdown */}
+        <div className="relative" ref={userMenuRef}>
+          <button
+            onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
+            className="flex items-center space-x-2 p-1 sm:px-2 py-1 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors border border-slate-200 dark:border-slate-700 cursor-pointer shadow-2xs group"
+            title="User Profile & Session"
+            aria-label="User Account Menu"
+          >
+            <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-blue-600 to-indigo-600 text-white flex items-center justify-center font-bold text-xs shadow-xs shrink-0">
+              {userInitial}
+            </div>
+            <div className="hidden md:flex flex-col text-left max-w-[120px]">
+              <span className="text-xs font-semibold text-slate-800 dark:text-slate-100 truncate leading-tight">
+                {displayName}
+              </span>
+              <span className="text-[10px] text-slate-400 font-medium truncate leading-tight">
+                {userEmail || 'Active'}
+              </span>
+            </div>
+            <ChevronDown className={`w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600 dark:group-hover:text-slate-200 transition-transform ${isUserMenuOpen ? 'rotate-180' : ''}`} />
+          </button>
+
+          {isUserMenuOpen && (
+            <div className="absolute right-0 mt-2 w-64 bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 p-2 z-50 animate-fade-in text-xs">
+              {/* User Identity Header */}
+              <div className="p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl mb-1 flex items-center space-x-3">
+                <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 text-white flex items-center justify-center font-bold text-base shadow-sm shrink-0">
+                  {userInitial}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="font-bold text-sm text-slate-900 dark:text-white truncate">
+                    {displayName}
+                  </p>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                    {userEmail || 'Active Session'}
+                  </p>
+                  <span className="inline-block mt-1 px-2 py-0.5 text-[9px] font-semibold bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 rounded-full truncate max-w-full">
+                    {currentOrg.name || 'Workspace'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Navigation Options */}
+              <div className="space-y-0.5 pt-1">
+                <button
+                  onClick={() => {
+                    setIsUserMenuOpen(false);
+                    if (onNavigate) onNavigate('settings');
+                  }}
+                  className="w-full text-left px-3 py-2 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800/80 flex items-center space-x-2.5 text-slate-700 dark:text-slate-200 cursor-pointer transition-colors"
+                >
+                  <Settings className="w-4 h-4 text-slate-400" />
+                  <span className="font-medium">Settings & Preferences</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setIsUserMenuOpen(false);
+                    if (onNavigate) onNavigate('team_access');
+                  }}
+                  className="w-full text-left px-3 py-2 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800/80 flex items-center space-x-2.5 text-slate-700 dark:text-slate-200 cursor-pointer transition-colors"
+                >
+                  <ShieldCheck className="w-4 h-4 text-slate-400" />
+                  <span className="font-medium">Security & Access</span>
+                </button>
+              </div>
+
+              <div className="border-t border-slate-100 dark:border-slate-800 my-1.5" />
+
+              {/* Log Out Action */}
+              <button
+                onClick={handleLogout}
+                className="w-full text-left px-3 py-2.5 rounded-xl hover:bg-rose-50 dark:hover:bg-rose-950/50 flex items-center space-x-2.5 text-rose-600 dark:text-rose-400 cursor-pointer transition-colors font-semibold group"
+                title="Log out of FirmBooks"
+                aria-label="Log Out"
+              >
+                <LogOut className="w-4 h-4 text-rose-500 group-hover:text-rose-600 transition-colors" />
+                <span>Log Out</span>
+              </button>
+            </div>
+          )}
+        </div>
 
       </div>
     </header>

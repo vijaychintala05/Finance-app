@@ -138,7 +138,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const logout = async (): Promise<void> => {
-    await apiClient.post('/auth/logout');
+    try {
+      await apiClient.post('/auth/logout');
+    } catch {
+      // Continue clearing local session even if server endpoint fails or user is offline
+    }
     localStorage.removeItem('auth_token');
     localStorage.removeItem('active_organization_id');
     localStorage.removeItem('firmbooks_authenticated');
@@ -180,4 +184,8 @@ export function useAuth(): AuthContextValue {
   const context = useContext(AuthContext);
   if (!context) throw new Error('useAuth must be used inside AuthProvider');
   return context;
+}
+
+export function useOptionalAuth(): AuthContextValue | null {
+  return useContext(AuthContext) ?? null;
 }

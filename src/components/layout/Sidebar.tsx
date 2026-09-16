@@ -8,6 +8,7 @@ import {
   Hash,
   Landmark,
   LayoutDashboard,
+  LogOut,
   PieChart,
   Plus,
   Settings,
@@ -16,6 +17,7 @@ import {
 } from 'lucide-react';
 import { NavigationTab } from '../../types';
 import { useBooks } from '../../context/BooksContext';
+import { useOptionalAuth } from '../../context/AuthContext';
 
 interface SidebarProps {
   activeTab: string;
@@ -48,7 +50,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenOrgWizard,
   enabledCapabilities = new Set(),
 }) => {
-  const { settings, currentOrg, organizations } = useBooks();
+  const auth = useOptionalAuth();
+  const { settings, currentOrg, organizations, currentUser } = useBooks();
+
+  const displayName = auth?.user?.fullName || currentUser?.fullName || 'Account';
+  const userEmail = auth?.user?.email || currentUser?.email || '';
+  const userInitial = displayName.charAt(0).toUpperCase() || 'U';
+
+  const handleLogout = async () => {
+    if (auth?.logout) {
+      await auth.logout();
+    } else {
+      localStorage.removeItem('auth_token');
+      localStorage.removeItem('active_organization_id');
+      localStorage.removeItem('firmbooks_authenticated');
+      window.location.reload();
+    }
+  };
 
   const navSections: NavSection[] = [
     {
@@ -325,8 +343,34 @@ export const Sidebar: React.FC<SidebarProps> = ({
         })}
       </nav>
 
+      {/* User Session & Quick Log Out Bar */}
+      <div className="p-3 border-t border-white/15 bg-black/10 flex items-center justify-between">
+        <div className="flex items-center space-x-2.5 min-w-0">
+          <div className="w-7 h-7 rounded-lg bg-white/20 text-white flex items-center justify-center font-bold text-xs shrink-0">
+            {userInitial}
+          </div>
+          <div className="min-w-0">
+            <p className="text-xs font-semibold text-white truncate leading-tight">
+              {displayName}
+            </p>
+            <p className="text-[10px] text-blue-200 truncate leading-tight">
+              {userEmail || 'Active'}
+            </p>
+          </div>
+        </div>
+
+        <button
+          onClick={handleLogout}
+          className="p-1.5 rounded-lg hover:bg-white/20 text-blue-200 hover:text-white transition-colors cursor-pointer shrink-0"
+          title="Log Out"
+          aria-label="Log Out"
+        >
+          <LogOut className="w-4 h-4" />
+        </button>
+      </div>
+
       {/* Footer info */}
-      <div className="p-3 border-t border-white/15 text-[11px] text-blue-200 flex justify-between items-center">
+      <div className="px-3 py-2 border-t border-white/10 text-[10px] text-blue-200/80 flex justify-between items-center">
         <span>FirmBooks v1.0</span>
         <span className="font-mono text-white font-semibold">{settings.currencyCode}</span>
       </div>

@@ -225,7 +225,7 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
+            <table className="mobile-record-table w-full text-left text-xs">
               <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-500 uppercase text-[10px] tracking-wider border-b border-slate-200 dark:border-slate-800">
                 <tr>
                   <th className="p-3 pl-4">Quote #</th>

@@ -417,7 +417,7 @@ export const TimeLogsView: React.FC<TimeLogsViewProps> = ({
       {/* TIME LOGS DATA TABLE */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xs overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
+          <table className="mobile-record-table w-full text-left text-xs">
             <thead className="bg-slate-50 dark:bg-slate-800/80 text-slate-500 dark:text-slate-400 uppercase text-[10px] font-bold tracking-wider border-b border-slate-200 dark:border-slate-800">
               <tr>
                 <th className="p-4">DATE & STAFF</th>

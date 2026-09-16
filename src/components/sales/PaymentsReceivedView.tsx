@@ -263,7 +263,7 @@ export const PaymentsReceivedView: React.FC<PaymentsReceivedViewProps> = ({
 
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xs dark:border-slate-800 dark:bg-slate-900">
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
+          <table className="mobile-record-table w-full text-left text-xs">
             <thead className="border-b border-slate-200 bg-slate-50 text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:border-slate-800 dark:bg-slate-800/80">
               <tr><th className="p-3 pl-4">Payment #</th><th className="p-3">Customer</th><th className="p-3">Allocated invoice</th><th className="p-3">Date</th><th className="p-3">Method</th><th className="p-3">Reference</th><th className="p-3 text-right">Amount</th><th className="p-3 pr-4 text-right">Actions</th></tr>
             </thead>

@@ -64,7 +64,7 @@ export const TransactionLockingView: React.FC = () => {
       </div>
 
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
-        <table className="w-full text-left text-xs">
+        <table className="mobile-record-table w-full text-left text-xs">
           <thead className="border-b border-slate-200 bg-slate-50 text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:border-slate-800 dark:bg-slate-800/80"><tr><th className="p-3 pl-4">Locked through</th><th className="p-3">Scope</th><th className="p-3">Reason</th><th className="p-3">Server actor</th><th className="p-3 pr-4">Status</th></tr></thead>
           <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
             {periodLocks.length === 0 ? (

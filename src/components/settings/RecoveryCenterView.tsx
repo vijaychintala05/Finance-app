@@ -104,7 +104,7 @@ export const RecoveryCenterView: React.FC = () => {
       <section className="space-y-3">
         <h3 className="text-sm font-bold text-slate-900 dark:text-white">Recovery artifacts</h3>
         <div className="overflow-x-auto border-y border-slate-200 dark:border-slate-800">
-          <table className="w-full text-left text-xs">
+          <table className="mobile-record-table w-full text-left text-xs">
             <thead className="bg-slate-50 text-[10px] font-bold uppercase text-slate-500 dark:bg-slate-900"><tr><th className="p-3">Artifact</th><th className="p-3">Created</th><th className="p-3">Schema</th><th className="p-3 text-right">Rows</th><th className="p-3 text-right">Actions</th></tr></thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {artifacts.length === 0 ? <tr><td colSpan={5} className="p-8 text-center text-slate-500">No encrypted exports have been created.</td></tr> : artifacts.map((artifact) => (

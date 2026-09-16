@@ -94,7 +94,7 @@ export const MasterItemsView: React.FC = () => {
       </div>
 
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-2xs">
-        <table className="w-full text-left text-xs">
+        <table className="mobile-record-table w-full text-left text-xs">
           <thead className="bg-slate-50 text-slate-600 font-semibold border-b border-slate-200">
             <tr>
               <th className="p-3">Item / Service Name</th>

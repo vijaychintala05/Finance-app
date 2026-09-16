@@ -263,7 +263,7 @@ export const BankingOverviewTable: React.FC<BankingOverviewTableProps> = ({
       {/* 4. ZOHO BOOKS BANKING TABLE */}
       <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs border-collapse">
+          <table className="mobile-record-table w-full text-left text-xs border-collapse">
             <thead>
               <tr className="bg-slate-50 dark:bg-slate-950 text-slate-500 dark:text-slate-400 font-extrabold uppercase text-[10px] tracking-wider border-b border-slate-200 dark:border-slate-800">
                 <th className="py-3.5 px-5">Bank Account</th>

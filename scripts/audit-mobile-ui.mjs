@@ -1,0 +1,60 @@
+// Run against an isolated local development server: node scripts/audit-mobile-ui.mjs
+// This is a read-only visual-layout audit; it does not create financial records.
+import { chromium } from '@playwright/test';
+import { mkdirSync, readFileSync } from 'node:fs';
+
+const source = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+const routes = [...new Set([...source.matchAll(/case '([^']+)':/g)].map((match) => match[1]))]
+  .filter((route) => route !== 'customer_portal' && route !== 'data_migration');
+const browser = await chromium.launch({ headless: true });
+const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 3 });
+const baseUrl = process.env.MOBILE_AUDIT_URL || 'http://localhost:3000';
+const screenshotDir = process.env.MOBILE_AUDIT_SCREENSHOTS;
+if (screenshotDir) mkdirSync(screenshotDir, { recursive: true });
+
+try {
+  await page.goto(baseUrl);
+  await page.getByRole('button', { name: /Enter as Developer Admin/ }).click();
+  await page.getByRole('heading', { name: 'Financial Command Center' }).waitFor({ state: 'visible', timeout: 15000 });
+  const results = [];
+  for (const [index, route] of routes.entries()) {
+    // The query makes each navigation a fresh document, so lazy views cannot
+    // be mistaken for the preceding page while the next module loads.
+    await page.goto(`${baseUrl}/?mobile_audit=${index}#/${route}`);
+    await page.locator('main').first().waitFor({ state: 'visible', timeout: 15000 });
+    await page.waitForFunction(() => {
+      const text = document.querySelector('main')?.textContent?.trim() || '';
+      return text.length > 20 && !text.includes('Loading workspace…');
+    }, undefined, { timeout: 15000 });
+    const result = await page.evaluate(() => {
+      const main = document.querySelector('main');
+      const heading = main?.querySelector('h1,h2,h3')?.textContent?.trim() || '';
+      const viewport = document.documentElement.clientWidth;
+      const overflowing = [...document.querySelectorAll('body *')]
+        .filter((element) => {
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return style.display !== 'none' && style.position !== 'fixed' && rect.right > viewport + 2 && rect.width < 2000;
+        })
+        .slice(0, 4)
+        .map((element) => `${element.tagName.toLowerCase()}.${String(element.className).slice(0, 45)}`);
+      return {
+        heading,
+        textLength: main?.textContent?.trim().length || 0,
+        viewport,
+        documentWidth: document.documentElement.scrollWidth,
+        tables: main?.querySelectorAll('table').length || 0,
+        mobileCardTables: main?.querySelectorAll('table.mobile-record-table').length || 0,
+        unlabeledCells: main?.querySelectorAll('table.mobile-record-table tbody td:not([colspan]):not([data-mobile-label])').length || 0,
+        overflowing,
+      };
+    });
+    results.push({ route, ...result });
+    if (screenshotDir && ['dashboard', 'invoices', 'bills', 'banking', 'reports', 'settings'].includes(route)) {
+      await page.screenshot({ path: `${screenshotDir}/${route}.png`, fullPage: true });
+    }
+  }
+  console.log(JSON.stringify(results, null, 2));
+} finally {
+  await browser.close();
+}

@@ -354,7 +354,7 @@ export const DocumentInboxView: React.FC<DocumentInboxViewProps> = ({ onNavigate
 
         {/* Documents Table */}
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
+          <table className="mobile-record-table w-full text-left text-sm">
             <thead className="bg-gray-50 dark:bg-gray-700/50 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider border-y border-gray-200 dark:border-gray-700">
               <tr>
                 <th className="py-3 px-4">Document</th>

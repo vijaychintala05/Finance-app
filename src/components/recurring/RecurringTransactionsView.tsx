@@ -156,7 +156,7 @@ export const RecurringTransactionsView: React.FC<{ kind: Kind }> = ({ kind }) =>
       {error && <div className="flex items-center gap-2 border border-red-200 bg-red-50 p-3 text-sm text-red-700"><AlertCircle className="h-4 w-4" />{error}</div>}
 
       <div className="overflow-x-auto border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
-        <table className="w-full min-w-[700px] text-left text-xs">
+        <table className="mobile-record-table w-full min-w-[700px] text-left text-xs">
           <thead className="border-b border-slate-200 bg-slate-50 text-slate-500 dark:border-slate-800 dark:bg-slate-950">
             <tr><th className="p-3">Schedule</th><th className="p-3">Frequency</th><th className="p-3">Next run</th><th className="p-3 text-right">Amount</th><th className="p-3">Status</th><th className="p-3 text-right">Action</th></tr>
           </thead>

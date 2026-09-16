@@ -491,237 +491,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       {/* VIEW 1: EXECUTIVE OVERVIEW */}
       {dashboard && view === 'overview' && (
         <div className="space-y-6">
-          {/* SECTION 1: ACTION QUEUE (LEFT) + CASH & POSITION CONTEXT (RIGHT) */}
-          <section className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
-            {/* Left: Needs Attention Widget (7 cols on lg) */}
-            <div className="lg:col-span-7 flex flex-col justify-between rounded-2xl border border-slate-200/90 bg-white p-5 sm:p-6 shadow-xs dark:border-slate-800/90 dark:bg-slate-900">
-              <div>
-                <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-slate-800">
-                  <div className="flex items-center gap-2">
-                    <h2 className="text-base font-bold text-slate-900 dark:text-white">
-                      Needs Attention
-                    </h2>
-                    {attentionItems.length > 0 && (
-                      <span className="rounded-full bg-rose-50 px-2.5 py-0.5 text-xs font-bold text-rose-700 dark:bg-rose-950/60 dark:text-rose-400">
-                        {attentionItems.length} {attentionItems.length === 1 ? 'Action' : 'Actions'}
-                      </span>
-                    )}
-                  </div>
-                  {attentionItems.length > 3 && (
-                    <button
-                      type="button"
-                      onClick={() => onNavigate(attentionItems[0].destination)}
-                      className="text-xs font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
-                    >
-                      View all ({attentionItems.length}) →
-                    </button>
-                  )}
-                </div>
-
-                {attentionItems.length === 0 ? (
-                  /* Quiet completion state when 0 items */
-                  <div className="my-6 flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-200 p-6 text-center dark:border-slate-800">
-                    <CheckCircle2 className="h-8 w-8 text-emerald-500 mb-2" />
-                    <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">
-                      Nothing needs action from the available records
-                    </p>
-                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                      Customer invoices, vendor bills, and bank imported items are up to date as of {formatDate(asOfDate)}.
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => onNavigate('reports')}
-                      className="mt-3 text-xs font-bold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
-                    >
-                      Inspect verified financial statements →
-                    </button>
-                  </div>
-                ) : (
-                  <div className="mt-4 divide-y divide-slate-100 dark:divide-slate-800/70">
-                    {attentionItems.slice(0, 3).map((item) => (
-                      <div
-                        key={item.id}
-                        className="flex flex-col sm:flex-row sm:items-center justify-between py-3 gap-2"
-                      >
-                        <div className="flex items-start gap-3">
-                          <span
-                            className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${
-                              item.severity === 'critical' ? 'bg-rose-500' : 'bg-amber-500'
-                            }`}
-                          />
-                          <div>
-                            <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                              {item.label}
-                            </p>
-                            <p className="text-xs text-slate-500 dark:text-slate-400">
-                              <span className="font-semibold text-slate-700 dark:text-slate-300">
-                                {item.count} {item.count === 1 ? 'item' : 'items'}
-                              </span>
-                              {item.amount !== null && item.amount !== undefined && (
-                                <span> • {money(item.amount)} total</span>
-                              )}
-                            </p>
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => onNavigate(item.destination)}
-                          className="inline-flex shrink-0 items-center justify-center rounded-lg border border-slate-200/90 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 dark:border-slate-800 dark:bg-slate-800/60 dark:text-slate-200 cursor-pointer"
-                        >
-                          <span>Take Action</span>
-                          <ArrowRight className="ml-1 h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Right: Cash & Position Context (5 cols on lg) */}
-            <div className="lg:col-span-5 flex flex-col justify-between rounded-2xl border border-slate-200/90 bg-white p-5 sm:p-6 shadow-xs dark:border-slate-800/90 dark:bg-slate-900">
-              <div>
-                <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-slate-800">
-                  <div className="flex items-center gap-2">
-                    <Wallet className="h-4.5 w-4.5 text-blue-600 dark:text-blue-400" />
-                    <h2 className="text-sm font-bold text-slate-900 dark:text-white">
-                      Cash & Financial Position
-                    </h2>
-                  </div>
-                  <span className="rounded-md border border-emerald-200/70 bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/60 dark:text-emerald-400">
-                    Book balance
-                  </span>
-                </div>
-
-                <div className="mt-4">
-                  <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">Total Liquid Cash & Bank</p>
-                  <p className="mt-1 font-financial text-2xl font-black text-slate-900 sm:text-3xl dark:text-white">
-                    {money(dashboard.commandCenter?.financialPosition?.cashAtBank ?? dashboard.overview?.bankBalance ?? 0)}
-                  </p>
-                  <p className="mt-0.5 text-xs text-slate-400">Posted ledger balance across all monetary accounts</p>
-                </div>
-
-                <div className="mt-4 grid grid-cols-2 gap-3 border-t border-slate-100 pt-3 dark:border-slate-800">
-                  <div
-                    onClick={() => onNavigate('invoices')}
-                    className="group rounded-xl border border-slate-100 bg-slate-50/60 p-3 hover:border-emerald-300 hover:bg-emerald-50/30 transition-colors cursor-pointer dark:border-slate-800 dark:bg-slate-800/40"
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-semibold text-slate-600 dark:text-slate-400">To Collect (AR)</span>
-                      <TrendingUp className="h-3.5 w-3.5 text-emerald-600" />
-                    </div>
-                    <p className="mt-1 font-financial text-base font-bold text-slate-900 dark:text-white">
-                      {money(dashboard.commandCenter?.financialPosition?.toCollect ?? dashboard.overview?.receivables ?? 0)}
-                    </p>
-                    <p className="mt-0.5 text-[11px] text-slate-400 truncate">
-                      {dashboard.overview?.overdueInvoicesCount > 0
-                        ? `${money(dashboard.overview.overdueReceivables)} overdue`
-                        : `${dashboard.overview?.outstandingInvoicesCount ?? 0} open invoices`}
-                    </p>
-                  </div>
-
-                  <div
-                    onClick={() => onNavigate('bills')}
-                    className="group rounded-xl border border-slate-100 bg-slate-50/60 p-3 hover:border-purple-300 hover:bg-purple-50/30 transition-colors cursor-pointer dark:border-slate-800 dark:bg-slate-800/40"
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-semibold text-slate-600 dark:text-slate-400">To Pay (AP)</span>
-                      <Receipt className="h-3.5 w-3.5 text-purple-600" />
-                    </div>
-                    <p className="mt-1 font-financial text-base font-bold text-slate-900 dark:text-white">
-                      {money(dashboard.commandCenter?.financialPosition?.toPay ?? dashboard.overview?.payables ?? 0)}
-                    </p>
-                    <p className="mt-0.5 text-[11px] text-slate-400 truncate">
-                      {dashboard.overview?.overdueBillsCount > 0
-                        ? `${money(dashboard.overview.overduePayables)} overdue`
-                        : `${dashboard.overview?.dueBillsCount ?? 0} bills pending`}
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-4 pt-2">
-                <button
-                  type="button"
-                  onClick={() => onNavigate('banking')}
-                  className="inline-flex w-full items-center justify-between text-xs font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
-                >
-                  <span>Inspect bank feeds & statements</span>
-                  <ArrowRight className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            </div>
-          </section>
-
-          {/* SECTION 2: COLLECT / PAY DUE NEXT (TWO LISTS) */}
-          <section className="grid grid-cols-1 md:grid-cols-2 gap-5">
-            {/* Receivables Due Next */}
+          {/* ROW 1: TOTAL PAYABLES, TOTAL RECEIVABLES, QUICK ACTIONS */}
+          <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 items-stretch">
+            {/* 1. Total Payables Widget */}
             <div className="rounded-2xl border border-slate-200/90 bg-white p-5 sm:p-6 shadow-xs dark:border-slate-800/90 dark:bg-slate-900 flex flex-col justify-between">
               <div>
                 <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-slate-800">
                   <div className="flex items-center gap-2">
-                    <TrendingUp className="h-4.5 w-4.5 text-emerald-600" />
-                    <h2 className="text-sm font-bold text-slate-900 dark:text-white">
-                      Receivables Due Next
-                    </h2>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => onNavigate('invoices')}
-                    className="text-xs font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
-                  >
-                    All Invoices →
-                  </button>
-                </div>
-
-                {(!dashboard.overview?.collections || dashboard.overview.collections.length === 0) ? (
-                  <p className="py-8 text-center text-xs text-slate-400">
-                    No customer collections currently due.
-                  </p>
-                ) : (
-                  <div className="mt-3 divide-y divide-slate-100 dark:divide-slate-800/70">
-                    {dashboard.overview.collections.slice(0, 3).map((item, idx) => (
-                      <div
-                        key={idx}
-                        onClick={() => onNavigate('invoices')}
-                        className="flex items-center justify-between py-2.5 hover:bg-slate-50/60 rounded-lg px-2 -mx-2 transition-colors cursor-pointer dark:hover:bg-slate-800/40"
-                      >
-                        <div className="min-w-0 flex-1">
-                          <p className="text-xs font-bold text-slate-800 dark:text-slate-200 truncate">
-                            {item.partyName}
-                          </p>
-                          <p className="text-[11px] text-slate-400">
-                            {item.dueDate ? (item.overdue ? `Overdue since ${formatDate(item.dueDate)}` : `Due ${formatDate(item.dueDate)}`) : 'Due on receipt'}
-                          </p>
-                        </div>
-                        <div className="text-right ml-3 shrink-0">
-                          <p className="font-financial text-xs font-bold text-slate-900 dark:text-white">
-                            {money(item.amount)}
-                          </p>
-                          <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-bold ${
-                            item.overdue
-                              ? 'bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-400'
-                              : 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
-                          }`}>
-                            {item.overdue ? 'Overdue' : 'Due Soon'}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Payables Due Next */}
-            <div className="rounded-2xl border border-slate-200/90 bg-white p-5 sm:p-6 shadow-xs dark:border-slate-800/90 dark:bg-slate-900 flex flex-col justify-between">
-              <div>
-                <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-slate-800">
-                  <div className="flex items-center gap-2">
-                    <Receipt className="h-4.5 w-4.5 text-purple-600" />
-                    <h2 className="text-sm font-bold text-slate-900 dark:text-white">
-                      Payables Due Next
-                    </h2>
+                    <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-purple-50 text-purple-600 dark:bg-purple-950 dark:text-purple-400">
+                      <Receipt className="h-4.5 w-4.5" />
+                    </div>
+                    <div>
+                      <h2 className="text-sm font-bold text-slate-900 dark:text-white">
+                        Total Payables
+                      </h2>
+                      <p className="text-[10px] text-slate-400">Vendor bills awaiting payment</p>
+                    </div>
                   </div>
                   <button
                     type="button"
@@ -732,51 +517,254 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                   </button>
                 </div>
 
-                {(!dashboard.overview?.billsDue || dashboard.overview.billsDue.length === 0) ? (
-                  <p className="py-8 text-center text-xs text-slate-400">
-                    No vendor bills currently due.
+                <div className="mt-4">
+                  <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">Total Unpaid Bills</span>
+                  <p className="mt-1 font-financial text-2xl sm:text-3xl font-black text-slate-900 dark:text-white">
+                    {money(dashboard.overview?.payables ?? 0)}
                   </p>
-                ) : (
-                  <div className="mt-3 divide-y divide-slate-100 dark:divide-slate-800/70">
-                    {dashboard.overview.billsDue.slice(0, 3).map((item, idx) => (
-                      <div
-                        key={idx}
-                        onClick={() => onNavigate('bills')}
-                        className="flex items-center justify-between py-2.5 hover:bg-slate-50/60 rounded-lg px-2 -mx-2 transition-colors cursor-pointer dark:hover:bg-slate-800/40"
-                      >
-                        <div className="min-w-0 flex-1">
-                          <p className="text-xs font-bold text-slate-800 dark:text-slate-200 truncate">
-                            {item.partyName}
-                          </p>
-                          <p className="text-[11px] text-slate-400">
-                            {item.dueDate ? (item.overdue ? `Overdue since ${formatDate(item.dueDate)}` : `Due ${formatDate(item.dueDate)}`) : 'Due upon receipt'}
-                          </p>
-                        </div>
-                        <div className="text-right ml-3 shrink-0">
-                          <p className="font-financial text-xs font-bold text-slate-900 dark:text-white">
-                            {money(item.amount)}
-                          </p>
-                          <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-bold ${
-                            item.overdue
-                              ? 'bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-400'
-                              : 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
-                          }`}>
-                            {item.overdue ? 'Overdue' : 'Due Soon'}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
+                  <div className="mt-1.5 flex items-center gap-2">
+                    {dashboard.overview?.overduePayables > 0 ? (
+                      <span className="rounded-md bg-rose-50 px-2 py-0.5 text-[11px] font-bold text-rose-700 dark:bg-rose-950/60 dark:text-rose-400">
+                        {money(dashboard.overview.overduePayables)} overdue
+                      </span>
+                    ) : (
+                      <span className="rounded-md bg-emerald-50 px-2 py-0.5 text-[11px] font-bold text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-400">
+                        All bills current
+                      </span>
+                    )}
+                    <span className="text-xs text-slate-400">
+                      • {dashboard.overview?.dueBillsCount ?? 0} bills pending
+                    </span>
                   </div>
-                )}
+                </div>
+
+                <div className="mt-4 border-t border-slate-100 pt-3 dark:border-slate-800">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-2">Payables Due Next</p>
+                  {(!dashboard.overview?.billsDue || dashboard.overview.billsDue.length === 0) ? (
+                    <p className="py-4 text-center text-xs text-slate-400">
+                      No vendor bills currently due.
+                    </p>
+                  ) : (
+                    <div className="divide-y divide-slate-100 dark:divide-slate-800/70">
+                      {dashboard.overview.billsDue.slice(0, 3).map((item, idx) => (
+                        <div
+                          key={idx}
+                          onClick={() => onNavigate('bills')}
+                          className="flex items-center justify-between py-2 hover:bg-slate-50/60 rounded-lg px-2 -mx-2 transition-colors cursor-pointer dark:hover:bg-slate-800/40"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <p className="text-xs font-bold text-slate-800 dark:text-slate-200 truncate">
+                              {item.partyName}
+                            </p>
+                            <p className="text-[11px] text-slate-400">
+                              {item.dueDate ? (item.overdue ? `Overdue since ${formatDate(item.dueDate)}` : `Due ${formatDate(item.dueDate)}`) : 'Due upon receipt'}
+                            </p>
+                          </div>
+                          <div className="text-right ml-2 shrink-0">
+                            <p className="font-financial text-xs font-bold text-slate-900 dark:text-white">
+                              {money(item.amount)}
+                            </p>
+                            <span className={`inline-block rounded px-1.5 py-0.2 text-[9px] font-bold ${
+                              item.overdue
+                                ? 'bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-400'
+                                : 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
+                            }`}>
+                              {item.overdue ? 'Overdue' : 'Due Soon'}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => onNavigate('bills', { autoCreate: true })}
+                  className="w-full py-2 px-3 rounded-xl border border-purple-200 bg-purple-50/60 hover:bg-purple-100 text-purple-700 dark:border-purple-900/60 dark:bg-purple-950/40 dark:text-purple-300 text-xs font-bold transition-colors cursor-pointer text-center"
+                >
+                  + Create Vendor Bill
+                </button>
+              </div>
+            </div>
+
+            {/* 2. Total Receivables Widget */}
+            <div className="rounded-2xl border border-slate-200/90 bg-white p-5 sm:p-6 shadow-xs dark:border-slate-800/90 dark:bg-slate-900 flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-slate-800">
+                  <div className="flex items-center gap-2">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600 dark:bg-emerald-950 dark:text-emerald-400">
+                      <TrendingUp className="h-4.5 w-4.5" />
+                    </div>
+                    <div>
+                      <h2 className="text-sm font-bold text-slate-900 dark:text-white">
+                        Total Receivables
+                      </h2>
+                      <p className="text-[10px] text-slate-400">Customer invoices to collect</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('invoices')}
+                    className="text-xs font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
+                  >
+                    All Invoices →
+                  </button>
+                </div>
+
+                <div className="mt-4">
+                  <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">Total Unpaid Invoices</span>
+                  <p className="mt-1 font-financial text-2xl sm:text-3xl font-black text-slate-900 dark:text-white">
+                    {money(dashboard.overview?.receivables ?? 0)}
+                  </p>
+                  <div className="mt-1.5 flex items-center gap-2">
+                    {dashboard.overview?.overdueReceivables > 0 ? (
+                      <span className="rounded-md bg-rose-50 px-2 py-0.5 text-[11px] font-bold text-rose-700 dark:bg-rose-950/60 dark:text-rose-400">
+                        {money(dashboard.overview.overdueReceivables)} overdue
+                      </span>
+                    ) : (
+                      <span className="rounded-md bg-emerald-50 px-2 py-0.5 text-[11px] font-bold text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-400">
+                        All invoices current
+                      </span>
+                    )}
+                    <span className="text-xs text-slate-400">
+                      • {dashboard.overview?.outstandingInvoicesCount ?? 0} open invoices
+                    </span>
+                  </div>
+                </div>
+
+                <div className="mt-4 border-t border-slate-100 pt-3 dark:border-slate-800">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-2">Receivables Due Next</p>
+                  {(!dashboard.overview?.collections || dashboard.overview.collections.length === 0) ? (
+                    <p className="py-4 text-center text-xs text-slate-400">
+                      No customer collections currently due.
+                    </p>
+                  ) : (
+                    <div className="divide-y divide-slate-100 dark:divide-slate-800/70">
+                      {dashboard.overview.collections.slice(0, 3).map((item, idx) => (
+                        <div
+                          key={idx}
+                          onClick={() => onNavigate('invoices')}
+                          className="flex items-center justify-between py-2 hover:bg-slate-50/60 rounded-lg px-2 -mx-2 transition-colors cursor-pointer dark:hover:bg-slate-800/40"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <p className="text-xs font-bold text-slate-800 dark:text-slate-200 truncate">
+                              {item.partyName}
+                            </p>
+                            <p className="text-[11px] text-slate-400">
+                              {item.dueDate ? (item.overdue ? `Overdue since ${formatDate(item.dueDate)}` : `Due ${formatDate(item.dueDate)}`) : 'Due on receipt'}
+                            </p>
+                          </div>
+                          <div className="text-right ml-2 shrink-0">
+                            <p className="font-financial text-xs font-bold text-slate-900 dark:text-white">
+                              {money(item.amount)}
+                            </p>
+                            <span className={`inline-block rounded px-1.5 py-0.2 text-[9px] font-bold ${
+                              item.overdue
+                                ? 'bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-400'
+                                : 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
+                            }`}>
+                              {item.overdue ? 'Overdue' : 'Due Soon'}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setIsInvoiceEditorOpen(true)}
+                  className="w-full py-2 px-3 rounded-xl border border-emerald-200 bg-emerald-50/60 hover:bg-emerald-100 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-300 text-xs font-bold transition-colors cursor-pointer text-center"
+                >
+                  + Create Customer Invoice
+                </button>
+              </div>
+            </div>
+
+            {/* 3. Quick Actions Widget */}
+            <div className="rounded-2xl border border-slate-200/90 bg-white p-5 sm:p-6 shadow-xs dark:border-slate-800/90 dark:bg-slate-900 flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-slate-800">
+                  <div className="flex items-center gap-2">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-50 text-blue-600 dark:bg-blue-950 dark:text-blue-400">
+                      <Sparkles className="h-4.5 w-4.5" />
+                    </div>
+                    <div>
+                      <h2 className="text-sm font-bold text-slate-900 dark:text-white">
+                        Quick Action Dock
+                      </h2>
+                      <p className="text-[10px] text-slate-400">Instant entries & billing</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-4 grid grid-cols-2 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => setIsInvoiceEditorOpen(true)}
+                    className="flex flex-col items-center justify-center gap-1.5 rounded-xl border border-slate-200/80 bg-slate-50/50 p-3 text-center transition-all hover:-translate-y-0.5 hover:border-blue-400 hover:bg-blue-50/50 hover:text-blue-700 dark:border-slate-800 dark:bg-slate-800/40 cursor-pointer"
+                  >
+                    <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-100 text-blue-600 dark:bg-blue-950 dark:text-blue-400">
+                      <FilePlus2 className="h-4 w-4" />
+                    </div>
+                    <span className="text-xs font-bold text-slate-700 dark:text-slate-200">New Invoice</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setIsExpenseModalOpen(true)}
+                    className="flex flex-col items-center justify-center gap-1.5 rounded-xl border border-slate-200/80 bg-slate-50/50 p-3 text-center transition-all hover:-translate-y-0.5 hover:border-blue-400 hover:bg-blue-50/50 hover:text-blue-700 dark:border-slate-800 dark:bg-slate-800/40 cursor-pointer"
+                  >
+                    <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-100 text-blue-600 dark:bg-blue-950 dark:text-blue-400">
+                      <Receipt className="h-4 w-4" />
+                    </div>
+                    <span className="text-xs font-bold text-slate-700 dark:text-slate-200">Record Expense</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('bills', { autoCreate: true })}
+                    className="flex flex-col items-center justify-center gap-1.5 rounded-xl border border-slate-200/80 bg-slate-50/50 p-3 text-center transition-all hover:-translate-y-0.5 hover:border-emerald-400 hover:bg-emerald-50/50 hover:text-emerald-700 dark:border-slate-800 dark:bg-slate-800/40 cursor-pointer"
+                  >
+                    <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-emerald-100 text-emerald-600 dark:bg-emerald-950 dark:text-emerald-400">
+                      <FileText className="h-4 w-4" />
+                    </div>
+                    <span className="text-xs font-bold text-slate-700 dark:text-slate-200">New Bill</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('journals')}
+                    className="flex flex-col items-center justify-center gap-1.5 rounded-xl border border-slate-200/80 bg-slate-50/50 p-3 text-center transition-all hover:-translate-y-0.5 hover:border-purple-400 hover:bg-purple-50/50 hover:text-purple-700 dark:border-slate-800 dark:bg-slate-800/40 cursor-pointer"
+                  >
+                    <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-purple-100 text-purple-600 dark:bg-purple-950 dark:text-purple-400">
+                      <BookOpenCheck className="h-4 w-4" />
+                    </div>
+                    <span className="text-xs font-bold text-slate-700 dark:text-slate-200">Journal Entry</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-4 pt-3 border-t border-slate-100 text-center dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setIsClientModalOpen(true)}
+                  className="w-full py-2 px-3 rounded-xl border border-blue-200 bg-blue-50/60 hover:bg-blue-100 text-blue-700 dark:border-blue-900/60 dark:bg-blue-950/40 dark:text-blue-300 text-xs font-bold transition-colors cursor-pointer text-center"
+                >
+                  + Add New Customer
+                </button>
               </div>
             </div>
           </section>
 
-          {/* SECTION 3: BANK & CASH ACCOUNTS (AUTHORITATIVE ACCOUNT DETAIL) */}
-          <BankAccountsWidget />
-
-          {/* SECTION 4: CASH FLOW (8 cols) & TOP EXPENSES (4 cols) */}
-          <section className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+          {/* ROW 2: CASH FLOW (8 COLS) & TOP EXPENSES (4 COLS) */}
+          <section className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
             {/* Left: Cash Flow */}
             <div className="lg:col-span-8 min-w-0">
               <CashFlowWidget
@@ -789,7 +777,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
               />
             </div>
 
-            {/* Right: Top Expense Categories (Ranked List - No Donut) */}
+            {/* Right: Top Expense Categories */}
             <div className="lg:col-span-4 min-w-0 rounded-2xl border border-slate-200/90 bg-white p-5 sm:p-6 shadow-xs dark:border-slate-800/90 dark:bg-slate-900 flex flex-col justify-between">
               <div>
                 <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-slate-800">
@@ -846,10 +834,177 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
             </div>
           </section>
 
-          {/* SECTION 5: RECENT RECORDS & QUICK ACTION DOCK */}
-          <section className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
-            {/* Left: Recent Activity (8 cols) */}
-            <div className="lg:col-span-8 rounded-2xl border border-slate-200/90 bg-white p-5 sm:p-6 shadow-xs dark:border-slate-800/90 dark:bg-slate-900 flex flex-col justify-between">
+          {/* ROW 3: BANKING BALANCES (50% COMPUTER WIDTH) & FINANCIAL POSITIONS (50% COMPUTER WIDTH) */}
+          <section className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-stretch">
+            {/* Left: Banking Balances (Half width of computer screen) */}
+            <div className="min-w-0">
+              <BankAccountsWidget />
+            </div>
+
+            {/* Right: Cash & Financial Position */}
+            <div className="min-w-0 rounded-2xl border border-slate-200/90 bg-white p-5 sm:p-6 shadow-xs dark:border-slate-800/90 dark:bg-slate-900 flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-slate-800">
+                  <div className="flex items-center gap-2">
+                    <Wallet className="h-4.5 w-4.5 text-blue-600 dark:text-blue-400" />
+                    <h2 className="text-sm font-bold text-slate-900 dark:text-white">
+                      Cash &amp; Financial Position
+                    </h2>
+                  </div>
+                  <span className="rounded-md border border-emerald-200/70 bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/60 dark:text-emerald-400">
+                    Book balance
+                  </span>
+                </div>
+
+                <div className="mt-4">
+                  <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">Total Liquid Cash &amp; Bank</p>
+                  <p className="mt-1 font-financial text-2xl sm:text-3xl font-black text-slate-900 dark:text-white">
+                    {money(dashboard.commandCenter?.financialPosition?.cashAtBank ?? dashboard.overview?.bankBalance ?? 0)}
+                  </p>
+                  <p className="mt-0.5 text-xs text-slate-400">Posted ledger balance across all monetary accounts</p>
+                </div>
+
+                <div className="mt-4 grid grid-cols-2 gap-3 border-t border-slate-100 pt-3 dark:border-slate-800">
+                  <div
+                    onClick={() => onNavigate('invoices')}
+                    className="group rounded-xl border border-slate-100 bg-slate-50/60 p-3 hover:border-emerald-300 hover:bg-emerald-50/30 transition-colors cursor-pointer dark:border-slate-800 dark:bg-slate-800/40"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-slate-600 dark:text-slate-400">To Collect (AR)</span>
+                      <TrendingUp className="h-3.5 w-3.5 text-emerald-600" />
+                    </div>
+                    <p className="mt-1 font-financial text-base font-bold text-slate-900 dark:text-white">
+                      {money(dashboard.commandCenter?.financialPosition?.toCollect ?? dashboard.overview?.receivables ?? 0)}
+                    </p>
+                    <p className="mt-0.5 text-[11px] text-slate-400 truncate">
+                      {dashboard.overview?.overdueInvoicesCount > 0
+                        ? `${money(dashboard.overview.overdueReceivables)} overdue`
+                        : `${dashboard.overview?.outstandingInvoicesCount ?? 0} open invoices`}
+                    </p>
+                  </div>
+
+                  <div
+                    onClick={() => onNavigate('bills')}
+                    className="group rounded-xl border border-slate-100 bg-slate-50/60 p-3 hover:border-purple-300 hover:bg-purple-50/30 transition-colors cursor-pointer dark:border-slate-800 dark:bg-slate-800/40"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-slate-600 dark:text-slate-400">To Pay (AP)</span>
+                      <Receipt className="h-3.5 w-3.5 text-purple-600" />
+                    </div>
+                    <p className="mt-1 font-financial text-base font-bold text-slate-900 dark:text-white">
+                      {money(dashboard.commandCenter?.financialPosition?.toPay ?? dashboard.overview?.payables ?? 0)}
+                    </p>
+                    <p className="mt-0.5 text-[11px] text-slate-400 truncate">
+                      {dashboard.overview?.overdueBillsCount > 0
+                        ? `${money(dashboard.overview.overduePayables)} overdue`
+                        : `${dashboard.overview?.dueBillsCount ?? 0} bills pending`}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => onNavigate('banking')}
+                  className="inline-flex w-full items-center justify-between text-xs font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
+                >
+                  <span>Inspect bank feeds &amp; statements</span>
+                  <ArrowRight className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
+          </section>
+
+          {/* ROW 4: NEEDS ATTENTION (LEFT) & RECENT ACTIVITY (RIGHT) */}
+          <section className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-stretch">
+            {/* Left: Needs Attention Widget */}
+            <div className="min-w-0 rounded-2xl border border-slate-200/90 bg-white p-5 sm:p-6 shadow-xs dark:border-slate-800/90 dark:bg-slate-900 flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-slate-800">
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-base font-bold text-slate-900 dark:text-white">
+                      Needs Attention
+                    </h2>
+                    {attentionItems.length > 0 && (
+                      <span className="rounded-full bg-rose-50 px-2.5 py-0.5 text-xs font-bold text-rose-700 dark:bg-rose-950/60 dark:text-rose-400">
+                        {attentionItems.length} {attentionItems.length === 1 ? 'Action' : 'Actions'}
+                      </span>
+                    )}
+                  </div>
+                  {attentionItems.length > 3 && (
+                    <button
+                      type="button"
+                      onClick={() => onNavigate(attentionItems[0].destination)}
+                      className="text-xs font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
+                    >
+                      View all ({attentionItems.length}) →
+                    </button>
+                  )}
+                </div>
+
+                {attentionItems.length === 0 ? (
+                  /* Quiet completion state when 0 items */
+                  <div className="my-6 flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-200 p-6 text-center dark:border-slate-800">
+                    <CheckCircle2 className="h-8 w-8 text-emerald-500 mb-2" />
+                    <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">
+                      Nothing needs action from the available records
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                      Customer invoices, vendor bills, and bank imported items are up to date as of {formatDate(asOfDate)}.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => onNavigate('reports')}
+                      className="mt-3 text-xs font-bold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
+                    >
+                      Inspect verified financial statements →
+                    </button>
+                  </div>
+                ) : (
+                  <div className="mt-4 divide-y divide-slate-100 dark:divide-slate-800/70">
+                    {attentionItems.slice(0, 4).map((item) => (
+                      <div
+                        key={item.id}
+                        className="flex flex-col sm:flex-row sm:items-center justify-between py-3 gap-2"
+                      >
+                        <div className="flex items-start gap-3">
+                          <span
+                            className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${
+                              item.severity === 'critical' ? 'bg-rose-500' : 'bg-amber-500'
+                            }`}
+                          />
+                          <div>
+                            <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                              {item.label}
+                            </p>
+                            <p className="text-xs text-slate-500 dark:text-slate-400">
+                              <span className="font-semibold text-slate-700 dark:text-slate-300">
+                                {item.count} {item.count === 1 ? 'item' : 'items'}
+                              </span>
+                              {item.amount !== null && item.amount !== undefined && (
+                                <span> • {money(item.amount)} total</span>
+                              )}
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => onNavigate(item.destination)}
+                          className="inline-flex shrink-0 items-center justify-center rounded-lg border border-slate-200/90 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 dark:border-slate-800 dark:bg-slate-800/60 dark:text-slate-200 cursor-pointer"
+                        >
+                          <span>Take Action</span>
+                          <ArrowRight className="ml-1 h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Right: Recent Activity */}
+            <div className="min-w-0 rounded-2xl border border-slate-200/90 bg-white p-5 sm:p-6 shadow-xs dark:border-slate-800/90 dark:bg-slate-900 flex flex-col justify-between">
               <div>
                 <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-slate-800">
                   <div className="flex items-center gap-2">
@@ -874,8 +1029,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                     <p className="text-[11px] text-slate-400 dark:text-slate-500">Transactions and reconciliations will appear here as they occur</p>
                   </div>
                 ) : (
-                  <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                    {dashboard.overview.recentTransactions.slice(0, 6).map((tx, idx) => (
+                  <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {dashboard.overview.recentTransactions.slice(0, 4).map((tx, idx) => (
                       <div
                         key={`${tx.documentNumber || 'tx'}-${idx}`}
                         onClick={() => {
@@ -908,71 +1063,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                     ))}
                   </div>
                 )}
-              </div>
-            </div>
-
-            {/* Right: Quick Action Dock (4 cols) */}
-            <div className="lg:col-span-4 rounded-2xl border border-slate-200/90 bg-white p-5 sm:p-6 shadow-xs dark:border-slate-800/90 dark:bg-slate-900 flex flex-col justify-between">
-              <div>
-                <h2 className="text-sm font-bold text-slate-900 dark:text-white border-b border-slate-100 pb-3 dark:border-slate-800">
-                  Quick Action Dock
-                </h2>
-
-                <div className="mt-4 grid grid-cols-2 gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setIsInvoiceEditorOpen(true)}
-                    className="flex flex-col items-center justify-center gap-2 rounded-xl border border-slate-200/80 bg-slate-50/50 p-3.5 text-center transition-all hover:-translate-y-0.5 hover:border-blue-400 hover:bg-blue-50/50 hover:text-blue-700 dark:border-slate-800 dark:bg-slate-800/40 cursor-pointer"
-                  >
-                    <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-100 text-blue-600 dark:bg-blue-950 dark:text-blue-400">
-                      <FilePlus2 className="h-4.5 w-4.5" />
-                    </div>
-                    <span className="text-xs font-bold text-slate-700 dark:text-slate-200">New Invoice</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setIsExpenseModalOpen(true)}
-                    className="flex flex-col items-center justify-center gap-2 rounded-xl border border-slate-200/80 bg-slate-50/50 p-3.5 text-center transition-all hover:-translate-y-0.5 hover:border-blue-400 hover:bg-blue-50/50 hover:text-blue-700 dark:border-slate-800 dark:bg-slate-800/40 cursor-pointer"
-                  >
-                    <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-100 text-blue-600 dark:bg-blue-950 dark:text-blue-400">
-                      <Receipt className="h-4.5 w-4.5" />
-                    </div>
-                    <span className="text-xs font-bold text-slate-700 dark:text-slate-200">Record Expense</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => onNavigate('bills', { autoCreate: true })}
-                    className="flex flex-col items-center justify-center gap-2 rounded-xl border border-slate-200/80 bg-slate-50/50 p-3.5 text-center transition-all hover:-translate-y-0.5 hover:border-emerald-400 hover:bg-emerald-50/50 hover:text-emerald-700 dark:border-slate-800 dark:bg-slate-800/40 cursor-pointer"
-                  >
-                    <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-100 text-emerald-600 dark:bg-emerald-950 dark:text-emerald-400">
-                      <FileText className="h-4.5 w-4.5" />
-                    </div>
-                    <span className="text-xs font-bold text-slate-700 dark:text-slate-200">New Bill</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => onNavigate('journals')}
-                    className="flex flex-col items-center justify-center gap-2 rounded-xl border border-slate-200/80 bg-slate-50/50 p-3.5 text-center transition-all hover:-translate-y-0.5 hover:border-purple-400 hover:bg-purple-50/50 hover:text-purple-700 dark:border-slate-800 dark:bg-slate-800/40 cursor-pointer"
-                  >
-                    <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-purple-100 text-purple-600 dark:bg-purple-950 dark:text-purple-400">
-                      <BookOpenCheck className="h-4.5 w-4.5" />
-                    </div>
-                    <span className="text-xs font-bold text-slate-700 dark:text-slate-200">Journal Entry</span>
-                  </button>
-                </div>
-              </div>
-
-              <div className="mt-4 pt-3 border-t border-slate-100 text-center dark:border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setIsClientModalOpen(true)}
-                  className="text-xs font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
-                >
-                  + Add New Client or Vendor
-                </button>
               </div>
             </div>
           </section>

@@ -17,15 +17,18 @@ export function CashBalanceWidget({ accounts, total, asOfDate, money, unmatchedC
     .sort((a, b) => a.balance - b.balance || a.name.localeCompare(b.name)), [accounts, search]);
   const rows = showAll || search ? filtered : filtered.slice(0, 5);
   const negativeCount = accounts.filter(a => a.balance < 0).length;
-  const button = 'min-h-11 rounded-md px-3 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-50 focus-visible:outline focus-visible:outline-2 dark:text-blue-300 dark:hover:bg-slate-800';
-  return <section aria-label="Cash and bank balances" className="rounded-xl border border-slate-200 bg-white p-4 sm:p-6 dark:border-slate-800 dark:bg-slate-900">
-    <div className="flex flex-wrap items-start justify-between gap-3">
-      <div><h2 className="text-lg font-bold text-slate-900 dark:text-white">Cash &amp; bank balances</h2>
-        <p className="text-sm text-slate-600 dark:text-slate-300">Posted ledger balances · As of {asOfDate}</p></div>
-      <button className={button} onClick={onAccounts}>View bank accounts →</button>
-    </div>
-    <p className="mt-4 break-words font-financial text-3xl font-bold text-slate-900 dark:text-white">{money(total)}</p>
-    <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">Book balance, not bank-confirmed available funds.</p>
+  const button = 'text-xs font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer';
+  return <section aria-label="Banking and cash balances" className="rounded-2xl border border-slate-200/90 bg-white p-5 sm:p-6 shadow-xs dark:border-slate-800/90 dark:bg-slate-900 h-full flex flex-col justify-between">
+    <div>
+      <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-slate-800">
+        <div>
+          <h2 className="text-sm font-bold text-slate-900 dark:text-white">Banking Balances</h2>
+          <p className="text-[10px] text-slate-400">Posted ledger balances · As of {asOfDate}</p>
+        </div>
+        <button className={button} onClick={onAccounts}>View bank accounts →</button>
+      </div>
+      <p className="mt-4 break-words font-financial text-2xl sm:text-3xl font-black text-slate-900 dark:text-white">{money(total)}</p>
+      <p className="mt-0.5 text-xs text-slate-400">Book balance across all monetary accounts</p>
     <div className="my-4 flex flex-wrap items-center justify-between gap-2 border-y border-slate-200 py-2 dark:border-slate-700">
       <p className="text-sm text-slate-700 dark:text-slate-200">{negativeCount > 0 ? `${negativeCount} account${negativeCount === 1 ? '' : 's'} with a negative balance` : `${accounts.length} accounts with posted activity`}</p>
       {unmatchedCount !== null && <button className={button} onClick={onReconcile}>{unmatchedCount > 0 ? `Review ${unmatchedCount} unmatched statement items →` : 'Review reconciliation →'}</button>}
@@ -44,5 +47,6 @@ export function CashBalanceWidget({ accounts, total, asOfDate, money, unmatchedC
         {!search && accounts.length > 5 && <button className={button} onClick={() => setShowAll(!showAll)}>{showAll ? 'Show fewer accounts' : `Show all ${accounts.length} accounts`}</button>}
       </div>
     </>}
+    </div>
   </section>;
 }

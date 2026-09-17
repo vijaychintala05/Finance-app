@@ -33,6 +33,7 @@ RoutePermissionRegistry.register('POST', '/invoices', ['invoices.create']);
 RoutePermissionRegistry.register('POST', '/finance/invoices', ['invoices.create']);
 RoutePermissionRegistry.register('POST', '/payments', ['payments.create', 'invoices.create']);
 RoutePermissionRegistry.register('POST', '/finance/payments', ['payments.create', 'invoices.create']);
+RoutePermissionRegistry.register('POST', '/payments-received', ['customer_payments.create', 'invoices.receive_payment']);
 RoutePermissionRegistry.register('POST', '/bills', ['vendors.create', 'purchases.create']);
 RoutePermissionRegistry.register('POST', '/finance/bills', ['vendors.create', 'purchases.create']);
 RoutePermissionRegistry.register('POST', '/payments-made', ['purchases.create', 'vendors.create']);

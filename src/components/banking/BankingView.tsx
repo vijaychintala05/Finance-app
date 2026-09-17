@@ -329,10 +329,10 @@ export const BankingView: React.FC<BankingViewProps> = ({
         />
       )}
 
-      {isRecordTxOpen && activeAccount && (
+      {isRecordTxOpen && (
         <RecordBankTransactionModal
           isOpen={isRecordTxOpen}
-          defaultAccountId={activeAccount.id}
+          defaultAccountId={activeAccount?.id}
           defaultType={recordTxDefaultType}
           onClose={() => setIsRecordTxOpen(false)}
         />

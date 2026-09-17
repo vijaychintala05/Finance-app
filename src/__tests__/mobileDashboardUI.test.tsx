@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, within } from '@testing-library/react';
 import { DashboardView } from '../components/dashboard/DashboardView';
 import { MobileBottomNav } from '../components/layout/MobileBottomNav';
 import { Header } from '../components/layout/Header';
@@ -40,12 +40,20 @@ vi.mock('../context/BooksContext', () => ({
       email: 'vijay@sensestudios.com',
     },
     invoices: [],
-    expenses: [],
+    expenses: [
+      { id: 'exp-1', description: 'Office Supplies', amount: 450, isBillable: true, isBilled: false },
+    ],
     bills: [],
-    accounts: [],
+    accounts: [
+      { id: 'acc-1', name: 'Main Checking', type: 'Bank', currentBalance: 550000 },
+      { id: 'acc-2', name: 'Petty Cash', type: 'Cash', currentBalance: 25000 },
+    ],
     clients: [],
     vendors: [],
     journalEntries: [],
+    timeEntries: [
+      { id: 't-1', hours: 4.5, isBillable: true, isBilled: false },
+    ],
   }),
   BooksProvider: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
@@ -87,7 +95,7 @@ describe('Mobile Dashboard UI (Light Mode) Test Suite', () => {
         { date: '2026-09-01', income: 800000, expenses: 10000 },
         { date: '2026-09-02', income: 547270, expenses: 10700 },
       ],
-      bankReconciliationAttentionCount: 0,
+      bankReconciliationAttentionCount: 177,
       quotationsAwaitingResponseCount: 0,
       pendingJournalsCount: 0,
       collections: [],
@@ -99,7 +107,10 @@ describe('Mobile Dashboard UI (Light Mode) Test Suite', () => {
       financialPosition: { cashAtBank: 550000, toCollect: 1347270, toPay: 20700 },
       performance: { revenue: 1347270, expenses: 20700, net: 1326570, marginPercent: 98.4, cashMovement: [] },
       scheduledCashOutlook: { windowDays: 30, collections: 1347270, bills: 20700, net: 1326570 },
-      attention: [],
+      attention: [
+        { id: 'overdue-receivables', severity: 'critical', label: 'Overdue customer invoices', count: 11, amount: 200000, destination: 'invoices' },
+        { id: 'overdue-payables', severity: 'critical', label: 'Overdue vendor bills', count: 2, amount: 5000, destination: 'bills' },
+      ],
       insights: { topExpenses: [{ name: 'Studio Rent', amount: 15000 }], bankAccounts: [] },
     },
     asOfDate: '2026-09-16',
@@ -108,7 +119,7 @@ describe('Mobile Dashboard UI (Light Mode) Test Suite', () => {
     view: 'overview',
   };
 
-  it('1. Mobile Primary Overview Cards render Receivables, Payables, Overdue Invoices (11), Overdue Bills (2)', async () => {
+  it('1. Renders Primary Overview Cards (Total Receivables, Total Payables, Overdue Invoices & Bills)', async () => {
     vi.mocked(apiClient.get).mockResolvedValue({
       data: { dashboard: mockDashboardData as any },
       error: null,
@@ -117,19 +128,24 @@ describe('Mobile Dashboard UI (Light Mode) Test Suite', () => {
 
     render(<DashboardView onNavigate={mockOnNavigate} />);
 
-    await waitFor(() => {
-      expect(screen.getAllByText('Total Receivables').length).toBeGreaterThanOrEqual(1);
-      expect(screen.getAllByText('Total Payables').length).toBeGreaterThanOrEqual(1);
-    });
+    const mobile = await screen.findByTestId('mobile-dashboard-overview');
+    expect(within(mobile).getByText('Total Receivables')).toBeTruthy();
+    expect(within(mobile).getByText('Total Payables')).toBeTruthy();
+    expect(within(mobile).getByText('Overdue Invoices')).toBeTruthy();
+    expect(within(mobile).getByText('Overdue Bills')).toBeTruthy();
+    expect(within(mobile).getByText('11')).toBeTruthy();
+    expect(within(mobile).getByText('2')).toBeTruthy();
 
-    // Check exact values from user screenshot
-    expect(screen.getByText('Overdue Invoices')).toBeTruthy();
-    expect(screen.getByText('11')).toBeTruthy();
-    expect(screen.getByText('Overdue Bills')).toBeTruthy();
-    expect(screen.getByText('2')).toBeTruthy();
+    // Click Overdue Invoices card
+    fireEvent.click(within(mobile).getByText('Overdue Invoices'));
+    expect(mockOnNavigate).toHaveBeenCalledWith('invoices');
+
+    // Click Overdue Bills card
+    fireEvent.click(within(mobile).getByText('Overdue Bills'));
+    expect(mockOnNavigate).toHaveBeenCalledWith('bills');
   });
 
-  it('2. Mobile Quick Create renders Customer, Expense, Quote, and Customise buttons', async () => {
+  it('2. Quick Create section provides Customer, Expense, Quote, and Customise actions', async () => {
     vi.mocked(apiClient.get).mockResolvedValue({
       data: { dashboard: mockDashboardData as any },
       error: null,
@@ -138,17 +154,19 @@ describe('Mobile Dashboard UI (Light Mode) Test Suite', () => {
 
     render(<DashboardView onNavigate={mockOnNavigate} />);
 
-    await waitFor(() => {
-      expect(screen.getByText('Quick Create')).toBeTruthy();
-    });
+    const mobile = await screen.findByTestId('mobile-dashboard-overview');
+    expect(within(mobile).getByText('Quick Create')).toBeTruthy();
+    expect(within(mobile).getByText('Customer')).toBeTruthy();
+    expect(within(mobile).getByText('Expense')).toBeTruthy();
+    expect(within(mobile).getByText('Quote')).toBeTruthy();
+    expect(within(mobile).getByText('Customise')).toBeTruthy();
 
-    expect(screen.getByText('Customer')).toBeTruthy();
-    expect(screen.getAllByText('Expense').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText('Quote')).toBeTruthy();
-    expect(screen.getByText('Customise')).toBeTruthy();
+    // Customise navigates to settings
+    fireEvent.click(within(mobile).getByText('Customise'));
+    expect(mockOnNavigate).toHaveBeenCalledWith('settings');
   });
 
-  it('3. Mobile Cash Flow widget renders This Fiscal Year dropdown and chart container', async () => {
+  it('3. Cash Flow widget renders Accrual/Cash pills and timeline ticks', async () => {
     vi.mocked(apiClient.get).mockResolvedValue({
       data: { dashboard: mockDashboardData as any },
       error: null,
@@ -157,26 +175,61 @@ describe('Mobile Dashboard UI (Light Mode) Test Suite', () => {
 
     render(<DashboardView onNavigate={mockOnNavigate} />);
 
-    await waitFor(() => {
-      expect(screen.getAllByText('This Fiscal Year').length).toBeGreaterThanOrEqual(1);
-    });
-
-    // Verify month labels on mobile chart
-    expect(screen.getAllByText('Apr').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText('Mar').length).toBeGreaterThanOrEqual(1);
-
-    // Verify Mobile Top Expenses widget
-    expect(screen.getByText('Top Expenses')).toBeTruthy();
-    expect(screen.getAllByText('Studio Rent').length).toBeGreaterThanOrEqual(1);
-
-    // Verify Mobile Banking Summary widget
-    expect(screen.getByText('Banking Summary')).toBeTruthy();
-    expect(screen.getByText('Uncategorised Transactions')).toBeTruthy();
-    expect(screen.getByText('Bank Balance')).toBeTruthy();
-    expect(screen.getByText('Cash In Hand')).toBeTruthy();
+    const mobile = await screen.findByTestId('mobile-dashboard-overview');
+    expect(within(mobile).getByText('Cash Flow')).toBeTruthy();
+    expect(within(mobile).getByText('Accrual')).toBeTruthy();
+    expect(within(mobile).getByText('Cash')).toBeTruthy();
+    expect(within(mobile).getByText('75K')).toBeTruthy();
+    expect(within(mobile).getByText('50K')).toBeTruthy();
+    expect(within(mobile).getByText('25K')).toBeTruthy();
   });
 
-  it('4. Floating MobileBottomNav renders Home, Customers, Invoices, Expenses, More', () => {
+  it('4. Project Timer & Unbilled items widget renders time tracker and unbilled summaries', async () => {
+    vi.mocked(apiClient.get).mockResolvedValue({
+      data: { dashboard: mockDashboardData as any },
+      error: null,
+      status: 200,
+    });
+
+    render(<DashboardView onNavigate={mockOnNavigate} />);
+
+    const mobile = await screen.findByTestId('mobile-dashboard-overview');
+    expect(within(mobile).getByText('00:00:00')).toBeTruthy();
+    expect(within(mobile).getByText('Start Project Timer')).toBeTruthy();
+    expect(within(mobile).getByText('Log Time')).toBeTruthy();
+    expect(within(mobile).getByText('Start Timer')).toBeTruthy();
+
+    // Toggle timer
+    fireEvent.click(within(mobile).getByText('Start Timer'));
+    expect(within(mobile).getByText('Stop Timer')).toBeTruthy();
+    expect(within(mobile).getByText('Timer Active • Tracking Session')).toBeTruthy();
+
+    // Unbilled items
+    expect(within(mobile).getByText('Unbilled Hours')).toBeTruthy();
+    expect(within(mobile).getByText('4:30 Hrs')).toBeTruthy();
+    expect(within(mobile).getByText('Unbilled Expenses')).toBeTruthy();
+  });
+
+  it('5. Top Expenses & Banking Summary widgets display balances and navigation', async () => {
+    vi.mocked(apiClient.get).mockResolvedValue({
+      data: { dashboard: mockDashboardData as any },
+      error: null,
+      status: 200,
+    });
+
+    render(<DashboardView onNavigate={mockOnNavigate} />);
+
+    const mobile = await screen.findByTestId('mobile-dashboard-overview');
+    expect(within(mobile).getByText('Top Expenses')).toBeTruthy();
+    expect(within(mobile).getByText('Studio Rent')).toBeTruthy();
+    expect(within(mobile).getByText('Banking Summary')).toBeTruthy();
+    expect(within(mobile).getByText('Uncategorised Transactions')).toBeTruthy();
+    expect(within(mobile).getByText('177')).toBeTruthy();
+    expect(within(mobile).getByText('Bank Balance')).toBeTruthy();
+    expect(within(mobile).getByText('Cash In Hand')).toBeTruthy();
+  });
+
+  it('6. Floating MobileBottomNav renders Home, Customers, Invoices, Expenses, More', () => {
     render(
       <MobileBottomNav
         activeTab="dashboard"
@@ -192,7 +245,7 @@ describe('Mobile Dashboard UI (Light Mode) Test Suite', () => {
     expect(screen.getByText('More')).toBeTruthy();
   });
 
-  it('5. Mobile Header renders Org Switcher, Bell, and Subheader tabs (Dashboard, Announcements, Help)', () => {
+  it('7. Mobile Header renders Org Switcher, Bell, and Subheader tabs (Dashboard, Announcements, Help)', () => {
     render(
       <Header
         currentTab="dashboard"

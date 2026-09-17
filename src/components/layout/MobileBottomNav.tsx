@@ -65,10 +65,11 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({ activeTab, onN
     <button
       type="button"
       onClick={onOpenMore}
-      className="flex min-w-0 flex-1 flex-col items-center justify-center py-1 px-1.5 rounded-full text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white transition-all cursor-pointer"
+      className={`flex min-w-0 flex-1 flex-col items-center justify-center py-1 px-1.5 rounded-full hover:text-slate-900 dark:hover:text-white transition-all cursor-pointer ${primaryDestinations.some(({ id }) => id === activeTab) ? 'text-slate-500 dark:text-slate-400' : 'text-blue-600 dark:text-blue-400'}`}
       aria-label="Open more menu"
+      aria-current={primaryDestinations.some(({ id }) => id === activeTab) ? undefined : 'page'}
     >
-      <div className="flex h-8 w-8 items-center justify-center rounded-full text-slate-500 dark:text-slate-400">
+      <div className="flex h-8 w-8 items-center justify-center rounded-full">
         <MoreHorizontal className="h-4.5 w-4.5" strokeWidth={1.9} />
       </div>
       <span className="text-[10px] mt-0.5 font-medium tracking-tight truncate">

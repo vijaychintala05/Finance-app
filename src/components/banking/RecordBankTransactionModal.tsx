@@ -55,12 +55,12 @@ export const RecordBankTransactionModal: React.FC<RecordBankTransactionModalProp
 
   useEffect(() => {
     if (!isOpen) return;
-    const selectedTreasury = treasuryAccounts.some((account) => account.id === defaultAccountId)
-      ? defaultAccountId || ''
-      : treasuryAccounts[0]?.id || '';
+    const selectedTreasury = defaultAccountId && treasuryAccounts.some((account) => account.id === defaultAccountId)
+      ? defaultAccountId
+      : '';
     setDirection(defaultType);
     setTreasuryAccountId(selectedTreasury);
-    setCounterAccountId(counterAccounts.find((account) => account.id !== selectedTreasury)?.id || '');
+    setCounterAccountId('');
     setAmount('');
     setDate(new Date().toISOString().slice(0, 10));
     setReference('');

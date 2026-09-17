@@ -28,7 +28,7 @@ export function CashBalanceWidget({ accounts, total, asOfDate, money, unmatchedC
         <button className={button} onClick={onAccounts}>View bank accounts →</button>
       </div>
       <p className="mt-4 break-words font-financial text-2xl sm:text-3xl font-black text-slate-900 dark:text-white">{money(total)}</p>
-      <p className="mt-0.5 text-xs text-slate-400">Book balance across all monetary accounts</p>
+      <p className="mt-0.5 text-xs text-slate-400">Book balance across all monetary accounts; not bank-confirmed available funds</p>
     <div className="my-4 flex flex-wrap items-center justify-between gap-2 border-y border-slate-200 py-2 dark:border-slate-700">
       <p className="text-sm text-slate-700 dark:text-slate-200">{negativeCount > 0 ? `${negativeCount} account${negativeCount === 1 ? '' : 's'} with a negative balance` : `${accounts.length} accounts with posted activity`}</p>
       {unmatchedCount !== null && <button className={button} onClick={onReconcile}>{unmatchedCount > 0 ? `Review ${unmatchedCount} unmatched statement items →` : 'Review reconciliation →'}</button>}

@@ -18,7 +18,9 @@ import {
   Landmark,
   Layers,
   PieChart,
+  Play,
   Plus,
+  Square,
   Receipt,
   ReceiptText,
   RefreshCw,
@@ -110,7 +112,7 @@ const viewLabels: Record<DashboardViewKey, string> = {
 };
 
 export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
-  const { settings, accounts } = useBooks();
+  const { settings, accounts, timeEntries, expenses } = useBooks();
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [view, setView] = useState<DashboardViewKey>('overview');
   const [asOfDate, setAsOfDate] = useState(localIsoDate);
@@ -124,8 +126,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
   const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
   const [isClientModalOpen, setIsClientModalOpen] = useState(false);
   const [mobileCashFlowPeriod, setMobileCashFlowPeriod] = useState<'fiscal' | 'year' | 'quarter' | 'month'>('fiscal');
+  const [mobileCashFlowBasis, setMobileCashFlowBasis] = useState<'accrual' | 'cash'>('accrual');
   const [mobileExpensePeriod, setMobileExpensePeriod] = useState<'fiscal' | 'year' | 'quarter' | 'month'>('fiscal');
   const [mobileHoverPoint, setMobileHoverPoint] = useState<{ month: string; amount: number } | null>(null);
+  const [isTimerRunning, setIsTimerRunning] = useState(false);
+  const [timerSeconds, setTimerSeconds] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -204,6 +209,39 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       ? Math.round((dashboard?.commandCenter?.financialPosition?.cashAtBank || 0) * 0.25)
       : 0;
   }, [accounts, dashboard]);
+
+  useEffect(() => {
+    let interval: any = null;
+    if (isTimerRunning) {
+      interval = setInterval(() => {
+        setTimerSeconds((prev) => prev + 1);
+      }, 1000);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [isTimerRunning]);
+
+  const formattedTimer = useMemo(() => {
+    const hrs = Math.floor(timerSeconds / 3600);
+    const mins = Math.floor((timerSeconds % 3600) / 60);
+    const secs = timerSeconds % 60;
+    return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  }, [timerSeconds]);
+
+  const unbilledHoursCount = useMemo(() => {
+    return (timeEntries || []).filter((t) => t.isBillable && !t.isBilled).reduce((acc, t) => acc + (Number(t.hours) || 0), 0);
+  }, [timeEntries]);
+
+  const formattedUnbilledHours = useMemo(() => {
+    const h = Math.floor(unbilledHoursCount);
+    const m = Math.round((unbilledHoursCount % 1) * 60);
+    return `${h}:${m.toString().padStart(2, '0')}`;
+  }, [unbilledHoursCount]);
+
+  const unbilledExpensesCount = useMemo(() => {
+    return (expenses || []).filter((e) => e.isBillable && !e.isBilled).reduce((acc, e) => acc + (Number(e.amount) || 0), 0);
+  }, [expenses]);
 
   // Real timeline points from authoritative backend response
   const timelinePoints = useMemo(() => {
@@ -510,7 +548,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       {dashboard && view === 'overview' && (
         <>
           {/* MOBILE VIEW (LIGHT MODE) - MATCHING USER SCREENSHOT */}
-          <div className="block lg:hidden space-y-4">
+          <div className="block lg:hidden space-y-4" data-testid="mobile-dashboard-overview">
             {/* 1. PRIMARY OVERVIEW CARDS */}
             <div className="grid grid-cols-12 gap-2.5 sm:gap-3">
               {/* Left Column: Royal Blue Card (Total Receivables + Total Payables) */}
@@ -666,6 +704,32 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                 </div>
               </div>
 
+              {/* Accrual / Cash Basis Pills (Matching Screenshot 3) */}
+              <div className="flex items-center gap-1.5 mt-2.5">
+                <button
+                  type="button"
+                  onClick={() => setMobileCashFlowBasis('accrual')}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    mobileCashFlowBasis === 'accrual'
+                      ? 'bg-slate-900 text-white shadow-xs dark:bg-slate-100 dark:text-slate-900'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200/80 dark:bg-slate-800 dark:text-slate-400'
+                  }`}
+                >
+                  Accrual
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMobileCashFlowBasis('cash')}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    mobileCashFlowBasis === 'cash'
+                      ? 'bg-slate-900 text-white shadow-xs dark:bg-slate-100 dark:text-slate-900'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200/80 dark:bg-slate-800 dark:text-slate-400'
+                  }`}
+                >
+                  Cash
+                </button>
+              </div>
+
               {/* Mobile SVG Chart */}
               <div className="mt-3 relative">
                 <svg viewBox="0 0 340 140" className="w-full h-auto overflow-visible select-none">
@@ -766,6 +830,84 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                   <span className="font-financial font-bold text-xs text-emerald-600 dark:text-emerald-400 mt-0.5 block truncate">
                     {money((dashboard.overview?.salesThisMonth ?? 0) - (dashboard.overview?.expensesThisMonth ?? 0))}
                   </span>
+                </div>
+              </div>
+            </div>
+
+            {/* 3.5. PROJECT TIMER & UNBILLED HOURS WIDGET (MATCHING IMAGE 2 IN LIGHT MODE) */}
+            <div className="space-y-2.5">
+              {/* Main Timer Card */}
+              <div className="rounded-2xl bg-gradient-to-br from-[#122e4c] via-[#0f263e] to-[#0a1b2d] p-5 shadow-sm text-white border border-slate-200/40 dark:border-slate-800">
+                <div className="text-center">
+                  <span className="font-mono text-3xl sm:text-4xl font-black tracking-widest text-white block select-none">
+                    {formattedTimer}
+                  </span>
+                  <span className="text-xs sm:text-sm font-medium text-blue-100/90 mt-1.5 flex items-center justify-center gap-1.5">
+                    {isTimerRunning && <span className="h-2 w-2 rounded-full bg-emerald-400 animate-ping" />}
+                    <span>{isTimerRunning ? 'Timer Active • Tracking Session' : 'Start Project Timer'}</span>
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3 mt-4 sm:mt-5">
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('time_logs')}
+                    className="w-full py-2.5 px-4 rounded-xl bg-[#091522]/90 hover:bg-[#091522] text-white font-bold text-xs shadow-xs border border-white/10 transition-all active:scale-95 cursor-pointer text-center"
+                  >
+                    Log Time
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (isTimerRunning) {
+                        setIsTimerRunning(false);
+                      } else {
+                        setIsTimerRunning(true);
+                      }
+                    }}
+                    className="w-full py-2.5 px-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-bold text-xs shadow-sm flex items-center justify-center gap-1.5 transition-all active:scale-95 cursor-pointer text-center"
+                  >
+                    {isTimerRunning ? (
+                      <>
+                        <Square className="w-3.5 h-3.5 fill-current text-rose-600" />
+                        <span>Stop Timer</span>
+                      </>
+                    ) : (
+                      <>
+                        <Play className="w-3.5 h-3.5 fill-current text-slate-900" />
+                        <span>Start Timer</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {/* Unbilled Hours Card */}
+              <div
+                onClick={() => onNavigate('time_logs')}
+                className="rounded-2xl border border-slate-200/90 bg-white p-3.5 shadow-xs hover:border-slate-300 dark:border-slate-800 dark:bg-slate-900 flex items-center justify-between cursor-pointer transition-all active:scale-[0.99]"
+              >
+                <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  Unbilled Hours
+                </span>
+                <div className="flex items-center gap-1 text-xs font-bold text-slate-900 dark:text-white">
+                  <span className="font-financial">{formattedUnbilledHours} Hrs</span>
+                  <ChevronRight className="w-4 h-4 text-slate-400" />
+                </div>
+              </div>
+
+              {/* Unbilled Expenses Card */}
+              <div
+                onClick={() => onNavigate('expenses')}
+                className="rounded-2xl border border-slate-200/90 bg-white p-3.5 shadow-xs hover:border-slate-300 dark:border-slate-800 dark:bg-slate-900 flex items-center justify-between cursor-pointer transition-all active:scale-[0.99]"
+              >
+                <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  Unbilled Expenses
+                </span>
+                <div className="flex items-center gap-1 text-xs font-bold text-slate-900 dark:text-white">
+                  <span className="font-financial">{money(unbilledExpensesCount)}</span>
+                  <ChevronRight className="w-4 h-4 text-slate-400" />
                 </div>
               </div>
             </div>

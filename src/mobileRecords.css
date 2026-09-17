@@ -1,6 +1,14 @@
 /* Phone-only record cards. Desktop retains the original table layout. */
 @media (max-width: 767px) {
 /* The phone header keeps one compact line; the page already has its own title. */
+  #root header.sticky {
+    padding-top: env(safe-area-inset-top);
+  }
+
+  #root [role="dialog"][aria-label="All modules"] > div.relative {
+    padding-top: env(safe-area-inset-top);
+  }
+
   #root header.sticky > div:first-child {
     gap: 0.375rem;
   }

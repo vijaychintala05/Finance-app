@@ -119,7 +119,7 @@ describe('DashboardView & Cash Flow Real-Data QA Tests', () => {
     // Verify Cash Flow Chart title and verified badge
     expect(screen.getAllByText(/Cash Flow/i).length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText(/Income & Expense Activity/i)).toBeTruthy();
-    expect(screen.getByText(/Posted Journals/i)).toBeTruthy();
+    expect(screen.getAllByText(/Posted Journals/i).length).toBeGreaterThanOrEqual(1);
 
     // Verify dynamic totals in legend: Income = 120,000, Expenses = 45,000, Net = 75,000
     expect(screen.getAllByText(/120,000/).length).toBeGreaterThanOrEqual(1);
@@ -297,8 +297,8 @@ describe('DashboardView & Cash Flow Real-Data QA Tests', () => {
     });
 
     // Verify attention items are rendered
-    expect(screen.getByText(/Overdue customer invoices/i)).toBeTruthy();
-    expect(screen.getByText(/Unreconciled bank transactions/i)).toBeTruthy();
+    expect(screen.getAllByText(/Overdue customer invoices/i).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/Unreconciled bank transactions/i).length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText(/Take Action/i).length).toBe(2);
 
     // Verify Receivables and Payables due next sections

@@ -202,14 +202,14 @@ export const DataMigrationModal: React.FC<DataMigrationModalProps> = ({ isOpen, 
 
   return (
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 w-full max-w-4xl overflow-hidden flex flex-col max-h-[92vh]">
+      <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 w-full max-w-4xl overflow-hidden flex flex-col max-h-[calc(100dvh-2rem)] sm:max-h-[92vh]">
         {/* Modal Header */}
-        <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
-          <div className="flex items-center gap-3">
+        <div className="px-4 sm:px-6 py-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 flex items-center justify-center">
               <Database className="w-5 h-5" />
             </div>
-            <div>
+            <div className="min-w-0">
               <h2 className="text-lg font-bold text-gray-900 dark:text-white">
                 Data Migration & Opening Balances Tooling
               </h2>
@@ -219,6 +219,8 @@ export const DataMigrationModal: React.FC<DataMigrationModalProps> = ({ isOpen, 
             </div>
           </div>
           <button
+            type="button"
+            aria-label="Close data migration"
             onClick={onClose}
             className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
           >
@@ -227,7 +229,7 @@ export const DataMigrationModal: React.FC<DataMigrationModalProps> = ({ isOpen, 
         </div>
 
         {/* Tab Selection */}
-        <div className="px-6 pt-3 border-b border-gray-200 dark:border-gray-700 flex gap-4">
+        <div className="px-4 sm:px-6 pt-3 border-b border-gray-200 dark:border-gray-700 flex gap-4">
           <button
             onClick={() => setActiveTab('BALANCES')}
             className={`pb-3 text-sm font-semibold flex items-center gap-2 border-b-2 transition-colors ${
@@ -269,7 +271,7 @@ export const DataMigrationModal: React.FC<DataMigrationModalProps> = ({ isOpen, 
         </div>
 
         {/* Modal Body */}
-        <div className="p-6 overflow-y-auto space-y-6 flex-1">
+        <div className="p-4 sm:p-6 overflow-y-auto space-y-6 flex-1">
           {activeTab === 'BALANCES' ? (
             <div className="space-y-5">
               {/* As-of Date & Auto Balance Options */}
@@ -318,8 +320,9 @@ export const DataMigrationModal: React.FC<DataMigrationModalProps> = ({ isOpen, 
                   </button>
                 </div>
 
-                <div className="border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden">
-                  <table className="w-full text-left text-xs">
+                <p className="text-xs text-gray-500 sm:hidden">Swipe the account lines sideways to edit debit and credit amounts.</p>
+                <div className="border border-gray-200 dark:border-gray-700 rounded-xl overflow-x-auto">
+                  <table className="min-w-[620px] sm:min-w-0 w-full text-left text-xs">
                     <thead className="bg-gray-50 dark:bg-gray-700/50 text-gray-500 dark:text-gray-400 uppercase font-semibold border-b border-gray-200 dark:border-gray-700">
                       <tr>
                         <th className="py-2.5 px-3">Account Code</th>
@@ -468,7 +471,7 @@ export const DataMigrationModal: React.FC<DataMigrationModalProps> = ({ isOpen, 
         </div>
 
         {/* Modal Footer */}
-        <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/80 flex items-center justify-between">
+        <div className="px-4 sm:px-6 py-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/80 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2">
           <button
             type="button"
             onClick={onClose}
@@ -477,7 +480,7 @@ export const DataMigrationModal: React.FC<DataMigrationModalProps> = ({ isOpen, 
             Close
           </button>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3">
             {activeTab === 'BALANCES' ? (
               <>
                 <button

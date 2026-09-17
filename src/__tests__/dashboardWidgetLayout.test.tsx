@@ -160,7 +160,7 @@ describe('Dashboard Grid Layout Reorganization Test Suite', () => {
       expect(screen.getByText('Recent Activity')).toBeTruthy();
     });
 
-    expect(screen.getByText('Overdue customer invoices')).toBeTruthy();
+    expect(screen.getAllByText('Overdue customer invoices').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('INV-101')).toBeTruthy();
   });
 });

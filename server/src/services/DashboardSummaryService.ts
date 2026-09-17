@@ -71,7 +71,7 @@ export interface DashboardResponse {
   };
 }
 
-export type DashboardPeriodPreset = 'today' | 'mtd' | 'qtd' | 'ytd' | 'custom';
+export type DashboardPeriodPreset = 'today' | 'mtd' | 'qtd' | 'ytd' | 'last12' | 'custom';
 
 const isoDate = (date: Date): string => date.toISOString().slice(0, 10);
 const isIsoDate = (value: string): boolean => {
@@ -105,6 +105,11 @@ export function calculatePeriodBounds(
   } else if (preset === 'ytd') {
     periodStart = `${year}-01-01`;
     label = `Year to date (${year})`;
+  } else if (preset === 'last12') {
+    const startYear = month === 11 ? year : year - 1;
+    const startMonth = (month + 1) % 12;
+    periodStart = `${startYear}-${String(startMonth + 1).padStart(2, '0')}-01`;
+    label = `Last 12 months (${periodStart} to ${asOfDate})`;
   } else if (preset === 'custom' && customStartDate && isIsoDate(customStartDate) && customStartDate <= asOfDate) {
     periodStart = customStartDate;
     label = `${periodStart} to ${asOfDate}`;
@@ -135,12 +140,25 @@ export class DashboardSummaryService {
 
     const view = (requestedView || 'overview') as DashboardViewKey;
     const asOfDate = requestedAsOfDate || isoDate(new Date());
-    const validPresets: DashboardPeriodPreset[] = ['today', 'mtd', 'qtd', 'ytd', 'custom'];
+    const validPresets: DashboardPeriodPreset[] = ['today', 'mtd', 'qtd', 'ytd', 'last12', 'custom'];
     const preset = (validPresets.includes(requestedPeriodPreset as DashboardPeriodPreset)
       ? requestedPeriodPreset
       : 'mtd') as DashboardPeriodPreset;
 
     const { periodStart, periodEnd, label: periodLabel } = calculatePeriodBounds(asOfDate, preset, requestedStartDate);
+
+    const asOf = new Date(`${asOfDate}T00:00:00Z`);
+    const asOfYear = asOf.getUTCFullYear();
+    const asOfMonth = asOf.getUTCMonth();
+    const rollingStartYear = asOfMonth === 11 ? asOfYear : asOfYear - 1;
+    const rollingStartMonth = (asOfMonth + 1) % 12;
+    const rolling12Start = `${rollingStartYear}-${String(rollingStartMonth + 1).padStart(2, '0')}-01`;
+    const calendarYearStart = `${asOfYear}-01-01`;
+    let trendStart = calendarYearStart < rolling12Start ? calendarYearStart : rolling12Start;
+    if (preset === 'custom' && requestedStartDate && requestedStartDate < trendStart) {
+      trendStart = requestedStartDate;
+    }
+
     const has = (permission: string) => permissions.includes(permission);
     const canSeeBanking = has('banking.view');
     const canSeeAccounting = has('accounting.view') || has('journals.view') || has('periods.view');
@@ -178,38 +196,50 @@ export class DashboardSummaryService {
         FROM documents`, [organizationId, asOfDate, addDays(asOfDate, 7), addDays(asOfDate, 30)]),
       canSeeBanking ? db.query(`SELECT a.name, COALESCE(SUM(jl.debit - jl.credit), 0) AS balance
         FROM accounts a
-        JOIN journal_lines jl ON jl.account_id = a.id AND jl.organization_id = a.organization_id
+        JOIN journal_lines jl ON jl.account_id = a.id AND (jl.organization_id = a.organization_id OR jl.organization_id IS NULL)
         JOIN journal_entries je ON je.id = jl.journal_entry_id AND je.organization_id = a.organization_id
           AND UPPER(je.status) = 'POSTED' AND je.date <= $2
-        WHERE a.organization_id = $1 AND UPPER(a.type) = 'ASSET'
-          AND (UPPER(a.sub_type) IN ('BANK', 'CASH', 'CASH & BANK') OR UPPER(a.name) LIKE '%BANK%' OR UPPER(a.name) LIKE '%CASH%')
+        WHERE a.organization_id = $1
+          AND (
+            UPPER(COALESCE(a.sub_type, '')) IN ('BANK', 'CASH', 'CASH & BANK', 'CASH AND CASH EQUIVALENTS', 'CHECKING', 'SAVINGS')
+            OR UPPER(COALESCE(a.type, '')) IN ('BANK', 'CASH')
+            OR UPPER(COALESCE(a.name, '')) LIKE '%BANK%'
+            OR UPPER(COALESCE(a.name, '')) LIKE '%PETTY CASH%'
+            OR UPPER(COALESCE(a.name, '')) LIKE '%CASH IN HAND%'
+            OR UPPER(COALESCE(a.name, '')) LIKE '%CASH ON HAND%'
+          )
         GROUP BY a.id, a.name
         ORDER BY balance DESC, a.name ASC`, [organizationId, asOfDate]) : Promise.resolve({ rows: [] }),
       db.query(`SELECT je.date AS activity_date,
           COALESCE(SUM(CASE WHEN UPPER(a.type) IN ('INCOME', 'REVENUE', 'OTHER INCOME') THEN jl.credit - jl.debit ELSE 0 END), 0) AS income,
           COALESCE(SUM(CASE WHEN UPPER(a.type) IN ('EXPENSE', 'COST OF GOODS SOLD', 'OTHER EXPENSE') THEN jl.debit - jl.credit ELSE 0 END), 0) AS expenses
         FROM accounts a
-        JOIN journal_lines jl ON jl.account_id = a.id AND jl.organization_id = a.organization_id
+        JOIN journal_lines jl ON jl.account_id = a.id AND (jl.organization_id = a.organization_id OR jl.organization_id IS NULL)
         JOIN journal_entries je ON je.id = jl.journal_entry_id AND je.organization_id = a.organization_id
           AND UPPER(je.status) = 'POSTED'
         WHERE a.organization_id = $1 AND je.date >= $2 AND je.date <= $3
           AND UPPER(a.type) IN ('INCOME', 'REVENUE', 'OTHER INCOME', 'EXPENSE', 'COST OF GOODS SOLD', 'OTHER EXPENSE')
         GROUP BY je.date
-        ORDER BY je.date ASC`, [organizationId, periodStart, asOfDate]),
+        ORDER BY je.date ASC`, [organizationId, trendStart, asOfDate]),
       db.query(`SELECT je.date AS activity_date,
           COALESCE(SUM(CASE WHEN jl.debit > jl.credit THEN jl.debit - jl.credit ELSE 0 END), 0) AS cash_in,
           COALESCE(SUM(CASE WHEN jl.credit > jl.debit THEN jl.credit - jl.debit ELSE 0 END), 0) AS cash_out,
           COALESCE(SUM(jl.debit - jl.credit), 0) AS net
         FROM accounts a
-        JOIN journal_lines jl ON jl.account_id = a.id AND jl.organization_id = a.organization_id
+        JOIN journal_lines jl ON jl.account_id = a.id AND (jl.organization_id = a.organization_id OR jl.organization_id IS NULL)
         JOIN journal_entries je ON je.id = jl.journal_entry_id AND je.organization_id = a.organization_id
           AND UPPER(je.status) = 'POSTED'
         WHERE a.organization_id = $1 AND je.date >= $2 AND je.date <= $3
-          AND UPPER(a.type) = 'ASSET'
-          AND (UPPER(COALESCE(a.sub_type, '')) IN ('BANK', 'CASH', 'CASH & BANK', 'CASH AND CASH EQUIVALENTS')
-            OR UPPER(a.name) LIKE '%BANK%' OR UPPER(a.name) LIKE '%CASH%')
+          AND (
+            UPPER(COALESCE(a.sub_type, '')) IN ('BANK', 'CASH', 'CASH & BANK', 'CASH AND CASH EQUIVALENTS', 'CHECKING', 'SAVINGS')
+            OR UPPER(COALESCE(a.type, '')) IN ('BANK', 'CASH')
+            OR UPPER(COALESCE(a.name, '')) LIKE '%BANK%'
+            OR UPPER(COALESCE(a.name, '')) LIKE '%PETTY CASH%'
+            OR UPPER(COALESCE(a.name, '')) LIKE '%CASH IN HAND%'
+            OR UPPER(COALESCE(a.name, '')) LIKE '%CASH ON HAND%'
+          )
         GROUP BY je.date
-        ORDER BY je.date ASC`, [organizationId, periodStart, asOfDate]),
+        ORDER BY je.date ASC`, [organizationId, trendStart, asOfDate]),
       has('invoices.view') ? db.query(`SELECT COALESCE(client_name, 'Unassigned customer') AS party_name, balance_due, due_date
         FROM invoices WHERE organization_id = $1 AND issue_date <= $2
           AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT') AND balance_due > 0
@@ -230,7 +260,7 @@ export class DashboardSummaryService {
         ORDER BY doc_date DESC NULLS LAST LIMIT 5`, [organizationId, asOfDate]),
       db.query(`SELECT a.name, COALESCE(SUM(jl.debit - jl.credit), 0) AS amount
         FROM accounts a
-        JOIN journal_lines jl ON jl.account_id = a.id AND jl.organization_id = a.organization_id
+        JOIN journal_lines jl ON jl.account_id = a.id AND (jl.organization_id = a.organization_id OR jl.organization_id IS NULL)
         JOIN journal_entries je ON je.id = jl.journal_entry_id AND je.organization_id = a.organization_id
           AND UPPER(je.status) = 'POSTED'
         WHERE a.organization_id = $1 AND je.date >= $2 AND je.date <= $3
@@ -276,8 +306,12 @@ export class DashboardSummaryService {
         net: databaseMoney(row.net, `Dashboard net cash movement for ${rawDate}`),
       };
     });
-    const salesThisMonth = activityTrend.reduce((total, point) => total + point.income, 0);
-    const expensesThisMonth = activityTrend.reduce((total, point) => total + point.expenses, 0);
+    const salesThisMonth = activityTrend
+      .filter((point) => point.date >= periodStart && point.date <= asOfDate)
+      .reduce((total, point) => total + point.income, 0);
+    const expensesThisMonth = activityTrend
+      .filter((point) => point.date >= periodStart && point.date <= asOfDate)
+      .reduce((total, point) => total + point.expenses, 0);
     const overview = {
       receivables, overdueReceivables: databaseMoney(documents.receivables_overdue_total, 'Dashboard overdue receivables'),
       outstandingInvoicesCount: Number(documents.invoice_open_count || 0), overdueInvoicesCount: Number(documents.invoice_overdue_count || 0),

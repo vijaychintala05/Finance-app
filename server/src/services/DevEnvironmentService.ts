@@ -5,6 +5,7 @@ import { SessionService } from '../auth/SessionService';
 import { OrganizationProvisioningService } from './OrganizationProvisioningService';
 import { newId } from '../utils/ids';
 import { SalesEngine } from '../sales/SalesEngine';
+import { ExpensePostingService } from './ExpensePostingService';
 
 export interface DevUserPersona {
   id: string;
@@ -271,6 +272,66 @@ export class DevEnvironmentService {
         });
       } catch (invoiceErr) {
         console.warn('[DevEnvironmentService] Standard invoice seeding notice:', invoiceErr);
+      }
+    }
+
+    // F. Seed Completed Customer Payment (Dr Bank / Cr Accounts Receivable)
+    const existingPayments = await db.query(
+      `SELECT count(*) as count FROM payments_received WHERE organization_id = $1`,
+      [DEV_ORG_ID]
+    );
+    if (Number(existingPayments.rows[0]?.count || 0) === 0 && ledgerBankId) {
+      try {
+        const invRes = await db.query(
+          `SELECT id, total_amount FROM invoices WHERE organization_id = $1 AND customer_id = 'cust-dev-acme' LIMIT 1`,
+          [DEV_ORG_ID]
+        );
+        if (invRes.rows.length > 0) {
+          const invoice = invRes.rows[0];
+          await SalesEngine.recordPayment(DEV_ORG_ID, {
+            customerId: 'cust-dev-acme',
+            customerName: 'Acme Global Technologies Inc.',
+            invoiceId: invoice.id,
+            paymentDate: new Date(Date.now() - 5 * 86400000).toISOString().split('T')[0],
+            amount: 15000.00,
+            paymentMode: 'Bank Transfer',
+            depositToAccountId: ledgerBankId,
+            notes: 'Full wire settlement for Phase 1 Migration',
+            _verifiedExternalSettlement: true,
+          });
+        }
+      } catch (pmtErr) {
+        console.warn('[DevEnvironmentService] Payment seeding notice:', pmtErr);
+      }
+    }
+
+    // G. Seed Operating Expense (Dr Expense / Cr Bank)
+    const existingExpenses = await db.query(
+      `SELECT count(*) as count FROM expenses WHERE organization_id = $1`,
+      [DEV_ORG_ID]
+    );
+    if (Number(existingExpenses.rows[0]?.count || 0) === 0 && ledgerBankId) {
+      try {
+        const expAccountRes = await db.query(
+          `SELECT id FROM accounts WHERE organization_id = $1 AND code = '6000' LIMIT 1`,
+          [DEV_ORG_ID]
+        );
+        const expAccId = expAccountRes.rows[0]?.id;
+        if (expAccId) {
+          await ExpensePostingService.createAndPost(
+            DEV_ORG_ID,
+            DEV_PERSONAS.Owner.id,
+            {
+              date: new Date(Date.now() - 3 * 86400000).toISOString().split('T')[0],
+              amount: 3250.00,
+              expenseAccountId: expAccId,
+              paidFromAccountId: ledgerBankId,
+              description: 'Monthly AWS Cloud Infrastructure & Hosting',
+            }
+          );
+        }
+      } catch (expErr) {
+        console.warn('[DevEnvironmentService] Expense seeding notice:', expErr);
       }
     }
   }

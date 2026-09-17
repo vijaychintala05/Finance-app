@@ -44,7 +44,7 @@ import { ClientModal } from '../clients/ClientModal';
 import { MetricCardSkeleton, TableSkeleton } from '../common/TableSkeleton';
 
 type DashboardViewKey = 'overview' | 'cash-operations' | 'close-controls';
-type DatePreset = 'today' | 'mtd' | 'qtd' | 'ytd' | 'custom';
+type DatePreset = 'today' | 'mtd' | 'qtd' | 'ytd' | 'last12' | 'custom';
 
 interface DashboardData {
   view: DashboardViewKey;
@@ -70,6 +70,9 @@ interface DashboardData {
     collections: Array<{ partyName: string; amount: number; overdue: boolean; dueDate: string | null }>;
     billsDue: Array<{ partyName: string; amount: number; overdue: boolean; dueDate: string | null }>;
     recentTransactions: Array<{ type: string; documentNumber: string; partyName: string; amount: number; status: string; date: string }>;
+  };
+  cashFlow?: {
+    movements: Array<{ date: string; cashIn: number; cashOut: number; net: number }>;
   };
   cashOperations: {
     available: boolean;
@@ -773,40 +776,46 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                     </linearGradient>
                   </defs>
 
-                  {/* Horizontal Gridlines & Y-Axis Labels */}
-                  {[
-                    { y: 15, label: '75K' },
-                    { y: 48, label: '50K' },
-                    { y: 81, label: '25K' },
-                    { y: 114, label: '0' },
-                  ].map((tick) => (
-                    <g key={tick.y}>
-                      <text x="0" y={tick.y + 3} fill="#94a3b8" fontSize="9" fontWeight="600" textAnchor="start">
-                        {tick.label}
-                      </text>
-                      <line x1="28" y1={tick.y} x2="340" y2={tick.y} stroke="#e2e8f0" strokeDasharray="3 3" strokeWidth="0.8" className="dark:stroke-slate-800" />
-                    </g>
-                  ))}
-
-                  {/* Dynamic Cash Flow Trend Line / Area */}
+                  {/* Values are matched to their actual ledger month; empty months remain zero. */}
                   {(() => {
                     const activePoints = mobileCashFlowBasis === 'cash' ? cashTimelinePoints : timelinePoints;
-                    const months = ['Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar'];
-                    const stepX = (340 - 32) / (months.length - 1);
-                    
-                    const points = months.map((m, i) => {
+                    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                    const currentMonth = new Date(`${asOfDate}T00:00:00Z`).getUTCMonth();
+                    const fiscalStart = Math.max(0, Math.min(11, (Number(settings.fiscalYearStartMonth) || 1) - 1));
+                    const startMonth = mobileCashFlowPeriod === 'fiscal' ? fiscalStart
+                      : mobileCashFlowPeriod === 'quarter' ? Math.floor(currentMonth / 3) * 3
+                      : mobileCashFlowPeriod === 'month' ? currentMonth : 0;
+                    const monthCount = mobileCashFlowPeriod === 'quarter' ? 3 : mobileCashFlowPeriod === 'month' ? 1 : 12;
+                    const months = Array.from({ length: monthCount }, (_, index) => (startMonth + index) % 12);
+                    const dataByMonth = new Map<number, { net: number }>();
+                    activePoints.forEach((point) => {
+                      const pointDate = new Date(`${point.rawDate}T00:00:00Z`);
+                      if (Number.isNaN(pointDate.getTime())) return;
+                      const month = pointDate.getUTCMonth();
+                      const prior = dataByMonth.get(month) || { net: 0 };
+                      dataByMonth.set(month, { net: prior.net + point.net });
+                    });
+                    const stepX = months.length > 1 ? (340 - 32) / (months.length - 1) : 0;
+                    const peak = Math.max(1, ...Array.from(dataByMonth.values()).map((point) => Math.abs(point.net)));
+                    const compact = (value: number) => value >= 1_000_000 ? `${(value / 1_000_000).toFixed(1)}M` : value >= 1_000 ? `${Math.round(value / 1_000)}K` : `${Math.round(value)}`;
+                    const points = months.map((month, i) => {
                       const x = 32 + i * stepX;
-                      const matchingPoint = activePoints[i % Math.max(1, activePoints.length)];
-                      const val = matchingPoint ? matchingPoint.net : 0;
-                      const y = Math.max(16, Math.min(112, 114 - (val > 0 ? (val / 75000) * 98 : 12)));
-                      return { x, y, month: m, amount: val };
+                      const value = dataByMonth.get(month)?.net || 0;
+                      const y = Math.max(16, Math.min(112, 65 - (value / peak) * 46));
+                      return { x, y, month: monthNames[month], amount: value };
                     });
 
                     const linePath = `M ${points.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' L ')}`;
-                    const areaPath = `${linePath} L ${points[points.length - 1].x},114 L ${points[0].x},114 Z`;
+                    const areaPath = `${linePath} L ${points[points.length - 1].x},65 L ${points[0].x},65 Z`;
 
                     return (
                       <g>
+                        {[{ y: 19, label: compact(peak) }, { y: 65, label: '0' }, { y: 111, label: `-${compact(peak)}` }].map((tick) => (
+                          <g key={tick.y}>
+                            <text x="0" y={tick.y + 3} fill="#94a3b8" fontSize="9" fontWeight="600" textAnchor="start">{tick.label}</text>
+                            <line x1="28" y1={tick.y} x2="340" y2={tick.y} stroke="#e2e8f0" strokeDasharray="3 3" strokeWidth="0.8" className="dark:stroke-slate-800" />
+                          </g>
+                        ))}
                         <path d={areaPath} fill="url(#mobileAreaGrad)" />
                         <path d={linePath} fill="none" stroke="#2563eb" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
                         {points.map((p) => (
@@ -822,20 +831,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                             onClick={() => setMobileHoverPoint({ month: p.month, amount: p.amount })}
                           />
                         ))}
+                        {points.map((p) => (
+                          <text key={`${p.month}-label`} x={p.x} y="132" fill="#94a3b8" fontSize="8.5" fontWeight="600" textAnchor="middle">
+                            {p.month}
+                          </text>
+                        ))}
                       </g>
                     );
                   })()}
-
-                  {/* Month X-Axis Ticks */}
-                  {['Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar'].map((m, i) => {
-                    const stepX = (340 - 32) / 11;
-                    const x = 32 + i * stepX;
-                    return (
-                      <text key={m} x={x} y="132" fill="#94a3b8" fontSize="8.5" fontWeight="600" textAnchor="middle">
-                        {m}
-                      </text>
-                    );
-                  })}
                 </svg>
 
                 {mobileHoverPoint && (

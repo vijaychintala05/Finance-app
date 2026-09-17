@@ -193,6 +193,10 @@ describe('Mobile Dashboard UI (Light Mode) Test Suite', () => {
     expect(within(mobile).getByText('₹1,750.00')).toBeTruthy();
     expect(within(mobile).getByText('₹550.00')).toBeTruthy();
     expect(within(mobile).getByText('₹1,200.00')).toBeTruthy();
+    // The chart scale follows the returned cash ledger values; it must not
+    // display the old fixed ₹75K/₹50K/₹25K visual-only scale.
+    expect(within(mobile).queryByText('75K')).toBeNull();
+    expect(within(mobile).queryByText('50K')).toBeNull();
 
     // Accrual remains an explicit P&L activity view; returning to cash must
     // restore the exact GL-derived cash totals, not a percentage estimate.

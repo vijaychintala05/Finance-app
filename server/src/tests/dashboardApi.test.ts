@@ -70,6 +70,42 @@ describe('role-adaptive dashboard API', () => {
       .not.toEqual(expect.arrayContaining(['INV-DASH-FUTURE', 'BILL-DASH-FUTURE']));
   });
 
+  it('derives dashboard cash flow from posted bank and cash journal lines, not P&L activity', async () => {
+    await db.query(
+      `INSERT INTO accounts (id, organization_id, code, name, type, sub_type, balance, status)
+       VALUES
+         ('dashboard-cash-bank', $1, '10991', 'Dashboard Test Bank', 'Asset', 'Bank', 0, 'Active'),
+         ('dashboard-cash-offset', $1, '10992', 'Dashboard Cash Offset', 'Asset', 'Other Current Asset', 0, 'Active')`,
+      [organizationId],
+    );
+    await db.query(
+      `INSERT INTO journal_entries (id, organization_id, entry_number, date, status)
+       VALUES
+         ('dashboard-cash-in-je', $1, 'JE-DASH-CASH-IN', '2026-08-20', 'POSTED'),
+         ('dashboard-cash-out-je', $1, 'JE-DASH-CASH-OUT', '2026-08-21', 'POSTED')`,
+      [organizationId],
+    );
+    await db.query(
+      `INSERT INTO journal_lines (id, journal_entry_id, organization_id, account_id, debit, credit)
+       VALUES
+         ('dashboard-cash-in-bank', 'dashboard-cash-in-je', $1, 'dashboard-cash-bank', 110, 0),
+         ('dashboard-cash-in-offset', 'dashboard-cash-in-je', $1, 'dashboard-cash-offset', 0, 110),
+         ('dashboard-cash-out-offset', 'dashboard-cash-out-je', $1, 'dashboard-cash-offset', 40, 0),
+         ('dashboard-cash-out-bank', 'dashboard-cash-out-je', $1, 'dashboard-cash-bank', 0, 40)`,
+      [organizationId],
+    );
+
+    const response = await request
+      .get('/api/v1/dashboard?view=overview&asOfDate=2026-08-23&periodPreset=mtd')
+      .set(ownerAuth);
+
+    expect(response.status).toBe(200);
+    expect(response.body.dashboard.cashFlow.movements).toEqual([
+      expect.objectContaining({ date: '2026-08-20', cashIn: 110, cashOut: 0, net: 110 }),
+      expect.objectContaining({ date: '2026-08-21', cashIn: 0, cashOut: 40, net: -40 }),
+    ]);
+  });
+
   it('rejects invalid date and unauthorized view inputs instead of silently changing them', async () => {
     const invalidDate = await request.get('/api/v1/dashboard?asOfDate=2026-02-31').set(ownerAuth);
     expect(invalidDate.status).toBe(400);

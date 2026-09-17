@@ -47,6 +47,9 @@ export default defineConfig(() => {
       // fail-closed behavior. Run test files serially so process-global environment
       // changes cannot weaken or corrupt another suite.
       fileParallelism: false,
+      // Node worker threads can stall while bootstrapping jsdom in this suite.
+      // A forked worker keeps browser-facing tests deterministic on Windows.
+      pool: 'forks',
       // Property-based accounting checks execute many real posting lifecycles.
       // A minute keeps their coverage intact without masking a stalled suite.
       testTimeout: 60_000,

@@ -263,7 +263,7 @@ interface BooksContextType {
   deleteTimeEntry: (id: string) => Promise<void>;
 
   invoices: Invoice[];
-  addInvoice: (invoice: Omit<Invoice, 'id' | 'createdAt' | 'invoiceNumber'>) => Promise<Invoice>;
+  addInvoice: (invoice: Omit<Invoice, 'id' | 'createdAt' | 'invoiceNumber'> & { expenseIds?: string[] }) => Promise<Invoice>;
   updateInvoice: (id: string, invoice: Partial<Invoice>) => Promise<Invoice>;
   deleteInvoice: (id: string) => Promise<void>;
 
@@ -1124,7 +1124,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     await refreshAfterCommittedWrite();
   };
 
-  const addInvoice = async (invoiceData: Omit<Invoice, 'id' | 'createdAt' | 'invoiceNumber'>): Promise<Invoice> => {
+  const addInvoice = async (invoiceData: Omit<Invoice, 'id' | 'createdAt' | 'invoiceNumber'> & { expenseIds?: string[] }): Promise<Invoice> => {
     const response = await apiClient.post<any>('/finance/invoices', {
       clientId: invoiceData.clientId,
       clientName: invoiceData.clientName,
@@ -1135,6 +1135,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       items: invoiceData.items,
       discount: invoiceData.discount,
       notes: invoiceData.notes,
+      expenseIds: invoiceData.expenseIds,
     });
     if (!response.data) throw new Error(response.error || 'Invoice could not be posted');
     const newInv = normalizeInvoiceForUi({

@@ -1,10 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Edit3, FileText, History, Plus, Trash2, X } from 'lucide-react';
-import { Invoice, InvoiceEditHistory, InvoiceItem, Estimate } from '../../types';
+import { Edit3, FileText, History, Plus, Trash2, X, Sparkles, Receipt } from 'lucide-react';
+import { Invoice, InvoiceEditHistory, InvoiceItem, Estimate, Expense } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 import { formatCurrency } from '../../utils/formatters';
+import { apiClient } from '../../api/client';
 import { QuickAddClientModal } from '../common/QuickAddClientModal';
 import { QuickAddProjectModal } from '../common/QuickAddProjectModal';
+import { UnbilledExpensesDrawer } from './UnbilledExpensesDrawer';
 
 interface InvoiceEditorModalProps {
   isOpen: boolean;
@@ -31,7 +33,7 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
   initialEstimate,
   clonedInvoice,
 }) => {
-  const { clients, projects, accounts, refreshAccounts, settings, salespersons, addInvoice, updateInvoice } = useBooks();
+  const { clients, projects, accounts, refreshAccounts, settings, salespersons, addInvoice, updateInvoice, expenses = [] } = useBooks();
 
   const [isQuickClientOpen, setIsQuickClientOpen] = useState(false);
   const [isQuickProjectOpen, setIsQuickProjectOpen] = useState(false);
@@ -67,6 +69,26 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
       refreshAccounts().catch((err) => console.error('Error fetching accounts for invoice:', err));
     }
   }, [isOpen, refreshAccounts]);
+
+  // Unbilled recoverable expenses integration (Stage 2)
+  const [isUnbilledDrawerOpen, setIsUnbilledDrawerOpen] = useState(false);
+  const [selectedExpenseIds, setSelectedExpenseIds] = useState<string[]>([]);
+
+  // Compute unbilled billable expenses for the selected client directly from state
+  const availableUnbilledExpenses = useMemo(() => {
+    if (!clientId || editingInvoice) return [];
+    return expenses.filter(
+      (e) => e.clientId === clientId && Boolean(e.isBillable) && !e.isBilled && !selectedExpenseIds.includes(e.id)
+    );
+  }, [expenses, clientId, selectedExpenseIds, editingInvoice]);
+
+  const unbilledCount = availableUnbilledExpenses.length;
+  const unbilledTotal = useMemo(() => {
+    return availableUnbilledExpenses.reduce((sum, e) => {
+      const price = e.sellingPrice !== undefined && e.sellingPrice !== null ? e.sellingPrice : e.amount;
+      return sum + Number(price || 0);
+    }, 0);
+  }, [availableUnbilledExpenses]);
 
   const [items, setItems] = useState<InvoiceItem[]>([
     {
@@ -260,6 +282,28 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
     setItems((prev) => prev.filter((_, idx) => idx !== index));
   };
 
+  const handleApplyUnbilledExpenses = (appliedExpenses: Expense[]) => {
+    const newItems: InvoiceItem[] = appliedExpenses.map((exp) => {
+      const price = exp.sellingPrice !== undefined && exp.sellingPrice !== null ? exp.sellingPrice : exp.amount;
+      return {
+        id: `item-exp-${exp.id}`,
+        description: exp.description || exp.accountName || 'Reimbursable expense',
+        accountId: revenueAccounts[0]?.id || '',
+        quantity: 1,
+        unitPrice: price,
+        taxRate: 0,
+        amount: price,
+      };
+    });
+
+    setItems((prev) => {
+      const isFirstItemEmpty = prev.length === 1 && !prev[0].description.trim() && Number(prev[0].unitPrice) === 0;
+      return isFirstItemEmpty ? newItems : [...prev, ...newItems];
+    });
+
+    setSelectedExpenseIds((prev) => Array.from(new Set([...prev, ...appliedExpenses.map((e) => e.id)])));
+  };
+
   const subtotal = Math.round(items.reduce((sum, item) => sum + (item.amount || 0), 0) * 100) / 100;
   const taxTotal = Math.round(
     items.reduce(
@@ -376,6 +420,7 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
           status: 'Sent',
           notes,
           terms,
+          expenseIds: selectedExpenseIds.length > 0 ? selectedExpenseIds : undefined,
         });
 
         onClose();
@@ -547,20 +592,60 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
             </div>
           </div>
 
+          {/* Zoho-style Unbilled Recoverable Expenses Banner */}
+          {unbilledCount > 0 && !editingInvoice && (
+            <div className="p-3.5 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-950/40 dark:to-indigo-950/40 border border-blue-200 dark:border-blue-800/80 rounded-xl flex items-center justify-between gap-3 shadow-xs">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-blue-600 text-white flex items-center justify-center font-bold text-xs shrink-0 shadow-xs">
+                  <Receipt className="w-4 h-4" />
+                </div>
+                <div>
+                  <p className="text-xs font-bold text-blue-900 dark:text-blue-100 flex items-center gap-1.5">
+                    <span>{unbilledCount} Unbilled Expense{unbilledCount === 1 ? '' : 's'} Available</span>
+                    <span className="font-mono text-blue-700 dark:text-blue-300">({formatCurrency(unbilledTotal, settings.currencySymbol)})</span>
+                  </p>
+                  <p className="text-[11px] text-blue-700/80 dark:text-blue-300/80">
+                    Recover costs at approved customer selling price without revealing internal receipts.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsUnbilledDrawerOpen(true)}
+                className="px-3.5 py-1.5 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 active:scale-95 rounded-lg shadow-sm transition shrink-0 flex items-center gap-1 cursor-pointer"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>Review & Add</span>
+              </button>
+            </div>
+          )}
+
           {/* Line Items Table */}
           <div className="space-y-2">
             <div className="flex justify-between items-center">
               <label className="block text-slate-800 dark:text-slate-200 font-bold">
                 Invoice Line Items
               </label>
-              <button
-                type="button"
-                onClick={addItem}
-                className="text-blue-600 dark:text-blue-400 font-semibold flex items-center space-x-1 cursor-pointer"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>Add Row</span>
-              </button>
+              <div className="flex items-center gap-3">
+                {unbilledCount > 0 && !editingInvoice && (
+                  <button
+                    type="button"
+                    onClick={() => setIsUnbilledDrawerOpen(true)}
+                    className="text-indigo-600 dark:text-indigo-400 font-semibold text-xs flex items-center space-x-1 cursor-pointer hover:underline"
+                  >
+                    <Plus className="w-3 h-3" />
+                    <span>Unbilled Expenses ({unbilledCount})</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={addItem}
+                  className="text-blue-600 dark:text-blue-400 font-semibold flex items-center space-x-1 cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Add Row</span>
+                </button>
+              </div>
             </div>
 
             {/* Desktop Table (hidden md:block) */}
@@ -901,6 +986,18 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
             setClientId(newPrj.clientId);
           }
         }}
+      />
+
+      <UnbilledExpensesDrawer
+        isOpen={isUnbilledDrawerOpen}
+        onClose={() => setIsUnbilledDrawerOpen(false)}
+        clientId={clientId}
+        clientName={clients.find((c) => c.id === clientId)?.companyName || clients.find((c) => c.id === clientId)?.name}
+        projectId={projectId}
+        currencySymbol={settings.currencySymbol}
+        alreadySelectedExpenseIds={selectedExpenseIds}
+        expenses={availableUnbilledExpenses}
+        onApply={handleApplyUnbilledExpenses}
       />
     </div>
   );

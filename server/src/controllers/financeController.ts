@@ -1246,7 +1246,7 @@ export class FinanceController {
 
   public static async createInvoice(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
-    const { clientId, clientName, clientEmail, projectId, issueDate, dueDate, items, discount, notes } = req.body;
+    const { clientId, clientName, clientEmail, projectId, issueDate, dueDate, items, discount, notes, expenseIds } = req.body;
 
     if (!clientId || !isIsoCalendarDate(issueDate) || !isIsoCalendarDate(dueDate) || dueDate < issueDate || !Array.isArray(items) || items.length === 0) {
       res.status(400).json({ error: 'A tenant client, valid issue/due dates, and at least one line item are required' });
@@ -1259,20 +1259,41 @@ export class FinanceController {
         commandType: 'invoice.post',
         payload: req.body,
         idempotencyKey: req.header('idempotency-key') || undefined,
-        execute: (client) => SalesEngine.createAndPostInvoice(orgId, {
-          customerId: clientId,
-          customerName: clientName,
-          customerEmail: clientEmail,
-          projectId,
-          issueDate,
-          dueDate,
-          discount: Number(discount || 0),
-          lineItems: items,
-          notes,
-          status: 'POSTED',
-          createdBy: req.auth!.userId,
-          approvedDraftId: req.body.approvedDraftId,
-        } as any, req.auth!.userId, client),
+        execute: async (client) => {
+          const invoice = await SalesEngine.createAndPostInvoice(orgId, {
+            customerId: clientId,
+            customerName: clientName,
+            customerEmail: clientEmail,
+            projectId,
+            issueDate,
+            dueDate,
+            discount: Number(discount || 0),
+            lineItems: items,
+            notes,
+            status: 'POSTED',
+            createdBy: req.auth!.userId,
+            approvedDraftId: req.body.approvedDraftId,
+          } as any, req.auth!.userId, client);
+
+          if (Array.isArray(expenseIds) && expenseIds.length > 0) {
+            const placeholders = expenseIds.map((_, i) => `$${i + 3}`).join(', ');
+            const updateRes = await client.query(
+              `UPDATE expenses
+                  SET invoice_id = $1, is_billed = TRUE
+                WHERE organization_id = $2
+                  AND id IN (${placeholders})
+                  AND is_billable = TRUE
+                  AND is_billed = FALSE
+                RETURNING id`,
+              [invoice.id, orgId, ...expenseIds]
+            );
+            if (updateRes.rows.length !== expenseIds.length) {
+              throw new Error('EXPENSE_ALREADY_BILLED: One or more selected expenses are already billed or invalid');
+            }
+          }
+
+          return invoice;
+        },
         events: (result) => [{
           eventType: 'invoice.posted',
           aggregateType: 'Invoice',
@@ -1494,6 +1515,11 @@ export class FinanceController {
     const orgId = req.auth!.organizationId;
     const limit = req.query.limit ? Number(req.query.limit) : null;
     const offset = req.query.offset ? Number(req.query.offset) : 0;
+    const clientId = typeof req.query.clientId === 'string' ? req.query.clientId.trim() : undefined;
+    const projectId = typeof req.query.projectId === 'string' ? req.query.projectId.trim() : undefined;
+    const isBillable = req.query.isBillable !== undefined ? req.query.isBillable === 'true' : undefined;
+    const isBilled = req.query.isBilled !== undefined ? req.query.isBilled === 'true' : undefined;
+
     let queryText = `
       SELECT e.*,
              ea.name AS expense_account_name,
@@ -1509,9 +1535,28 @@ export class FinanceController {
         LEFT JOIN clients cl ON cl.id = e.client_id AND cl.organization_id = e.organization_id
         LEFT JOIN invoices inv ON inv.id = e.invoice_id AND inv.organization_id = e.organization_id
        WHERE e.organization_id = $1
-       ORDER BY e.date DESC, e.created_at DESC, e.id DESC
     `;
     const params: any[] = [orgId];
+
+    if (clientId) {
+      params.push(clientId);
+      queryText += ` AND e.client_id = $${params.length}`;
+    }
+    if (projectId) {
+      params.push(projectId);
+      queryText += ` AND e.project_id = $${params.length}`;
+    }
+    if (isBillable !== undefined) {
+      params.push(isBillable);
+      queryText += ` AND e.is_billable = $${params.length}`;
+    }
+    if (isBilled !== undefined) {
+      params.push(isBilled);
+      queryText += ` AND e.is_billed = $${params.length}`;
+    }
+
+    queryText += ` ORDER BY e.date DESC, e.created_at DESC, e.id DESC`;
+
     if (limit && Number.isFinite(limit) && limit > 0) {
       queryText += ` LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
       params.push(limit, offset);

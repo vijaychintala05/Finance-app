@@ -398,6 +398,8 @@ export interface Expense {
   isItemized?: boolean;
   items?: ExpenseItem[];
   isBillable: boolean;
+  markupPercentage?: number;
+  sellingPrice?: number;
   isBilled?: boolean;
   invoiceId?: string;
   customerInvoiceNumber?: string;
@@ -776,6 +778,7 @@ export interface FirmSettings {
   expensesSettings?: {
     approvalThreshold: number;
     requireReceipt: boolean;
+    defaultMarkupPercentage?: number;
   };
   purchaseOrdersSettings?: {
     requirePOAbove: number;

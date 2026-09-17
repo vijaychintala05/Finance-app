@@ -4,6 +4,7 @@ import { useBooks } from '../../context/BooksContext';
 import { Account, Expense } from '../../types';
 import { AccountModal } from '../coa/AccountModal';
 import { QuickAddAccountModal } from '../common/QuickAddAccountModal';
+import { ProjectBillingDialog } from './ProjectBillingDialog';
 import { compressReceiptImage, MAX_RECEIPT_IMAGES } from './receiptUpload';
 
 interface ExpenseModalProps {
@@ -229,6 +230,12 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
   const [projectId, setProjectId] = useState(defaultProjectId || '');
   const [clientId, setClientId] = useState(defaultClientId || '');
   const [isBillable, setIsBillable] = useState(false);
+  const [markupPercentage, setMarkupPercentage] = useState(
+    expenseToEdit?.markupPercentage !== undefined
+      ? expenseToEdit.markupPercentage
+      : (settings?.expensesSettings?.defaultMarkupPercentage || 0)
+  );
+  const [isProjectBillingDialogOpen, setIsProjectBillingDialogOpen] = useState(false);
   const [correctionReason, setCorrectionReason] = useState('');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -290,7 +297,20 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
     }
     if (!newClientId) {
       setIsBillable(false);
+      setProjectId('');
+      setMarkupPercentage(0);
+      setIsProjectBillingDialogOpen(false);
+    } else {
+      // Procedure: Once a client is selected/added, immediately open the Project & Billable dialog!
+      setIsProjectBillingDialogOpen(true);
     }
+  };
+
+  const handleApplyProjectBilling = (newProjectId: string, newBillable: boolean, newMarkup: number) => {
+    setProjectId(newProjectId);
+    setIsBillable(newBillable);
+    setMarkupPercentage(newMarkup);
+    setIsProjectBillingDialogOpen(false);
   };
 
   const handleCreateVendor = async (event: React.FormEvent) => {
@@ -370,6 +390,12 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
       setProjectId(expenseToEdit?.projectId || defaultProjectId || '');
       setClientId(expenseToEdit?.clientId || defaultClientId || '');
       setIsBillable(Boolean(expenseToEdit?.isBillable));
+      setMarkupPercentage(
+        expenseToEdit?.markupPercentage !== undefined
+          ? expenseToEdit.markupPercentage
+          : (settings?.expensesSettings?.defaultMarkupPercentage || 0)
+      );
+      setIsProjectBillingDialogOpen(false);
       setCorrectionReason('');
       setError('');
       setIsSubmitting(false);
@@ -414,6 +440,10 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
   };
 
   const calculatedItemizedTotal = items.reduce((sum, it) => sum + (Number(it.amount) || 0), 0);
+  const currentCostBasis = isItemized ? calculatedItemizedTotal : (Number(amount) || 0);
+  const calculatedSellingPrice = isBillable
+    ? Math.round(currentCostBasis * (1 + markupPercentage / 100) * 100) / 100
+    : 0;
 
   const appendReceiptFiles = (incoming: File[]) => {
     if (incoming.length === 0) return;
@@ -505,6 +535,8 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
         projectId: projectId || undefined,
         clientId: resolvedClientId || undefined,
         isBillable: Boolean(isBillable && resolvedClientId),
+        markupPercentage: Boolean(isBillable && resolvedClientId) ? markupPercentage : 0,
+        sellingPrice: Boolean(isBillable && resolvedClientId) ? calculatedSellingPrice : 0,
         receiptImages,
         paymentStatus: 'Paid',
         isItemized,
@@ -868,29 +900,65 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                 </div>
               </div>
 
-              {/* Billable toggle if customer is selected */}
+              {/* Customer summary and settings */}
               {clientId && (
-                <div className="flex items-center justify-between p-3.5">
-                  <div className="space-y-0.5">
-                    <span className="text-sm font-medium text-slate-800 dark:text-white block">Billable to Customer</span>
-                    <span className="text-xs text-slate-400 block">Track as unbilled for customer invoice</span>
-                  </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={isBillable}
-                    onClick={() => setIsBillable(!isBillable)}
-                    className={`w-12 h-7 rounded-full p-0.5 transition-colors cursor-pointer relative ${
-                      isBillable ? 'bg-blue-600 dark:bg-blue-500' : 'bg-slate-300 dark:bg-zinc-700'
-                    }`}
+                <>
+                  <div
+                    onClick={() => setIsProjectBillingDialogOpen(true)}
+                    className="flex items-center justify-between p-3.5 cursor-pointer hover:bg-slate-50/80 active:bg-slate-100 dark:hover:bg-zinc-800/50 transition-colors select-none"
                   >
+                    <span className="text-sm font-medium text-slate-800 dark:text-white">Project</span>
+                    <div className="flex items-center gap-1 text-sm">
+                      <span className="font-semibold text-slate-900 dark:text-white truncate max-w-[180px]">
+                        {projects.find((p) => p.id === projectId)?.name || 'No project'}
+                      </span>
+                      <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between p-3.5">
                     <div
-                      className={`w-6 h-6 rounded-full bg-white shadow-md transform transition-transform ${
-                        isBillable ? 'translate-x-5' : 'translate-x-0'
+                      className="space-y-0.5 cursor-pointer flex-1"
+                      onClick={() => setIsProjectBillingDialogOpen(true)}
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-sm font-medium text-slate-800 dark:text-white block">Billable to Customer</span>
+                        {isBillable && (
+                          <span className="text-[10px] uppercase font-black tracking-wider bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 px-1.5 py-0.2 rounded-full">
+                            +{markupPercentage}%
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-xs text-slate-400 block">
+                        {isBillable
+                          ? `Track as unbilled (${settings.currencySymbol} ${calculatedSellingPrice.toFixed(2)})`
+                          : 'Track as unbilled for customer invoice'}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={isBillable}
+                      aria-label="Billable to Customer"
+                      onClick={() => {
+                        const next = !isBillable;
+                        setIsBillable(next);
+                        if (next) {
+                          setIsProjectBillingDialogOpen(true);
+                        }
+                      }}
+                      className={`w-12 h-7 rounded-full p-0.5 transition-colors cursor-pointer relative ${
+                        isBillable ? 'bg-blue-600 dark:bg-blue-500' : 'bg-slate-300 dark:bg-zinc-700'
                       }`}
-                    />
-                  </button>
-                </div>
+                    >
+                      <div
+                        className={`w-6 h-6 rounded-full bg-white shadow-md transform transition-transform ${
+                          isBillable ? 'translate-x-5' : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                </>
               )}
             </div>
 
@@ -1488,6 +1556,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                         <span>Customer</span>
                         <select
                           id="expense-customer-select"
+                          aria-label="Customer"
                           value={clientId}
                           onChange={(event) => handleClientChange(event.target.value)}
                           className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal text-slate-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
@@ -1505,6 +1574,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                         <span>Project</span>
                         <select
                           id="expense-project-select"
+                          aria-label="Project"
                           value={projectId}
                           onChange={(event) => handleProjectChange(event.target.value)}
                           className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal text-slate-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
@@ -1518,25 +1588,47 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                         </select>
                       </label>
 
-                      {/* Zoho Books Billable to Customer Switch */}
-                      <div className="sm:col-span-2 rounded-xl border border-amber-200/80 bg-amber-50/60 p-3.5 dark:border-amber-900/50 dark:bg-amber-950/20">
+                      {/* Zoho Books Billable to Customer Switch & Markup Settings */}
+                      <div className="sm:col-span-2 rounded-xl border border-amber-200/80 bg-amber-50/60 p-3.5 dark:border-amber-900/50 dark:bg-amber-950/20 space-y-2">
                         <label className="flex items-start gap-3 cursor-pointer select-none">
                           <input
                             type="checkbox"
                             id="expense-is-billable"
+                            aria-label="Billable to customer"
                             checked={isBillable}
-                            onChange={(e) => setIsBillable(e.target.checked)}
+                            onChange={(e) => {
+                              const checked = e.target.checked;
+                              setIsBillable(checked);
+                              if (checked && clientId) {
+                                setIsProjectBillingDialogOpen(true);
+                              }
+                            }}
                             className="mt-0.5 h-4 w-4 rounded border-slate-300 text-amber-600 focus:ring-amber-500 dark:border-slate-600 dark:bg-slate-700"
                           />
-                          <div className="space-y-0.5">
-                            <span className="text-sm font-bold text-slate-900 dark:text-slate-100 flex items-center gap-1.5">
-                              <span>Billable to Customer</span>
-                              {isBillable && (
-                                <span className="text-[10px] uppercase font-black tracking-wider bg-amber-200/70 text-amber-800 dark:bg-amber-900/60 dark:text-amber-200 px-1.5 py-0.2 rounded">
-                                  Recoverable Cost
-                                </span>
+                          <div className="space-y-0.5 flex-1">
+                            <div className="flex items-center justify-between">
+                              <span className="text-sm font-bold text-slate-900 dark:text-slate-100 flex items-center gap-1.5">
+                                <span>Billable to Customer</span>
+                                {isBillable && (
+                                  <span className="text-[10px] uppercase font-black tracking-wider bg-amber-200/70 text-amber-800 dark:bg-amber-900/60 dark:text-amber-200 px-1.5 py-0.2 rounded">
+                                    Recoverable Cost
+                                  </span>
+                                )}
+                              </span>
+                              {clientId && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setIsProjectBillingDialogOpen(true);
+                                  }}
+                                  className="text-xs font-bold text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1 cursor-pointer"
+                                >
+                                  Configure Project & Markup
+                                </button>
                               )}
-                            </span>
+                            </div>
                             <p className="text-xs text-slate-600 dark:text-slate-400">
                               Paid upfront by your firm. Check this to track this expense as unbilled and convert it to a customer invoice later.
                             </p>
@@ -1544,6 +1636,17 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                               <p className="text-xs font-semibold text-rose-600 dark:text-rose-400 mt-1">
                                 * Please select a customer above to bill this expense to.
                               </p>
+                            )}
+                            {isBillable && clientId && (
+                              <div className="pt-1.5 flex items-center gap-2 text-xs">
+                                <span className="font-semibold text-slate-700 dark:text-slate-300">
+                                  Markup: <span className="text-blue-600 dark:text-blue-400 font-bold">+{markupPercentage}%</span>
+                                </span>
+                                <span className="text-slate-400">•</span>
+                                <span className="font-semibold text-slate-700 dark:text-slate-300">
+                                  Customer Price: <span className="text-blue-600 dark:text-blue-400 font-bold font-financial">{settings.currencySymbol} {calculatedSellingPrice.toFixed(2)}</span>
+                                </span>
+                              </div>
                             )}
                           </div>
                         </label>
@@ -1699,6 +1802,22 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
             </div>
           </form>
         </div>
+      )}
+      {isProjectBillingDialogOpen && (
+        <ProjectBillingDialog
+          isOpen={isProjectBillingDialogOpen}
+          onClose={() => setIsProjectBillingDialogOpen(false)}
+          onApply={handleApplyProjectBilling}
+          client={selectedClient}
+          projects={availableProjects}
+          initialProjectId={projectId}
+          initialIsBillable={isBillable}
+          initialMarkupPercentage={markupPercentage}
+          costBasis={currentCostBasis}
+          currencyCode={settings.currencyCode}
+          currencySymbol={settings.currencySymbol}
+          isMobile={isMobile}
+        />
       )}
     </>
   );

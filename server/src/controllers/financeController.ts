@@ -1543,6 +1543,8 @@ export class FinanceController {
       clientId: expense.client_id || undefined,
       clientName: expense.client_name || undefined,
       isBillable: Boolean(expense.is_billable),
+      markupPercentage: expense.markup_percentage !== null && expense.markup_percentage !== undefined ? Number(expense.markup_percentage) : 0,
+      sellingPrice: expense.selling_price !== null && expense.selling_price !== undefined ? Number(expense.selling_price) : undefined,
       isBilled: Boolean(expense.is_billed),
       invoiceId: expense.invoice_id || undefined,
       customerInvoiceNumber: expense.customer_invoice_number || undefined,
@@ -3516,13 +3518,19 @@ export class FinanceController {
         }
 
         let lineItems: Array<{ description: string; quantity: number; unitPrice: number; taxRate: number }> = [];
+        const markupPct = exp.markup_percentage !== null && exp.markup_percentage !== undefined ? Number(exp.markup_percentage) : 0;
+        const markupMultiplier = 1 + markupPct / 100;
+        const sellingPrice = exp.selling_price !== null && exp.selling_price !== undefined && Number(exp.selling_price) > 0
+          ? Number(exp.selling_price)
+          : Math.round(Number(exp.amount) * markupMultiplier * 100) / 100;
+
         if (exp.is_itemized && exp.items) {
           const parsedItems = typeof exp.items === 'string' ? JSON.parse(exp.items) : exp.items;
           if (Array.isArray(parsedItems) && parsedItems.length > 0) {
             lineItems = parsedItems.map((item: any) => ({
               description: item.description || `Reimbursable expense line (${exp.expense_number})`,
               quantity: 1,
-              unitPrice: Number(item.amount),
+              unitPrice: Math.round(Number(item.amount) * markupMultiplier * 100) / 100,
               taxRate: 0,
             }));
           }
@@ -3535,7 +3543,7 @@ export class FinanceController {
           lineItems = [{
             description: `Billable Expense [${exp.expense_number}]: ${categoryInfo}${descInfo}${vendorInfo}`,
             quantity: 1,
-            unitPrice: Number(exp.amount),
+            unitPrice: sellingPrice,
             taxRate: 0,
           }];
         }

@@ -42,6 +42,8 @@ export interface ExpensePostingInput {
   clientId?: string;
   customerId?: string;
   isBillable?: boolean;
+  markupPercentage?: number;
+  sellingPrice?: number;
   sourceOccurrenceKey?: string;
   receiptImages?: ExpenseReceiptUpload[];
   isItemized?: boolean;
@@ -397,6 +399,22 @@ export class ExpensePostingService {
         throw new Error('EXPENSE_CUSTOMER_REQUIRED: Billable expenses must be assigned to a customer');
       }
 
+      const markupPercentage = input.markupPercentage !== undefined && input.markupPercentage !== null
+        ? Number(input.markupPercentage)
+        : 0;
+      if (!Number.isFinite(markupPercentage) || markupPercentage < 0) {
+        throw new Error('EXPENSE_MARKUP_INVALID: Markup percentage must be a non-negative number');
+      }
+
+      let sellingPrice = 0;
+      if (input.isBillable) {
+        if (input.sellingPrice !== undefined && input.sellingPrice !== null && Number.isFinite(Number(input.sellingPrice)) && Number(input.sellingPrice) >= 0) {
+          sellingPrice = Math.round(Number(input.sellingPrice) * 100) / 100;
+        } else {
+          sellingPrice = Math.round(amount * (1 + markupPercentage / 100) * 100) / 100;
+        }
+      }
+
       if (effectiveClientId) {
         const customerCheck = await client.query(
           `SELECT id FROM customers WHERE organization_id = $1 AND id = $2
@@ -445,15 +463,16 @@ export class ExpensePostingService {
            vendor_id, vendor_name, vendor_invoice_number, date, amount, tax_rate, tax_amount, tax_account_id,
            is_tax_inclusive, is_rcm, rcm_tax_account_id,
            tds_rate, tds_amount, tds_section, tds_account_id,
-           description, project_id, client_id, is_billable, is_billed, invoice_id, source_occurrence_key,
+           description, project_id, client_id, is_billable, markup_percentage, selling_price,
+           is_billed, invoice_id, source_occurrence_key,
            is_itemized, items)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, FALSE, NULL, $25, $26, $27)`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, FALSE, NULL, $27, $28, $29)`,
         [id, organizationId, expenseNumber, input.expenseAccountId, input.paidFromAccountId,
           vendorId, vendorName, vendorInvoiceNumber || null, input.date, amount, taxRate, computedTaxAmount, resolvedTaxAccountId,
           isTaxInclusive, isRcm, resolvedRcmAccountId,
           tdsRate, computedTdsAmount, input.tdsSection || null, resolvedTdsAccountId,
           input.description || '', input.projectId || null,
-          effectiveClientId, Boolean(input.isBillable), input.sourceOccurrenceKey || null,
+          effectiveClientId, Boolean(input.isBillable), markupPercentage, sellingPrice, input.sourceOccurrenceKey || null,
           isItemized, itemsJson]
       );
       const receiptAttachments = await ExpenseReceiptService.attachToExpense(client, organizationId, id, receipts);
@@ -580,6 +599,8 @@ export class ExpensePostingService {
         tdsSection: input.tdsSection || null,
         tdsAccountId: resolvedTdsAccountId,
         isBillable: Boolean(input.isBillable),
+        markupPercentage,
+        sellingPrice,
         isBilled: false,
         clientId: effectiveClientId,
         projectId: input.projectId || null,
@@ -593,7 +614,7 @@ export class ExpensePostingService {
   public static async updateExpense(
     organizationId: string,
     expenseId: string,
-    data: { description?: string; vendorName?: string; isBillable?: boolean; date?: string; amount?: number },
+    data: { description?: string; vendorName?: string; isBillable?: boolean; markupPercentage?: number; sellingPrice?: number; date?: string; amount?: number },
     transactionClient?: DbQueryClient
   ): Promise<any> {
     const execute = async (client: DbQueryClient) => {
@@ -619,14 +640,16 @@ export class ExpensePostingService {
       const billable = data.isBillable !== undefined ? Boolean(data.isBillable) : Boolean(exp.is_billable);
       const date = data.date || exp.date;
       const amt = data.amount !== undefined ? Number(data.amount) : Number(exp.amount);
+      const markup = data.markupPercentage !== undefined ? Number(data.markupPercentage) : Number(exp.markup_percentage || 0);
+      const selling = data.sellingPrice !== undefined ? Number(data.sellingPrice) : (billable ? Math.round(amt * (1 + markup / 100) * 100) / 100 : Number(exp.selling_price || 0));
 
       await client.query(
-        `UPDATE expenses SET description = $1, vendor_name = $2, is_billable = $3, date = $4, amount = $5
-          WHERE organization_id = $6 AND id = $7`,
-        [desc, vendor, billable, date, amt, organizationId, expenseId]
+        `UPDATE expenses SET description = $1, vendor_name = $2, is_billable = $3, markup_percentage = $4, selling_price = $5, date = $6, amount = $7
+          WHERE organization_id = $8 AND id = $9`,
+        [desc, vendor, billable, markup, selling, date, amt, organizationId, expenseId]
       );
 
-      return { ...exp, description: desc, vendorName: vendor, isBillable: billable, date, amount: amt };
+      return { ...exp, description: desc, vendorName: vendor, isBillable: billable, markupPercentage: markup, sellingPrice: selling, date, amount: amt };
     };
 
     return transactionClient ? await execute(transactionClient) : await db.transaction(execute);

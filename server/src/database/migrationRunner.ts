@@ -501,6 +501,8 @@ export class MigrationRunner {
         project_id VARCHAR(64),
         client_id VARCHAR(64),
         is_billable BOOLEAN NOT NULL DEFAULT FALSE,
+        markup_percentage NUMERIC(5, 2) DEFAULT 0.00,
+        selling_price NUMERIC(15, 2) DEFAULT 0.00,
         is_billed BOOLEAN NOT NULL DEFAULT FALSE,
         invoice_id VARCHAR(64),
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
@@ -1434,6 +1436,8 @@ export class MigrationRunner {
       `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS tds_amount NUMERIC(15, 2) DEFAULT 0.00`,
       `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS tds_section VARCHAR(50)`,
       `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS tds_account_id VARCHAR(64)`,
+      `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS markup_percentage NUMERIC(5, 2) DEFAULT 0.00`,
+      `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS selling_price NUMERIC(15, 2) DEFAULT 0.00`,
       `ALTER TABLE bills ADD COLUMN IF NOT EXISTS reversal_journal_id VARCHAR(64)`,
       `ALTER TABLE bills ADD COLUMN IF NOT EXISTS reversed_at TIMESTAMP WITH TIME ZONE`,
       `ALTER TABLE bills ADD COLUMN IF NOT EXISTS reversed_by VARCHAR(64)`,

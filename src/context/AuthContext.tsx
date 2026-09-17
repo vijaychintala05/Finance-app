@@ -31,6 +31,12 @@ function storeSession(token?: string, organizationId?: string): void {
   if (organizationId) localStorage.setItem('active_organization_id', organizationId);
 }
 
+function clearStoredSession(): void {
+  localStorage.removeItem('auth_token');
+  localStorage.removeItem('active_organization_id');
+  localStorage.removeItem('firmbooks_authenticated');
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
@@ -52,6 +58,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
         setLoading(false);
       } else {
+        // A confirmed authorization failure means the stored bearer token can
+        // no longer be used. Clear it so protected requests stop repeatedly
+        // failing in the background and AuthGate can present sign-in.
+        if (response.status === 401 || response.status === 403) {
+          clearStoredSession();
+          setUser(null);
+        }
         setLoading(false);
       }
     });
@@ -82,7 +95,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       storeSession(response.data.token);
       const profile = await apiClient.get<{ user: AuthUser; organizations: Array<{ id: string }> }>('/auth/me');
       if (!profile.data) {
-        localStorage.removeItem('auth_token');
+        clearStoredSession();
         setError(profile.error || 'Could not load account');
         return false;
       }
@@ -108,7 +121,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     storeSession(response.data.token);
     const profile = await apiClient.get<{ user: AuthUser; organizations: Array<{ id: string }> }>('/auth/me');
     if (!profile.data) {
-      localStorage.removeItem('auth_token');
+      clearStoredSession();
       setError(profile.error || 'Could not load account');
       return false;
     }
@@ -143,9 +156,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch {
       // Continue clearing local session even if server endpoint fails or user is offline
     }
-    localStorage.removeItem('auth_token');
-    localStorage.removeItem('active_organization_id');
-    localStorage.removeItem('firmbooks_authenticated');
+    clearStoredSession();
     setUser(null);
     setMfaRequired(false);
     setMfaTicket(null);

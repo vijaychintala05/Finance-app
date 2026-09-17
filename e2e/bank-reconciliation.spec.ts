@@ -7,8 +7,11 @@ test.describe('Banking tenant boundary', () => {
 
     if (testInfo.project.name.includes('mobile')) {
       await page.getByRole('button', { name: 'Open Mobile Menu' }).click();
+      await page.getByRole('button', { name: /^Banking & Cash/ }).filter({ visible: true }).click();
+      await page.getByRole('button', { name: 'Bank & Cash Accounts' }).click();
+    } else {
+      await page.getByRole('button', { name: /^Banking & Cash/ }).filter({ visible: true }).click();
     }
-    await page.getByRole('button', { name: /^Banking & Cash/ }).filter({ visible: true }).click();
     await expect(page.getByRole('heading', { name: 'Banking & Cash Management' })).toBeVisible();
     await expect(page.getByText('Bank Balance', { exact: true })).toBeVisible();
 

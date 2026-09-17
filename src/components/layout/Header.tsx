@@ -241,7 +241,8 @@ export const Header: React.FC<HeaderProps> = ({
           <button
             onClick={handleMobileToggle}
             className="lg:hidden p-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-colors cursor-pointer border border-slate-200/80 dark:border-slate-700"
-            aria-label="Open Mobile Navigation Drawer"
+            aria-label="Open Mobile Menu"
+            title="Open Mobile Navigation Drawer"
           >
             <Menu className="w-4.5 h-4.5" />
           </button>
@@ -251,6 +252,7 @@ export const Header: React.FC<HeaderProps> = ({
           <button
             onClick={() => setIsNewMenuOpen(!isNewMenuOpen)}
             className="bg-blue-600 hover:bg-blue-700 text-white px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-2xs cursor-pointer transition-all active:scale-95"
+            aria-label="+ New"
             title="Create New Financial Record"
           >
             <Plus className="w-4 h-4" />

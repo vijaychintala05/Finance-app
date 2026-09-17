@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Check, ChevronDown, ChevronRight, ImagePlus, Layers, Plus, Receipt, RefreshCw, Search, ShieldCheck, Trash2, X } from 'lucide-react';
 import { useBooks } from '../../context/BooksContext';
 import { Account, Expense } from '../../types';
@@ -372,7 +372,10 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
 
   const prevIsOpenRef = useRef(false);
 
-  useEffect(() => {
+  // Initialize before the form becomes interactive. With useEffect, a fast
+  // customer selection could race the initial reset and make the required
+  // Project & Billing dialog disappear.
+  useLayoutEffect(() => {
     if (!isOpen) {
       prevIsOpenRef.current = false;
       return;

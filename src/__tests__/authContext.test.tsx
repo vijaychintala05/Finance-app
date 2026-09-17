@@ -34,6 +34,29 @@ describe('AuthContext & Session Lifecycle Test Suite', () => {
     expect(result.current.user).toBeNull();
   });
 
+  it('clears a stale browser session after /auth/me confirms it is expired', async () => {
+    localStorage.setItem('auth_token', 'expired-token');
+    localStorage.setItem('active_organization_id', 'org-stale');
+    localStorage.setItem('firmbooks_authenticated', 'true');
+    vi.spyOn(apiClient, 'get').mockResolvedValueOnce({
+      data: null,
+      error: 'Invalid or expired authentication session',
+      status: 401,
+    });
+
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+
+    expect(result.current.loading).toBe(false);
+    expect(result.current.user).toBeNull();
+    expect(localStorage.getItem('auth_token')).toBeNull();
+    expect(localStorage.getItem('active_organization_id')).toBeNull();
+    expect(localStorage.getItem('firmbooks_authenticated')).toBeNull();
+  });
+
   it('2. Initial load hydrates user and active org when /auth/me succeeds', async () => {
     const mockUser = { id: 'usr-1', email: 'test@example.com', fullName: 'Jane Doe' };
     const mockOrgs = [{ id: 'org-1' }, { id: 'org-2' }];

@@ -10,6 +10,8 @@ export interface VendorStatementResponse {
   totalBills: number;
   totalPayments: number;
   totalDebits: number;
+  totalCredits?: number;
+  totalRefunds?: number;
   totalWriteOffs: number;
   closingBalance: number;
   transactions: StatementLine[];
@@ -22,22 +24,26 @@ export class VendorStatementService {
     fromDate: string,
     toDate: string
   ): Promise<VendorStatementResponse> {
-    const [vRes, billsOpen, payOpen, vcOpen, woOpen, bills, pays, vcs, writeOffs] = await Promise.all([
+    const [vRes, billsOpen, payOpen, vcOpen, woOpen, refOpen, bills, pays, vcs, writeOffs, refunds] = await Promise.all([
       db.query(`SELECT id, name, company_name FROM vendors WHERE organization_id = $1 AND (id = $2 OR vendor_id = $2)`, [orgId, vendorId]),
       db.query(`SELECT COALESCE(SUM(total_amount), 0) as total FROM bills WHERE organization_id = $1 AND vendor_id = $2 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED') AND bill_date < $3`, [orgId, vendorId, fromDate]),
       db.query(`SELECT COALESCE(SUM(amount), 0) as total FROM payments_made WHERE organization_id = $1 AND vendor_id = $2 AND UPPER(status) NOT IN ('DRAFT', 'SUBMITTED', 'REVERSED', 'VOID', 'VOIDED') AND payment_date < $3`, [orgId, vendorId, fromDate]),
       db.query(`SELECT COALESCE(SUM(total_amount), 0) as total FROM vendor_credits WHERE organization_id = $1 AND vendor_id = $2 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED', 'REVERSED') AND date < $3`, [orgId, vendorId, fromDate]),
       db.query(`SELECT COALESCE(SUM(amount), 0) as total FROM ap_write_offs WHERE organization_id = $1 AND vendor_id = $2 AND write_off_date < $3`, [orgId, vendorId, fromDate]),
+      db.query(`SELECT COALESCE(SUM(amount), 0) as total FROM vendor_refunds WHERE organization_id = $1 AND vendor_id = $2 AND UPPER(COALESCE(status, 'POSTED')) = 'POSTED' AND reversed_at IS NULL AND refund_date < $3`, [orgId, vendorId, fromDate]),
       db.query(`SELECT id, bill_number, bill_date as date, total_amount as amount, notes FROM bills WHERE organization_id = $1 AND vendor_id = $2 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED') AND bill_date >= $3 AND bill_date <= $4`, [orgId, vendorId, fromDate, toDate]),
       db.query(`SELECT id, payment_number, payment_date as date, amount, reference FROM payments_made WHERE organization_id = $1 AND vendor_id = $2 AND UPPER(status) NOT IN ('DRAFT', 'SUBMITTED', 'REVERSED', 'VOID', 'VOIDED') AND payment_date >= $3 AND payment_date <= $4`, [orgId, vendorId, fromDate, toDate]),
       db.query(`SELECT id, credit_number, date, total_amount as amount, reason FROM vendor_credits WHERE organization_id = $1 AND vendor_id = $2 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED', 'REVERSED') AND date >= $3 AND date <= $4`, [orgId, vendorId, fromDate, toDate]),
       db.query(`SELECT id, bill_id, write_off_date as date, amount, reason FROM ap_write_offs WHERE organization_id = $1 AND vendor_id = $2 AND write_off_date >= $3 AND write_off_date <= $4`, [orgId, vendorId, fromDate, toDate]),
+      db.query(`SELECT id, refund_number, refund_date as date, amount, reference, notes FROM vendor_refunds WHERE organization_id = $1 AND vendor_id = $2 AND UPPER(COALESCE(status, 'POSTED')) = 'POSTED' AND reversed_at IS NULL AND refund_date >= $3 AND refund_date <= $4`, [orgId, vendorId, fromDate, toDate]),
     ]);
 
     const vendorName = vRes.rows[0]?.name || vRes.rows[0]?.company_name || 'Vendor';
 
+    // Opening balance: (Bills + Vendor Refunds) - (Payments + Vendor Credits + Write-Offs)
     const openingBalance =
-      Number(billsOpen.rows[0]?.total || 0) -
+      Number(billsOpen.rows[0]?.total || 0) +
+      Number(refOpen.rows[0]?.total || 0) -
       Number(payOpen.rows[0]?.total || 0) -
       Number(vcOpen.rows[0]?.total || 0) -
       Number(woOpen.rows[0]?.total || 0);
@@ -73,6 +79,16 @@ export class VendorStatementService {
         credit: 0,
       });
     }
+    for (const r of refunds.rows) {
+      rawTxns.push({
+        date: typeof r.date === 'string' ? r.date.split('T')[0] : new Date(r.date).toISOString().split('T')[0],
+        transactionType: 'Vendor Refund',
+        transactionNumber: r.refund_number || 'REFUND',
+        description: r.reference ? `Ref: ${r.reference}` : (r.notes || 'Vendor Refund'),
+        debit: 0,
+        credit: Number(r.amount), // Payable increases with credit (reversing previous credit)
+      });
+    }
     for (const r of writeOffs.rows) {
       rawTxns.push({
         date: typeof r.date === 'string' ? r.date.split('T')[0] : new Date(r.date).toISOString().split('T')[0],
@@ -90,12 +106,14 @@ export class VendorStatementService {
     let totalBills = 0;
     let totalPayments = 0;
     let totalDebits = 0;
+    let totalRefunds = 0;
     let totalWriteOffs = 0;
 
     const transactions: StatementLine[] = rawTxns.map((t) => {
-      totalBills += t.credit;
+      totalBills += t.transactionType === 'Vendor Bill' ? t.credit : 0;
       totalPayments += t.transactionType === 'Payment Made' ? t.debit : 0;
       totalDebits += t.transactionType === 'Debit Note / Credit' ? t.debit : 0;
+      totalRefunds += t.transactionType === 'Vendor Refund' ? t.credit : 0;
       totalWriteOffs += t.transactionType === 'Write-Off' ? t.debit : 0;
       currentBal = currentBal + t.credit - t.debit;
 
@@ -118,6 +136,8 @@ export class VendorStatementService {
       totalBills: Math.round(totalBills * 100) / 100,
       totalPayments: Math.round(totalPayments * 100) / 100,
       totalDebits: Math.round(totalDebits * 100) / 100,
+      totalCredits: Math.round(totalDebits * 100) / 100,
+      totalRefunds: Math.round(totalRefunds * 100) / 100,
       totalWriteOffs: Math.round(totalWriteOffs * 100) / 100,
       closingBalance: Math.round(currentBal * 100) / 100,
       transactions,

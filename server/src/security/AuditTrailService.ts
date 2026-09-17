@@ -78,78 +78,104 @@ export interface AuditLogEntry {
 }
 
 export class AuditTrailService {
-  public static async logAction(params: AuditLogParams): Promise<AuditLogEntry> {
-    const logId = newId('aud');
-    const now = new Date().toISOString();
+  private static orgMutexes: Map<string, Promise<void>> = new Map();
 
-    const beforeStateJson = params.beforeState ? JSON.stringify(params.beforeState) : null;
-    const afterStateJson = params.afterState ? JSON.stringify(params.afterState) : null;
-    const metadataJson = JSON.stringify({
-      ipAddress: params.ipAddress || '127.0.0.1',
-      userAgent: params.userAgent || 'FirmBooks/1.0',
-      ...(params.metadata || {}),
-    });
-
-    let previousHash = GENESIS_HASH;
+  private static async runWithOrgMutex<T>(orgId: string, fn: () => Promise<T>): Promise<T> {
+    const prev = AuditTrailService.orgMutexes.get(orgId) || Promise.resolve();
+    let release!: () => void;
+    const next = new Promise<void>((res) => { release = res; });
+    AuditTrailService.orgMutexes.set(orgId, prev.then(() => next));
     try {
-      const latest = await db.query(
-        `SELECT current_hash FROM audit_logs WHERE organization_id = $1 AND current_hash IS NOT NULL ORDER BY timestamp DESC, id DESC LIMIT 1`,
-        [params.organizationId]
-      );
-      if (latest.rows.length > 0 && latest.rows[0].current_hash) {
-        previousHash = latest.rows[0].current_hash;
-      }
-    } catch {
-      // Fallback to genesis hash if query fails or table is fresh
+      await prev;
+      return await fn();
+    } finally {
+      release();
     }
+  }
 
-    const currentHash = calculateAuditEntryHash(
-      previousHash,
-      logId,
-      params.organizationId,
-      params.userId,
-      params.action,
-      params.entityType,
-      params.entityId,
-      now,
-      beforeStateJson,
-      afterStateJson,
-      metadataJson
-    );
+  public static async logAction(params: AuditLogParams): Promise<AuditLogEntry> {
+    return AuditTrailService.runWithOrgMutex(params.organizationId, async () => {
+      return db.transaction(async (tx) => {
+        if (!db.isMemoryMode()) {
+          try {
+            await tx.query(`SELECT pg_advisory_xact_lock(hashtext('audit_' || $1))`, [params.organizationId]);
+          } catch {
+            // Ignore advisory lock errors in non-standard PG wrappers
+          }
+        }
+        const logId = newId('aud');
+        const now = new Date().toISOString();
 
-    await db.query(
-      `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, timestamp, before_state, after_state, metadata, previous_hash, current_hash)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-      [
-        logId,
-        params.organizationId,
-        params.userId,
-        params.action,
-        params.entityType,
-        params.entityId,
-        now,
-        beforeStateJson,
-        afterStateJson,
-        metadataJson,
-        previousHash,
-        currentHash,
-      ]
-    );
+        const beforeStateJson = params.beforeState ? JSON.stringify(params.beforeState) : null;
+        const afterStateJson = params.afterState ? JSON.stringify(params.afterState) : null;
+        const metadataJson = JSON.stringify({
+          ipAddress: params.ipAddress || '127.0.0.1',
+          userAgent: params.userAgent || 'FirmBooks/1.0',
+          ...(params.metadata || {}),
+        });
 
-    return {
-      id: logId,
-      organizationId: params.organizationId,
-      userId: params.userId,
-      action: params.action,
-      entityType: params.entityType,
-      entityId: params.entityId,
-      timestamp: now,
-      beforeState: params.beforeState || null,
-      afterState: params.afterState || null,
-      metadata: params.metadata || {},
-      previousHash,
-      currentHash,
-    };
+        let previousHash = GENESIS_HASH;
+        try {
+          const latest = await tx.query(
+            `SELECT current_hash FROM audit_logs WHERE organization_id = $1 AND current_hash IS NOT NULL ORDER BY timestamp DESC, id DESC LIMIT 1`,
+            [params.organizationId]
+          );
+          if (latest.rows.length > 0 && latest.rows[0].current_hash) {
+            previousHash = latest.rows[0].current_hash;
+          }
+        } catch {
+          // Fallback to genesis hash if query fails or table is fresh
+        }
+
+        const currentHash = calculateAuditEntryHash(
+          previousHash,
+          logId,
+          params.organizationId,
+          params.userId,
+          params.action,
+          params.entityType,
+          params.entityId,
+          now,
+          beforeStateJson,
+          afterStateJson,
+          metadataJson
+        );
+
+        await tx.query(
+          `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, timestamp, before_state, after_state, metadata, previous_hash, current_hash)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+          [
+            logId,
+            params.organizationId,
+            params.userId,
+            params.action,
+            params.entityType,
+            params.entityId,
+            now,
+            beforeStateJson,
+            afterStateJson,
+            metadataJson,
+            previousHash,
+            currentHash,
+          ]
+        );
+
+        return {
+          id: logId,
+          organizationId: params.organizationId,
+          userId: params.userId,
+          action: params.action,
+          entityType: params.entityType,
+          entityId: params.entityId,
+          timestamp: now,
+          beforeState: params.beforeState || null,
+          afterState: params.afterState || null,
+          metadata: params.metadata || {},
+          previousHash,
+          currentHash,
+        };
+      });
+    });
   }
 
   public static async getAuditLogs(
@@ -226,28 +252,29 @@ export class AuditTrailService {
       const rowPrevHash = row.previous_hash || row.previousHash;
       const rowCurrHash = row.current_hash || row.currentHash;
 
-      if (rowPrevHash && rowPrevHash !== expectedPrevHash) {
+      if (!rowPrevHash || rowPrevHash !== expectedPrevHash) {
         return { isValid: false, verifiedCount: i, brokenAtLogId: row.id };
       }
-      if (rowCurrHash) {
-        const calculated = calculateAuditEntryHash(
-          rowPrevHash || expectedPrevHash,
-          row.id,
-          row.organization_id || row.organizationId,
-          row.user_id || row.userId,
-          row.action,
-          row.entity_type || row.entityType,
-          row.entity_id || row.entityId,
-          row.timestamp,
-          row.before_state || row.beforeState,
-          row.after_state || row.afterState,
-          row.metadata
-        );
-        if (calculated !== rowCurrHash) {
-          return { isValid: false, verifiedCount: i, brokenAtLogId: row.id };
-        }
-        expectedPrevHash = rowCurrHash;
+      if (!rowCurrHash) {
+        return { isValid: false, verifiedCount: i, brokenAtLogId: row.id };
       }
+      const calculated = calculateAuditEntryHash(
+        rowPrevHash || expectedPrevHash,
+        row.id,
+        row.organization_id || row.organizationId,
+        row.user_id || row.userId,
+        row.action,
+        row.entity_type || row.entityType,
+        row.entity_id || row.entityId,
+        row.timestamp,
+        row.before_state || row.beforeState,
+        row.after_state || row.afterState,
+        row.metadata
+      );
+      if (calculated !== rowCurrHash) {
+        return { isValid: false, verifiedCount: i, brokenAtLogId: row.id };
+      }
+      expectedPrevHash = rowCurrHash;
     }
     return { isValid: true, verifiedCount: res.rows.length };
   }

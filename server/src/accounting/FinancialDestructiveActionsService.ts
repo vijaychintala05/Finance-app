@@ -45,7 +45,8 @@ export class FinancialDestructiveActionsService {
     if (original.reversal_of_journal_id) throw new Error('A reversal journal cannot itself be reversed through a source-document workflow');
 
     const lines = await client.query(
-      `SELECT jl.account_id, jl.debit, jl.credit, jl.description
+      `SELECT jl.account_id, jl.debit, jl.credit, jl.description,
+              jl.customer_id, jl.vendor_id, jl.project_id
          FROM journal_lines jl
          JOIN accounts a ON a.id = jl.account_id AND a.organization_id = $1
         WHERE jl.journal_entry_id = $2
@@ -75,6 +76,9 @@ export class FinancialDestructiveActionsService {
         debit: Number(line.credit || 0),
         credit: Number(line.debit || 0),
         description: `Reversal: ${String(line.description || '').slice(0, 900)}`,
+        customerId: line.customer_id || undefined,
+        vendorId: line.vendor_id || undefined,
+        projectId: line.project_id || undefined,
       })),
     }, client);
 

@@ -45,7 +45,9 @@ describe('Stage 6 — Usability, Onboarding, and Document Handling Services', ()
        VALUES
        ('acc-cash', $1, '1010', 'Checking Account', 'Asset', 'Bank', 0.00),
        ('acc-ar', $1, '1200', 'Accounts Receivable', 'Asset', 'Accounts Receivable', 0.00),
+       ('acc-prepaid', $1, '1300', 'Prepaid Expenses', 'Asset', 'Current Asset', 0.00),
        ('acc-ap', $1, '2000', 'Accounts Payable', 'Liability', 'Accounts Payable', 0.00),
+       ('acc-loan', $1, '2100', 'Bank Loan', 'Liability', 'Long Term Liability', 0.00),
        ('acc-equity', $1, '3000', 'Owner Equity', 'Equity', 'Equity', 0.00),
        ('acc-revenue', $1, '4000', 'Sales Revenue', 'Revenue', 'Sales Revenue', 0.00),
        ('acc-expense', $1, '5000', 'Office Supplies Expense', 'Expense', 'Operating Expense', 0.00)
@@ -237,8 +239,8 @@ describe('Stage 6 — Usability, Onboarding, and Document Handling Services', ()
     it('detects unbalanced opening balance lines and provides equity adjustment suggestion', async () => {
       const unbalancedLines = [
         { accountCode: '1010', debit: 5000, credit: 0, accountName: 'Cash' },
-        { accountCode: '1200', debit: 3000, credit: 0, accountName: 'Accounts Receivable' },
-        { accountCode: '2000', debit: 0, credit: 2000, accountName: 'Accounts Payable' },
+        { accountCode: '1300', debit: 3000, credit: 0, accountName: 'Prepaid Expenses' },
+        { accountCode: '2100', debit: 0, credit: 2000, accountName: 'Bank Loan' },
       ];
 
       const preview = await DataMigrationService.previewOpeningBalances(orgId, unbalancedLines);
@@ -259,7 +261,7 @@ describe('Stage 6 — Usability, Onboarding, and Document Handling Services', ()
     it('rejects posting unbalanced opening balances when autoBalanceWithEquity is false', async () => {
       const unbalancedLines = [
         { accountCode: '1010', debit: 5000, credit: 0 },
-        { accountCode: '2000', debit: 0, credit: 2000 },
+        { accountCode: '2100', debit: 0, credit: 2000 },
       ];
 
       await expect(
@@ -274,7 +276,7 @@ describe('Stage 6 — Usability, Onboarding, and Document Handling Services', ()
     it('posts balanced opening balances directly, creating balanced GL journal entry and updating accounts', async () => {
       const balancedLines = [
         { accountCode: '1010', debit: 10000, credit: 0, accountName: 'Checking Account' },
-        { accountCode: '2000', debit: 0, credit: 4000, accountName: 'Accounts Payable' },
+        { accountCode: '2100', debit: 0, credit: 4000, accountName: 'Bank Loan' },
         { accountCode: '3000', debit: 0, credit: 6000, accountName: 'Owner Equity' },
       ];
 
@@ -302,7 +304,7 @@ describe('Stage 6 — Usability, Onboarding, and Document Handling Services', ()
     it('posts unbalanced lines with autoBalanceWithEquity = true, balancing perfectly with Opening Balance Equity', async () => {
       const lines = [
         { accountCode: '1010', debit: 7500, credit: 0 },
-        { accountCode: '2000', debit: 0, credit: 2500 },
+        { accountCode: '2100', debit: 0, credit: 2500 },
       ];
 
       const result = await DataMigrationService.postOpeningBalances(

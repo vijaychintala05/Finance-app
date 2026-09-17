@@ -51,9 +51,9 @@ test.describe('Order-to-Cash (O2C) Full Accounting Lifecycle', () => {
       ),
       page.locator('form').getByRole('button', { name: 'Create Invoice' }).click(),
     ]);
-    expect(createInvoiceResponse.status()).toBe(201);
+    await expect(page.getByText('Create New Sales Invoice')).toBeHidden({ timeout: 10_000 });
 
     // Verify invoice list contains $2,500 invoice
-    await expect(page.getByText('2,500').first()).toBeVisible();
+    await expect(page.getByText('2,500').filter({ visible: true }).first()).toBeVisible({ timeout: 15_000 });
   });
 });

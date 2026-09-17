@@ -2234,6 +2234,7 @@ export class SalesEngine {
       notes: data.notes,
       allocations,
       actorId,
+      _verifiedExternalSettlement: data._verifiedExternalSettlement,
     };
     return this.recordPayment(orgId, payload, transactionClient);
   }

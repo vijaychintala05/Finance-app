@@ -1144,6 +1144,8 @@ export class MigrationRunner {
         state VARCHAR(20) NOT NULL,
         response_status INT,
         response_body JSONB,
+        user_id VARCHAR(64),
+        required_permissions VARCHAR(255),
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
         CONSTRAINT uk_org_idempotency_key UNIQUE (organization_id, idempotency_key)
@@ -1672,6 +1674,8 @@ export class MigrationRunner {
       `ALTER TABLE journal_lines ADD COLUMN IF NOT EXISTS project_id VARCHAR(64)`,
       `ALTER TABLE journal_lines ADD COLUMN IF NOT EXISTS customer_id VARCHAR(64)`,
       `ALTER TABLE journal_lines ADD COLUMN IF NOT EXISTS vendor_id VARCHAR(64)`,
+      `ALTER TABLE api_idempotency_keys ADD COLUMN IF NOT EXISTS user_id VARCHAR(64)`,
+      `ALTER TABLE api_idempotency_keys ADD COLUMN IF NOT EXISTS required_permissions VARCHAR(255)`,
       `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP WITH TIME ZONE`,
       `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS archived_by VARCHAR(64)`,
       `DO $$ BEGIN

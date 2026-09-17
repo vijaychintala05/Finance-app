@@ -1,4 +1,5 @@
 import { db } from '../database/db';
+import { MonetaryAccountPolicy } from '../accounting/monetaryAccountPolicy';
 
 type CashFlowCategory = 'operating' | 'investing' | 'financing';
 
@@ -54,8 +55,8 @@ export class CashFlowStatementService {
     }
 
     const bankAccountsRes = await db.query(
-      `SELECT id FROM accounts WHERE organization_id = $1
-       AND (UPPER(COALESCE(sub_type, '')) IN ('BANK', 'CASH', 'CASH & BANK', 'CASH AND CASH EQUIVALENTS') OR UPPER(name) LIKE '%CASH%' OR UPPER(name) LIKE '%BANK%')`,
+      `SELECT a.id FROM accounts a WHERE a.organization_id = $1
+          AND ${MonetaryAccountPolicy.getMonetaryAccountSqlCondition('a')}`,
       [orgId]
     );
     const bankAccountIds = bankAccountsRes.rows.map((row: any) => row.id);

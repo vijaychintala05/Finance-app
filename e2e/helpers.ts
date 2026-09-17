@@ -6,7 +6,7 @@ export async function registerTenant(page: Page, testInfo: TestInfo): Promise<{ 
   const organizationName = `Reliability ${testInfo.project.name} ${Date.now()}`;
 
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible({ timeout: 15_000 });
   await page.getByRole('button', { name: 'Create a new firm' }).click();
   await page.getByPlaceholder('Full name').fill('E2E Reliability Owner');
   await page.getByPlaceholder('Organization name').fill(organizationName);

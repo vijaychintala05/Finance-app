@@ -54,6 +54,20 @@ export class DataMigrationService {
     let totalCredits = 0;
     let validLinesCount = 0;
 
+    const controlAccountsRes = await db.query(
+      `SELECT id, code, type, sub_type, system_role FROM accounts
+       WHERE organization_id = $1
+         AND (
+           code IN ('1100', '2000')
+           OR UPPER(COALESCE(system_role, '')) IN ('ACCOUNTS_RECEIVABLE', 'ACCOUNTS_PAYABLE', 'AR_CONTROL', 'AP_CONTROL')
+           OR UPPER(type) IN ('ACCOUNTS RECEIVABLE', 'ACCOUNTS PAYABLE')
+           OR UPPER(COALESCE(sub_type, '')) IN ('ACCOUNTS RECEIVABLE', 'ACCOUNTS PAYABLE')
+         )`,
+      [orgId]
+    );
+    const controlAccountIds = new Set(controlAccountsRes.rows.map((r: any) => r.id));
+    const controlAccountCodes = new Set(controlAccountsRes.rows.map((r: any) => r.code).concat(['1100', '2000']));
+
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       const debit = Number(line.debit || 0);
@@ -62,6 +76,19 @@ export class DataMigrationService {
       if (!line.accountCode && !line.accountId) {
         errors.push({ lineIndex: i + 1, error: 'Account code or ID is required' });
         continue;
+      }
+
+      const isControlAccount =
+        (line.accountCode && controlAccountCodes.has(line.accountCode)) ||
+        (line.accountId && controlAccountIds.has(line.accountId)) ||
+        line.accountCode === '1100' ||
+        line.accountCode === '2000';
+
+      if (isControlAccount) {
+        errors.push({
+          lineIndex: i + 1,
+          error: 'MIGRATION_CONTROL_ACCOUNT_REJECTED: Direct journal opening balances to subledger control accounts (1100 Accounts Receivable, 2000 Accounts Payable) are prohibited because they break subledger reconciliation. Migrate opening receivables via outstanding customer invoices and opening payables via outstanding vendor bills.',
+        });
       }
 
       if (debit < 0 || credit < 0) {
@@ -213,6 +240,28 @@ export class DataMigrationService {
              VALUES ($1, $2, $3, $4, $5, $6, $7, 'Active', CURRENT_TIMESTAMP)`,
             [accountId, orgId, accountCode, accountName, classification, classification, normalBalance]
           );
+        }
+
+        const checkRes = await tx.query(
+          `SELECT id, code, name, type, sub_type, system_role FROM accounts WHERE organization_id = $1 AND id = $2`,
+          [orgId, accountId]
+        );
+        if (checkRes.rows.length > 0) {
+          const acc = checkRes.rows[0];
+          const normType = String(acc.type || '').trim().toUpperCase();
+          const normSubType = String(acc.sub_type || '').trim().toUpperCase();
+          const normRole = String(acc.system_role || '').trim().toUpperCase();
+          const code = String(acc.code || '');
+          if (
+            ['1100', '2000'].includes(code) ||
+            ['ACCOUNTS RECEIVABLE', 'ACCOUNTS PAYABLE'].includes(normType) ||
+            ['ACCOUNTS RECEIVABLE', 'ACCOUNTS PAYABLE'].includes(normSubType) ||
+            ['ACCOUNTS_RECEIVABLE', 'ACCOUNTS_PAYABLE', 'AR_CONTROL', 'AP_CONTROL'].includes(normRole)
+          ) {
+            throw new Error(
+              `MIGRATION_CONTROL_ACCOUNT_REJECTED: Direct journal opening balances to subledger control accounts (${acc.code} ${acc.name || normType}) are prohibited because they break subledger reconciliation.`
+            );
+          }
         }
 
         resolvedLines.push({

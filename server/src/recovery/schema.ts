@@ -31,6 +31,35 @@ function journalChildTable(name: string, columns: readonly string[]): RecoveryTa
   };
 }
 
+/**
+ * Three-Tier Sensitive Data and Recovery Schema Classification:
+ *
+ * 1. Category 1: Financial and Business Data
+ *    - Must round-trip exactly with 100% field value parity.
+ *    - Covered by POINT1_RECOVERY_SCHEMA.
+ *
+ * 2. Category 2: Operational Data (Documented Intentional Exclusions)
+ *    - outbox_emails: Transient worker queue; re-dispatching emails on restore causes duplicate external notifications.
+ *    - api_idempotency_keys: Ephemeral deduplication cache with TTL.
+ *    - rate_limits: Ephemeral rate limiting counters.
+ *    - audit_logs: Append-only hash chain; subject to separate compliance ledger archival.
+ *
+ * 3. Category 3: Secrets and Encrypted Configurations
+ *    - Excluded from plain tenant JSON backups to prevent credential exposure.
+ *    - Restored through dedicated EncryptedConfigRecoveryService.
+ */
+export const OPERATIONAL_TABLE_EXCLUSIONS = new Set([
+  'outbox_emails',
+  'api_idempotency_keys',
+  'rate_limits',
+  'audit_logs',
+]);
+
+export const ENCRYPTED_SECRET_COLUMNS: Record<string, string[]> = {
+  bank_feed_connections: ['credentials_encrypted'],
+  organization_payment_gateways: ['key_secret', 'webhook_secret'],
+};
+
 // This is the only source of exportable table and column names. Request data is
 // never used to construct SQL identifiers or accepted as an artifact schema.
 // Tables are ordered topologically so deletion in reverse and insertion forward
@@ -55,24 +84,24 @@ export const POINT1_RECOVERY_SCHEMA: readonly RecoveryTableSchema[] = [
   tenantTable('sales_orders', ['id', 'organization_id', 'sales_order_number', 'estimate_id', 'customer_id', 'customer_name', 'order_date', 'expected_delivery', 'subtotal', 'tax_total', 'discount', 'total_amount', 'fulfilled_amount', 'invoiced_amount', 'status', 'line_items', 'project_id', 'notes', 'created_at']),
   tenantTable('delivery_challans', ['id', 'organization_id', 'challan_number', 'customer_id', 'customer_name', 'sales_order_id', 'delivery_date', 'status', 'reason', 'line_items', 'transport_details', 'notes', 'created_at']),
   tenantTable('recurring_invoice_profiles', ['id', 'organization_id', 'profile_name', 'frequency', 'start_date', 'end_date', 'next_generation_date', 'customer_id', 'customer_name', 'line_items', 'payment_terms', 'auto_send', 'status', 'created_at']),
-  tenantTable('invoices', ['id', 'organization_id', 'invoice_number', 'sales_order_id', 'estimate_id', 'client_id', 'customer_id', 'client_name', 'client_email', 'project_id', 'issue_date', 'due_date', 'subtotal', 'tax_total', 'discount', 'round_off_amount', 'total_amount', 'paid_amount', 'amount_credited', 'amount_written_off', 'balance_due', 'status', 'notes', 'created_at']),
+  tenantTable('invoices', ['id', 'organization_id', 'invoice_number', 'sales_order_id', 'estimate_id', 'client_id', 'customer_id', 'client_name', 'client_email', 'project_id', 'issue_date', 'due_date', 'subtotal', 'tax_total', 'discount', 'round_off_amount', 'total_amount', 'paid_amount', 'amount_credited', 'amount_written_off', 'balance_due', 'status', 'notes', 'journal_entry_id', 'reversal_journal_id', 'reversed_at', 'reversed_by', 'reversal_reason', 'created_at']),
   tenantTable('invoice_items', ['id', 'organization_id', 'invoice_id', 'description', 'account_id', 'quantity', 'unit_price', 'tax_rate', 'amount']),
-  tenantTable('payments_received', ['id', 'organization_id', 'payment_number', 'client_id', 'client_name', 'payment_date', 'amount', 'payment_mode', 'deposit_to_account_id', 'reference', 'notes', 'unallocated_amount', 'status', 'created_at']),
+  tenantTable('payments_received', ['id', 'organization_id', 'payment_number', 'client_id', 'client_name', 'payment_date', 'amount', 'payment_mode', 'deposit_to_account_id', 'reference', 'notes', 'unallocated_amount', 'status', 'journal_entry_id', 'reversal_journal_id', 'reversed_at', 'reversed_by', 'reversal_reason', 'created_at']),
   tenantTable('payment_received_allocations', ['id', 'organization_id', 'payment_id', 'invoice_id', 'amount']),
-  tenantTable('bills', ['id', 'organization_id', 'bill_number', 'vendor_id', 'vendor_name', 'bill_date', 'due_date', 'total_amount', 'amount_paid', 'status', 'notes', 'created_at']),
+  tenantTable('bills', ['id', 'organization_id', 'bill_number', 'vendor_id', 'vendor_name', 'bill_date', 'due_date', 'total_amount', 'amount_paid', 'status', 'notes', 'journal_entry_id', 'reversal_journal_id', 'reversed_at', 'reversed_by', 'reversal_reason', 'balance_due', 'created_at']),
   tenantTable('purchase_orders', ['id', 'organization_id', 'purchase_order_number', 'vendor_id', 'vendor_name', 'order_date', 'expected_delivery', 'subtotal', 'tax_total', 'discount', 'total_amount', 'billed_amount', 'status', 'line_items', 'notes', 'created_at']),
   tenantTable('goods_service_receipts', ['id', 'organization_id', 'receipt_number', 'purchase_order_id', 'vendor_id', 'vendor_name', 'receipt_date', 'status', 'line_items', 'notes', 'created_at']),
   tenantTable('payments_made', ['id', 'organization_id', 'payment_number', 'vendor_id', 'vendor_name', 'payment_date', 'amount', 'payment_mode', 'paid_from_account_id', 'reference', 'notes', 'unallocated_amount', 'status', 'journal_entry_id', 'created_at']),
   tenantTable('payment_made_allocations', ['id', 'organization_id', 'payment_id', 'bill_id', 'amount']),
-  tenantTable('credit_notes', ['id', 'organization_id', 'credit_note_number', 'client_id', 'client_name', 'date', 'total_amount', 'remaining_credit', 'status', 'reason', 'created_at']),
-  tenantTable('vendor_credits', ['id', 'organization_id', 'credit_number', 'vendor_id', 'vendor_name', 'date', 'total_amount', 'remaining_credit', 'status', 'reason', 'created_at']),
-  tenantTable('expenses', ['id', 'organization_id', 'expense_number', 'expense_account_id', 'paid_from_account_id', 'vendor_id', 'vendor_name', 'vendor_invoice_number', 'date', 'amount', 'tax_rate', 'tax_amount', 'tax_account_id', 'is_tax_inclusive', 'is_rcm', 'rcm_tax_account_id', 'tds_rate', 'tds_amount', 'tds_section', 'tds_account_id', 'description', 'project_id', 'client_id', 'is_billable', 'is_billed', 'invoice_id', 'created_at']),
+  tenantTable('credit_notes', ['id', 'organization_id', 'credit_note_number', 'client_id', 'client_name', 'date', 'total_amount', 'remaining_credit', 'status', 'reason', 'journal_entry_id', 'reversal_journal_id', 'reversed_at', 'reversed_by', 'reversal_reason', 'created_at']),
+  tenantTable('vendor_credits', ['id', 'organization_id', 'credit_number', 'vendor_id', 'vendor_name', 'date', 'total_amount', 'remaining_credit', 'status', 'reason', 'journal_entry_id', 'reversal_journal_id', 'reversed_at', 'reversed_by', 'reversal_reason', 'created_at']),
+  tenantTable('expenses', ['id', 'organization_id', 'expense_number', 'expense_account_id', 'paid_from_account_id', 'vendor_id', 'vendor_name', 'vendor_invoice_number', 'date', 'amount', 'tax_rate', 'tax_amount', 'tax_account_id', 'is_tax_inclusive', 'is_rcm', 'rcm_tax_account_id', 'tds_rate', 'tds_amount', 'tds_section', 'tds_account_id', 'description', 'project_id', 'client_id', 'is_billable', 'markup_percentage', 'selling_price', 'status', 'is_billed', 'invoice_id', 'journal_entry_id', 'reversal_journal_id', 'reversed_at', 'reversed_by', 'reversal_reason', 'is_itemized', 'items', 'source_occurrence_key', 'created_at']),
   tenantTable('expense_receipt_attachments', ['id', 'organization_id', 'expense_id', 'file_name', 'mime_type', 'byte_size', 'content_base64', 'created_at']),
   tenantTable('employee_claims', ['id', 'organization_id', 'claim_number', 'claimant_id', 'claimant_name', 'claim_date', 'title', 'description', 'total_amount', 'approved_amount', 'paid_amount', 'status', 'payable_account_id', 'claim_journal_entry_id', 'reversal_journal_id', 'submitted_at', 'submitted_by', 'approved_at', 'approved_by', 'rejected_at', 'rejected_by', 'rejection_reason', 'created_at', 'updated_at']),
   tenantTable('employee_claim_items', ['id', 'organization_id', 'claim_id', 'expense_account_id', 'date', 'amount', 'tax_rate', 'tax_amount', 'description', 'project_id', 'client_id', 'receipt_url', 'created_at']),
   tenantTable('employee_reimbursement_payments', ['id', 'organization_id', 'payment_number', 'claim_id', 'claimant_id', 'payment_date', 'amount', 'paid_from_account_id', 'payable_account_id', 'payment_method', 'reference', 'notes', 'status', 'journal_entry_id', 'reversal_journal_id', 'created_by', 'created_at']),
   tenantTable('journal_entries', ['id', 'organization_id', 'entry_number', 'date', 'reference', 'description', 'status', 'created_at', 'reversal_of_journal_id', 'reversed_by_journal_id', 'reversed_at', 'reversed_by', 'reversal_reason']),
-  journalChildTable('journal_lines', ['id', 'journal_entry_id', 'organization_id', 'account_id', 'account_code', 'account_name', 'debit', 'credit', 'description']),
+  journalChildTable('journal_lines', ['id', 'journal_entry_id', 'organization_id', 'account_id', 'account_code', 'account_name', 'debit', 'credit', 'description', 'customer_id', 'vendor_id', 'project_id']),
   tenantTable('customer_advances', ['id', 'organization_id', 'customer_id', 'payment_id', 'amount', 'unapplied_amount', 'received_date', 'status', 'journal_entry_id', 'created_at']),
   tenantTable('customer_advance_applications', ['id', 'organization_id', 'advance_id', 'invoice_id', 'amount_applied', 'applied_date', 'journal_entry_id', 'status', 'created_at', 'reversal_journal_id', 'reversed_at', 'reversed_by', 'reversal_reason']),
   tenantTable('customer_refunds', ['id', 'organization_id', 'refund_number', 'customer_id', 'credit_note_id', 'payment_id', 'refund_date', 'amount', 'refund_account_id', 'reference', 'notes', 'journal_entry_id', 'created_at', 'status', 'reversal_journal_id', 'reversed_at', 'reversed_by', 'reversal_reason']),
@@ -91,7 +120,7 @@ export const POINT1_RECOVERY_SCHEMA: readonly RecoveryTableSchema[] = [
   tenantTable('bank_reconciliation_rules', ['id', 'organization_id', 'rule_name', 'priority', 'narration_pattern', 'direction', 'suggested_category', 'suggested_account_id', 'is_enabled', 'created_at']),
   tenantTable('bank_reconciliation_sessions', ['id', 'organization_id', 'bank_account_id', 'statement_end_date', 'statement_closing_balance', 'ledger_balance', 'difference', 'reconciled_by', 'reconciled_at', 'status']),
   tenantTable('bank_reconciliation_matches', ['id', 'organization_id', 'statement_transaction_id', 'accounting_transaction_type', 'accounting_transaction_id', 'matched_amount', 'match_confidence', 'match_reasons', 'matched_by', 'matched_at', 'status']),
-  tenantTable('bank_feed_connections', ['id', 'organization_id', 'bank_account_id', 'provider', 'connection_status', 'credentials_encrypted', 'created_at', 'updated_at']),
+  tenantTable('bank_feed_connections', ['id', 'organization_id', 'bank_account_id', 'provider', 'connection_status', 'created_at', 'updated_at']),
   tenantTable('period_locks', ['id', 'organization_id', 'year', 'month', 'period_name', 'is_locked', 'lock_date', 'region', 'locked_by', 'locked_at', 'reason', 'status']),
   tenantTable('period_close_checklists', ['id', 'organization_id', 'period_key', 'status', 'checklist_data', 'closed_by', 'closed_at', 'created_at']),
   tenantTable('accounting_period_closes', ['id', 'organization_id', 'period_key', 'period_start', 'period_end', 'status', 'closed_by', 'closed_at', 'reopened_by', 'reopened_at', 'reopen_reason', 'checklist_summary', 'created_at', 'close_evidence', 'state_version']),
@@ -111,10 +140,14 @@ export const POINT1_RECOVERY_SCHEMA: readonly RecoveryTableSchema[] = [
   tenantTable('background_jobs', ['id', 'organization_id', 'job_type', 'payload', 'status', 'attempt_count', 'max_retries', 'backoff_seconds', 'next_attempt_at', 'lease_owner', 'lease_expires_at', 'idempotency_key', 'started_at', 'completed_at', 'last_error', 'result', 'created_at', 'updated_at']),
   tenantTable('background_job_runs', ['id', 'job_id', 'organization_id', 'attempt_number', 'worker_id', 'status', 'error_message', 'duration_ms', 'created_at']),
   tenantTable('payment_intents', ['id', 'organization_id', 'customer_id', 'invoice_id', 'gateway', 'provider_session_id', 'provider_reference', 'currency', 'amount', 'status', 'idempotency_key', 'checkout_url', 'metadata', 'payment_id', 'gateway_event_id', 'expires_at', 'created_at', 'updated_at']),
-  tenantTable('organization_payment_gateways', ['id', 'organization_id', 'gateway', 'is_active', 'key_id', 'key_secret', 'webhook_secret', 'config', 'created_at', 'updated_at']),
+  tenantTable('organization_payment_gateways', ['id', 'organization_id', 'gateway', 'is_active', 'key_id', 'config', 'created_at', 'updated_at']),
   tenantTable('payment_gateway_events', ['id', 'organization_id', 'gateway', 'event_id', 'event_type', 'payload', 'status', 'payment_id', 'invoice_id', 'settlement_reference', 'processed_at', 'error_message', 'created_at']),
   tenantTable('document_inbox', ['id', 'organization_id', 'filename', 'file_url', 'mime_type', 'file_size', 'status', 'ocr_data', 'linked_document_type', 'linked_document_id', 'uploaded_by', 'created_at', 'updated_at']),
   tenantTable('customer_portal_tokens', ['id', 'organization_id', 'customer_id', 'token', 'token_hash', 'is_active', 'expires_at', 'created_at']),
   tenantTable('saved_views', ['id', 'organization_id', 'user_id', 'entity_type', 'name', 'filters', 'is_default', 'created_at']),
   tenantTable('organization_invitations', ['id', 'organization_id', 'email', 'role', 'token_hash', 'invited_by_user_id', 'accepted_by_user_id', 'expires_at', 'accepted_at', 'revoked_at', 'revoked_by_user_id', 'created_at']),
+  tenantTable('financial_commands', ['id', 'organization_id', 'actor_user_id', 'command_type', 'schema_version', 'idempotency_key', 'payload', 'payload_hash', 'status', 'result', 'result_version', 'error_code', 'created_at', 'completed_at']),
+  tenantTable('financial_evidence_links', ['id', 'organization_id', 'command_id', 'source_type', 'source_id', 'relation_type', 'target_type', 'target_id', 'metadata', 'created_at']),
+  tenantTable('financial_outbox_events', ['id', 'organization_id', 'command_id', 'event_type', 'aggregate_type', 'aggregate_id', 'payload', 'status', 'attempt_count', 'available_at', 'claimed_at', 'completed_at', 'last_error', 'created_at']),
+  tenantTable('financial_projection_checkpoints', ['organization_id', 'projection_name', 'last_event_id', 'last_projected_at', 'updated_at'], ['organization_id', 'projection_name']),
 ] as const;

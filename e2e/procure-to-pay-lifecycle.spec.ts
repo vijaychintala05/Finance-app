@@ -54,8 +54,9 @@ test.describe('Procure-to-Pay (P2P) Full Accounting Lifecycle', () => {
       page.getByRole('button', { name: 'Record Bill' }).click(),
     ]);
     expect(createBillResponse.status()).toBe(201);
+    await expect(page.getByRole('heading', { name: 'Record Vendor Bill' })).toBeHidden({ timeout: 10_000 });
 
     // Verify bill appears in bills list
-    await expect(page.getByText('1,500').first()).toBeVisible();
+    await expect(page.getByText('1,500').filter({ visible: true }).first()).toBeVisible({ timeout: 15_000 });
   });
 });

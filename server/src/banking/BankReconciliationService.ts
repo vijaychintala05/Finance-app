@@ -897,20 +897,33 @@ export class BankReconciliationService {
     description?: string,
     createdBy: string = 'System'
   ): Promise<{ journalEntryId: string; match: BankReconciliationMatch }> {
-    const txResult = await db.query<BankStatementTransaction>(
-      `SELECT * FROM bank_statement_transactions WHERE organization_id = $1 AND id = $2`,
-      [orgId, statementTxId]
-    );
-    if (!txResult.rows || txResult.rows.length === 0) {
-      throw new Error(`Statement transaction ${statementTxId} not found`);
-    }
-    const statementTx = this.formatTransaction(txResult.rows[0]);
-
-    const bankAccs = await this.getBankAccounts(orgId);
-    const bankAcc = bankAccs.find((b) => b.id === statementTx.bankAccountId);
-    const bankLedgerAccId = bankAcc?.ledgerAccountId || `acc-bank-${statementTx.bankAccountId}`;
-
     return db.transaction(async (client) => {
+      const txResult = await client.query<BankStatementTransaction>(
+        `SELECT * FROM bank_statement_transactions WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, statementTxId]
+      );
+      if (!txResult.rows || txResult.rows.length === 0) {
+        throw new Error(`Statement transaction ${statementTxId} not found`);
+      }
+      const statementTx = this.formatTransaction(txResult.rows[0]);
+
+      if (['MATCHED', 'CATEGORIZED', 'RECONCILED'].includes(statementTx.reconciliationStatus)) {
+        throw new Error(`BANK_TRANSACTION_ALREADY_PROCESSED: Statement transaction ${statementTxId} has already been ${statementTx.reconciliationStatus.toLowerCase()}`);
+      }
+
+      const existingMatch = await client.query(
+        `SELECT id FROM bank_reconciliation_matches
+          WHERE organization_id = $1 AND statement_transaction_id = $2 AND status != 'REJECTED' FOR UPDATE`,
+        [orgId, statementTxId]
+      );
+      if (existingMatch.rows.length > 0) {
+        throw new Error(`BANK_TRANSACTION_ALREADY_MATCHED: Statement transaction ${statementTxId} is already associated with an accounting match`);
+      }
+
+      const bankAccs = await this.getBankAccounts(orgId);
+      const bankAcc = bankAccs.find((b) => b.id === statementTx.bankAccountId);
+      const bankLedgerAccId = bankAcc?.ledgerAccountId || `acc-bank-${statementTx.bankAccountId}`;
+
       const entryNum = `JE-${Date.now().toString().slice(-6)}`;
       const date = (statementTx.transactionDate as any) instanceof Date
         ? (statementTx.transactionDate as any as Date).toISOString().slice(0, 10)
@@ -2211,23 +2224,31 @@ export class BankReconciliationService {
     },
     userId: string
   ): Promise<any> {
-    const txResult = await db.query(
-      `SELECT * FROM bank_statement_transactions WHERE organization_id = $1 AND id = $2`,
-      [orgId, statementTxId]
-    );
-    if (!txResult.rows || txResult.rows.length === 0) {
-      throw new Error(`Statement transaction ${statementTxId} not found`);
-    }
-    const statementTx = this.formatTransaction(txResult.rows[0]);
-    if (statementTx.reconciliationStatus === 'RECONCILED') {
-      throw new Error('Reconciled transactions cannot be recategorized unless reconciliation is reopened.');
-    }
-
-    const bankAccs = await this.getBankAccounts(orgId);
-    const bankAcc = bankAccs.find((b) => b.id === statementTx.bankAccountId);
-    const bankLedgerAccId = bankAcc?.ledgerAccountId || `acc-bank-${statementTx.bankAccountId}`;
-
     return db.transaction(async (client) => {
+      const txResult = await client.query(
+        `SELECT * FROM bank_statement_transactions WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, statementTxId]
+      );
+      if (!txResult.rows || txResult.rows.length === 0) {
+        throw new Error(`Statement transaction ${statementTxId} not found`);
+      }
+      const statementTx = this.formatTransaction(txResult.rows[0]);
+      if (['MATCHED', 'CATEGORIZED', 'RECONCILED'].includes(statementTx.reconciliationStatus)) {
+        throw new Error(`BANK_TRANSACTION_ALREADY_PROCESSED: Statement transaction ${statementTxId} is already ${statementTx.reconciliationStatus.toLowerCase()}`);
+      }
+
+      const targetAcc = await client.query(
+        `SELECT id, code, name, type FROM accounts WHERE organization_id = $1 AND id = $2 AND status = 'Active'`,
+        [orgId, payload.ledgerAccountId]
+      );
+      if (targetAcc.rows.length === 0) {
+        throw new Error(`Target account ${payload.ledgerAccountId} not found or inactive`);
+      }
+
+      const bankAccs = await this.getBankAccounts(orgId);
+      const bankAcc = bankAccs.find((b) => b.id === statementTx.bankAccountId);
+      const bankLedgerAccId = bankAcc?.ledgerAccountId || `acc-bank-${statementTx.bankAccountId}`;
+
       const entryNum = `JE-${Date.now().toString().slice(-6)}`;
       const date = (statementTx.transactionDate as any) instanceof Date
         ? (statementTx.transactionDate as any as Date).toISOString().slice(0, 10)
@@ -2236,26 +2257,50 @@ export class BankReconciliationService {
       const desc = payload.notes || statementTx.narration;
       const isDebit = statementTx.direction === 'DEBIT'; // Money Out
 
-      const jrnId = newId('jrn');
-      await client.query(
-        `INSERT INTO journal_entries (id, organization_id, entry_number, date, reference, description, status, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, 'Posted', CURRENT_TIMESTAMP)`,
-        [jrnId, orgId, entryNum, date, ref, `[Created from bank statement] ${desc}`]
+      const bankAccount = await MonetaryAccountPolicy.resolve(
+        client,
+        orgId,
+        bankLedgerAccId,
+        isDebit ? 'OUTFLOW' : 'INFLOW',
+        'statement_bank_account'
       );
 
-      if (isDebit) {
-        await client.query(
-          `INSERT INTO journal_lines (id, organization_id, journal_entry_id, account_id, debit, credit, description)
-           VALUES ($1, $2, $3, $4, $5, 0.00, $6), ($7, $2, $3, $8, 0.00, $5, $6)`,
-          [newId('jrl'), orgId, jrnId, payload.ledgerAccountId, statementTx.amount, desc, newId('jrl'), bankLedgerAccId]
+      let customerId: string | undefined;
+      let vendorId: string | undefined;
+      if (payload.counterpartyId) {
+        const cust = await client.query(
+          `SELECT id FROM clients WHERE id = $1 AND organization_id = $2
+           UNION ALL SELECT id FROM customers WHERE id = $1 AND organization_id = $2 LIMIT 1`,
+          [payload.counterpartyId, orgId]
         );
-      } else {
-        await client.query(
-          `INSERT INTO journal_lines (id, organization_id, journal_entry_id, account_id, debit, credit, description)
-           VALUES ($1, $2, $3, $4, $5, 0.00, $6), ($7, $2, $3, $8, 0.00, $5, $6)`,
-          [newId('jrl'), orgId, jrnId, bankLedgerAccId, statementTx.amount, desc, newId('jrl'), payload.ledgerAccountId]
-        );
+        if (cust.rows.length > 0) {
+          customerId = payload.counterpartyId;
+        } else {
+          const vend = await client.query(`SELECT id FROM vendors WHERE id = $1 AND organization_id = $2 LIMIT 1`, [payload.counterpartyId, orgId]);
+          if (vend.rows.length > 0) {
+            vendorId = payload.counterpartyId;
+          }
+        }
       }
+
+      // Post through ServerPostingEngine to enforce period locks, account validations, and balance projections
+      const posting = await ServerPostingEngine.postEntry({
+        organizationId: orgId,
+        entryNumber: entryNum,
+        date,
+        reference: ref,
+        description: `[Created from bank statement] ${desc}`,
+        lines: isDebit
+          ? [
+              { accountId: payload.ledgerAccountId, debit: statementTx.amount, credit: 0, description: desc, customerId, vendorId, projectId: payload.projectId },
+              { accountId: bankAccount.id, debit: 0, credit: statementTx.amount, description: desc },
+            ]
+          : [
+              { accountId: bankAccount.id, debit: statementTx.amount, credit: 0, description: desc },
+              { accountId: payload.ledgerAccountId, debit: 0, credit: statementTx.amount, description: desc, customerId, vendorId, projectId: payload.projectId },
+            ],
+      }, client);
+      const jrnId = posting.entryId;
 
       const balanceDelta = isDebit ? -statementTx.amount : statementTx.amount;
       await client.query(

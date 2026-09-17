@@ -2,6 +2,7 @@ import { db } from '../database/db';
 import { databaseMoney } from '../utils/money';
 import { AccountingIntegrityService } from './AccountingIntegrityService';
 import { PeriodCloseService } from './PeriodCloseService';
+import { MonetaryAccountPolicy } from '../accounting/monetaryAccountPolicy';
 
 export type DashboardViewKey = 'overview' | 'cash-operations' | 'close-controls';
 
@@ -200,14 +201,7 @@ export class DashboardSummaryService {
         JOIN journal_entries je ON je.id = jl.journal_entry_id AND je.organization_id = a.organization_id
           AND UPPER(je.status) = 'POSTED' AND je.date <= $2
         WHERE a.organization_id = $1
-          AND (
-            UPPER(COALESCE(a.sub_type, '')) IN ('BANK', 'CASH', 'CASH & BANK', 'CASH AND CASH EQUIVALENTS', 'CHECKING', 'SAVINGS')
-            OR UPPER(COALESCE(a.type, '')) IN ('BANK', 'CASH')
-            OR UPPER(COALESCE(a.name, '')) LIKE '%BANK%'
-            OR UPPER(COALESCE(a.name, '')) LIKE '%PETTY CASH%'
-            OR UPPER(COALESCE(a.name, '')) LIKE '%CASH IN HAND%'
-            OR UPPER(COALESCE(a.name, '')) LIKE '%CASH ON HAND%'
-          )
+          AND ${MonetaryAccountPolicy.getMonetaryAccountSqlCondition('a')}
         GROUP BY a.id, a.name
         ORDER BY balance DESC, a.name ASC`, [organizationId, asOfDate]) : Promise.resolve({ rows: [] }),
       db.query(`SELECT je.date AS activity_date,
@@ -221,7 +215,7 @@ export class DashboardSummaryService {
           AND UPPER(a.type) IN ('INCOME', 'REVENUE', 'OTHER INCOME', 'EXPENSE', 'COST OF GOODS SOLD', 'OTHER EXPENSE')
         GROUP BY je.date
         ORDER BY je.date ASC`, [organizationId, trendStart, asOfDate]),
-      db.query(`SELECT je.date AS activity_date,
+      canSeeBanking ? db.query(`SELECT je.date AS activity_date,
           COALESCE(SUM(CASE WHEN jl.debit > jl.credit THEN jl.debit - jl.credit ELSE 0 END), 0) AS cash_in,
           COALESCE(SUM(CASE WHEN jl.credit > jl.debit THEN jl.credit - jl.debit ELSE 0 END), 0) AS cash_out,
           COALESCE(SUM(jl.debit - jl.credit), 0) AS net
@@ -230,16 +224,9 @@ export class DashboardSummaryService {
         JOIN journal_entries je ON je.id = jl.journal_entry_id AND je.organization_id = a.organization_id
           AND UPPER(je.status) = 'POSTED'
         WHERE a.organization_id = $1 AND je.date >= $2 AND je.date <= $3
-          AND (
-            UPPER(COALESCE(a.sub_type, '')) IN ('BANK', 'CASH', 'CASH & BANK', 'CASH AND CASH EQUIVALENTS', 'CHECKING', 'SAVINGS')
-            OR UPPER(COALESCE(a.type, '')) IN ('BANK', 'CASH')
-            OR UPPER(COALESCE(a.name, '')) LIKE '%BANK%'
-            OR UPPER(COALESCE(a.name, '')) LIKE '%PETTY CASH%'
-            OR UPPER(COALESCE(a.name, '')) LIKE '%CASH IN HAND%'
-            OR UPPER(COALESCE(a.name, '')) LIKE '%CASH ON HAND%'
-          )
+          AND ${MonetaryAccountPolicy.getMonetaryAccountSqlCondition('a')}
         GROUP BY je.date
-        ORDER BY je.date ASC`, [organizationId, trendStart, asOfDate]),
+        ORDER BY je.date ASC`, [organizationId, trendStart, asOfDate]) : Promise.resolve({ rows: [] }),
       has('invoices.view') ? db.query(`SELECT COALESCE(client_name, 'Unassigned customer') AS party_name, balance_due, due_date
         FROM invoices WHERE organization_id = $1 AND issue_date <= $2
           AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT') AND balance_due > 0
@@ -375,7 +362,7 @@ export class DashboardSummaryService {
     };
 
     return { view, asOfDate, generatedAt: new Date().toISOString(), availableViews, overview,
-      cashFlow: { movements: cashMovements },
+      cashFlow: { movements: canSeeBanking ? cashMovements : [] },
       cashOperations: { available: availableViews.includes('cash-operations'), bankReconciliationAttentionCount: canSeeBanking ? overview.bankReconciliationAttentionCount : null, oldestUnmatchedDate: canSeeBanking && bankQueueRes.rows[0]?.oldest_date ? String(bankQueueRes.rows[0].oldest_date).slice(0, 10) : null, collectionsDue7Days: databaseMoney(documents.collections_7, 'Dashboard collections due in seven days'), collectionsDue30Days, billsDue7Days: databaseMoney(documents.bills_7, 'Dashboard bills due in seven days'), billsDue30Days, forecast: { available: false, reason: 'Cash forecasting is unavailable until its trusted finance capability is certified and enabled.' } }, closeControls, commandCenter };
   }
 

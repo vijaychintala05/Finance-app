@@ -155,8 +155,8 @@ router.post('/recurring-journals', requirePermission(['journals.post', 'accounti
 router.post('/recurring-journals/generate', requirePermission(['journals.post', 'accounting.post']), requireTrustedFinanceFeature('recurring-journal-generation'), FinanceController.generateDueRecurringJournals);
 
 // Budgeting & Cash Forecasting
-router.get('/budgets', requirePermission(['reports.view']), FinanceController.getBudgets);
-router.post('/budgets', requirePermission(['settings.manage_budgets', 'reports.view']), FinanceController.createBudget);
+router.get('/budgets', requirePermission(['budgets.view', 'reports.view']), FinanceController.getBudgets);
+router.post('/budgets', requirePermission(['budgets.manage', 'settings.manage_budgets']), FinanceController.createBudget);
 router.get('/reports/budget-vs-actual', requirePermission(['reports.view']), requireTrustedFinanceFeature('budget-reporting'), FinanceController.getBudgetVsActual);
 router.get('/cash-flow-forecast', requirePermission(['reports.bank', 'reports.view']), requireTrustedFinanceFeature('cash-flow-forecasting'), FinanceController.getCashFlowForecast);
 

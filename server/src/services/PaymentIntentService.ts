@@ -8,6 +8,7 @@ export interface CreatePaymentIntentParams {
   customerId: string;
   invoiceId: string;
   amount: number;
+  currency?: string;
   gateway?: string;
   idempotencyKey?: string;
   successUrl?: string;
@@ -52,7 +53,7 @@ export class PaymentIntentService {
     // 1. Fetch and lock invoice
     const invRes = await db.query(
       `SELECT i.id, i.invoice_number, i.total_amount, i.balance_due, i.status, i.client_id, i.customer_id,
-              COALESCE(c.currency, o.base_currency, 'USD') AS currency
+              COALESCE(c.currency, 'USD') AS currency
          FROM invoices i
          LEFT JOIN clients c ON c.id = COALESCE(i.client_id, i.customer_id) AND c.organization_id = i.organization_id
          LEFT JOIN organizations o ON o.id = i.organization_id
@@ -80,7 +81,7 @@ export class PaymentIntentService {
       throw new Error(`OVERPAYMENT_NOT_PERMITTED: Requested amount ${exactAmount.toFixed(2)} exceeds invoice balance due ${balanceDue.toFixed(2)}`);
     }
 
-    const currency = (invoice.currency || 'USD').toUpperCase();
+    const currency = (params.currency || 'USD').toUpperCase();
     const idempotencyKey = params.idempotencyKey?.trim() || `idem_${newId('pmt')}`;
 
     // 2. Check existing intent by idempotency key

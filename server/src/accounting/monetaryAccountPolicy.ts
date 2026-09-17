@@ -11,40 +11,88 @@ export interface MonetaryAccount {
   subType: string;
 }
 
-const ASSET_MONEY_SUBTYPES = new Set([
+export const ASSET_MONEY_SUBTYPES = new Set([
   'bank',
   'cash',
   'cash & bank',
   'cash and cash equivalents',
+  'checking',
+  'savings',
   'digital wallet',
   'undeposited funds',
   'payment clearing',
 ]);
 
-const OUTFLOW_LIABILITY_SUBTYPES = new Set([
+export const OUTFLOW_LIABILITY_SUBTYPES = new Set([
   'credit card',
   'credit cards',
   'loan/credit',
 ]);
 
-function isEligibleMonetaryAccount(
-  type: string,
-  subType: string,
-  direction: MonetaryAccountDirection,
-  hasBankProfile: boolean
-): boolean {
-  if (hasBankProfile) return true;
-  const normalizedType = type.trim().toLowerCase();
-  const normalizedSubType = subType.trim().toLowerCase();
-
-  if (normalizedType === 'bank' || normalizedType === 'cash') return true;
-  if (normalizedType === 'asset' && ASSET_MONEY_SUBTYPES.has(normalizedSubType)) return true;
-  return direction === 'OUTFLOW'
-    && normalizedType === 'liability'
-    && OUTFLOW_LIABILITY_SUBTYPES.has(normalizedSubType);
-}
-
 export class MonetaryAccountPolicy {
+  /**
+   * Used for Dashboard, Cash Flow Statements, and Bank Balances.
+   * Strictly requires Asset/Bank/Cash with an approved liquid money subtype.
+   * Non-asset accounts (Expense, Liability, Equity, Income) can NEVER qualify,
+   * regardless of whether a bank_accounts profile was associated with them.
+   */
+  public static isLiquidCashAsset(account: { type: string; sub_type?: string; subType?: string }): boolean {
+    const normType = String(account.type || '').trim().toLowerCase();
+    const normSubType = String(account.sub_type || account.subType || '').trim().toLowerCase();
+
+    if (['expense', 'cost of goods sold', 'other expense', 'liability', 'equity', 'income', 'revenue'].includes(normType)) {
+      return false;
+    }
+
+    if (normType === 'bank' || normType === 'cash') return true;
+    return normType === 'asset' && ASSET_MONEY_SUBTYPES.has(normSubType);
+  }
+
+  /**
+   * Backward-compatible alias for isLiquidCashAsset.
+   */
+  public static isMonetaryAsset(account: { type: string; sub_type?: string; subType?: string }): boolean {
+    return MonetaryAccountPolicy.isLiquidCashAsset(account);
+  }
+
+  /**
+   * Used for payment, transfer, and credit-card selection.
+   * For INFLOW and TRANSFER, requires a liquid cash asset.
+   * For OUTFLOW, allows liquid cash assets OR qualifying liability credit-card/credit lines.
+   */
+  public static isEligiblePaymentAccount(
+    direction: MonetaryAccountDirection,
+    account: { type: string; sub_type?: string; subType?: string }
+  ): boolean {
+    if (MonetaryAccountPolicy.isLiquidCashAsset(account)) {
+      return true;
+    }
+
+    if (direction === 'OUTFLOW') {
+      const normType = String(account.type || '').trim().toLowerCase();
+      const normSubType = String(account.sub_type || account.subType || '').trim().toLowerCase();
+      return normType === 'liability' && OUTFLOW_LIABILITY_SUBTYPES.has(normSubType);
+    }
+
+    return false;
+  }
+
+  /**
+   * Authoritative SQL WHERE-clause condition for identifying liquid monetary assets.
+   * Guaranteed to match isLiquidCashAsset logic.
+   */
+  public static getMonetaryAccountSqlCondition(tableAlias: string = 'a'): string {
+    return `(
+      (UPPER(${tableAlias}.type) IN ('BANK', 'CASH') OR (
+        UPPER(${tableAlias}.type) = 'ASSET' AND UPPER(COALESCE(${tableAlias}.sub_type, '')) IN (
+          'BANK', 'CASH', 'CASH & BANK', 'CASH AND CASH EQUIVALENTS',
+          'CHECKING', 'SAVINGS', 'DIGITAL WALLET', 'UNDEPOSITED FUNDS', 'PAYMENT CLEARING'
+        )
+      ))
+      AND UPPER(${tableAlias}.type) NOT IN ('EXPENSE', 'COST OF GOODS SOLD', 'OTHER EXPENSE', 'LIABILITY', 'EQUITY', 'INCOME', 'REVENUE')
+    )`;
+  }
+
   public static async resolve(
     client: DbQueryClient,
     organizationId: string,
@@ -80,20 +128,25 @@ export class MonetaryAccountPolicy {
     }
 
     const row = result.rows[0];
-    let hasBankProfile = false;
-    try {
-      const bankProfile = await client.query(
-        `SELECT id FROM bank_accounts
-          WHERE organization_id = $1 AND ledger_account_id = $2 AND COALESCE(is_active, TRUE) = TRUE
-          LIMIT 1`,
-        [organizationId, row.id]
-      );
-      hasBankProfile = bankProfile.rows.length > 0;
-    } catch {
-      // bank_accounts table may not be queried in memory
+
+    let isEligible = MonetaryAccountPolicy.isEligiblePaymentAccount(direction, { type: row.type, sub_type: row.sub_type });
+    if (!isEligible && String(row.type || '').trim().toLowerCase() === 'asset') {
+      try {
+        const bankProfile = await client.query(
+          `SELECT id FROM bank_accounts
+            WHERE organization_id = $1 AND ledger_account_id = $2 AND COALESCE(is_active, TRUE) = TRUE
+            LIMIT 1`,
+          [organizationId, row.id]
+        );
+        if (bankProfile.rows.length > 0) {
+          isEligible = true;
+        }
+      } catch {
+        // bank_accounts table may not exist in test schema
+      }
     }
 
-    if (!isEligibleMonetaryAccount(String(row.type || ''), String(row.sub_type || ''), direction, hasBankProfile)) {
+    if (!isEligible) {
       const allowed = direction === 'OUTFLOW'
         ? 'bank, cash, wallet, clearing, or credit-card account'
         : 'bank, cash, wallet, or clearing account';

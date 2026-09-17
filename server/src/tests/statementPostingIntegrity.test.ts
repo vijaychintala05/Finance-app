@@ -329,4 +329,182 @@ describe('T5b: Customer & Vendor Statement Posting State Integrity Tests', () =>
     expect(vendRes.body.closingBalance).toBe(25000);
     expect(vendRes.body.transactions.length).toBe(2);
   });
+
+  // ---------------------------------------------------------------------------
+  // 4. CANONICAL P0 TEST: INVOICE 100 -> ADVANCE 100 -> APPLY ADVANCE 100
+  // ---------------------------------------------------------------------------
+  it('4. Canonical P0 Test: Invoice ₹100 -> customer advance ₹100 -> apply advance ₹100 -> invoice outstanding ₹0 -> customer statement ₹0 -> AR ledger ₹0', async () => {
+    const custId = 'cust-p0-canonical';
+    await db.query(
+      `INSERT INTO customers (id, organization_id, customer_id, display_name, legal_name, email, currency, active)
+       VALUES ($1, $2, $1, 'P0 Canonical Customer', 'P0 Canonical Customer', 'p0@cust.com', 'INR', true)
+       ON CONFLICT (id) DO NOTHING`,
+      [custId, orgId]
+    );
+
+    const invId = newId('inv');
+    const payId = newId('pay');
+    const advId = newId('adv');
+    const appId = newId('caa');
+
+    // Step 1: Issue Invoice ₹100
+    await db.query(
+      `INSERT INTO invoices (id, organization_id, invoice_number, customer_id, client_id, client_name, issue_date, due_date, total_amount, balance_due, paid_amount, status)
+       VALUES ($1, $2, 'INV-P0-100', $3, $3, 'P0 Canonical Customer', '2026-06-01', '2026-06-15', 100.00, 100.00, 0.00, 'SENT')`,
+      [invId, orgId, custId]
+    );
+
+    // GL for Invoice: Dr 1100 AR 100 / Cr 4000 Sales 100
+    const jeInvId = newId('je');
+    await db.query(
+      `INSERT INTO journal_entries (id, organization_id, entry_number, date, description, status)
+       VALUES ($1, $2, 'JE-INV-P0', '2026-06-01', 'Invoice INV-P0-100', 'POSTED')`,
+      [jeInvId, orgId]
+    );
+    await db.query(
+      `INSERT INTO journal_lines (id, journal_entry_id, organization_id, account_id, account_code, account_name, debit, credit, customer_id)
+       VALUES ($1, $2, $3, '1100', '1100', 'Accounts Receivable', 100.00, 0.00, $4)`,
+      [newId('jl'), jeInvId, orgId, custId]
+    );
+
+    // Check at Step 1:
+    let stmt = await CustomerStatementService.getCustomerStatement(orgId, custId, '2026-06-01', '2026-06-30');
+    let invRow = await db.query(`SELECT balance_due FROM invoices WHERE id = $1`, [invId]);
+    let arRes = await db.query(
+      `SELECT COALESCE(SUM(debit - credit), 0) as balance FROM journal_lines WHERE organization_id = $1 AND account_code = '1100' AND customer_id = $2`,
+      [orgId, custId]
+    );
+    expect(Number(invRow.rows[0].balance_due)).toBe(100.00);
+    expect(stmt.closingBalance).toBe(100.00);
+    expect(Number(arRes.rows[0].balance)).toBe(100.00);
+
+    // Step 2: Customer advance ₹100 originating from a payment (payment_id is NOT NULL)
+    await db.query(
+      `INSERT INTO payments_received (id, organization_id, payment_number, client_id, client_name, payment_date, amount, unallocated_amount, payment_mode, deposit_to_account_id, status)
+       VALUES ($1, $2, 'PAY-P0-ADV', $3, 'P0 Canonical Customer', '2026-06-02', 100.00, 100.00, 'Bank Transfer', 'acc-bank-1', 'UNALLOCATED')`,
+      [payId, orgId, custId]
+    );
+    await db.query(
+      `INSERT INTO customer_advances (id, organization_id, customer_id, payment_id, amount, unapplied_amount, received_date, status)
+       VALUES ($1, $2, $3, $4, 100.00, 100.00, '2026-06-02', 'UNAPPLIED')`,
+      [advId, orgId, custId, payId]
+    );
+
+    // GL for Payment Advance: Dr 1010 Bank 100 / Cr 2100 Customer Advances Liability 100 (AR is NOT credited)
+    const jePayId = newId('je');
+    await db.query(
+      `INSERT INTO journal_entries (id, organization_id, entry_number, date, description, status)
+       VALUES ($1, $2, 'JE-PAY-ADV', '2026-06-02', 'Payment Advance PAY-P0-ADV', 'POSTED')`,
+      [jePayId, orgId]
+    );
+    await db.query(
+      `INSERT INTO journal_lines (id, journal_entry_id, organization_id, account_id, account_code, account_name, debit, credit)
+       VALUES ($1, $2, $3, '1010', '1010', 'Bank', 100.00, 0.00)`,
+      [newId('jl'), jePayId, orgId]
+    );
+    await db.query(
+      `INSERT INTO journal_lines (id, journal_entry_id, organization_id, account_id, account_code, account_name, debit, credit, customer_id)
+       VALUES ($1, $2, $3, '2100', '2100', 'Customer Advances', 0.00, 100.00, $4)`,
+      [newId('jl'), jePayId, orgId, custId]
+    );
+
+    // Check at Step 2:
+    stmt = await CustomerStatementService.getCustomerStatement(orgId, custId, '2026-06-01', '2026-06-30');
+    invRow = await db.query(`SELECT balance_due FROM invoices WHERE id = $1`, [invId]);
+    arRes = await db.query(
+      `SELECT COALESCE(SUM(debit - credit), 0) as balance FROM journal_lines WHERE organization_id = $1 AND account_code = '1100' AND customer_id = $2`,
+      [orgId, custId]
+    );
+    expect(Number(invRow.rows[0].balance_due)).toBe(100.00);
+    expect(stmt.closingBalance).toBe(100.00);
+    expect(Number(arRes.rows[0].balance)).toBe(100.00);
+
+    // Step 3: Apply advance ₹100 to invoice
+    const jeAppId = newId('je');
+    await db.query(
+      `INSERT INTO journal_entries (id, organization_id, entry_number, date, description, status)
+       VALUES ($1, $2, 'JE-APP-ADV', '2026-06-03', 'Apply Advance to Invoice', 'POSTED')`,
+      [jeAppId, orgId]
+    );
+    await db.query(
+      `INSERT INTO customer_advance_applications (id, organization_id, advance_id, invoice_id, amount_applied, applied_date, status, journal_entry_id)
+       VALUES ($1, $2, $3, $4, 100.00, '2026-06-03', 'POSTED', $5)`,
+      [appId, orgId, advId, invId, jeAppId]
+    );
+    await db.query(
+      `UPDATE customer_advances SET unapplied_amount = 0.00, status = 'FULLY_APPLIED' WHERE id = $1`,
+      [advId]
+    );
+    await db.query(
+      `UPDATE invoices SET paid_amount = 100.00, balance_due = 0.00, status = 'PAID' WHERE id = $1`,
+      [invId]
+    );
+    await db.query(
+      `INSERT INTO journal_lines (id, journal_entry_id, organization_id, account_id, account_code, account_name, debit, credit, customer_id)
+       VALUES ($1, $2, $3, '2100', '2100', 'Customer Advances', 100.00, 0.00, $4)`,
+      [newId('jl'), jeAppId, orgId, custId]
+    );
+    await db.query(
+      `INSERT INTO journal_lines (id, journal_entry_id, organization_id, account_id, account_code, account_name, debit, credit, customer_id)
+       VALUES ($1, $2, $3, '1100', '1100', 'Accounts Receivable', 0.00, 100.00, $4)`,
+      [newId('jl'), jeAppId, orgId, custId]
+    );
+
+    // Check at Step 3:
+    stmt = await CustomerStatementService.getCustomerStatement(orgId, custId, '2026-06-01', '2026-06-30');
+    invRow = await db.query(`SELECT balance_due FROM invoices WHERE id = $1`, [invId]);
+    arRes = await db.query(
+      `SELECT COALESCE(SUM(debit - credit), 0) as balance FROM journal_lines WHERE organization_id = $1 AND account_code = '1100' AND customer_id = $2`,
+      [orgId, custId]
+    );
+
+    // Canonical Assertion: Invoice outstanding ₹0 -> Customer statement ₹0 -> AR ledger ₹0
+    expect(Number(invRow.rows[0].balance_due)).toBe(0.00);
+    expect(stmt.closingBalance).toBe(0.00);
+    expect(Number(arRes.rows[0].balance)).toBe(0.00);
+    expect(stmt.totalAdvancesApplied).toBe(100.00);
+  });
+
+  // ---------------------------------------------------------------------------
+  // 5. VENDOR STATEMENT REFUND RESTORATION TEST
+  // ---------------------------------------------------------------------------
+  it('5. Vendor Statement: Bill ₹100 -> Vendor Credit ₹75 -> Vendor Refund ₹75 -> balance returns to ₹100', async () => {
+    const vendId = 'vend-refund-canonical';
+    await db.query(
+      `INSERT INTO vendors (id, organization_id, vendor_id, name, company_name, email, currency, active)
+       VALUES ($1, $2, $1, 'Canonical Refund Vendor', 'Canonical Refund Vendor', 'vend-ref@test.com', 'INR', true)
+       ON CONFLICT (id) DO NOTHING`,
+      [vendId, orgId]
+    );
+
+    // 1. Bill ₹100
+    await db.query(
+      `INSERT INTO bills (id, organization_id, bill_number, vendor_id, vendor_name, bill_date, due_date, total_amount, balance_due, amount_paid, status)
+       VALUES ($1, $2, 'BILL-100', $3, 'Canonical Refund Vendor', '2026-07-01', '2026-07-15', 100.00, 100.00, 0.00, 'POSTED')`,
+      [newId('bil'), orgId, vendId]
+    );
+
+    // 2. Vendor Credit ₹75
+    await db.query(
+      `INSERT INTO vendor_credits (id, organization_id, credit_number, vendor_id, vendor_name, date, total_amount, remaining_credit, status)
+       VALUES ($1, $2, 'VCR-75', $3, 'Canonical Refund Vendor', '2026-07-05', 75.00, 0.00, 'POSTED')`,
+      [newId('vc'), orgId, vendId]
+    );
+
+    // 3. Vendor Refund ₹75
+    await db.query(
+      `INSERT INTO vendor_refunds (id, organization_id, refund_number, vendor_id, refund_date, amount, deposit_to_account_id, status)
+       VALUES ($1, $2, 'VREF-75', $3, '2026-07-10', 75.00, 'acc-bank-1', 'POSTED')`,
+      [newId('vref'), orgId, vendId]
+    );
+
+    const stmt = await VendorStatementService.getVendorStatement(orgId, vendId, '2026-07-01', '2026-07-31');
+
+    // Bill 100 - VC 75 + Refund 75 = 100
+    expect(stmt.totalBills).toBe(100.00);
+    expect(stmt.totalCredits).toBe(75.00);
+    expect(stmt.totalRefunds).toBe(75.00);
+    expect(stmt.closingBalance).toBe(100.00);
+  });
 });
+

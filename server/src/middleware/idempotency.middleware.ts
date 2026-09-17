@@ -4,6 +4,8 @@ import { db } from '../database/db';
 import { AuthenticatedRequest } from './organizationIsolation.middleware';
 import { newId } from '../utils/ids';
 import { isProduction } from '../config/environment';
+import { RbacService } from '../auth/RbacService';
+import { RoutePermissionRegistry } from '../auth/RoutePermissionRegistry';
 
 const MUTATION_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const KEY_PATTERN = /^[A-Za-z0-9._:-]{16,128}$/;
@@ -70,6 +72,23 @@ export async function idempotencyMiddleware(
   }
 
   const organizationId = req.auth!.organizationId;
+  const routePermissions = RoutePermissionRegistry.getRequiredPermissions(req.method, req.originalUrl || req.path);
+
+  // 1. Authorize route permissions BEFORE checking idempotency store or executing
+  if (routePermissions && routePermissions.length > 0 && req.auth) {
+    const userRole = req.auth.role || req.auth.roles?.[0] || 'Viewer';
+    const userPerms = new Set(req.auth.permissions || []);
+    const hasPerm = routePermissions.some((p) => {
+      if (userPerms.has(p)) return true;
+      const mapped = RbacService.getPermissionsForRole(userRole);
+      return mapped.includes(p);
+    });
+    if (!hasPerm) {
+      res.status(403).json({ error: `Forbidden: Missing required permission [${routePermissions.join(', ')}]` });
+      return;
+    }
+  }
+
   const requestHash = crypto
     .createHash('sha256')
     .update(JSON.stringify({ method: req.method, path: req.originalUrl, body: req.body ?? null }))
@@ -82,7 +101,7 @@ export async function idempotencyMiddleware(
     // RLS scope even when Express continues the middleware chain asynchronously.
     const outcome = await db.withOrganizationContext(organizationId, () => db.transaction<CapturedResponse>(async (client) => {
       const existing = await client.query(
-        `SELECT request_hash, state, response_status, response_body
+        `SELECT request_hash, state, response_status, response_body, user_id, required_permissions
            FROM api_idempotency_keys
           WHERE organization_id = $1 AND idempotency_key = $2
           FOR UPDATE`,
@@ -94,6 +113,30 @@ export async function idempotencyMiddleware(
         if ((record.request_hash || record.requestHash) !== requestHash) {
           return { status: 409, body: { error: 'Idempotency-Key was already used with a different request' } };
         }
+        if (record.user_id && req.auth?.userId && record.user_id !== req.auth.userId) {
+          return { status: 403, body: { error: 'Forbidden: Cannot replay idempotent request created by another user' } };
+        }
+
+        // Fail-closed policy for legacy records without recorded required_permissions
+        if (!record.required_permissions) {
+          return { status: 403, body: { error: 'IDEMPOTENCY_PERMISSIONS_UNKNOWN: Legacy record without recorded permissions cannot be replayed' } };
+        }
+
+        // Verify that caller's current role/permissions still satisfy the recorded permissions
+        const requiredPerms: string[] = typeof record.required_permissions === 'string'
+          ? JSON.parse(record.required_permissions)
+          : record.required_permissions;
+        const userRole = req.auth?.role || req.auth?.roles?.[0] || 'Viewer';
+        const userPerms = new Set(req.auth?.permissions || []);
+        const stillAuthorized = requiredPerms.some((p) => {
+          if (userPerms.has(p)) return true;
+          const mapped = RbacService.getPermissionsForRole(userRole);
+          return mapped.includes(p);
+        });
+        if (!stillAuthorized) {
+          return { status: 403, body: { error: 'Forbidden: Insufficient permissions to replay request' } };
+        }
+
         if (record.state === 'COMPLETED') {
           return {
             status: Number(record.response_status || 200),
@@ -105,11 +148,13 @@ export async function idempotencyMiddleware(
 
       await client.query(
         `INSERT INTO api_idempotency_keys
-          (id, organization_id, idempotency_key, request_hash, method, path, state, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, 'PROCESSING', $7)`,
+          (id, organization_id, idempotency_key, request_hash, method, path, state, expires_at, user_id, required_permissions)
+         VALUES ($1, $2, $3, $4, $5, $6, 'PROCESSING', $7, $8, $9)`,
         [
           newId('idem'), organizationId, key, requestHash, req.method, req.path,
           new Date(Date.now() + RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString(),
+          req.auth?.userId || null,
+          routePermissions ? JSON.stringify(routePermissions) : null,
         ]
       );
 

@@ -303,13 +303,17 @@ export class PaymentGatewayService {
        ON CONFLICT (organization_id, gateway, event_id) DO NOTHING`,
       [newId('pge'), organizationId, gateway, eventId, eventType, JSON.stringify(payload || {})]
     );
+    const staleProcessingCutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
     const claimed = await db.query(
       `UPDATE payment_gateway_events
           SET status = 'PROCESSING', error_message = NULL
         WHERE organization_id = $1 AND gateway = $2 AND event_id = $3
-          AND status IN ('RECEIVED', 'FAILED')
+          AND (
+            status IN ('RECEIVED', 'FAILED')
+            OR (status = 'PROCESSING' AND COALESCE(processed_at, created_at) < $4)
+          )
         RETURNING id`,
-      [organizationId, gateway, eventId]
+      [organizationId, gateway, eventId, staleProcessingCutoff]
     );
     if (claimed.rows.length !== 1) {
       const existing = await db.query(
@@ -463,15 +467,93 @@ export class PaymentGatewayService {
         if (fRes.rows.length > 0) feeAccountId = fRes.rows[0].id;
 
         if (isPaymentSuccess) {
-          // Overpayment defense: verify remaining invoice balance
+          const providerRef = String(data.id || data.payment_intent || data.payment_id || reference || '').trim();
+          const providerSessionId = data.session_id || data.checkout_session_id || data.order_id || null;
+
+          // Lock matching payment intent FOR UPDATE if one exists
+          const intentCheck = await txClient.query(
+            `SELECT id, customer_id, invoice_id, amount, currency, status, provider_reference, provider_session_id
+               FROM payment_intents
+              WHERE organization_id = $1
+                AND (
+                  (provider_reference = $2 OR provider_session_id = $2)
+                  OR ($3::text IS NOT NULL AND (provider_reference = $3 OR provider_session_id = $3))
+                )
+              LIMIT 3
+              FOR UPDATE`,
+            [organizationId, providerRef, providerSessionId]
+          );
+
+          if (intentCheck.rows.length > 1) {
+            throw new Error(`GATEWAY_AMBIGUOUS_INTENTS: Multiple payment intents match reference ${providerRef}`);
+          }
+
+          let intent = intentCheck.rows[0];
+          if (!intent && invoiceId) {
+            const byInvoice = await txClient.query(
+              `SELECT id, customer_id, invoice_id, amount, currency, status, provider_reference, provider_session_id
+                 FROM payment_intents
+                WHERE organization_id = $1 AND invoice_id = $2
+                ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
+              [organizationId, invoiceId]
+            );
+            if (byInvoice.rows.length > 0) {
+              intent = byInvoice.rows[0];
+            }
+          }
+
+          if (intent) {
+            // Ensure provider_reference and provider_session_id cannot map to different intents
+            if (providerSessionId && intent.provider_session_id && intent.provider_session_id !== providerSessionId && intent.provider_reference !== providerSessionId) {
+              throw new Error(`GATEWAY_INTENT_REFERENCE_MISMATCH: Provider reference and session map to conflicting intents`);
+            }
+
+            if (intent.status === 'SUCCEEDED') {
+              throw new Error(`GATEWAY_INTENT_ALREADY_SUCCEEDED: Payment intent ${intent.id} has already succeeded`);
+            }
+            if (!['PENDING', 'CREATED', 'PROCESSING'].includes(String(intent.status).toUpperCase())) {
+              throw new Error(`GATEWAY_INTENT_INVALID_STATUS: Payment intent ${intent.id} is in status ${intent.status} and cannot transition to SUCCEEDED`);
+            }
+            if (grossAmount > Number(intent.amount) + 0.001) {
+              throw new Error(`GATEWAY_INTENT_AMOUNT_MISMATCH: Webhook amount ${grossAmount.toFixed(2)} exceeds payment intent amount ${Number(intent.amount).toFixed(2)}`);
+            }
+          }
+
+          // Resolve invoice strictly
+          const resolvedInvoiceId = intent?.invoice_id || invoiceId;
+          if (!resolvedInvoiceId) {
+            throw new Error(`GATEWAY_INVOICE_REQUIRED: Successful receipt must identify an invoice`);
+          }
+          if (intent?.invoice_id && invoiceId && invoiceId !== intent.invoice_id) {
+            throw new Error(`GATEWAY_INTENT_INVOICE_MISMATCH: Webhook specified invoice ${invoiceId} but intent belongs to invoice ${intent.invoice_id}`);
+          }
+
+          // Lock invoice
           const invCheck = await txClient.query(
-            `SELECT balance_due, status FROM invoices WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
-            [organizationId, invoiceId]
+            `SELECT balance_due, status, client_id, customer_id, total_amount FROM invoices WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+            [organizationId, resolvedInvoiceId]
           );
           if (invCheck.rows.length === 0) {
-            throw new Error('GATEWAY_INVOICE_NOT_FOUND: Referenced invoice was not found');
+            throw new Error(`GATEWAY_INVOICE_NOT_FOUND: Referenced invoice ${resolvedInvoiceId} was not found`);
           }
-          const currentBalance = Math.round(Number(invCheck.rows[0].balance_due) * 100) / 100;
+
+          const invoiceRow = invCheck.rows[0];
+          const custId = invoiceRow.customer_id || invoiceRow.client_id;
+          if (intent?.customer_id && custId && intent.customer_id !== custId) {
+            throw new Error(`GATEWAY_INTENT_CUSTOMER_MISMATCH: Intent customer ${intent.customer_id} does not match invoice customer ${custId}`);
+          }
+
+          // Resolve currency
+          let expectedCurrency = '';
+          if (intent?.currency) {
+            expectedCurrency = String(intent.currency).trim().toUpperCase();
+          }
+
+          if (currency && expectedCurrency && currency !== expectedCurrency) {
+            throw new Error(`GATEWAY_CURRENCY_MISMATCH: Event currency ${currency} does not match invoice/settlement currency ${expectedCurrency}`);
+          }
+
+          const currentBalance = Math.round(Number(invoiceRow.balance_due) * 100) / 100;
           if (grossAmount > currentBalance) {
             throw new Error(`OVERPAYMENT_NOT_PERMITTED: Webhook payment amount ${grossAmount.toFixed(2)} exceeds invoice balance due ${currentBalance.toFixed(2)}`);
           }
@@ -480,7 +562,7 @@ export class PaymentGatewayService {
           const pmtRes = await SalesEngine.recordCustomerPayment(
             organizationId,
             {
-              invoiceId,
+              invoiceId: resolvedInvoiceId,
               amount: grossAmount,
               paymentDate,
               paymentMode,
@@ -499,12 +581,21 @@ export class PaymentGatewayService {
           }
 
           // Update linked payment_intents to SUCCEEDED
-          await txClient.query(
-            `UPDATE payment_intents
-                SET status = 'SUCCEEDED', payment_id = $1, gateway_event_id = $2, updated_at = CURRENT_TIMESTAMP
-              WHERE organization_id = $3 AND (provider_reference = $4 OR provider_session_id = $4)`,
-            [paymentId, eventId, organizationId, reference]
-          );
+          if (intent) {
+            await txClient.query(
+              `UPDATE payment_intents
+                  SET status = 'SUCCEEDED', payment_id = $1, gateway_event_id = $2, updated_at = CURRENT_TIMESTAMP
+                WHERE organization_id = $3 AND id = $4`,
+              [paymentId, eventId, organizationId, intent.id]
+            );
+          } else {
+            await txClient.query(
+              `UPDATE payment_intents
+                  SET status = 'SUCCEEDED', payment_id = $1, gateway_event_id = $2, updated_at = CURRENT_TIMESTAMP
+                WHERE organization_id = $3 AND (provider_reference = $4 OR provider_session_id = $4)`,
+              [paymentId, eventId, organizationId, reference]
+            );
+          }
 
           // If gateway fee charged, record gateway processing fee expense
           if (fee > 0) {
@@ -605,6 +696,16 @@ export class PaymentGatewayService {
       });
     } catch (err: any) {
       const errorMsg = err?.message || String(err);
+      const code = String(err?.code || '');
+      const isTransient =
+        ['40P01', '40001', '57P01', '08006', '08001', '08004'].includes(code) ||
+        /deadlock|connection drop|connection closed|timeout|concurrent update/i.test(errorMsg);
+
+      if (isTransient) {
+        // Rethrow transient database failures so webhook endpoint returns 500 and gateway provider retries
+        throw err;
+      }
+
       await db.query(
         `UPDATE payment_gateway_events
          SET status = 'FAILED',

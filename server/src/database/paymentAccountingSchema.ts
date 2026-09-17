@@ -71,6 +71,34 @@ export async function applyPaymentAccountingSchema(client: DbQueryClient): Promi
     `CREATE UNIQUE INDEX IF NOT EXISTS uk_bank_transfer_original_journal ON bank_transfers (organization_id, journal_entry_id)`,
   ];
 
+  // Preflight check for duplicate active bank reconciliation matches before unique index creation
+  try {
+    const duplicates = await client.query(
+      `SELECT organization_id, statement_transaction_id, accounting_transaction_type, accounting_transaction_id, COUNT(*) AS match_count
+         FROM bank_reconciliation_matches
+        WHERE COALESCE(status, '') != 'REJECTED'
+        GROUP BY organization_id, statement_transaction_id, accounting_transaction_type, accounting_transaction_id
+       HAVING COUNT(*) > 1`
+    );
+    if (duplicates.rows.length > 0) {
+      const repairReport = duplicates.rows
+        .map((r: any) => `org=${r.organization_id} stmtTx=${r.statement_transaction_id} accTx=${r.accounting_transaction_id} count=${r.match_count}`)
+        .join('; ');
+      const msg = `BANK_RECONCILIATION_INDEX_PREFLIGHT_FAILED: Duplicate active bank reconciliation matches detected. Repair required before unique index creation: [${repairReport}]`;
+      console.error(msg);
+      throw new Error(msg);
+    }
+  } catch (err: any) {
+    if (err?.message?.includes('BANK_RECONCILIATION_INDEX_PREFLIGHT_FAILED')) {
+      throw err;
+    }
+    // Table may not exist yet on fresh installations
+  }
+
+  statements.push(
+    `CREATE UNIQUE INDEX IF NOT EXISTS uk_bank_reconciliation_active_match ON bank_reconciliation_matches (organization_id, statement_transaction_id, accounting_transaction_type, accounting_transaction_id) WHERE COALESCE(status, '') != 'REJECTED'`
+  );
+
   for (const statement of statements) {
     try {
       await client.query(statement);

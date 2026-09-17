@@ -1173,6 +1173,24 @@ export const PERMISSIONS_REGISTRY: Record<string, PermissionMetadata> = {
     description: 'Restore backup database (Owner Only)',
     dependencies: ['backup.view'],
   },
+  'budgets.view': {
+    code: 'budgets.view',
+    module: 'Finance',
+    resource: 'Budgets',
+    action: 'View',
+    risk: 'LOW',
+    description: 'View budgets, targets, and variance forecasts',
+    dependencies: [],
+  },
+  'budgets.manage': {
+    code: 'budgets.manage',
+    module: 'Finance',
+    resource: 'Budgets',
+    action: 'Manage',
+    risk: 'MEDIUM',
+    description: 'Create, revise, and approve organization budgets',
+    dependencies: ['budgets.view'],
+  },
 };
 
 export type PermissionCode = keyof typeof PERMISSIONS_REGISTRY;
@@ -1210,6 +1228,7 @@ export const SYSTEM_ROLE_PERMISSIONS: Record<string, PermissionCode[]> = {
     'fixed_assets.view', 'fixed_assets.manage',
     'banking.view', 'bank_accounts.create', 'bank_accounts.edit', 'bank_transactions.view', 'bank_statements.import', 'bank_reconciliation.view', 'bank_reconciliation.match', 'bank_reconciliation.reconcile', 'bank_reconciliation.unreconcile', 'bank_transfers.create',
     'reports.view', 'reports.financial_statements', 'reports.receivables', 'reports.payables', 'reports.gst', 'reports.bank', 'reports.projects', 'reports.audit', 'reports.export',
+    'budgets.view', 'budgets.manage',
     'projects.view', 'projects.create', 'projects.edit', 'projects.financials', 'projects.time_entries', 'projects.invoice_time',
     'roles.view', 'settings.view', 'approvals.manage', 'audit.view', 'backup.view', 'backup.create',
   ],
@@ -1236,6 +1255,7 @@ export const SYSTEM_ROLE_PERMISSIONS: Record<string, PermissionCode[]> = {
     'fixed_assets.view', 'fixed_assets.manage',
     'banking.view', 'bank_transactions.view', 'bank_statements.import', 'bank_reconciliation.view', 'bank_reconciliation.match', 'bank_reconciliation.reconcile', 'bank_transfers.create',
     'reports.view', 'reports.financial_statements', 'reports.receivables', 'reports.payables', 'reports.gst', 'reports.bank', 'reports.projects', 'reports.export',
+    'budgets.view', 'budgets.manage',
     'projects.view', 'projects.create', 'projects.edit', 'projects.financials', 'projects.time_entries', 'projects.invoice_time',
     'settings.view',
   ],
@@ -1306,6 +1326,7 @@ export const SYSTEM_ROLE_PERMISSIONS: Record<string, PermissionCode[]> = {
     'reports.bank',
     'reports.projects',
     'reports.audit',
+    'budgets.view',
     'projects.view',
     'projects.financials',
   ],
@@ -1425,7 +1446,7 @@ export const LEGACY_TO_GRANULAR_MAP: Record<string, PermissionCode[]> = {
   'settings.restore': ['backup.restore'],
   'settings.approvals': ['approvals.manage'],
   'settings.manage_accounts': ['accounts.create', 'accounts.edit', 'accounts.archive', 'accounts.delete'],
-  'settings.manage_budgets': ['reports.view'],
+  'settings.manage_budgets': ['budgets.manage'],
   'settings.manage_numbering': ['settings.manage'],
   'migration.import': ['opening_balances.manage'],
 };

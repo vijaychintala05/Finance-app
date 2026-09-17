@@ -25,11 +25,12 @@ test.describe('Authenticated financial master-data lifecycle', () => {
       createClientResponse.status(),
       `Customer creation failed: ${await createClientResponse.text()}`,
     ).toBe(201);
+    await expect(page.getByRole('heading', { name: 'Add New Client' })).toBeHidden({ timeout: 10_000 });
 
     const visibleCustomer = () => testInfo.project.name.includes('mobile')
       ? page.locator('div.block.lg\\:hidden').getByText(companyName, { exact: true }).filter({ visible: true })
       : page.getByRole('row').filter({ hasText: companyName });
-    await expect(visibleCustomer()).toBeVisible();
+    await expect(visibleCustomer()).toBeVisible({ timeout: 15_000 });
     await page.reload();
     await expect(page.getByRole('button', { name: '+ New', exact: true })).toBeVisible({ timeout: 15_000 });
 

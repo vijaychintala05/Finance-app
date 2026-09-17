@@ -6,6 +6,7 @@ import { ProfitAndLossReportService } from './ProfitAndLossReportService';
 import { BalanceSheetReportService } from './BalanceSheetReportService';
 import { BudgetService } from './BudgetService';
 import { CashFlowForecastService } from './CashFlowForecastService';
+import { isFeatureEnabled } from '../middleware/trustedFeature.middleware';
 
 export type WorkspaceReportValueType = 'text' | 'date' | 'number' | 'money' | 'percent' | 'status';
 
@@ -162,6 +163,9 @@ export class ReportWorkspaceService {
   }
 
   private static async cashFlowStatement(orgId: string, dates: ReturnType<typeof period>, filter: WorkspaceReportFilter) {
+    if (!isFeatureEnabled('cash-flow-classification')) {
+      throw new Error('FEATURE_DISABLED: Cash-flow classification capability is unavailable');
+    }
     const report = await CashFlowStatementService.getCashFlowStatement(orgId, dates);
     const rows = [
       ...report.operatingActivities.lines.map((row) => ({ section: 'Operating activities', account_code: row.accountCode, account_name: row.accountName, amount: number(row.amount) })),

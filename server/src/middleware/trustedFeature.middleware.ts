@@ -25,6 +25,7 @@ export const CERTIFIED_OPTIONAL_FEATURES = new Set<string>([
   'vendor-statements',
   'accountant-overview',
   'delivery-challans',
+  'cash-flow-classification',
 ]);
 
 function enabledFeatures(): Set<string> {
@@ -46,6 +47,10 @@ function enabledFeatures(): Set<string> {
     }
   }
   return enabled;
+}
+
+export function isFeatureEnabled(feature: string): boolean {
+  return enabledFeatures().has(feature);
 }
 
 /**

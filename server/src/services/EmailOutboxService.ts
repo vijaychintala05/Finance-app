@@ -146,15 +146,31 @@ export class EmailOutboxService {
     const now = new Date(Date.now() + 2000);
     const leaseExpiry = new Date(now.getTime() + leaseSeconds * 1000);
 
+    // 1. Preceding atomic cleanup: transition expired PROCESSING leases at max_retries directly to DEAD_LETTER
+    await db.query(
+      `UPDATE outbox_emails
+          SET delivery_status = 'DEAD_LETTER',
+              last_error = COALESCE(last_error, 'Lease expired at maximum retries without completion')
+        WHERE delivery_status = 'PROCESSING'
+          AND lease_expires_at IS NOT NULL
+          AND lease_expires_at < $1
+          AND retry_count >= max_retries`,
+      [now]
+    );
+
     // Atomically claim eligible rows into PROCESSING state with row lease
     const claimedRows = await db.transaction(async (client) => {
       const candidates = await client.query(
         `SELECT id FROM outbox_emails
-         WHERE delivery_status IN ('PENDING', 'RETRYING')
+         WHERE (
+           delivery_status IN ('PENDING', 'RETRYING')
+           OR (delivery_status = 'PROCESSING' AND lease_expires_at IS NOT NULL AND lease_expires_at < $1)
+         )
            AND (next_retry_at IS NULL OR next_retry_at <= $1)
            AND retry_count < max_retries
          ORDER BY created_at ASC
-         LIMIT $2`,
+         LIMIT $2
+         FOR UPDATE ${!db.isMemoryMode() ? 'SKIP LOCKED' : ''}`,
         [now, batchSize]
       );
 

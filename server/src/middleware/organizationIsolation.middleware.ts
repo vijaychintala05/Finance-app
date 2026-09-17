@@ -162,6 +162,7 @@ export const requirePermission = (permissionCode: string | string[]) => {
     }
 
     const codes = Array.isArray(permissionCode) ? permissionCode : [permissionCode];
+    (req as any).requiredPermissions = codes;
     const permissionChecks = await Promise.all(
       codes.map((code) =>
         RbacService.hasPermissionAsync(req.auth!.organizationId, req.auth!.role, code)

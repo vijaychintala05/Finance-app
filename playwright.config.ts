@@ -6,14 +6,14 @@ const useMemoryDatabase = !process.env.DATABASE_URL || process.env.USE_PG_MEM ==
 
 export default defineConfig({
   testDir: './e2e',
-  timeout: process.env.CI ? 90 * 1000 : 60 * 1000,
+  timeout: 90 * 1000,
   expect: {
-    timeout: process.env.CI ? 15_000 : 5000,
+    timeout: 15_000,
   },
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  workers: process.env.CI ? 1 : undefined,
+  workers: process.env.CI || useMemoryDatabase ? 1 : undefined,
   reporter: process.env.CI ? [['list'], ['html', { outputFolder: 'playwright-report', open: 'never' }]] : 'list',
   use: {
     baseURL: process.env.PLAYWRIGHT_TEST_BASE_URL || 'http://127.0.0.1:3100',

@@ -1,6 +1,6 @@
 {
-  "date": "2026-09-09",
-  "url": "http://localhost:3100",
+  "date": "2026-09-17",
+  "url": "http://127.0.0.1:3100",
   "healthScore": 100,
   "issues": [],
   "categoryScores": {
@@ -17,12 +17,7 @@
     "total": 20,
     "passed": 20,
     "failed": 0,
-    "projects": ["chromium-desktop", "mobile-chrome"]
-  },
-  "unitAndComponent": {
-    "total": 268,
-    "passed": 268,
-    "failed": 0,
-    "suites": 31
+    "flaky": 0,
+    "browserGatePassed": true
   }
 }

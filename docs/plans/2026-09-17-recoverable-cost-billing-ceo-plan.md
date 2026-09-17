@@ -12,6 +12,8 @@ This follows Zoho Books' documented pattern: select a customer, optionally assoc
 
 The user approved the Zoho-style unbilled selection flow and expansion to vendor bills, project time, private profitability reporting, and an overridable organization default markup.
 
+**12-month vision:** one trusted customer billing queue contains every recoverable cost and hour, each with a private cost and approved selling price. Staff can assemble an accurate invoice in minutes, see what remains unbilled, and prove the margin and ledger trail later. The redesign moves today's isolated one-expense conversion toward that shared queue without rebuilding expense or invoice posting.
+
 ## Existing leverage and material gaps
 
 - `ExpenseModal.tsx` already captures customer, project, and billable status in the desktop form. An in-progress mobile redesign shows customer and billable controls but does not yet expose project selection. Neither form has markup or a final-price preview; both must share the same billing logic.

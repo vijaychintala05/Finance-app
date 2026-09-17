@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, Check, ChevronDown, ImagePlus, Layers, Plus, Receipt, RefreshCw, Search, ShieldCheck, Trash2, X } from 'lucide-react';
+import { AlertTriangle, Check, ChevronDown, ChevronRight, ImagePlus, Layers, Plus, Receipt, RefreshCw, Search, ShieldCheck, Trash2, X } from 'lucide-react';
 import { useBooks } from '../../context/BooksContext';
 import { Account, Expense } from '../../types';
 import { AccountModal } from '../coa/AccountModal';
@@ -26,6 +26,34 @@ const today = () => new Date().toISOString().slice(0, 10);
 function toDateInputValue(value?: string): string {
   const match = value?.match(/^\d{4}-\d{2}-\d{2}/);
   return match ? match[0] : today();
+}
+
+function formatDisplayDate(dStr: string): string {
+  if (!dStr) return '';
+  const parts = dStr.split('-');
+  if (parts.length === 3) {
+    return `${parts[2]}/${parts[1]}/${parts[0]}`;
+  }
+  return dStr;
+}
+
+function useIsMobile(): boolean {
+  const [isMobile, setIsMobile] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return window.innerWidth < 768;
+    }
+    return false;
+  });
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  return isMobile;
 }
 
 interface SearchableAccountPickerProps {
@@ -219,6 +247,28 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
     { id: 'item-1', accountId: '', description: '', amount: '' },
   ]);
   const receiptInputRef = useRef<HTMLInputElement>(null);
+  const dateInputRef = useRef<HTMLInputElement>(null);
+
+  const isMobile = useIsMobile();
+  const [activePicker, setActivePicker] = useState<'expenseAccount' | 'paymentAccount' | 'vendor' | 'customer' | null>(null);
+  const [pickerSearch, setPickerSearch] = useState('');
+
+  const selectedExpenseAccount = useMemo(
+    () => expenseAccounts.find((a) => a.id === expenseAccountId),
+    [expenseAccounts, expenseAccountId]
+  );
+  const selectedPaymentAccount = useMemo(
+    () => paymentAccounts.find((a) => a.id === paidFromAccountId),
+    [paymentAccounts, paidFromAccountId]
+  );
+  const selectedVendor = useMemo(
+    () => vendors.find((v) => v.id === vendorId),
+    [vendors, vendorId]
+  );
+  const selectedClient = useMemo(
+    () => clients.find((c) => c.id === clientId),
+    [clients, clientId]
+  );
 
   const handleProjectChange = (newProjectId: string) => {
     setProjectId(newProjectId);
@@ -491,25 +541,650 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
 
   return (
     <>
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4" onClick={onClose}>
-        <div
-          className="flex max-h-[calc(100vh-2rem)] w-full max-w-6xl flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900"
-          onClick={(event) => event.stopPropagation()}
-        >
-          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4 sm:px-7 dark:border-slate-700">
-            <div className="flex gap-3">
-              <span className="flex h-9 w-9 items-center justify-center rounded-md bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300">
-                <Receipt className="h-5 w-5" />
-              </span>
-              <div>
-                <h2 className="text-lg font-bold text-slate-900 dark:text-white">{expenseToEdit ? 'Edit & correct expense' : 'Record Expense'}</h2>
-                <p className="mt-0.5 text-xs text-slate-500">{expenseToEdit ? 'The original journal will be reversed and a corrected expense will be posted.' : 'Record a paid business expense and attach its receipt.'}</p>
+      {isMobile ? (
+        /* MOBILE VIEW (LIGHT MODE) - MATCHING IOS INSET GROUPED SCREENSHOTS */
+        <div className="fixed inset-0 z-50 flex flex-col bg-[#f2f2f7] dark:bg-black overflow-hidden animate-in fade-in duration-150" data-testid="mobile-expense-modal">
+          {/* 1. Header Bar */}
+          <header className="sticky top-0 z-30 bg-white/95 dark:bg-[#1c1c1e]/95 backdrop-blur-md px-4 py-2.5 sm:py-3 border-b border-slate-200/80 dark:border-white/10 flex items-center justify-between">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-1.5 rounded-full bg-slate-200/80 hover:bg-slate-300 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-slate-800 dark:text-slate-200 font-semibold text-xs transition-colors cursor-pointer"
+            >
+              Cancel
+            </button>
+            <h2 className="text-base font-bold text-slate-900 dark:text-white">
+              {expenseToEdit ? 'Edit Expense' : 'Add Expense'}
+            </h2>
+            <button
+              type="button"
+              onClick={handleSubmit}
+              disabled={postingUnavailable || isSubmitting}
+              className="px-5 py-1.5 rounded-full bg-blue-500 hover:bg-blue-600 text-white font-bold text-xs shadow-xs transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+            >
+              {isSubmitting ? 'Saving…' : 'Save'}
+            </button>
+          </header>
+
+          {/* Form Scroll Area */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-3.5 pb-24">
+            {error && (
+              <div role="alert" className="rounded-2xl border border-rose-200 bg-rose-50 dark:border-rose-900/60 dark:bg-rose-950/40 p-3 text-xs font-semibold text-rose-800 dark:text-rose-200">
+                {error}
+              </div>
+            )}
+
+            {postingUnavailable && (
+              <div role="alert" className="rounded-2xl border border-amber-200 bg-amber-50 dark:border-amber-900/60 dark:bg-amber-950/40 p-3 text-xs text-amber-800 dark:text-amber-200">
+                Posting is unavailable until active expense and payment accounts exist in your Chart of Accounts.
+              </div>
+            )}
+
+            {expenseToEdit && (
+              <div className="bg-white dark:bg-[#1c1c1e] rounded-2xl border border-slate-200/80 dark:border-white/5 shadow-2xs p-3.5 space-y-1.5">
+                <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                  Correction Reason <span className="text-rose-500">*</span>
+                </span>
+                <textarea
+                  value={correctionReason}
+                  onChange={(e) => setCorrectionReason(e.target.value)}
+                  placeholder="Explain why this expense needs correction..."
+                  rows={2}
+                  className="w-full rounded-xl bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 p-2.5 text-xs text-slate-900 dark:text-white outline-none focus:border-blue-500 resize-none"
+                />
+              </div>
+            )}
+
+            {/* CARD 1: Date, Itemize Expense, Expense Account, Paid Through */}
+            <div className="bg-white dark:bg-[#1c1c1e] rounded-2xl border border-slate-200/80 dark:border-white/5 shadow-2xs divide-y divide-slate-100 dark:divide-white/5 overflow-hidden">
+              {/* Row 1: Date */}
+              <div
+                onClick={() => {
+                  try {
+                    dateInputRef.current?.showPicker();
+                  } catch {
+                    dateInputRef.current?.focus();
+                  }
+                }}
+                className="flex items-center justify-between p-3.5 cursor-pointer hover:bg-slate-50/80 active:bg-slate-100 dark:hover:bg-zinc-800/50 transition-colors select-none"
+              >
+                <span className="text-sm font-medium text-rose-500 dark:text-rose-400">Date</span>
+                <div className="flex items-center gap-1 text-sm font-medium text-blue-600 dark:text-blue-400">
+                  <span>{formatDisplayDate(date)}</span>
+                  <ChevronRight className="w-4 h-4 text-slate-400" />
+                </div>
+                <input
+                  ref={dateInputRef}
+                  type="date"
+                  value={date}
+                  onChange={(e) => setDate(e.target.value)}
+                  className="sr-only"
+                  aria-label="Posting date"
+                />
+              </div>
+
+              {/* Row 2: Itemize Expense Switch */}
+              <div className="flex items-center justify-between p-3.5">
+                <span className="text-sm font-medium text-slate-800 dark:text-white">Itemize Expense</span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={isItemized}
+                  onClick={() => {
+                    const next = !isItemized;
+                    setIsItemized(next);
+                    if (next && items.length === 1 && !items[0].amount && amount) {
+                      setItems([{ id: 'item-1', accountId: expenseAccountId || expenseAccounts[0]?.id || '', description: description || '', amount }]);
+                    }
+                  }}
+                  className={`w-12 h-7 rounded-full p-0.5 transition-colors cursor-pointer relative ${
+                    isItemized ? 'bg-blue-600 dark:bg-blue-500' : 'bg-slate-300 dark:bg-zinc-700'
+                  }`}
+                  aria-label="Itemize Expense"
+                >
+                  <div
+                    className={`w-6 h-6 rounded-full bg-white shadow-md transform transition-transform ${
+                      isItemized ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+              </div>
+
+              {/* Row 3: Expense Account (when not itemized) */}
+              {!isItemized && (
+                <div
+                  onClick={() => {
+                    setPickerSearch('');
+                    setActivePicker('expenseAccount');
+                  }}
+                  className="flex items-center justify-between p-3.5 cursor-pointer hover:bg-slate-50/80 active:bg-slate-100 dark:hover:bg-zinc-800/50 transition-colors select-none"
+                >
+                  <span className="text-sm font-medium text-rose-500 dark:text-rose-400">Expense Account</span>
+                  <div className="flex items-center gap-1 text-sm">
+                    {selectedExpenseAccount ? (
+                      <span className="font-semibold text-slate-900 dark:text-white truncate max-w-[200px]">
+                        {selectedExpenseAccount.name}
+                      </span>
+                    ) : (
+                      <span className="text-slate-400 font-normal">Tap to Select</span>
+                    )}
+                    <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />
+                  </div>
+                </div>
+              )}
+
+              {/* Row 4: Paid Through */}
+              <div
+                onClick={() => {
+                  setPickerSearch('');
+                  setActivePicker('paymentAccount');
+                }}
+                className="flex items-center justify-between p-3.5 cursor-pointer hover:bg-slate-50/80 active:bg-slate-100 dark:hover:bg-zinc-800/50 transition-colors select-none"
+              >
+                <span className="text-sm font-medium text-rose-500 dark:text-rose-400">Paid Through</span>
+                <div className="flex items-center gap-1 text-sm">
+                  {selectedPaymentAccount ? (
+                    <span className="font-semibold text-slate-900 dark:text-white truncate max-w-[200px]">
+                      {selectedPaymentAccount.name}
+                    </span>
+                  ) : (
+                    <span className="text-slate-400 font-normal">Tap to Select</span>
+                  )}
+                  <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />
+                </div>
               </div>
             </div>
-            <button type="button" onClick={onClose} className="rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 cursor-pointer" aria-label="Close record expense">
-              <X className="h-5 w-5" />
-            </button>
+
+            {/* ITEMIZE SPLIT EXPENSES LIST (WHEN TOGGLED ON) */}
+            {isItemized && (
+              <div className="bg-white dark:bg-[#1c1c1e] rounded-2xl border border-slate-200/80 dark:border-white/5 shadow-2xs p-3.5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold uppercase tracking-wider text-slate-500">Split Line Items</span>
+                  <button
+                    type="button"
+                    onClick={handleAddItem}
+                    className="text-xs font-bold text-blue-600 hover:text-blue-700 flex items-center gap-1 cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Add Line</span>
+                  </button>
+                </div>
+
+                <div className="space-y-2.5 divide-y divide-slate-100 dark:divide-white/5">
+                  {items.map((it, idx) => (
+                    <div key={it.id} className="pt-2 first:pt-0 space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Line {idx + 1} Category</span>
+                        {items.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveItem(idx)}
+                            className="text-rose-500 hover:text-rose-700 p-1 cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                      <select
+                        value={it.accountId}
+                        onChange={(e) => handleUpdateItem(idx, 'accountId', e.target.value)}
+                        className="w-full text-xs font-semibold p-2 rounded-lg border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800 text-slate-800 dark:text-white outline-none"
+                      >
+                        <option value="">Select category</option>
+                        {expenseAccounts.map((a) => (
+                          <option key={a.id} value={a.id}>{a.code} - {a.name}</option>
+                        ))}
+                      </select>
+                      <div className="grid grid-cols-2 gap-2">
+                        <input
+                          type="text"
+                          placeholder="Description"
+                          value={it.description}
+                          onChange={(e) => handleUpdateItem(idx, 'description', e.target.value)}
+                          className="text-xs p-2 rounded-lg border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800 text-slate-900 dark:text-white outline-none"
+                        />
+                        <input
+                          type="number"
+                          min="0.01"
+                          step="0.01"
+                          placeholder="0.00"
+                          value={it.amount}
+                          onChange={(e) => handleUpdateItem(idx, 'amount', e.target.value)}
+                          className="text-xs font-financial text-right p-2 rounded-lg border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800 text-slate-900 dark:text-white outline-none"
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="pt-2 border-t border-slate-100 dark:border-white/5 flex items-center justify-between text-xs font-bold text-slate-900 dark:text-white">
+                  <span>Total Split Amount</span>
+                  <span className="font-financial text-blue-600 dark:text-blue-400">
+                    {settings.currencySymbol} {calculatedItemizedTotal.toFixed(2)}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* CARD 2: Amount, Currency, Vendor */}
+            <div className="bg-white dark:bg-[#1c1c1e] rounded-2xl border border-slate-200/80 dark:border-white/5 shadow-2xs divide-y divide-slate-100 dark:divide-white/5 overflow-hidden">
+              {/* Row 1: Amount */}
+              <div className="flex items-center justify-between p-3.5">
+                <span className="text-sm font-medium text-rose-500 dark:text-rose-400">Amount</span>
+                <div className="flex items-center justify-end">
+                  <input
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    inputMode="decimal"
+                    value={amount}
+                    onChange={(e) => setAmount(e.target.value)}
+                    placeholder="0.00"
+                    disabled={isItemized}
+                    className="text-right font-financial text-sm font-semibold text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none bg-transparent w-36 disabled:opacity-60"
+                  />
+                </div>
+              </div>
+
+              {/* Row 2: Currency */}
+              <div className="flex items-center justify-between p-3.5">
+                <span className="text-sm font-medium text-slate-800 dark:text-white">Currency</span>
+                <div className="flex items-center gap-1 text-sm font-semibold text-blue-600 dark:text-blue-400">
+                  <span>{settings.currencyCode || 'INR'}</span>
+                  <ChevronRight className="w-4 h-4 text-slate-400" />
+                </div>
+              </div>
+
+              {/* Row 3: Vendor */}
+              <div
+                onClick={() => {
+                  setPickerSearch('');
+                  setActivePicker('vendor');
+                }}
+                className="flex items-center justify-between p-3.5 cursor-pointer hover:bg-slate-50/80 active:bg-slate-100 dark:hover:bg-zinc-800/50 transition-colors select-none"
+              >
+                <span className="text-sm font-medium text-slate-800 dark:text-white">Vendor</span>
+                <div className="flex items-center gap-1 text-sm">
+                  {selectedVendor ? (
+                    <span className="font-semibold text-slate-900 dark:text-white truncate max-w-[200px]">
+                      {selectedVendor.companyName || selectedVendor.name}
+                    </span>
+                  ) : (
+                    <span className="text-slate-400 font-normal">Tap to Select</span>
+                  )}
+                  <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />
+                </div>
+              </div>
+            </div>
+
+            {/* CARD 3: Reference#, Notes */}
+            <div className="bg-white dark:bg-[#1c1c1e] rounded-2xl border border-slate-200/80 dark:border-white/5 shadow-2xs divide-y divide-slate-100 dark:divide-white/5 overflow-hidden">
+              {/* Row 1: Reference# */}
+              <div className="flex items-center justify-between p-3.5">
+                <span className="text-sm font-medium text-slate-800 dark:text-white">Reference#</span>
+                <div className="flex items-center justify-end">
+                  <input
+                    type="text"
+                    value={vendorInvoiceNumber}
+                    onChange={(e) => setVendorInvoiceNumber(e.target.value)}
+                    placeholder="Tap to Enter"
+                    className="text-right text-sm text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none bg-transparent w-40"
+                  />
+                </div>
+              </div>
+
+              {/* Row 2: Notes */}
+              <div className="p-3.5 space-y-2">
+                <span className="text-sm font-medium text-slate-800 dark:text-white block">Notes</span>
+                <textarea
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  placeholder="Add notes about this expense..."
+                  rows={3}
+                  className="w-full rounded-xl bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 p-3 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:border-blue-500 resize-none"
+                />
+              </div>
+            </div>
+
+            {/* CARD 4: Customer */}
+            <div className="bg-white dark:bg-[#1c1c1e] rounded-2xl border border-slate-200/80 dark:border-white/5 shadow-2xs divide-y divide-slate-100 dark:divide-white/5 overflow-hidden">
+              <div
+                onClick={() => {
+                  setPickerSearch('');
+                  setActivePicker('customer');
+                }}
+                className="flex items-center justify-between p-3.5 cursor-pointer hover:bg-slate-50/80 active:bg-slate-100 dark:hover:bg-zinc-800/50 transition-colors select-none"
+              >
+                <span className="text-sm font-medium text-slate-800 dark:text-white">Customer</span>
+                <div className="flex items-center gap-1 text-sm">
+                  {selectedClient ? (
+                    <span className="font-semibold text-slate-900 dark:text-white truncate max-w-[200px]">
+                      {selectedClient.companyName || selectedClient.name}
+                    </span>
+                  ) : (
+                    <span className="text-slate-400 font-normal">Tap to Select</span>
+                  )}
+                  <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />
+                </div>
+              </div>
+
+              {/* Billable toggle if customer is selected */}
+              {clientId && (
+                <div className="flex items-center justify-between p-3.5">
+                  <div className="space-y-0.5">
+                    <span className="text-sm font-medium text-slate-800 dark:text-white block">Billable to Customer</span>
+                    <span className="text-xs text-slate-400 block">Track as unbilled for customer invoice</span>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={isBillable}
+                    onClick={() => setIsBillable(!isBillable)}
+                    className={`w-12 h-7 rounded-full p-0.5 transition-colors cursor-pointer relative ${
+                      isBillable ? 'bg-blue-600 dark:bg-blue-500' : 'bg-slate-300 dark:bg-zinc-700'
+                    }`}
+                  >
+                    <div
+                      className={`w-6 h-6 rounded-full bg-white shadow-md transform transition-transform ${
+                        isBillable ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* CARD 5: Attachments */}
+            <div className="bg-white dark:bg-[#1c1c1e] rounded-2xl border border-slate-200/80 dark:border-white/5 shadow-2xs divide-y divide-slate-100 dark:divide-white/5 overflow-hidden">
+              <div
+                onClick={() => receiptInputRef.current?.click()}
+                className="flex items-center justify-between p-3.5 cursor-pointer hover:bg-slate-50/80 active:bg-slate-100 dark:hover:bg-zinc-800/50 transition-colors select-none"
+              >
+                <span className="text-sm font-medium text-slate-800 dark:text-white">Attachments</span>
+                <div className="flex items-center gap-1.5 text-sm font-medium text-slate-500">
+                  {filePreviews.length > 0 && (
+                    <span className="text-xs font-semibold text-blue-600 bg-blue-50 dark:bg-blue-950 px-2 py-0.5 rounded-full">
+                      {filePreviews.length} {filePreviews.length === 1 ? 'file' : 'files'}
+                    </span>
+                  )}
+                  <ChevronRight className="w-4 h-4 text-slate-400" />
+                </div>
+                <input
+                  ref={receiptInputRef}
+                  type="file"
+                  multiple
+                  accept="image/jpeg,image/png,image/webp"
+                  className="hidden"
+                  onChange={(e) => {
+                    appendReceiptFiles(Array.from(e.target.files || []));
+                    if (receiptInputRef.current) receiptInputRef.current.value = '';
+                  }}
+                />
+              </div>
+
+              {/* Receipt Image Previews */}
+              {filePreviews.length > 0 && (
+                <div className="p-3.5 flex flex-wrap gap-2.5">
+                  {filePreviews.map(({ file, url }, index) => (
+                    <div key={index} className="relative w-16 h-16 rounded-xl overflow-hidden border border-slate-200 dark:border-zinc-700">
+                      <img src={url} alt={file.name} className="w-full h-full object-cover" />
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setReceiptFiles((curr) => curr.filter((_, i) => i !== index));
+                        }}
+                        className="absolute top-1 right-1 w-5 h-5 rounded-full bg-black/70 text-white flex items-center justify-center text-xs hover:bg-rose-600 transition-colors cursor-pointer"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
+
+          {/* BOTTOM SHEET PICKER FOR MOBILE */}
+          {activePicker && (
+            <div className="fixed inset-0 z-[70] flex flex-col justify-end">
+              <div
+                className="fixed inset-0 bg-black/50 backdrop-blur-xs transition-opacity animate-in fade-in duration-200"
+                onClick={() => setActivePicker(null)}
+              />
+              <div className="relative z-10 max-h-[82vh] w-full rounded-t-3xl bg-white dark:bg-zinc-900 shadow-2xl flex flex-col overflow-hidden pb-6 animate-in slide-in-from-bottom duration-250">
+                {/* Drag Handle & Header */}
+                <div className="pt-3 pb-2.5 px-5 border-b border-slate-100 dark:border-zinc-800">
+                  <div className="w-10 h-1 rounded-full bg-slate-300 dark:bg-zinc-700 mx-auto mb-3" />
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                      {activePicker === 'expenseAccount' && 'Select Expense Account'}
+                      {activePicker === 'paymentAccount' && 'Select Paid Through'}
+                      {activePicker === 'vendor' && 'Select Vendor'}
+                      {activePicker === 'customer' && 'Select Customer'}
+                    </h3>
+                    <button
+                      type="button"
+                      onClick={() => setActivePicker(null)}
+                      className="w-7 h-7 rounded-full bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-slate-300 flex items-center justify-center hover:bg-slate-200 transition-colors cursor-pointer"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  {/* Search Input */}
+                  <div className="mt-3 relative">
+                    <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={pickerSearch}
+                      onChange={(e) => setPickerSearch(e.target.value)}
+                      placeholder="Search options..."
+                      className="w-full pl-9 pr-3 py-2 rounded-xl bg-slate-100 dark:bg-zinc-800 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 outline-none"
+                    />
+                  </div>
+                </div>
+
+                {/* Items List */}
+                <div className="flex-1 overflow-y-auto p-3 space-y-1 divide-y divide-slate-100 dark:divide-zinc-800/80">
+                  {/* Expense Account Options */}
+                  {activePicker === 'expenseAccount' && (
+                    <>
+                      <div className="pb-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActivePicker(null);
+                            setIsAddExpenseModalOpen(true);
+                          }}
+                          className="w-full py-2.5 px-3 rounded-xl border border-blue-200 bg-blue-50/60 hover:bg-blue-100 text-blue-700 dark:border-blue-900/60 dark:bg-blue-950/40 dark:text-blue-300 text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          <Plus className="w-4 h-4" />
+                          <span>New Account</span>
+                        </button>
+                      </div>
+                      {expenseAccounts
+                        .filter((a) => !pickerSearch || `${a.code} ${a.name}`.toLowerCase().includes(pickerSearch.toLowerCase()))
+                        .map((account) => {
+                          const isSelected = account.id === expenseAccountId;
+                          return (
+                            <div
+                              key={account.id}
+                              onClick={() => {
+                                setExpenseAccountId(account.id);
+                                setActivePicker(null);
+                              }}
+                              className={`pt-1.5 p-3 rounded-xl flex items-center justify-between cursor-pointer transition-colors ${
+                                isSelected ? 'bg-blue-50 text-blue-900 dark:bg-blue-950/40 dark:text-blue-100 font-bold' : 'hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-800 dark:text-slate-200'
+                              }`}
+                            >
+                              <div>
+                                <span className="text-sm block">{account.code} - {account.name}</span>
+                                <span className="text-[11px] text-slate-400 font-normal">{account.type} / {account.subType}</span>
+                              </div>
+                              {isSelected && <Check className="w-4 h-4 text-blue-600 shrink-0" />}
+                            </div>
+                          );
+                        })}
+                    </>
+                  )}
+
+                  {/* Payment Account Options */}
+                  {activePicker === 'paymentAccount' && (
+                    <>
+                      <div className="pb-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActivePicker(null);
+                            setIsAddPaymentModalOpen(true);
+                          }}
+                          className="w-full py-2.5 px-3 rounded-xl border border-blue-200 bg-blue-50/60 hover:bg-blue-100 text-blue-700 dark:border-blue-900/60 dark:bg-blue-950/40 dark:text-blue-300 text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          <Plus className="w-4 h-4" />
+                          <span>New Bank / Card</span>
+                        </button>
+                      </div>
+                      {paymentAccounts
+                        .filter((a) => !pickerSearch || `${a.code} ${a.name}`.toLowerCase().includes(pickerSearch.toLowerCase()))
+                        .map((account) => {
+                          const isSelected = account.id === paidFromAccountId;
+                          return (
+                            <div
+                              key={account.id}
+                              onClick={() => {
+                                setPaidFromAccountId(account.id);
+                                setActivePicker(null);
+                              }}
+                              className={`pt-1.5 p-3 rounded-xl flex items-center justify-between cursor-pointer transition-colors ${
+                                isSelected ? 'bg-blue-50 text-blue-900 dark:bg-blue-950/40 dark:text-blue-100 font-bold' : 'hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-800 dark:text-slate-200'
+                              }`}
+                            >
+                              <div>
+                                <span className="text-sm block">{account.code} - {account.name}</span>
+                                <span className="text-[11px] text-slate-400 font-normal">{account.subType || account.type}</span>
+                              </div>
+                              {isSelected && <Check className="w-4 h-4 text-blue-600 shrink-0" />}
+                            </div>
+                          );
+                        })}
+                    </>
+                  )}
+
+                  {/* Vendor Options */}
+                  {activePicker === 'vendor' && (
+                    <>
+                      <div className="pb-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActivePicker(null);
+                            setIsAddVendorModalOpen(true);
+                          }}
+                          className="w-full py-2.5 px-3 rounded-xl border border-blue-200 bg-blue-50/60 hover:bg-blue-100 text-blue-700 dark:border-blue-900/60 dark:bg-blue-950/40 dark:text-blue-300 text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          <Plus className="w-4 h-4" />
+                          <span>Add New Vendor</span>
+                        </button>
+                      </div>
+                      <div
+                        onClick={() => {
+                          setVendorId('');
+                          setActivePicker(null);
+                        }}
+                        className={`pt-1.5 p-3 rounded-xl flex items-center justify-between cursor-pointer transition-colors ${
+                          !vendorId ? 'bg-blue-50 text-blue-900 dark:bg-blue-950/40 font-bold' : 'hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-500'
+                        }`}
+                      >
+                        <span className="text-sm">No vendor selected</span>
+                        {!vendorId && <Check className="w-4 h-4 text-blue-600 shrink-0" />}
+                      </div>
+                      {vendors
+                        .filter((v) => !pickerSearch || (v.companyName || v.name).toLowerCase().includes(pickerSearch.toLowerCase()))
+                        .map((vendor) => {
+                          const isSelected = vendor.id === vendorId;
+                          return (
+                            <div
+                              key={vendor.id}
+                              onClick={() => {
+                                setVendorId(vendor.id);
+                                setActivePicker(null);
+                              }}
+                              className={`pt-1.5 p-3 rounded-xl flex items-center justify-between cursor-pointer transition-colors ${
+                                isSelected ? 'bg-blue-50 text-blue-900 dark:bg-blue-950/40 dark:text-blue-100 font-bold' : 'hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-800 dark:text-slate-200'
+                              }`}
+                            >
+                              <span className="text-sm">{vendor.companyName || vendor.name}</span>
+                              {isSelected && <Check className="w-4 h-4 text-blue-600 shrink-0" />}
+                            </div>
+                          );
+                        })}
+                    </>
+                  )}
+
+                  {/* Customer Options */}
+                  {activePicker === 'customer' && (
+                    <>
+                      <div
+                        onClick={() => {
+                          handleClientChange('');
+                          setActivePicker(null);
+                        }}
+                        className={`pt-1.5 p-3 rounded-xl flex items-center justify-between cursor-pointer transition-colors ${
+                          !clientId ? 'bg-blue-50 text-blue-900 dark:bg-blue-950/40 font-bold' : 'hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-500'
+                        }`}
+                      >
+                        <span className="text-sm">No customer selected</span>
+                        {!clientId && <Check className="w-4 h-4 text-blue-600 shrink-0" />}
+                      </div>
+                      {clients
+                        .filter((c) => !pickerSearch || (c.companyName || c.name).toLowerCase().includes(pickerSearch.toLowerCase()))
+                        .map((client) => {
+                          const isSelected = client.id === clientId;
+                          return (
+                            <div
+                              key={client.id}
+                              onClick={() => {
+                                handleClientChange(client.id);
+                                setActivePicker(null);
+                              }}
+                              className={`pt-1.5 p-3 rounded-xl flex items-center justify-between cursor-pointer transition-colors ${
+                                isSelected ? 'bg-blue-50 text-blue-900 dark:bg-blue-950/40 dark:text-blue-100 font-bold' : 'hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-800 dark:text-slate-200'
+                              }`}
+                            >
+                              <span className="text-sm">{client.companyName || client.name}</span>
+                              {isSelected && <Check className="w-4 h-4 text-blue-600 shrink-0" />}
+                            </div>
+                          );
+                        })}
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+        /* DESKTOP VIEW - 100% UNCHANGED */
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4" onClick={onClose}>
+          <div
+            className="flex max-h-[calc(100vh-2rem)] w-full max-w-6xl flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4 sm:px-7 dark:border-slate-700">
+              <div className="flex gap-3">
+                <span className="flex h-9 w-9 items-center justify-center rounded-md bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300">
+                  <Receipt className="h-5 w-5" />
+                </span>
+                <div>
+                  <h2 className="text-lg font-bold text-slate-900 dark:text-white">{expenseToEdit ? 'Edit & correct expense' : 'Record Expense'}</h2>
+                  <p className="mt-0.5 text-xs text-slate-500">{expenseToEdit ? 'The original journal will be reversed and a corrected expense will be posted.' : 'Record a paid business expense and attach its receipt.'}</p>
+                </div>
+              </div>
+              <button type="button" onClick={onClose} className="rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 cursor-pointer" aria-label="Close record expense">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
 
           <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
             <div className="min-h-0 flex-1 overflow-y-auto p-5 sm:p-7">
@@ -977,6 +1652,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
           </form>
         </div>
       </div>
+      )}
 
       {isAddExpenseModalOpen && (
         <AccountModal

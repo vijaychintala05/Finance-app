@@ -76,7 +76,7 @@ export async function idempotencyMiddleware(
 
   // 1. Authorize route permissions BEFORE checking idempotency store or executing
   if (routePermissions && routePermissions.length > 0 && req.auth) {
-    const userRole = req.auth.role || req.auth.roles?.[0] || 'Viewer';
+    const userRole = req.auth.role || 'Viewer';
     const userPerms = new Set(req.auth.permissions || []);
     const hasPerm = routePermissions.some((p) => {
       if (userPerms.has(p)) return true;
@@ -126,7 +126,7 @@ export async function idempotencyMiddleware(
         const requiredPerms: string[] = typeof record.required_permissions === 'string'
           ? JSON.parse(record.required_permissions)
           : record.required_permissions;
-        const userRole = req.auth?.role || req.auth?.roles?.[0] || 'Viewer';
+        const userRole = req.auth?.role || 'Viewer';
         const userPerms = new Set(req.auth?.permissions || []);
         const stillAuthorized = requiredPerms.some((p) => {
           if (userPerms.has(p)) return true;

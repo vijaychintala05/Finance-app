@@ -1116,15 +1116,36 @@ export class FinanceController {
         res.status(404).json({ error: `Invoice ${id} not found` });
         return;
       }
-      const inv = invRes.rows[0];
+      let inv = invRes.rows[0];
+      const invStatus = String(inv.status).toUpperCase();
+
+      if (['VOID', 'VOIDED'].includes(invStatus)) {
+        res.status(400).json({ error: 'Cannot send a voided invoice' });
+        return;
+      }
+
+      if (invStatus === 'SUBMITTED') {
+        res.status(422).json({ error: 'Invoice is awaiting approval and cannot be sent until approved and posted' });
+        return;
+      }
+
       const targetEmail = recipientEmail || inv.client_email;
       if (!targetEmail) {
         res.status(400).json({ error: 'Recipient email address is required' });
         return;
       }
 
-      if (String(inv.status).toUpperCase() === 'DRAFT') {
-        await db.query(`UPDATE invoices SET status = 'POSTED' WHERE organization_id = $1 AND id = $2`, [orgId, id]);
+      if (invStatus === 'DRAFT') {
+        const posted = await SalesEngine.postInvoice(orgId, req.auth!.userId, id);
+        inv = {
+          ...inv,
+          status: posted.status,
+          balance_due: posted.balanceDue,
+          total_amount: posted.totalAmount,
+          invoice_number: posted.invoiceNumber,
+          due_date: posted.dueDate,
+          client_name: posted.customerName || inv.client_name,
+        };
       }
 
       await EmailOutboxService.enqueueEmail(
@@ -1147,7 +1168,8 @@ export class FinanceController {
       });
     } catch (err: any) {
       console.error('SEND_INVOICE_EMAIL_ERROR:', err);
-      res.status(500).json({ error: err.message || 'Failed to send invoice email' });
+      const isApprovalError = err.message && err.message.includes('APPROVAL_REQUIRED');
+      res.status(isApprovalError ? 422 : 500).json({ error: err.message || 'Failed to send invoice email' });
     }
   }
 

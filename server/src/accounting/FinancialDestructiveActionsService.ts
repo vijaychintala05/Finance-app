@@ -172,6 +172,38 @@ export class FinancialDestructiveActionsService {
           [Number(newInvoicedCents) / 100, orderStatus, organizationId, invoice.sales_order_id]
         );
       }
+
+      // Release any linked billable expenses back to unbilled
+      const linkedExpenses = await client.query(
+        `SELECT id, expense_number, is_billed, is_billable
+           FROM expenses
+          WHERE organization_id = $1 AND invoice_id = $2
+          FOR UPDATE`,
+        [organizationId, invoiceId]
+      );
+      if (linkedExpenses.rows.length > 0) {
+        await client.query(
+          `UPDATE expenses
+              SET is_billed = FALSE, invoice_id = NULL
+            WHERE organization_id = $1 AND invoice_id = $2`,
+          [organizationId, invoiceId]
+        );
+        await this.audit(client, organizationId, userId, 'EXPENSES_RELEASED_FROM_VOIDED_INVOICE', 'Invoice', invoiceId,
+          { linkedExpenseCount: linkedExpenses.rows.length, releasedIds: linkedExpenses.rows.map((e: any) => e.id) },
+          { isBilled: false, invoiceId: null, reason: normalizedReason }
+        );
+      }
+
+      const customerId = invoice.customer_id || invoice.client_id;
+      if (customerId) {
+        await client.query(
+          `UPDATE customers
+              SET receivables_balance = GREATEST(0, receivables_balance - $1)
+            WHERE organization_id = $2 AND id = $3`,
+          [Number(invoice.total_amount || 0), organizationId, customerId]
+        );
+      }
+
       await this.audit(client, organizationId, userId, 'INVOICE_VOIDED', 'Invoice', invoiceId,
         { status: invoice.status, balanceDue: invoice.balance_due },
         { status: 'VOIDED', balanceDue: 0, reversalJournalId, reason: normalizedReason });
@@ -1014,6 +1046,20 @@ export class FinancialDestructiveActionsService {
       const expense = result.rows[0];
       if (String(expense.status).toUpperCase() === 'VOIDED') throw new Error('Expense is already voided');
       if (!expense.journal_entry_id) throw new Error('Expense has no certified posting journal to reverse');
+
+      // Guard: reject voiding if expense is linked to an active customer invoice
+      if (expense.invoice_id) {
+        const linkedInv = await client.query(
+          `SELECT id, invoice_number, status FROM invoices WHERE organization_id = $1 AND id = $2`,
+          [organizationId, expense.invoice_id]
+        );
+        if (linkedInv.rows.length > 0 && !['VOID', 'VOIDED'].includes(String(linkedInv.rows[0].status).toUpperCase())) {
+          throw new Error(`EXPENSE_ALREADY_BILLED: Expense is linked to active invoice ${linkedInv.rows[0].invoice_number}. Reverse or void the customer invoice before voiding this expense.`);
+        }
+      }
+      if (expense.is_billed && !expense.invoice_id) {
+        throw new Error('EXPENSE_ALREADY_BILLED: Expense is marked as billed. Reverse or void the linked customer invoice before voiding this expense.');
+      }
 
       // Reject voiding if expense or its journal entry is actively matched in a bank reconciliation
       const matchedCheck = await client.query(

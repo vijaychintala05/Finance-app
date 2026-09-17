@@ -40,6 +40,7 @@ export interface ExpensePostingInput {
   description?: string;
   projectId?: string;
   clientId?: string;
+  customerId?: string;
   isBillable?: boolean;
   sourceOccurrenceKey?: string;
   receiptImages?: ExpenseReceiptUpload[];
@@ -373,7 +374,7 @@ export class ExpensePostingService {
         }
       }
 
-      let effectiveClientId = input.clientId || null;
+      let effectiveClientId = input.clientId || input.customerId || null;
       if (input.projectId) {
         const project = await client.query(
           `SELECT client_id FROM projects WHERE organization_id = $1 AND id = $2 AND status <> 'Cancelled'`,

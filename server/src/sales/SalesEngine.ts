@@ -1946,176 +1946,257 @@ export class SalesEngine {
       // Atomically consume approval
       await ApprovalWorkflowService.consumeApproval(orgId, 'INVOICE', invoiceId, client, inv);
 
-      const issueDate = inv.issue_date instanceof Date ? inv.issue_date.toISOString().split('T')[0] : String(inv.issue_date).split('T')[0];
-      await SalesEngine.checkPeriodLock(orgId, issueDate, client);
-
-      const finalTotal = Number(inv.total_amount || 0);
-      const subtotal = Number(inv.subtotal || 0);
-      const taxTotal = Number(inv.tax_total || 0);
-      const invoiceDiscount = Number(inv.discount || 0);
-      const roundOff = Number(inv.round_off_amount || 0);
-      const isGstInclusive = Boolean(inv.is_gst_inclusive);
-      const customerId = inv.customer_id || inv.client_id;
-      const resolvedCustomerName = inv.client_name || 'Customer';
-
-      const arAccountId = await OrganizationProvisioningService.resolveSystemAccountId(client, orgId, 'AR_CONTROL', ['Asset']);
-      const salesAccountId = await OrganizationProvisioningService.resolveSystemAccountId(client, orgId, 'SALES_REVENUE', ['Income', 'Revenue']);
-      const taxAccountId = taxTotal > 0
-        ? await OrganizationProvisioningService.resolveAccountId(client, orgId, '2200', ['Liability'])
-        : '';
-
-      const preTaxRevenue = isGstInclusive
-        ? Math.round((subtotal - invoiceDiscount - taxTotal) * 100) / 100
-        : Math.round((subtotal - invoiceDiscount) * 100) / 100;
-
-      const journalLines: any[] = [
-        {
-          accountId: arAccountId,
-          accountCode: '1100',
-          accountName: 'Accounts Receivable',
-          debit: finalTotal,
-          credit: 0,
-          description: `Invoice ${inv.invoice_number} Receivable`,
-        },
-        {
-          accountId: salesAccountId,
-          accountCode: '4000',
-          accountName: 'Sales Revenue',
-          debit: 0,
-          credit: preTaxRevenue,
-          description: `Invoice ${inv.invoice_number} Revenue`,
-        },
-      ];
-
-      if (taxTotal > 0) {
-        journalLines.push({
-          accountId: taxAccountId,
-          accountCode: '2200',
-          accountName: 'GST Output Liability',
-          debit: 0,
-          credit: taxTotal,
-          description: `Invoice ${inv.invoice_number} Tax`,
-        });
-      }
-
-      if (roundOff !== 0) {
-        if (roundOff > 0) {
-          journalLines.push({
-            accountId: await OrganizationProvisioningService.resolveAccountId(client, orgId, '4900', ['Income', 'Revenue']),
-            accountCode: '4900',
-            accountName: 'Round-Off Income',
-            debit: 0,
-            credit: roundOff,
-            description: `Invoice ${inv.invoice_number} Rounding`,
-          });
-        } else {
-          journalLines.push({
-            accountId: await OrganizationProvisioningService.resolveAccountId(client, orgId, '5900', ['Expense']),
-            accountCode: '5900',
-            accountName: 'Round-Off Expense',
-            debit: Math.abs(roundOff),
-            credit: 0,
-            description: `Invoice ${inv.invoice_number} Rounding`,
-          });
-        }
-      }
-
-      // Historical invoice journals are handled by the reporting fallback. All
-      // new invoice postings retain the project dimension on every ledger leg.
-      if (inv.project_id) journalLines.forEach((line) => { line.projectId = inv.project_id; });
-
-      const journalEntryId = await SalesEngine.persistJournalEntry(
-        orgId,
-        `JE-${inv.invoice_number}`,
-        issueDate,
-        inv.invoice_number,
-        `Posted Invoice ${inv.invoice_number} for ${resolvedCustomerName}`,
-        journalLines,
-        client
-      );
-
-      await client.query(
-        `UPDATE invoices SET status = 'POSTED', journal_entry_id = $1 WHERE organization_id = $2 AND id = $3`,
-        [journalEntryId, orgId, invoiceId]
-      );
-
-      // Billable expenses reserve their source row with invoice_id while an
-      // approval is pending.  Consume that reservation only when the invoice
-      // has its authoritative posted journal entry.
-      await client.query(
-        `UPDATE expenses
-            SET is_billed = TRUE
-          WHERE organization_id = $1
-            AND invoice_id = $2
-            AND is_billable = TRUE
-            AND is_billed = FALSE`,
-        [orgId, invoiceId]
-      );
-
-      if (inv.sales_order_id) {
-        const soRes = await client.query(
-          `SELECT * FROM sales_orders WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
-          [orgId, inv.sales_order_id]
-        );
-        if (soRes.rows.length === 1) {
-          const so = soRes.rows[0];
-          const newInvoiced = Number(so.invoiced_amount || 0) + finalTotal;
-          const soTotal = Number(so.total_amount || 0);
-          const newSoStatus = newInvoiced >= (soTotal - 0.009) ? 'INVOICED' : 'PARTIALLY_INVOICED';
-          await client.query(
-            `UPDATE sales_orders SET invoiced_amount = $1, status = $2 WHERE organization_id = $3 AND id = $4`,
-            [newInvoiced, newSoStatus, orgId, inv.sales_order_id]
-          );
-        }
-      }
-
-      if (customerId) {
-        await client.query(
-          `UPDATE customers SET receivables_balance = receivables_balance + $1 WHERE organization_id = $2 AND id = $3`,
-          [finalTotal, orgId, customerId]
-        );
-      }
-
-      await client.query(
-        `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state)
-         VALUES ($1, $2, $3, 'INVOICE_POSTED', 'Invoice', $4, $5)`,
-        [newId('aud'), orgId, userId, invoiceId, JSON.stringify({ invoiceNumber: inv.invoice_number, totalAmount: finalTotal, journalEntryId })]
-      );
-
-      const itemsRes = await client.query(
-        `SELECT * FROM invoice_items WHERE invoice_id = $1`,
-        [invoiceId]
-      );
-
-      return {
-        id: inv.id,
-        organizationId: inv.organization_id,
-        invoiceNumber: inv.invoice_number,
-        salesOrderId: inv.sales_order_id,
-        estimateId: inv.estimate_id,
-        customerId: inv.customer_id || inv.client_id,
-        customerName: inv.client_name,
-        customerEmail: inv.client_email,
-        projectId: inv.project_id,
-        issueDate: inv.issue_date,
-        dueDate: inv.due_date,
-        subtotal: Number(inv.subtotal),
-        taxTotal: Number(inv.tax_total),
-        discount: Number(inv.discount),
-        roundOffAmount: Number(inv.round_off_amount || 0),
-        isGstInclusive: Boolean(inv.is_gst_inclusive),
-        totalAmount: Number(inv.total_amount),
-        paidAmount: Number(inv.paid_amount || 0),
-        balanceDue: Number(inv.balance_due || inv.total_amount),
-        status: 'POSTED' as any,
-        lineItems: itemsRes.rows,
-        notes: inv.notes,
-        journalEntryId,
-      };
+      return await SalesEngine.executeCanonicalInvoicePosting(orgId, userId, inv, client);
     };
 
     if (transactionClient) return await execute(transactionClient);
     return await db.transaction(execute);
+  }
+
+  public static async postInvoice(
+    orgId: string,
+    userId: string,
+    invoiceId: string,
+    transactionClient?: QueryClient
+  ): Promise<InvoiceModel> {
+    const execute = async (client: QueryClient) => {
+      const invRes = await client.query(
+        `SELECT * FROM invoices WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, invoiceId]
+      );
+      if (invRes.rows.length === 0) throw new Error('INVOICE_NOT_FOUND: Invoice does not exist');
+      const inv = invRes.rows[0];
+      const invStatus = String(inv.status).toUpperCase();
+
+      if (['POSTED', 'PAID', 'PARTIALLY_PAID'].includes(invStatus)) {
+        const itemsRes = await client.query(
+          `SELECT * FROM invoice_items WHERE invoice_id = $1`,
+          [invoiceId]
+        );
+        return {
+          id: inv.id,
+          organizationId: inv.organization_id,
+          invoiceNumber: inv.invoice_number,
+          salesOrderId: inv.sales_order_id,
+          estimateId: inv.estimate_id,
+          customerId: inv.customer_id || inv.client_id,
+          customerName: inv.client_name,
+          customerEmail: inv.client_email,
+          projectId: inv.project_id,
+          issueDate: inv.issue_date,
+          dueDate: inv.due_date,
+          subtotal: Number(inv.subtotal),
+          taxTotal: Number(inv.tax_total),
+          discount: Number(inv.discount),
+          roundOffAmount: Number(inv.round_off_amount || 0),
+          isGstInclusive: Boolean(inv.is_gst_inclusive),
+          totalAmount: Number(inv.total_amount),
+          paidAmount: Number(inv.paid_amount || 0),
+          balanceDue: Number(inv.balance_due || inv.total_amount),
+          status: inv.status,
+          lineItems: itemsRes.rows,
+          notes: inv.notes,
+          journalEntryId: inv.journal_entry_id,
+        };
+      }
+
+      if (['VOID', 'VOIDED'].includes(invStatus)) {
+        throw new Error('INVOICE_VOIDED: Cannot post a voided invoice');
+      }
+
+      const finalTotal = Number(inv.total_amount || 0);
+
+      if (invStatus === 'SUBMITTED') {
+        await ApprovalWorkflowService.consumeApproval(orgId, 'INVOICE', invoiceId, client, inv);
+      } else if (invStatus === 'DRAFT') {
+        const requiresApproval = await ApprovalWorkflowService.requiresApproval(orgId, 'INVOICE', finalTotal, client);
+        if (requiresApproval) {
+          await ApprovalWorkflowService.consumeApproval(orgId, 'INVOICE', invoiceId, client, inv);
+        }
+      } else {
+        throw new Error(`INVOICE_INVALID_STATUS: Cannot post invoice with status '${inv.status}'`);
+      }
+
+      return await SalesEngine.executeCanonicalInvoicePosting(orgId, userId, inv, client);
+    };
+
+    if (transactionClient) return await execute(transactionClient);
+    return await db.transaction(execute);
+  }
+
+  private static async executeCanonicalInvoicePosting(
+    orgId: string,
+    userId: string,
+    inv: any,
+    client: QueryClient
+  ): Promise<InvoiceModel> {
+    const invoiceId = inv.id;
+    const issueDate = inv.issue_date instanceof Date ? inv.issue_date.toISOString().split('T')[0] : String(inv.issue_date).split('T')[0];
+    await SalesEngine.checkPeriodLock(orgId, issueDate, client);
+
+    const finalTotal = Number(inv.total_amount || 0);
+    const subtotal = Number(inv.subtotal || 0);
+    const taxTotal = Number(inv.tax_total || 0);
+    const invoiceDiscount = Number(inv.discount || 0);
+    const roundOff = Number(inv.round_off_amount || 0);
+    const isGstInclusive = Boolean(inv.is_gst_inclusive);
+    const customerId = inv.customer_id || inv.client_id;
+    const resolvedCustomerName = inv.client_name || 'Customer';
+
+    const arAccountId = await OrganizationProvisioningService.resolveSystemAccountId(client, orgId, 'AR_CONTROL', ['Asset']);
+    const salesAccountId = await OrganizationProvisioningService.resolveSystemAccountId(client, orgId, 'SALES_REVENUE', ['Income', 'Revenue']);
+    const taxAccountId = taxTotal > 0
+      ? await OrganizationProvisioningService.resolveAccountId(client, orgId, '2200', ['Liability'])
+      : '';
+
+    const preTaxRevenue = isGstInclusive
+      ? Math.round((subtotal - invoiceDiscount - taxTotal) * 100) / 100
+      : Math.round((subtotal - invoiceDiscount) * 100) / 100;
+
+    const journalLines: any[] = [
+      {
+        accountId: arAccountId,
+        accountCode: '1100',
+        accountName: 'Accounts Receivable',
+        debit: finalTotal,
+        credit: 0,
+        description: `Invoice ${inv.invoice_number} Receivable`,
+      },
+      {
+        accountId: salesAccountId,
+        accountCode: '4000',
+        accountName: 'Sales Revenue',
+        debit: 0,
+        credit: preTaxRevenue,
+        description: `Invoice ${inv.invoice_number} Revenue`,
+      },
+    ];
+
+    if (taxTotal > 0) {
+      journalLines.push({
+        accountId: taxAccountId,
+        accountCode: '2200',
+        accountName: 'GST Output Liability',
+        debit: 0,
+        credit: taxTotal,
+        description: `Invoice ${inv.invoice_number} Tax`,
+      });
+    }
+
+    if (roundOff !== 0) {
+      if (roundOff > 0) {
+        journalLines.push({
+          accountId: await OrganizationProvisioningService.resolveAccountId(client, orgId, '4900', ['Income', 'Revenue']),
+          accountCode: '4900',
+          accountName: 'Round-Off Income',
+          debit: 0,
+          credit: roundOff,
+          description: `Invoice ${inv.invoice_number} Rounding`,
+        });
+      } else {
+        journalLines.push({
+          accountId: await OrganizationProvisioningService.resolveAccountId(client, orgId, '5900', ['Expense']),
+          accountCode: '5900',
+          accountName: 'Round-Off Expense',
+          debit: Math.abs(roundOff),
+          credit: 0,
+          description: `Invoice ${inv.invoice_number} Rounding`,
+        });
+      }
+    }
+
+    // Historical invoice journals are handled by the reporting fallback. All
+    // new invoice postings retain the project dimension on every ledger leg.
+    if (inv.project_id) journalLines.forEach((line) => { line.projectId = inv.project_id; });
+
+    const journalEntryId = await SalesEngine.persistJournalEntry(
+      orgId,
+      `JE-${inv.invoice_number}`,
+      issueDate,
+      inv.invoice_number,
+      `Posted Invoice ${inv.invoice_number} for ${resolvedCustomerName}`,
+      journalLines,
+      client
+    );
+
+    await client.query(
+      `UPDATE invoices SET status = 'POSTED', journal_entry_id = $1 WHERE organization_id = $2 AND id = $3`,
+      [journalEntryId, orgId, invoiceId]
+    );
+
+    // Billable expenses reserve their source row with invoice_id while an
+    // approval is pending.  Consume that reservation only when the invoice
+    // has its authoritative posted journal entry.
+    await client.query(
+      `UPDATE expenses
+          SET is_billed = TRUE
+        WHERE organization_id = $1
+          AND invoice_id = $2
+          AND is_billable = TRUE
+          AND is_billed = FALSE`,
+      [orgId, invoiceId]
+    );
+
+    if (inv.sales_order_id) {
+      const soRes = await client.query(
+        `SELECT * FROM sales_orders WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [orgId, inv.sales_order_id]
+      );
+      if (soRes.rows.length === 1) {
+        const so = soRes.rows[0];
+        const newInvoiced = Number(so.invoiced_amount || 0) + finalTotal;
+        const soTotal = Number(so.total_amount || 0);
+        const newSoStatus = newInvoiced >= (soTotal - 0.009) ? 'INVOICED' : 'PARTIALLY_INVOICED';
+        await client.query(
+          `UPDATE sales_orders SET invoiced_amount = $1, status = $2 WHERE organization_id = $3 AND id = $4`,
+          [newInvoiced, newSoStatus, orgId, inv.sales_order_id]
+        );
+      }
+    }
+
+    if (customerId) {
+      await client.query(
+        `UPDATE customers SET receivables_balance = receivables_balance + $1 WHERE organization_id = $2 AND id = $3`,
+        [finalTotal, orgId, customerId]
+      );
+    }
+
+    await client.query(
+      `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state)
+       VALUES ($1, $2, $3, 'INVOICE_POSTED', 'Invoice', $4, $5)`,
+      [newId('aud'), orgId, userId, invoiceId, JSON.stringify({ invoiceNumber: inv.invoice_number, totalAmount: finalTotal, journalEntryId })]
+    );
+
+    const itemsRes = await client.query(
+      `SELECT * FROM invoice_items WHERE invoice_id = $1`,
+      [invoiceId]
+    );
+
+    return {
+      id: inv.id,
+      organizationId: inv.organization_id,
+      invoiceNumber: inv.invoice_number,
+      salesOrderId: inv.sales_order_id,
+      estimateId: inv.estimate_id,
+      customerId: inv.customer_id || inv.client_id,
+      customerName: inv.client_name,
+      customerEmail: inv.client_email,
+      projectId: inv.project_id,
+      issueDate: inv.issue_date,
+      dueDate: inv.due_date,
+      subtotal: Number(inv.subtotal),
+      taxTotal: Number(inv.tax_total),
+      discount: Number(inv.discount),
+      roundOffAmount: Number(inv.round_off_amount || 0),
+      isGstInclusive: Boolean(inv.is_gst_inclusive),
+      totalAmount: Number(inv.total_amount),
+      paidAmount: Number(inv.paid_amount || 0),
+      balanceDue: Number(inv.balance_due || inv.total_amount),
+      status: 'POSTED' as any,
+      lineItems: itemsRes.rows,
+      notes: inv.notes,
+      journalEntryId,
+    };
   }
 
   // -------------------------------------------------------------

@@ -540,4 +540,119 @@ export class AccountingIntegrityService {
       };
     }
   }
+
+  /**
+   * Diagnostic audit for Stage 0 recoverable-cost billing lifecycle certification.
+   * Detects posted invoices without journals, expenses marked billed without invoice_id,
+   * or expenses linked to missing or voided invoices without altering historical data.
+   */
+  public static async runRecoverableCostPreflightAudit(organizationId?: string): Promise<{
+    isClean: boolean;
+    checkedAt: string;
+    organizationId?: string;
+    unpostedInvoiceCount: number;
+    unpostedInvoices: Array<{ id: string; invoiceNumber: string; organizationId: string; totalAmount: number; status: string }>;
+    orphanedBilledExpenseCount: number;
+    orphanedBilledExpenses: Array<{ id: string; expenseNumber: string; organizationId: string; amount: number }>;
+    expensesLinkedToVoidInvoicesCount: number;
+    expensesLinkedToVoidInvoices: Array<{ id: string; expenseNumber: string; organizationId: string; invoiceId: string; invoiceStatus: string }>;
+    expensesLinkedToMissingInvoicesCount: number;
+    expensesLinkedToMissingInvoices: Array<{ id: string; expenseNumber: string; organizationId: string; invoiceId: string }>;
+  }> {
+    const now = new Date().toISOString();
+    const orgFilter = organizationId ? `AND i.organization_id = $1` : '';
+    const orgParam = organizationId ? [organizationId] : [];
+
+    // 1. Invoices with status = 'POSTED' lacking a valid certified journal entry
+    const unpostedQuery = `
+      SELECT i.id, i.invoice_number, i.organization_id, i.total_amount, i.status
+        FROM invoices i
+        LEFT JOIN journal_entries je
+          ON je.id = i.journal_entry_id AND je.organization_id = i.organization_id AND UPPER(je.status) = 'POSTED'
+       WHERE UPPER(i.status) = 'POSTED'
+         AND (i.journal_entry_id IS NULL OR je.id IS NULL)
+         ${orgFilter}
+       ORDER BY i.created_at DESC
+    `;
+    const unpostedRes = await db.query(unpostedQuery, orgParam);
+
+    // 2. Expenses marked billed = true without an invoice_id
+    const expOrgFilter = organizationId ? `AND e.organization_id = $1` : '';
+    const orphanedBilledQuery = `
+      SELECT e.id, e.expense_number, e.organization_id, e.amount
+        FROM expenses e
+       WHERE e.is_billed = TRUE
+         AND e.invoice_id IS NULL
+         ${expOrgFilter}
+       ORDER BY e.created_at DESC
+    `;
+    const orphanedRes = await db.query(orphanedBilledQuery, orgParam);
+
+    // 3. Expenses linked to a VOID or VOIDED invoice where is_billed is true
+    const voidLinkedQuery = `
+      SELECT e.id, e.expense_number, e.organization_id, e.invoice_id, i.status AS invoice_status
+        FROM expenses e
+        JOIN invoices i ON i.id = e.invoice_id AND i.organization_id = e.organization_id
+       WHERE e.is_billed = TRUE
+         AND UPPER(i.status) IN ('VOID', 'VOIDED')
+         ${expOrgFilter}
+       ORDER BY e.created_at DESC
+    `;
+    const voidLinkedRes = await db.query(voidLinkedQuery, orgParam);
+
+    // 4. Expenses with an invoice_id that does not exist in invoices table
+    const missingLinkedQuery = `
+      SELECT e.id, e.expense_number, e.organization_id, e.invoice_id
+        FROM expenses e
+        LEFT JOIN invoices i
+          ON i.id = e.invoice_id AND i.organization_id = e.organization_id
+       WHERE e.invoice_id IS NOT NULL
+         AND i.id IS NULL
+         ${expOrgFilter}
+       ORDER BY e.created_at DESC
+    `;
+    const missingLinkedRes = await db.query(missingLinkedQuery, orgParam);
+
+    const isClean =
+      unpostedRes.rows.length === 0 &&
+      orphanedRes.rows.length === 0 &&
+      voidLinkedRes.rows.length === 0 &&
+      missingLinkedRes.rows.length === 0;
+
+    return {
+      isClean,
+      checkedAt: now,
+      organizationId,
+      unpostedInvoiceCount: unpostedRes.rows.length,
+      unpostedInvoices: unpostedRes.rows.map((r: any) => ({
+        id: r.id,
+        invoiceNumber: r.invoice_number,
+        organizationId: r.organization_id,
+        totalAmount: Number(r.total_amount || 0),
+        status: r.status,
+      })),
+      orphanedBilledExpenseCount: orphanedRes.rows.length,
+      orphanedBilledExpenses: orphanedRes.rows.map((r: any) => ({
+        id: r.id,
+        expenseNumber: r.expense_number,
+        organizationId: r.organization_id,
+        amount: Number(r.amount || 0),
+      })),
+      expensesLinkedToVoidInvoicesCount: voidLinkedRes.rows.length,
+      expensesLinkedToVoidInvoices: voidLinkedRes.rows.map((r: any) => ({
+        id: r.id,
+        expenseNumber: r.expense_number,
+        organizationId: r.organization_id,
+        invoiceId: r.invoice_id,
+        invoiceStatus: r.invoice_status,
+      })),
+      expensesLinkedToMissingInvoicesCount: missingLinkedRes.rows.length,
+      expensesLinkedToMissingInvoices: missingLinkedRes.rows.map((r: any) => ({
+        id: r.id,
+        expenseNumber: r.expense_number,
+        organizationId: r.organization_id,
+        invoiceId: r.invoice_id,
+      })),
+    };
+  }
 }

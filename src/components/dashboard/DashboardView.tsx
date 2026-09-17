@@ -665,16 +665,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                   <span className="text-[11px] font-semibold text-slate-700 dark:text-slate-300">Quote</span>
                 </button>
 
-                {/* 4. Customise */}
+                {/* 4. Invoices */}
                 <button
                   type="button"
-                  onClick={() => onNavigate('settings')}
+                  onClick={() => onNavigate('invoices')}
                   className="flex flex-col items-center gap-1.5 cursor-pointer group"
                 >
-                  <div className="w-full aspect-square max-w-[64px] rounded-2xl border-2 border-dashed border-slate-300 bg-white/50 shadow-xs flex items-center justify-center text-slate-700 hover:border-blue-500 hover:text-blue-600 dark:border-slate-700 dark:bg-slate-900/40 dark:text-slate-200 transition-all active:scale-95">
-                    <SlidersHorizontal className="w-5 h-5 sm:w-6 sm:h-6 text-slate-700 dark:text-slate-200" />
+                  <div className="w-full aspect-square max-w-[64px] rounded-2xl bg-white border border-slate-200/90 shadow-xs flex items-center justify-center text-slate-800 hover:border-blue-400 hover:bg-blue-50/40 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 transition-all active:scale-95">
+                    <FilePlus2 className="w-5 h-5 sm:w-6 sm:h-6 text-slate-700 dark:text-slate-200" />
                   </div>
-                  <span className="text-[11px] font-semibold text-slate-700 dark:text-slate-300">Customise</span>
+                  <span className="text-[11px] font-semibold text-slate-700 dark:text-slate-300">Invoices</span>
                 </button>
               </div>
             </div>

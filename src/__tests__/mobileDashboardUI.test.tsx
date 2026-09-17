@@ -145,7 +145,7 @@ describe('Mobile Dashboard UI (Light Mode) Test Suite', () => {
     expect(mockOnNavigate).toHaveBeenCalledWith('bills');
   });
 
-  it('2. Quick Create section provides Customer, Expense, Quote, and Customise actions', async () => {
+  it('2. Quick Create section provides Customer, Expense, Quote, and Invoices actions', async () => {
     vi.mocked(apiClient.get).mockResolvedValue({
       data: { dashboard: mockDashboardData as any },
       error: null,
@@ -159,11 +159,11 @@ describe('Mobile Dashboard UI (Light Mode) Test Suite', () => {
     expect(within(mobile).getByText('Customer')).toBeTruthy();
     expect(within(mobile).getByText('Expense')).toBeTruthy();
     expect(within(mobile).getByText('Quote')).toBeTruthy();
-    expect(within(mobile).getByText('Customise')).toBeTruthy();
+    expect(within(mobile).getByText('Invoices')).toBeTruthy();
 
-    // Customise navigates to settings
-    fireEvent.click(within(mobile).getByText('Customise'));
-    expect(mockOnNavigate).toHaveBeenCalledWith('settings');
+    // Invoices navigates to invoices
+    fireEvent.click(within(mobile).getByText('Invoices'));
+    expect(mockOnNavigate).toHaveBeenCalledWith('invoices');
   });
 
   it('3. Cash Flow widget renders Accrual/Cash pills and timeline ticks', async () => {

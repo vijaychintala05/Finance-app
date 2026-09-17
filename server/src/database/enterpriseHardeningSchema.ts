@@ -118,6 +118,7 @@ export async function applyEnterpriseHardeningSchema(client: DbQueryClient): Pro
     `CREATE INDEX IF NOT EXISTS idx_payments_received_org_date ON payments_received (organization_id, payment_date DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_payments_made_org_date ON payments_made (organization_id, payment_date DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_accounts_org_status_type ON accounts (organization_id, status, type)`,
+    `CREATE INDEX IF NOT EXISTS idx_customers_org_display_name ON customers (organization_id, display_name)`,
 
     // 2. In-Engine Accounting Integrity Diagnostic Views
     `CREATE OR REPLACE VIEW vw_ledger_trial_balance_summary AS

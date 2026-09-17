@@ -40,7 +40,13 @@ app.disable('x-powered-by');
 app.use(requestCorrelationMiddleware);
 app.set('trust proxy', process.env.TRUST_PROXY === 'true' ? 1 : false);
 app.use('/api', requestSecurityMiddleware);
-app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '4mb', strict: true }));
+app.use(express.json({
+  limit: process.env.JSON_BODY_LIMIT || '4mb',
+  strict: true,
+  verify: (req: any, _res, buf) => {
+    req.rawBody = buf.toString('utf8');
+  },
+}));
 
 app.get('/api/healthz', (_req, res) => {
   res.json({ status: 'ok' });

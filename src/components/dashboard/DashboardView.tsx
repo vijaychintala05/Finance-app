@@ -125,8 +125,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
   const [isInvoiceEditorOpen, setIsInvoiceEditorOpen] = useState(false);
   const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
   const [isClientModalOpen, setIsClientModalOpen] = useState(false);
-  const [mobileCashFlowPeriod, setMobileCashFlowPeriod] = useState<'fiscal' | 'year' | 'quarter' | 'month'>('fiscal');
-  const [mobileCashFlowBasis, setMobileCashFlowBasis] = useState<'accrual' | 'cash'>('accrual');
+  const [customStartDate, setCustomStartDate] = useState<string | null>(null);
+  const [mobileCashFlowPeriod, setMobileCashFlowPeriod] = useState<'fiscal' | 'year' | 'quarter' | 'month'>('month');
+  const [mobileCashFlowBasis, setMobileCashFlowBasis] = useState<'accrual' | 'cash'>('cash');
   const [mobileExpensePeriod, setMobileExpensePeriod] = useState<'fiscal' | 'year' | 'quarter' | 'month'>('fiscal');
   const [mobileHoverPoint, setMobileHoverPoint] = useState<{ month: string; amount: number } | null>(null);
   const [isTimerRunning, setIsTimerRunning] = useState(false);
@@ -141,6 +142,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       asOfDate,
       periodPreset: selectedPreset,
     });
+    if (selectedPreset === 'custom' && customStartDate) params.set('startDate', customStartDate);
     apiClient
       .get<{ dashboard: DashboardData }>(`/dashboard?${params.toString()}`)
       .then(async (response) => {
@@ -164,12 +166,30 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     return () => {
       cancelled = true;
     };
-  }, [view, asOfDate, selectedPreset, reloadToken]);
+  }, [view, asOfDate, selectedPreset, customStartDate, reloadToken]);
 
   const money = (value: number) => formatCurrency(value, settings.currencySymbol);
 
   const handlePresetSelect = (preset: DatePreset) => {
+    setCustomStartDate(null);
     setSelectedPreset(preset);
+  };
+
+  const handleMobileCashFlowPeriodChange = (period: 'fiscal' | 'year' | 'quarter' | 'month') => {
+    setMobileCashFlowPeriod(period);
+    setMobileHoverPoint(null);
+    if (period === 'fiscal') {
+      const asOf = new Date(`${asOfDate}T00:00:00Z`);
+      const fiscalStartMonth = Math.max(1, Math.min(12, Number(settings.fiscalYearStartMonth) || 1));
+      const fiscalYear = asOf.getUTCMonth() + 1 < fiscalStartMonth
+        ? asOf.getUTCFullYear() - 1
+        : asOf.getUTCFullYear();
+      setCustomStartDate(`${fiscalYear}-${String(fiscalStartMonth).padStart(2, '0')}-01`);
+      setSelectedPreset('custom');
+      return;
+    }
+    setCustomStartDate(null);
+    setSelectedPreset(period === 'year' ? 'ytd' : period === 'quarter' ? 'qtd' : 'mtd');
   };
 
   const openView = (nextView: DashboardViewKey) => {
@@ -205,10 +225,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     if (cashAccounts.length > 0) {
       return cashAccounts.reduce((sum, a) => sum + (Number(a.currentBalance) || 0), 0);
     }
-    return (dashboard?.commandCenter?.financialPosition?.cashAtBank || 0) > 0
-      ? Math.round((dashboard?.commandCenter?.financialPosition?.cashAtBank || 0) * 0.25)
-      : 0;
-  }, [accounts, dashboard]);
+    const backendCash = liquidAccounts.filter(a => (a.name || '').toLowerCase().includes('cash'));
+    if (backendCash.length > 0) {
+      return backendCash.reduce((sum, a) => sum + (Number(a.balance) || 0), 0);
+    }
+    return 0;
+  }, [accounts, liquidAccounts]);
 
   useEffect(() => {
     let interval: any = null;
@@ -258,6 +280,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         net: inc - exp,
       };
     });
+  }, [dashboard]);
+
+  const cashTimelinePoints = useMemo(() => {
+    const movements = dashboard?.cashFlow?.movements || [];
+    return movements.map((movement) => ({
+      date: formatDate(movement.date),
+      rawDate: movement.date,
+      income: Number(movement.cashIn || 0),
+      expenses: Number(movement.cashOut || 0),
+      net: Number(movement.net || 0),
+    }));
   }, [dashboard]);
 
   const chartTotals = useMemo(() => {
@@ -692,7 +725,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                 <div className="relative">
                   <select
                     value={mobileCashFlowPeriod}
-                    onChange={(e) => setMobileCashFlowPeriod(e.target.value as any)}
+                    onChange={(e) => handleMobileCashFlowPeriodChange(e.target.value as any)}
                     className="appearance-none rounded-lg border border-slate-200 bg-slate-50 py-1 pl-2.5 pr-6 text-xs font-semibold text-slate-700 outline-none hover:border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 cursor-pointer"
                   >
                     <option value="fiscal">This Fiscal Year</option>
@@ -757,13 +790,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
                   {/* Dynamic Cash Flow Trend Line / Area */}
                   {(() => {
+                    const activePoints = mobileCashFlowBasis === 'cash' ? cashTimelinePoints : timelinePoints;
                     const months = ['Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar'];
                     const stepX = (340 - 32) / (months.length - 1);
                     
                     const points = months.map((m, i) => {
                       const x = 32 + i * stepX;
-                      const matchingPoint = timelinePoints[i % Math.max(1, timelinePoints.length)];
-                      const val = matchingPoint ? matchingPoint.income - matchingPoint.expenses : 35000;
+                      const matchingPoint = activePoints[i % Math.max(1, activePoints.length)];
+                      const val = matchingPoint ? matchingPoint.net : 0;
                       const y = Math.max(16, Math.min(112, 114 - (val > 0 ? (val / 75000) * 98 : 12)));
                       return { x, y, month: m, amount: val };
                     });
@@ -812,26 +846,49 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
               </div>
 
               {/* Bottom Mini Metrics */}
-              <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 grid grid-cols-3 gap-2 text-center">
-                <div className="p-2 rounded-xl bg-slate-50/80 dark:bg-slate-800/50">
-                  <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Total Income</span>
-                  <span className="font-financial font-bold text-xs text-blue-600 dark:text-blue-400 mt-0.5 block truncate">
-                    {money(dashboard.overview?.salesThisMonth ?? 0)}
-                  </span>
+              {mobileCashFlowBasis === 'cash' ? (
+                <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 grid grid-cols-3 gap-2 text-center">
+                  <div className="p-2 rounded-xl bg-slate-50/80 dark:bg-slate-800/50">
+                    <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Cash In</span>
+                    <span className="font-financial font-bold text-xs text-emerald-600 dark:text-emerald-400 mt-0.5 block truncate">
+                      {money(cashTimelinePoints.reduce((acc, p) => acc + p.income, 0))}
+                    </span>
+                  </div>
+                  <div className="p-2 rounded-xl bg-slate-50/80 dark:bg-slate-800/50">
+                    <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Cash Out</span>
+                    <span className="font-financial font-bold text-xs text-rose-600 dark:text-rose-400 mt-0.5 block truncate">
+                      {money(cashTimelinePoints.reduce((acc, p) => acc + p.expenses, 0))}
+                    </span>
+                  </div>
+                  <div className="p-2 rounded-xl bg-slate-50/80 dark:bg-slate-800/50">
+                    <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Net Cash</span>
+                    <span className="font-financial font-bold text-xs text-blue-600 dark:text-blue-400 mt-0.5 block truncate">
+                      {money(cashTimelinePoints.reduce((acc, p) => acc + p.net, 0))}
+                    </span>
+                  </div>
                 </div>
-                <div className="p-2 rounded-xl bg-slate-50/80 dark:bg-slate-800/50">
-                  <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Total Expenses</span>
-                  <span className="font-financial font-bold text-xs text-amber-600 dark:text-amber-400 mt-0.5 block truncate">
-                    {money(dashboard.overview?.expensesThisMonth ?? 0)}
-                  </span>
+              ) : (
+                <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 grid grid-cols-3 gap-2 text-center">
+                  <div className="p-2 rounded-xl bg-slate-50/80 dark:bg-slate-800/50">
+                    <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Total Income</span>
+                    <span className="font-financial font-bold text-xs text-blue-600 dark:text-blue-400 mt-0.5 block truncate">
+                      {money(dashboard?.overview?.salesThisMonth ?? 0)}
+                    </span>
+                  </div>
+                  <div className="p-2 rounded-xl bg-slate-50/80 dark:bg-slate-800/50">
+                    <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Total Expenses</span>
+                    <span className="font-financial font-bold text-xs text-amber-600 dark:text-amber-400 mt-0.5 block truncate">
+                      {money(dashboard?.overview?.expensesThisMonth ?? 0)}
+                    </span>
+                  </div>
+                  <div className="p-2 rounded-xl bg-slate-50/80 dark:bg-slate-800/50">
+                    <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Net Profit</span>
+                    <span className="font-financial font-bold text-xs text-emerald-600 dark:text-emerald-400 mt-0.5 block truncate">
+                      {money((dashboard?.overview?.salesThisMonth ?? 0) - (dashboard?.overview?.expensesThisMonth ?? 0))}
+                    </span>
+                  </div>
                 </div>
-                <div className="p-2 rounded-xl bg-slate-50/80 dark:bg-slate-800/50">
-                  <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Net Profit</span>
-                  <span className="font-financial font-bold text-xs text-emerald-600 dark:text-emerald-400 mt-0.5 block truncate">
-                    {money((dashboard.overview?.salesThisMonth ?? 0) - (dashboard.overview?.expensesThisMonth ?? 0))}
-                  </span>
-                </div>
-              </div>
+              )}
             </div>
 
             {/* 3.5. PROJECT TIMER & UNBILLED HOURS WIDGET (MATCHING IMAGE 2 IN LIGHT MODE) */}
@@ -925,7 +982,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                 <div className="relative">
                   <select
                     value={mobileExpensePeriod}
-                    onChange={(e) => setMobileExpensePeriod(e.target.value as any)}
+                    onChange={(e) => {
+                      const val = e.target.value as 'fiscal' | 'year' | 'quarter' | 'month';
+                      setMobileExpensePeriod(val);
+                      setSelectedPreset(val === 'year' || val === 'fiscal' ? 'ytd' : val === 'quarter' ? 'qtd' : 'mtd');
+                    }}
                     className="appearance-none rounded-lg border border-slate-200 bg-slate-50 py-1 pl-2.5 pr-6 text-xs font-semibold text-slate-700 outline-none hover:border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 cursor-pointer"
                   >
                     <option value="fiscal">This Fiscal Year</option>
@@ -1350,11 +1411,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
             <div className="lg:col-span-8 min-w-0">
               <CashFlowWidget
                 timelinePoints={timelinePoints}
+                cashMovements={cashTimelinePoints}
                 performanceTotals={dashboard.commandCenter?.performance}
                 periodLabel={dashboard.commandCenter?.period?.label}
                 currencySymbol={settings.currencySymbol}
                 onNavigate={onNavigate}
                 selectedPreset={selectedPreset}
+                onPresetSelect={handlePresetSelect}
               />
             </div>
 

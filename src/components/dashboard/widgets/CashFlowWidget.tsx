@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   BarChart2,
   Coins,
@@ -19,6 +19,7 @@ export interface TimelineDataPoint {
 
 interface CashFlowWidgetProps {
   timelinePoints: TimelineDataPoint[];
+  cashMovements?: TimelineDataPoint[];
   performanceTotals?: {
     revenue: number;
     expenses: number;
@@ -29,6 +30,7 @@ interface CashFlowWidgetProps {
   currencySymbol?: string;
   onNavigate?: (tab: any) => void;
   selectedPreset?: string;
+  onPresetSelect?: (preset: 'today' | 'mtd' | 'qtd' | 'ytd' | 'custom') => void;
 }
 
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -63,22 +65,39 @@ function parseMonthIndex(raw: string | undefined): number | null {
 
 export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
   timelinePoints = [],
+  cashMovements = [],
   performanceTotals,
   periodLabel = 'Year to date',
   currencySymbol = '$',
   onNavigate,
   selectedPreset = 'ytd',
+  onPresetSelect,
 }) => {
   const [basis, setBasis] = useState<'accrual' | 'cash'>('accrual');
-  const [internalPeriod, setInternalPeriod] = useState<string>('ytd');
+  const [internalPeriod, setInternalPeriod] = useState<string>(selectedPreset || 'ytd');
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (selectedPreset && ['ytd', 'qtd', 'mtd'].includes(selectedPreset)) {
+      setInternalPeriod(selectedPreset);
+    }
+  }, [selectedPreset]);
 
   const money = (val: number) => formatCurrency(val, currencySymbol);
 
-  // Transform timeline points into 12-month calendar structure
+  // Choose authoritative source data points based on basis:
+  // - Accrual basis uses posted P&L journal line movements (timelinePoints)
+  // - Cash basis uses posted movements on liquid bank and cash GL accounts (cashMovements)
+  const activePoints = useMemo(() => {
+    if (basis === 'cash') {
+      return (cashMovements && cashMovements.length > 0) ? cashMovements : [];
+    }
+    return timelinePoints;
+  }, [basis, cashMovements, timelinePoints]);
+
+  // Transform authoritative timeline points into 12-month calendar structure
   const allMonthsData = useMemo(() => {
     const currentYear = new Date().getFullYear();
-    const currentMonth = new Date().getMonth();
 
     const months = MONTH_NAMES.map((name, idx) => ({
       index: idx,
@@ -89,53 +108,19 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
       net: 0,
     }));
 
-    let matchedAny = false;
-
-    if (timelinePoints.length > 0) {
-      timelinePoints.forEach((pt) => {
+    if (activePoints.length > 0) {
+      activePoints.forEach((pt) => {
         const mIdx = parseMonthIndex(pt.rawDate) ?? parseMonthIndex(pt.date);
         if (mIdx !== null && mIdx >= 0 && mIdx < 12) {
           months[mIdx].income += pt.income;
           months[mIdx].expenses += pt.expenses;
           months[mIdx].net = months[mIdx].income - months[mIdx].expenses;
-          matchedAny = true;
         }
       });
-
-      // If dates couldn't be parsed directly, place in current month
-      if (!matchedAny) {
-        timelinePoints.forEach((pt, idx) => {
-          const target = idx === 0 ? currentMonth : idx % 12;
-          months[target].income += pt.income;
-          months[target].expenses += pt.expenses;
-          months[target].net = months[target].income - months[target].expenses;
-        });
-        matchedAny = true;
-      }
-    }
-
-    // If still 0 across all months but performance totals exist, allocate to current month
-    const totalPlotIncome = months.reduce((s, m) => s + m.income, 0);
-    const totalPlotExpense = months.reduce((s, m) => s + m.expenses, 0);
-    if (totalPlotIncome === 0 && totalPlotExpense === 0 && performanceTotals) {
-      if (performanceTotals.revenue > 0 || performanceTotals.expenses > 0) {
-        months[currentMonth].income = performanceTotals.revenue;
-        months[currentMonth].expenses = performanceTotals.expenses;
-        months[currentMonth].net = performanceTotals.net;
-      }
-    }
-
-    if (basis === 'cash') {
-      return months.map((m) => ({
-        ...m,
-        income: Math.round(m.income * 0.95),
-        expenses: Math.round(m.expenses * 0.92),
-        net: Math.round(m.income * 0.95) - Math.round(m.expenses * 0.92),
-      }));
     }
 
     return months;
-  }, [timelinePoints, performanceTotals, basis]);
+  }, [activePoints]);
 
   // Active filtered months based on internal period selector (instant client-side filtering)
   const activeMonths = useMemo(() => {
@@ -162,7 +147,7 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
       return { totalIncome, totalExpenses, totalNet };
     }
 
-    if (performanceTotals && (performanceTotals.revenue > 0 || performanceTotals.expenses > 0)) {
+    if (basis === 'accrual' && performanceTotals && (performanceTotals.revenue > 0 || performanceTotals.expenses > 0)) {
       return {
         totalIncome: performanceTotals.revenue,
         totalExpenses: performanceTotals.expenses,
@@ -170,14 +155,12 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
       };
     }
 
-    const fallbackInc = timelinePoints.reduce((acc, p) => acc + p.income, 0);
-    const fallbackExp = timelinePoints.reduce((acc, p) => acc + p.expenses, 0);
     return {
-      totalIncome: fallbackInc,
-      totalExpenses: fallbackExp,
-      totalNet: fallbackInc - fallbackExp,
+      totalIncome,
+      totalExpenses,
+      totalNet,
     };
-  }, [activeMonths, performanceTotals, timelinePoints]);
+  }, [activeMonths, performanceTotals, basis]);
 
   // Dynamic period badge text
   const currentPeriodBadge = useMemo(() => {
@@ -298,8 +281,12 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
                 <span className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white font-financial">
                   {money(totals.totalNet)}
                 </span>
-                <span className="inline-flex items-center gap-0.5 text-xs sm:text-sm font-bold text-emerald-600 dark:text-emerald-400">
-                  ↑ 12% vs last year
+                <span className={`inline-flex items-center gap-0.5 text-xs sm:text-sm font-bold ${
+                  totals.totalNet >= 0
+                    ? 'text-emerald-600 dark:text-emerald-400'
+                    : 'text-rose-600 dark:text-rose-400'
+                }`}>
+                  {totals.totalNet >= 0 ? '● Net Surplus' : '● Net Deficit'}
                 </span>
               </div>
             </div>
@@ -334,11 +321,17 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
                 </button>
               </div>
 
-              {/* Period Dropdown with zero-reload client-side switching */}
+              {/* Period Dropdown with zero-reload client-side switching and parent coordination */}
               <div className="relative">
                 <select
                   value={internalPeriod}
-                  onChange={(e) => handlePeriodChange(e.target.value)}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setInternalPeriod(val);
+                    if (onPresetSelect && (val === 'ytd' || val === 'qtd' || val === 'mtd')) {
+                      onPresetSelect(val);
+                    }
+                  }}
                   className="appearance-none bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-1.5 pr-8 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer shadow-2xs hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
                 >
                   <option value="ytd">This Year</option>
@@ -565,9 +558,9 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
         <div className="mt-5 rounded-xl border border-slate-100 bg-slate-50/70 px-4 py-2 text-center text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-400 flex items-center justify-center gap-1.5">
           <span className="text-slate-400">ⓘ</span>
           <span>
-            {timelinePoints.length > 0
-              ? `Displaying ${timelinePoints.length} verified posted journal timeline point${timelinePoints.length === 1 ? '' : 's'}.`
-              : 'No posted journal transactions recorded for the selected timeline.'}
+            {activePoints.length > 0
+              ? `Displaying ${activePoints.length} verified posted ${basis === 'cash' ? 'cash-flow' : 'journal'} timeline point${activePoints.length === 1 ? '' : 's'}.`
+              : `No posted journal transactions recorded for the selected timeline.`}
           </span>
         </div>
 
@@ -581,15 +574,15 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
               </div>
               <div>
                 <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
-                  Total Income ({currentPeriodBadge})
+                  {basis === 'cash' ? 'Cash Inflows' : 'Total Income'} ({currentPeriodBadge})
                 </span>
                 <p className="text-base sm:text-lg font-extrabold text-slate-900 dark:text-white font-financial">
                   {money(totals.totalIncome)}
                 </p>
               </div>
             </div>
-            <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400 shrink-0">
-              ↑ 8%
+            <span className="text-[11px] font-bold text-blue-600 dark:text-blue-400 shrink-0">
+              {basis === 'cash' ? 'Received' : 'Revenue'}
             </span>
           </div>
 
@@ -601,15 +594,15 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
               </div>
               <div>
                 <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
-                  Total Expenses ({currentPeriodBadge})
+                  {basis === 'cash' ? 'Cash Outflows' : 'Total Expenses'} ({currentPeriodBadge})
                 </span>
                 <p className="text-base sm:text-lg font-extrabold text-slate-900 dark:text-white font-financial">
                   {money(totals.totalExpenses)}
                 </p>
               </div>
             </div>
-            <span className="text-xs font-bold text-rose-500 dark:text-rose-400 shrink-0">
-              ↑ 5%
+            <span className="text-[11px] font-bold text-amber-600 dark:text-amber-400 shrink-0">
+              {basis === 'cash' ? 'Disbursed' : 'Expense'}
             </span>
           </div>
 
@@ -621,15 +614,15 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
               </div>
               <div>
                 <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
-                  Net Profit ({currentPeriodBadge})
+                  {basis === 'cash' ? 'Net Cash Movement' : 'Net Profit'} ({currentPeriodBadge})
                 </span>
                 <p className="text-base sm:text-lg font-extrabold text-slate-900 dark:text-white font-financial">
                   {money(totals.totalNet)}
                 </p>
               </div>
             </div>
-            <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400 shrink-0">
-              ↑ 12%
+            <span className={`text-[11px] font-bold shrink-0 ${totals.totalNet >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+              {totals.totalNet >= 0 ? 'Surplus' : 'Deficit'}
             </span>
           </div>
         </div>

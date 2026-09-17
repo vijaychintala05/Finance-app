@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent, within } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, within, waitFor } from '@testing-library/react';
 import { DashboardView } from '../components/dashboard/DashboardView';
 import { MobileBottomNav } from '../components/layout/MobileBottomNav';
 import { Header } from '../components/layout/Header';
@@ -102,6 +102,14 @@ describe('Mobile Dashboard UI (Light Mode) Test Suite', () => {
       billsDue: [],
       recentTransactions: [],
     },
+    cashFlow: {
+      // These deliberately differ from accrual income/expense activity. The
+      // mobile Cash view must use these posted cash-account movements exactly.
+      movements: [
+        { date: '2026-09-01', cashIn: 1250, cashOut: 350, net: 900 },
+        { date: '2026-09-02', cashIn: 500, cashOut: 200, net: 300 },
+      ],
+    },
     commandCenter: {
       period: { start: '2026-04-01', end: '2026-09-16', label: 'FY 2026-27' },
       financialPosition: { cashAtBank: 550000, toCollect: 1347270, toPay: 20700 },
@@ -166,7 +174,7 @@ describe('Mobile Dashboard UI (Light Mode) Test Suite', () => {
     expect(mockOnNavigate).toHaveBeenCalledWith('invoices');
   });
 
-  it('3. Cash Flow widget renders Accrual/Cash pills and timeline ticks', async () => {
+  it('3. Cash Flow uses posted cash-account movements by default, without fabricated cash-basis adjustments', async () => {
     vi.mocked(apiClient.get).mockResolvedValue({
       data: { dashboard: mockDashboardData as any },
       error: null,
@@ -179,9 +187,40 @@ describe('Mobile Dashboard UI (Light Mode) Test Suite', () => {
     expect(within(mobile).getByText('Cash Flow')).toBeTruthy();
     expect(within(mobile).getByText('Accrual')).toBeTruthy();
     expect(within(mobile).getByText('Cash')).toBeTruthy();
-    expect(within(mobile).getByText('75K')).toBeTruthy();
-    expect(within(mobile).getByText('50K')).toBeTruthy();
-    expect(within(mobile).getByText('25K')).toBeTruthy();
+    expect(within(mobile).getByText('Cash In')).toBeTruthy();
+    expect(within(mobile).getByText('Cash Out')).toBeTruthy();
+    expect(within(mobile).getByText('Net Cash')).toBeTruthy();
+    expect(within(mobile).getByText('₹1,750.00')).toBeTruthy();
+    expect(within(mobile).getByText('₹550.00')).toBeTruthy();
+    expect(within(mobile).getByText('₹1,200.00')).toBeTruthy();
+
+    // Accrual remains an explicit P&L activity view; returning to cash must
+    // restore the exact GL-derived cash totals, not a percentage estimate.
+    fireEvent.click(within(mobile).getByText('Accrual'));
+    expect(within(mobile).getByText('Net Profit')).toBeTruthy();
+    fireEvent.click(within(mobile).getByText('Cash'));
+    expect(within(mobile).getByText('₹1,200.00')).toBeTruthy();
+  });
+
+  it('3a. Cash Flow period control requests the selected fiscal-year ledger range', async () => {
+    vi.mocked(apiClient.get).mockResolvedValue({
+      data: { dashboard: mockDashboardData as any },
+      error: null,
+      status: 200,
+    });
+
+    render(<DashboardView onNavigate={mockOnNavigate} />);
+    const mobile = await screen.findByTestId('mobile-dashboard-overview');
+
+    const [cashFlowPeriod] = within(mobile).getAllByRole('combobox');
+    fireEvent.change(cashFlowPeriod, { target: { value: 'quarter' } });
+    await waitFor(() => expect(vi.mocked(apiClient.get).mock.calls.at(-1)?.[0]).toContain('periodPreset=qtd'));
+
+    fireEvent.change(cashFlowPeriod, { target: { value: 'fiscal' } });
+    await waitFor(() => {
+      expect(vi.mocked(apiClient.get).mock.calls.at(-1)?.[0]).toContain('periodPreset=custom');
+      expect(vi.mocked(apiClient.get).mock.calls.at(-1)?.[0]).toContain('startDate=2026-04-01');
+    });
   });
 
   it('4. Project Timer & Unbilled items widget renders time tracker and unbilled summaries', async () => {

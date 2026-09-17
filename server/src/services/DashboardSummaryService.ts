@@ -33,6 +33,14 @@ export interface DashboardResponse {
     billsDue: Array<{ partyName: string; amount: number; overdue: boolean; dueDate: string | null }>;
     recentTransactions: DashboardSummaryData['recentTransactions'];
   };
+  cashFlow: {
+    /**
+     * Cash-basis movements from posted lines on liquid cash and bank accounts.
+     * Unlike performance.cashMovement, this is never derived from income or
+     * expense accounts, so it remains valid for receipts, payments and transfers.
+     */
+    movements: Array<{ date: string; cashIn: number; cashOut: number; net: number }>;
+  };
   cashOperations: {
     available: boolean; bankReconciliationAttentionCount: number | null; oldestUnmatchedDate: string | null;
     collectionsDue7Days: number; collectionsDue30Days: number; billsDue7Days: number; billsDue30Days: number;
@@ -142,7 +150,7 @@ export class DashboardSummaryService {
     if (canSeeControls) availableViews.push('close-controls');
     if (!availableViews.includes(view)) throw new Error('DASHBOARD_VIEW_FORBIDDEN: You are not authorized to view this dashboard');
 
-    const [documentsRes, bankRes, activityTrendRes, collectionsRes, billsRes, bankQueueRes, quotationRes, journalRes, recentRes, topExpensesRes] = await Promise.all([
+    const [documentsRes, bankRes, activityTrendRes, cashMovementRes, collectionsRes, billsRes, bankQueueRes, quotationRes, journalRes, recentRes, topExpensesRes] = await Promise.all([
       db.query(`WITH documents AS (
           SELECT 'invoice' AS kind, balance_due, due_date, issue_date AS document_date
             FROM invoices
@@ -186,6 +194,20 @@ export class DashboardSummaryService {
           AND UPPER(je.status) = 'POSTED'
         WHERE a.organization_id = $1 AND je.date >= $2 AND je.date <= $3
           AND UPPER(a.type) IN ('INCOME', 'REVENUE', 'OTHER INCOME', 'EXPENSE', 'COST OF GOODS SOLD', 'OTHER EXPENSE')
+        GROUP BY je.date
+        ORDER BY je.date ASC`, [organizationId, periodStart, asOfDate]),
+      db.query(`SELECT je.date AS activity_date,
+          COALESCE(SUM(CASE WHEN jl.debit > jl.credit THEN jl.debit - jl.credit ELSE 0 END), 0) AS cash_in,
+          COALESCE(SUM(CASE WHEN jl.credit > jl.debit THEN jl.credit - jl.debit ELSE 0 END), 0) AS cash_out,
+          COALESCE(SUM(jl.debit - jl.credit), 0) AS net
+        FROM accounts a
+        JOIN journal_lines jl ON jl.account_id = a.id AND jl.organization_id = a.organization_id
+        JOIN journal_entries je ON je.id = jl.journal_entry_id AND je.organization_id = a.organization_id
+          AND UPPER(je.status) = 'POSTED'
+        WHERE a.organization_id = $1 AND je.date >= $2 AND je.date <= $3
+          AND UPPER(a.type) = 'ASSET'
+          AND (UPPER(COALESCE(a.sub_type, '')) IN ('BANK', 'CASH', 'CASH & BANK', 'CASH AND CASH EQUIVALENTS')
+            OR UPPER(a.name) LIKE '%BANK%' OR UPPER(a.name) LIKE '%CASH%')
         GROUP BY je.date
         ORDER BY je.date ASC`, [organizationId, periodStart, asOfDate]),
       has('invoices.view') ? db.query(`SELECT COALESCE(client_name, 'Unassigned customer') AS party_name, balance_due, due_date
@@ -236,6 +258,22 @@ export class DashboardSummaryService {
         date: formattedDate,
         income: databaseMoney(row.income, `Dashboard activity income for ${row.activity_date}`),
         expenses: databaseMoney(row.expenses, `Dashboard activity expense for ${row.activity_date}`),
+      };
+    });
+    const cashMovements = cashMovementRes.rows.map((row: any) => {
+      const rawDate = row.activity_date;
+      const date = rawDate instanceof Date
+        ? isoDate(rawDate)
+        : (/^\d{4}-\d{2}-\d{2}/.test(String(rawDate))
+          ? String(rawDate).slice(0, 10)
+          : (!isNaN(new Date(String(rawDate)).getTime())
+            ? isoDate(new Date(String(rawDate)))
+            : String(rawDate).slice(0, 10)));
+      return {
+        date,
+        cashIn: databaseMoney(row.cash_in, `Dashboard cash inflow for ${rawDate}`),
+        cashOut: databaseMoney(row.cash_out, `Dashboard cash outflow for ${rawDate}`),
+        net: databaseMoney(row.net, `Dashboard net cash movement for ${rawDate}`),
       };
     });
     const salesThisMonth = activityTrend.reduce((total, point) => total + point.income, 0);
@@ -303,6 +341,7 @@ export class DashboardSummaryService {
     };
 
     return { view, asOfDate, generatedAt: new Date().toISOString(), availableViews, overview,
+      cashFlow: { movements: cashMovements },
       cashOperations: { available: availableViews.includes('cash-operations'), bankReconciliationAttentionCount: canSeeBanking ? overview.bankReconciliationAttentionCount : null, oldestUnmatchedDate: canSeeBanking && bankQueueRes.rows[0]?.oldest_date ? String(bankQueueRes.rows[0].oldest_date).slice(0, 10) : null, collectionsDue7Days: databaseMoney(documents.collections_7, 'Dashboard collections due in seven days'), collectionsDue30Days, billsDue7Days: databaseMoney(documents.bills_7, 'Dashboard bills due in seven days'), billsDue30Days, forecast: { available: false, reason: 'Cash forecasting is unavailable until its trusted finance capability is certified and enabled.' } }, closeControls, commandCenter };
   }
 

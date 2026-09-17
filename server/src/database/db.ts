@@ -210,6 +210,33 @@ class DatabaseService {
             values: params,
             ...(options?.timeoutMs && options.timeoutMs > 0 ? { timeout: options.timeoutMs } : {}),
           };
+          const orgId = this.currentOrgContext.getStore();
+          if (orgId && !this.isMemoryMode()) {
+            const client = await this.pool.connect();
+            let committed = false;
+            try {
+              await client.query('BEGIN');
+              try {
+                await client.query("SELECT set_config('app.current_org_id', $1, true)", [orgId]);
+              } catch {
+                // Non-blocking in case setting is not configured
+              }
+              const res = await client.query(queryConfig);
+              await client.query('COMMIT');
+              committed = true;
+              return { rows: res.rows, rowCount: res.rowCount || 0 };
+            } catch (txErr) {
+              try {
+                await client.query('ROLLBACK');
+              } catch {
+                // ignore
+              }
+              throw txErr;
+            } finally {
+              client.release(!committed);
+            }
+          }
+
           const res = await this.pool.query(queryConfig);
           return { rows: res.rows, rowCount: res.rowCount || 0 };
         } catch (err: any) {

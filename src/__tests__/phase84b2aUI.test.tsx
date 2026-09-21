@@ -592,7 +592,7 @@ describe('Phase 8.4B.2A & 2B — Production Quotation Details & Conversion Test 
     await waitFor(() => {
       expect(screen.getByText(/Round Off:/i)).toBeDefined();
       expect(screen.getByText('+₹0.40')).toBeDefined();
-      expect(screen.getByText('₹106,200.40')).toBeDefined();
+      expect(screen.getByText('₹1,06,200.40')).toBeDefined();
     });
   });
 
@@ -613,7 +613,7 @@ describe('Phase 8.4B.2A & 2B — Production Quotation Details & Conversion Test 
     await waitFor(() => {
       expect(screen.getByText(/Round Off:/i)).toBeDefined();
       expect(screen.getByText('-₹0.30')).toBeDefined();
-      expect(screen.getByText('₹106,199.70')).toBeDefined();
+      expect(screen.getByText('₹1,06,199.70')).toBeDefined();
     });
   });
 });

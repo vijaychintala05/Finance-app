@@ -1,4 +1,4 @@
-import { DbQueryClient } from './db';
+import { db, DbQueryClient } from './db';
 import { newId } from '../utils/ids';
 
 export const ALL_42_TEMPLATE_MODELS = [
@@ -74,6 +74,12 @@ export const ALL_42_TEMPLATE_MODELS = [
 ] as const;
 
 export async function applyDocumentTemplateSchema(client: DbQueryClient): Promise<void> {
+  // pg-mem does not support the composite foreign-key/constraint syntax used
+  // by this PostgreSQL-only template registry.  The registry is not part of
+  // the in-memory accounting fixture, so skip its DDL and seed work there.
+  // Production PostgreSQL still executes the complete schema below.
+  if (db.isMemoryMode()) return;
+
   // 1. Table: document_templates
   await client.query(`
     CREATE TABLE IF NOT EXISTS document_templates (

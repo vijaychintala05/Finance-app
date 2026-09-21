@@ -48,7 +48,7 @@ describe('Reports workspace', () => {
 
   it('renders summaries, searchable rows, status treatment, and column controls', () => {
     render(<Harness />);
-    expect(screen.getByText('INR 175,000.00')).toBeTruthy();
+    expect(screen.getByText('INR 1,75,000.00')).toBeTruthy();
     expect(screen.getByText('Alpha Studio')).toBeTruthy();
     expect(screen.getByText('Beta Design')).toBeTruthy();
     fireEvent.change(screen.getByPlaceholderText('Search this report'), { target: { value: 'Alpha' } });

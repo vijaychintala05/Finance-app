@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { lazy, Suspense, useRef, useState } from 'react';
 import { ArrowLeft, Building2, ChevronRight, FileText, Grid2X2, Search, Shield, SlidersHorizontal, Users, CheckSquare, ShieldCheck, Database, X } from 'lucide-react';
 import { UsersRolesSettings } from './UsersRolesSettings';
 import { RolesPermissionsSettings } from './RolesPermissionsSettings';
@@ -10,10 +10,13 @@ import { AuditLogsSettings } from './AuditLogsSettings';
 import { RecoveryCenterView } from './RecoveryCenterView';
 import { OrganizationSettings, type OrganizationSection } from './OrganizationSettings';
 import { BrandingSettings } from './BrandingSettings';
-import { PdfTemplatesSettings } from './PdfTemplatesSettings';
 import { MfaSettings } from './MfaSettings';
 import { useBooks } from '../../context/BooksContext';
 import './settings.css';
+
+const PdfTemplatesSettings = lazy(() =>
+  import('./PdfTemplatesSettings').then((module) => ({ default: module.PdfTemplatesSettings }))
+);
 
 export type SettingsNavTab =
   | 'overview'
@@ -253,7 +256,9 @@ export const SettingsView: React.FC = () => {
                 <BrandingSettings onNavigateToPdfTemplates={() => navigate('org-pdf-templates')} />
               )}
               {activeTab === 'org-pdf-templates' && (
-                <PdfTemplatesSettings onNavigateToBranding={() => navigate('org-branding')} />
+                <Suspense fallback={<div className="settings-loading" role="status">Loading PDF templates…</div>}>
+                  <PdfTemplatesSettings onNavigateToBranding={() => navigate('org-branding')} />
+                </Suspense>
               )}
               {activeTab === 'org-tax' && <OrganizationSettings section="tax" />}
               {activeTab === 'org-invoicing' && <OrganizationSettings section="invoicing" />}

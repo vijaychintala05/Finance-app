@@ -20,6 +20,15 @@ export interface BackupPayload {
 }
 
 export class BackupRestoreService {
+  // Plain tenant backups intentionally omit encrypted credentials and secret
+  // material. Those values are handled by the dedicated encrypted-config
+  // recovery flow and must never be serialized into a JSON backup artifact.
+  private static SAFE_COLUMN_PROJECTIONS: Record<string, string> = {
+    bank_feed_connections: 'id, organization_id, bank_account_id, provider, connection_status, created_at, updated_at',
+    vendors: 'id, organization_id, vendor_id, name, legal_name, company_name, vendor_type, gst_status, gstin, pan, email, phone, mobile, website, tax_id, currency, billing_address, shipping_address, place_of_supply, primary_contact, additional_contacts, payment_terms, default_expense_account_id, custom_fields, notes, payables_balance, unused_credits, advance_balance, active, opening_balance, created_at, updated_at',
+    vendor_attachments: 'id, organization_id, vendor_id, file_name, mime_type, byte_size, sha256_hash, uploaded_by, created_at, deleted_at, deleted_by',
+  };
+
   private static TENANT_TABLES = [
     'organization_settings',
     'organization_profiles',
@@ -93,7 +102,8 @@ export class BackupRestoreService {
 
     for (const table of this.TENANT_TABLES) {
       try {
-        let query = `SELECT * FROM ${table} WHERE organization_id = $1`;
+        const projection = this.SAFE_COLUMN_PROJECTIONS[table] || '*';
+        let query = `SELECT ${projection} FROM ${table} WHERE organization_id = $1`;
         if (table === 'journal_lines') {
           query = `SELECT jl.* FROM journal_lines jl JOIN journal_entries je ON jl.journal_entry_id = je.id WHERE je.organization_id = $1`;
         } else if (table === 'invoice_items') {

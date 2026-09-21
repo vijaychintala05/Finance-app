@@ -7,6 +7,7 @@ import tailwindcss from "@tailwindcss/vite";
 import { createServer as createViteServer } from "vite";
 import apiApp, { initDatabase } from "./server/src/index";
 import { db } from "./server/src/database/db";
+import { PRODUCTION_CONTENT_SECURITY_POLICY } from './server/src/config/contentSecurityPolicy';
 
 async function startServer() {
   const PORT = Number(process.env.PORT) || Number(process.env.APP_PORT) || 3000;
@@ -66,7 +67,7 @@ async function startServer() {
       res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
       res.setHeader(
         'Content-Security-Policy',
-        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+        PRODUCTION_CONTENT_SECURITY_POLICY
       );
       next();
     });

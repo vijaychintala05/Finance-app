@@ -1,6 +1,7 @@
 import PDFDocument from 'pdfkit';
 import { type DbQueryClient, db } from '../database/db';
 import { amountToWords } from '../utils/numberToWords';
+import { formatCurrencyAmount } from '../utils/money';
 import { CustomerStatementService } from './CustomerStatementService';
 import { VendorStatementService } from './VendorStatementService';
 import { DocumentTemplateService, type DocumentTemplateRecord } from './DocumentTemplateService';
@@ -239,8 +240,7 @@ export class DocumentPdfService {
   private static formatAmount(amount: number, org: Record<string, any>): string {
     const code = sanitize(org.base_currency || 'INR');
     const symbol = sanitize(org.currency_symbol || (code === 'INR' ? '₹' : code));
-    const formatted = Math.abs(amount).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    return `${amount < 0 ? '-' : ''}${symbol} ${formatted}`;
+    return formatCurrencyAmount(amount, symbol);
   }
 
   private static layout(templateId: string): 'standard' | 'ledger' | 'compact' {

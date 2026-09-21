@@ -1,4 +1,5 @@
 import { AccountingTransactionType, BankStatementTransaction, MatchReason, MatchSuggestion } from '../../../src/types/banking';
+import { formatIndianNumber } from '../utils/money';
 
 export interface AccountingCandidate {
   id: string;
@@ -44,18 +45,18 @@ export class BankMatchingEngine {
       // 2. Amount Matching
       if (diffAmt === 0) {
         score += 35;
-        reasons.push({ code: 'EXACT_AMOUNT', description: `Exact amount match (₹${statementTx.amount.toLocaleString()})`, weight: 35 });
+        reasons.push({ code: 'EXACT_AMOUNT', description: `Exact amount match (₹${formatIndianNumber(statementTx.amount)})`, weight: 35 });
       } else if (diffAmt <= toleranceFee && isCredit && candidate.type === 'invoice') {
         // Bank fee / gateway charge deduction scenario (e.g. Invoice 100,000, Bank 99,500, Fee 500)
         score += 25;
         reasons.push({
           code: 'AMOUNT_WITH_BANK_FEE',
-          description: `Amount match with potential bank charge difference (₹${diffAmt} fee)`,
+          description: `Amount match with potential bank charge difference (₹${formatIndianNumber(diffAmt)} fee)`,
           weight: 25,
         });
       } else if (diffAmt <= candidateAmt * 0.1) {
         score += 15;
-        reasons.push({ code: 'CLOSE_AMOUNT', description: `Partial/close amount difference (₹${diffAmt})`, weight: 15 });
+        reasons.push({ code: 'CLOSE_AMOUNT', description: `Partial/close amount difference (₹${formatIndianNumber(diffAmt)})`, weight: 15 });
       }
 
       // 3. UTR / Reference / RRN Matching

@@ -267,7 +267,7 @@ export class DashboardSummaryService {
           AND UPPER(a.type) IN ('EXPENSE', 'COST OF GOODS SOLD', 'OTHER EXPENSE')
         GROUP BY a.id, a.name
         ORDER BY amount DESC, a.name ASC
-        LIMIT 5`, [organizationId, periodStart, asOfDate]),
+        LIMIT 50`, [organizationId, periodStart, asOfDate]),
       db.query(`SELECT COALESCE(SUM(hours), 0) AS unbilled_hours FROM time_entries WHERE organization_id = $1 AND is_billable = TRUE AND is_billed = FALSE`, [organizationId]),
       db.query(`SELECT COALESCE(SUM(amount), 0) AS unbilled_expenses FROM expenses WHERE organization_id = $1 AND is_billable = TRUE AND is_billed = FALSE AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT')`, [organizationId]),
     ]);

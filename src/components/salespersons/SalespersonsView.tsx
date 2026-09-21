@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { useBooks } from '../../context/BooksContext';
 import { Salesperson } from '../../types';
+import { formatCurrency } from '../../utils/formatters';
 
 export const SalespersonsView: React.FC = () => {
   const { salespersons, addSalesperson, updateSalesperson, deleteSalesperson, invoices, settings } =
@@ -188,8 +189,7 @@ export const SalespersonsView: React.FC = () => {
             </div>
           </div>
           <div className="text-2xl font-black text-slate-900 dark:text-slate-100 mt-2">
-            {settings.currencySymbol}
-            {overallStats.totalRevenue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+            {formatCurrency(overallStats.totalRevenue, settings.currencySymbol)}
           </div>
           <p className="text-[11px] font-medium text-slate-500 mt-1">Total across tagged sales invoices</p>
         </div>
@@ -204,8 +204,7 @@ export const SalespersonsView: React.FC = () => {
             </div>
           </div>
           <div className="text-2xl font-black text-purple-600 dark:text-purple-400 mt-2">
-            {settings.currencySymbol}
-            {overallStats.totalCommission.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+            {formatCurrency(overallStats.totalCommission, settings.currencySymbol)}
           </div>
           <p className="text-[11px] font-medium text-slate-500 mt-1">Weighted commission earned</p>
         </div>
@@ -334,16 +333,14 @@ export const SalespersonsView: React.FC = () => {
                       </td>
 
                       <td className="p-4 text-right font-mono font-bold text-slate-900 dark:text-slate-100">
-                        {settings.currencySymbol}
-                        {stats.totalSales.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        {formatCurrency(stats.totalSales, settings.currencySymbol)}
                         <div className="text-[10px] text-slate-400 font-normal">
                           {stats.invoiceCount} invoices
                         </div>
                       </td>
 
                       <td className="p-4 text-right font-mono font-bold text-emerald-600 dark:text-emerald-400">
-                        {settings.currencySymbol}
-                        {commission.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        {formatCurrency(commission, settings.currencySymbol)}
                       </td>
 
                       <td className="p-4 text-center">

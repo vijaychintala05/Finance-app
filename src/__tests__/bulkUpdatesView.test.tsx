@@ -92,7 +92,7 @@ describe('BulkUpdatesView Component', () => {
       fireEvent.change(screen.getByLabelText(`Amount ${index}`), { target: { value: '1,00,000.50' } });
     }
 
-    expect(screen.getByText('Total: 300,001.50')).toBeTruthy();
+    expect(screen.getByText('Total: 3,00,001.50')).toBeTruthy();
     expect(screen.getByText('(3 of 3 valid)')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: /post 3 entries/i }));

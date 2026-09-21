@@ -1,6 +1,7 @@
 import PDFDocument from 'pdfkit';
 import { type DbQueryClient } from '../database/db';
 import { amountToWords } from '../utils/numberToWords';
+import { formatCurrencyAmount } from '../utils/money';
 
 export interface InvoicePdfItem {
   id?: string;
@@ -27,15 +28,8 @@ export class InvoicePdfService {
   /**
    * Currency formatter with ISO symbol or currency code
    */
-  public static formatAmount(amount: number, symbol: string = '$'): string {
-    const safeAmount = Number.isFinite(amount) ? amount : 0;
-    const absVal = Math.abs(safeAmount).toLocaleString('en-IN', {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    });
-    const prefix = symbol.trim();
-    const formatted = `${prefix} ${absVal}`;
-    return safeAmount < 0 ? `-${formatted}` : formatted;
+  public static formatAmount(amount: number, symbol: string = '₹'): string {
+    return formatCurrencyAmount(amount, symbol);
   }
 
   /**

@@ -1,5 +1,6 @@
 import { CashBalanceWidget } from './widgets/CashBalanceWidget';
 import { CashFlowWidget } from './widgets/CashFlowWidget';
+import { TopExpensesWidget } from './widgets/TopExpensesWidget';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
@@ -245,22 +246,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     dashboard?.overview.activityTrend.reduce((acc, p) => acc + p.expenses, 0) || 0;
   const totalTrendNet = totalTrendIncome - totalTrendExpense;
 
-  // Dynamic insights and categories from authoritative backend dashboard DTO
-  const topExpenseCategories = useMemo(() => {
-    const raw = dashboard?.commandCenter.insights.topExpenses || [];
-    const colors = ['#3b82f6', '#ef4444', '#8b5cf6', '#06b6d4', '#eab308', '#10b981', '#f97316'];
-    const total = raw.reduce((sum, c) => sum + c.amount, 0);
-    return {
-      categories: raw.map((c, i) => ({
-        name: c.name,
-        amount: c.amount,
-        percent: total > 0 ? Math.round((c.amount / total) * 100) : 0,
-        color: colors[i % colors.length],
-      })),
-      total,
-    };
-  }, [dashboard]);
-
   const liquidAccounts = dashboard?.commandCenter.insights.bankAccounts || [];
 
   const cashInHandTotal = useMemo(() => {
@@ -402,46 +387,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       net: Number(movement.net || 0),
     }));
   }, [dashboard]);
-
-  // Dynamic calculation for mobile cash flow mini metrics filtered strictly to the selected period
-  const mobilePeriodTotals = useMemo(() => {
-    const activePoints = mobileCashFlowBasis === 'cash' ? cashTimelinePoints : timelinePoints;
-    const asOf = new Date(`${asOfDate}T00:00:00Z`);
-    const asOfYear = Number.isNaN(asOf.getTime()) ? new Date().getFullYear() : asOf.getUTCFullYear();
-    const asOfMonth = Number.isNaN(asOf.getTime()) ? new Date().getMonth() : asOf.getUTCMonth();
-    const fiscalStartMonth = Math.max(1, Math.min(12, Number(settings.fiscalYearStartMonth) || 1));
-
-    let targetYmKeys: string[] = [];
-    if (mobileCashFlowPeriod === 'month') {
-      targetYmKeys = [`${asOfYear}-${String(asOfMonth + 1).padStart(2, '0')}`];
-    } else if (mobileCashFlowPeriod === 'quarter') {
-      const qStart = Math.floor(asOfMonth / 3) * 3;
-      targetYmKeys = [0, 1, 2].map((offset) => `${asOfYear}-${String(qStart + offset + 1).padStart(2, '0')}`);
-    } else if (mobileCashFlowPeriod === 'year') {
-      targetYmKeys = Array.from({ length: 12 }, (_, m) => `${asOfYear}-${String(m + 1).padStart(2, '0')}`);
-    } else {
-      // 'fiscal'
-      const fiscalStartYear = (asOfMonth + 1 < fiscalStartMonth) ? asOfYear - 1 : asOfYear;
-      targetYmKeys = Array.from({ length: 12 }, (_, i) => {
-        const totalMonth = (fiscalStartMonth - 1) + i;
-        const y = fiscalStartYear + Math.floor(totalMonth / 12);
-        const m = totalMonth % 12;
-        return `${y}-${String(m + 1).padStart(2, '0')}`;
-      });
-    }
-
-    const keySet = new Set(targetYmKeys);
-    const filtered = activePoints.filter((p) => {
-      const raw = String(p.rawDate || p.date || '');
-      const iso = raw.slice(0, 7);
-      return keySet.has(iso);
-    });
-
-    const totalIncome = filtered.reduce((acc, p) => acc + p.income, 0);
-    const totalExpenses = filtered.reduce((acc, p) => acc + p.expenses, 0);
-    const totalNet = totalIncome - totalExpenses;
-    return { totalIncome, totalExpenses, totalNet };
-  }, [mobileCashFlowBasis, mobileCashFlowPeriod, asOfDate, cashTimelinePoints, timelinePoints, settings.fiscalYearStartMonth]);
 
   const chartTotals = useMemo(() => {
     const totalIncome = timelinePoints.reduce((acc, p) => acc + p.income, 0);
@@ -862,247 +807,31 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
               </div>
             </div>
 
-            {/* 3. CASH FLOW SECTION (MOBILE LIGHT MODE) */}
-            <div className="rounded-2xl border border-slate-200/90 bg-white p-4 shadow-xs dark:border-slate-800 dark:bg-slate-900">
-              <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-slate-800">
-                <div className="flex items-center gap-2">
-                  <div className="flex h-7 w-7 items-center justify-center rounded-full bg-blue-50 text-blue-600 dark:bg-blue-950 dark:text-blue-400">
-                    <TrendingUp className="h-4 w-4" />
-                  </div>
-                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">Cash Flow</h3>
-                </div>
-
-                <div className="relative">
-                  <select
-                    value={mobileCashFlowPeriod}
-                    onChange={(e) => handleMobileCashFlowPeriodChange(e.target.value as any)}
-                    className="appearance-none rounded-lg border border-slate-200 bg-slate-50 py-1 pl-2.5 pr-6 text-xs font-semibold text-slate-700 outline-none hover:border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 cursor-pointer"
-                  >
-                    <option value="fiscal">This Fiscal Year</option>
-                    <option value="year">This Calendar Year</option>
-                    <option value="quarter">This Quarter</option>
-                    <option value="month">This Month</option>
-                  </select>
-                  <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
-                </div>
-              </div>
-
-              {/* Accrual / Cash Basis Pills (Matching Screenshot 3) */}
-              <div className="flex items-center gap-1.5 mt-2.5">
-                <button
-                  type="button"
-                  onClick={() => setMobileCashFlowBasis('accrual')}
-                  className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                    mobileCashFlowBasis === 'accrual'
-                      ? 'bg-slate-900 text-white shadow-xs dark:bg-slate-100 dark:text-slate-900'
-                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200/80 dark:bg-slate-800 dark:text-slate-400'
-                  }`}
-                >
-                  Accrual
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMobileCashFlowBasis('cash')}
-                  className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                    mobileCashFlowBasis === 'cash'
-                      ? 'bg-slate-900 text-white shadow-xs dark:bg-slate-100 dark:text-slate-900'
-                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200/80 dark:bg-slate-800 dark:text-slate-400'
-                  }`}
-                >
-                  Cash
-                </button>
-              </div>
-
-              {/* Mobile SVG Chart */}
-              <div className="mt-3 relative">
-                <svg viewBox="0 0 340 140" className="w-full h-auto overflow-visible select-none">
-                  <defs>
-                    <linearGradient id="mobileAreaGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#2563eb" stopOpacity="0.28" />
-                      <stop offset="85%" stopColor="#2563eb" stopOpacity="0.02" />
-                    </linearGradient>
-                  </defs>
-
-                  {/* Values are matched to exact YYYY-MM ledger months without cross-year collisions */}
-                  {(() => {
-                    const activePoints = mobileCashFlowBasis === 'cash' ? cashTimelinePoints : timelinePoints;
-                    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-                    const asOf = new Date(`${asOfDate}T00:00:00Z`);
-                    const asOfYear = Number.isNaN(asOf.getTime()) ? new Date().getFullYear() : asOf.getUTCFullYear();
-                    const asOfMonth = Number.isNaN(asOf.getTime()) ? new Date().getMonth() : asOf.getUTCMonth();
-                    const fiscalStartMonth = Math.max(1, Math.min(12, Number(settings.fiscalYearStartMonth) || 1));
-
-                    let targetMonths: Array<{ ymKey: string; year: number; month: number; label: string }> = [];
-
-                    if (mobileCashFlowPeriod === 'month') {
-                      targetMonths = [{
-                        ymKey: `${asOfYear}-${String(asOfMonth + 1).padStart(2, '0')}`,
-                        year: asOfYear,
-                        month: asOfMonth,
-                        label: monthNames[asOfMonth],
-                      }];
-                    } else if (mobileCashFlowPeriod === 'quarter') {
-                      const qStart = Math.floor(asOfMonth / 3) * 3;
-                      targetMonths = [0, 1, 2].map((offset) => {
-                        const m = qStart + offset;
-                        return {
-                          ymKey: `${asOfYear}-${String(m + 1).padStart(2, '0')}`,
-                          year: asOfYear,
-                          month: m,
-                          label: monthNames[m],
-                        };
-                      });
-                    } else if (mobileCashFlowPeriod === 'year') {
-                      targetMonths = Array.from({ length: 12 }, (_, m) => ({
-                        ymKey: `${asOfYear}-${String(m + 1).padStart(2, '0')}`,
-                        year: asOfYear,
-                        month: m,
-                        label: monthNames[m],
-                      }));
-                    } else {
-                      // 'fiscal'
-                      const fiscalStartYear = (asOfMonth + 1 < fiscalStartMonth) ? asOfYear - 1 : asOfYear;
-                      targetMonths = Array.from({ length: 12 }, (_, i) => {
-                        const totalMonth = (fiscalStartMonth - 1) + i;
-                        const y = fiscalStartYear + Math.floor(totalMonth / 12);
-                        const m = totalMonth % 12;
-                        return {
-                          ymKey: `${y}-${String(m + 1).padStart(2, '0')}`,
-                          year: y,
-                          month: m,
-                          label: monthNames[m],
-                        };
-                      });
-                    }
-
-                    // Map movements strictly to their matching target YYYY-MM
-                    const dataByYm = new Map<string, { income: number; expenses: number; net: number }>();
-                    activePoints.forEach((point) => {
-                      const raw = String(point.rawDate || point.date || '');
-                      const isoMatch = raw.match(/^(\d{4})-(\d{2})/);
-                      let ymKey = '';
-                      if (isoMatch) {
-                        ymKey = `${isoMatch[1]}-${isoMatch[2]}`;
-                      } else {
-                        const d = new Date(raw);
-                        if (!isNaN(d.getTime())) {
-                          ymKey = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
-                        }
-                      }
-                      if (!ymKey) return;
-                      const prior = dataByYm.get(ymKey) || { income: 0, expenses: 0, net: 0 };
-                      dataByYm.set(ymKey, {
-                        income: prior.income + point.income,
-                        expenses: prior.expenses + point.expenses,
-                        net: prior.net + point.net,
-                      });
-                    });
-
-                    const periodValues = targetMonths.map((tm) => dataByYm.get(tm.ymKey)?.net || 0);
-                    const peak = Math.max(1, ...periodValues.map((v) => Math.abs(v)));
-                    const compact = (value: number) =>
-                      value >= 1_000_000
-                        ? `${(value / 1_000_000).toFixed(1)}M`
-                        : value >= 1_000
-                        ? `${Math.round(value / 1_000)}K`
-                        : `${Math.round(value)}`;
-
-                    const stepX = targetMonths.length > 1 ? (340 - 32) / (targetMonths.length - 1) : 0;
-                    const points = targetMonths.map((tm, i) => {
-                      const x = targetMonths.length > 1 ? 32 + i * stepX : 170;
-                      const value = dataByYm.get(tm.ymKey)?.net || 0;
-                      const y = Math.max(16, Math.min(112, 65 - (value / peak) * 46));
-                      return { x, y, month: tm.label, fullKey: tm.ymKey, amount: value };
-                    });
-
-                    const linePath = `M ${points.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' L ')}`;
-                    const areaPath = `${linePath} L ${points[points.length - 1].x},65 L ${points[0].x},65 Z`;
-
-                    return (
-                      <g>
-                        {[{ y: 19, label: compact(peak) }, { y: 65, label: '0' }, { y: 111, label: `-${compact(peak)}` }].map((tick) => (
-                          <g key={tick.y}>
-                            <text x="0" y={tick.y + 3} fill="#94a3b8" fontSize="9" fontWeight="600" textAnchor="start">{tick.label}</text>
-                            <line x1="28" y1={tick.y} x2="340" y2={tick.y} stroke="#e2e8f0" strokeDasharray="3 3" strokeWidth="0.8" className="dark:stroke-slate-800" />
-                          </g>
-                        ))}
-                        <path d={areaPath} fill="url(#mobileAreaGrad)" />
-                        <path d={linePath} fill="none" stroke="#2563eb" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-                        {points.map((p) => (
-                          <circle
-                            key={p.fullKey}
-                            cx={p.x}
-                            cy={p.y}
-                            r={mobileHoverPoint?.month === p.month ? 4.5 : 2.5}
-                            fill="#2563eb"
-                            stroke="#ffffff"
-                            strokeWidth={mobileHoverPoint?.month === p.month ? 2 : 1.5}
-                            className="cursor-pointer transition-all"
-                            onClick={() => setMobileHoverPoint({ month: p.month, amount: p.amount })}
-                          />
-                        ))}
-                        {points.map((p) => (
-                          <text key={`${p.fullKey}-label`} x={p.x} y="132" fill="#94a3b8" fontSize="8.5" fontWeight="600" textAnchor="middle">
-                            {p.month}
-                          </text>
-                        ))}
-                      </g>
-                    );
-                  })()}
-                </svg>
-
-                {mobileHoverPoint && (
-                  <div className="mt-2 text-center text-xs font-bold text-blue-600 bg-blue-50/70 dark:bg-blue-950/60 dark:text-blue-400 py-1 px-2 rounded-lg border border-blue-200/60 dark:border-blue-900/60">
-                    {mobileHoverPoint.month}: Net Cash Movement {money(mobileHoverPoint.amount)}
-                  </div>
-                )}
-              </div>
-
-              {/* Bottom Mini Metrics Strictly Filtered to Selected Period */}
-              {mobileCashFlowBasis === 'cash' ? (
-                <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 grid grid-cols-3 gap-2 text-center">
-                  <div className="p-2 rounded-xl bg-slate-50/80 dark:bg-slate-800/50">
-                    <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Cash In</span>
-                    <span className="font-financial font-bold text-xs text-emerald-600 dark:text-emerald-400 mt-0.5 block truncate">
-                      {money(mobilePeriodTotals.totalIncome)}
-                    </span>
-                  </div>
-                  <div className="p-2 rounded-xl bg-slate-50/80 dark:bg-slate-800/50">
-                    <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Cash Out</span>
-                    <span className="font-financial font-bold text-xs text-rose-600 dark:text-rose-400 mt-0.5 block truncate">
-                      {money(mobilePeriodTotals.totalExpenses)}
-                    </span>
-                  </div>
-                  <div className="p-2 rounded-xl bg-slate-50/80 dark:bg-slate-800/50">
-                    <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Net Cash</span>
-                    <span className="font-financial font-bold text-xs text-blue-600 dark:text-blue-400 mt-0.5 block truncate">
-                      {money(mobilePeriodTotals.totalNet)}
-                    </span>
-                  </div>
-                </div>
-              ) : (
-                <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 grid grid-cols-3 gap-2 text-center">
-                  <div className="p-2 rounded-xl bg-slate-50/80 dark:bg-slate-800/50">
-                    <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Total Income</span>
-                    <span className="font-financial font-bold text-xs text-blue-600 dark:text-blue-400 mt-0.5 block truncate">
-                      {money(mobilePeriodTotals.totalIncome)}
-                    </span>
-                  </div>
-                  <div className="p-2 rounded-xl bg-slate-50/80 dark:bg-slate-800/50">
-                    <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Total Expenses</span>
-                    <span className="font-financial font-bold text-xs text-amber-600 dark:text-amber-400 mt-0.5 block truncate">
-                      {money(mobilePeriodTotals.totalExpenses)}
-                    </span>
-                  </div>
-                  <div className="p-2 rounded-xl bg-slate-50/80 dark:bg-slate-800/50">
-                    <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Net Profit</span>
-                    <span className="font-financial font-bold text-xs text-emerald-600 dark:text-emerald-400 mt-0.5 block truncate">
-                      {money(mobilePeriodTotals.totalNet)}
-                    </span>
-                  </div>
-                </div>
-              )}
-            </div>
+            {/* 3. CASH FLOW SECTION (MOBILE - IDENTICAL TO DESKTOP) */}
+            <CashFlowWidget
+              timelinePoints={timelinePoints}
+              cashMovements={cashTimelinePoints}
+              performanceTotals={dashboard?.commandCenter?.performance}
+              periodLabel={dashboard?.commandCenter?.period?.label}
+              currencySymbol={settings.currencySymbol}
+              onNavigate={onNavigate}
+              asOfDate={asOfDate}
+              selectedPreset={selectedPreset}
+              onPresetSelect={(preset) => {
+                if (preset === 'fiscal') {
+                  handleMobileCashFlowPeriodChange('fiscal');
+                } else if (preset === 'year') {
+                  handleMobileCashFlowPeriodChange('year');
+                } else if (preset === 'quarter') {
+                  handleMobileCashFlowPeriodChange('quarter');
+                } else if (preset === 'month') {
+                  handleMobileCashFlowPeriodChange('month');
+                } else {
+                  handlePresetSelect(preset as any);
+                }
+              }}
+              isMobile={true}
+            />
 
             {/* 3.5. PROJECT TIMER & UNBILLED HOURS WIDGET */}
             <div className="space-y-2.5">
@@ -1231,86 +960,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
               </div>
             </div>
 
-            {/* 4. TOP EXPENSES WIDGET (LIGHT MODE PATTERN MATCHING REFERENCE) */}
-            <div className="rounded-2xl border border-slate-200/90 bg-white p-4 shadow-xs dark:border-slate-800 dark:bg-slate-900">
-              <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-slate-800">
-                <div className="flex items-center gap-2">
-                  <div className="flex h-7 w-7 items-center justify-center rounded-full bg-rose-50 text-rose-600 dark:bg-rose-950 dark:text-rose-400">
-                    <PieChart className="h-4 w-4" />
-                  </div>
-                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">Top Expenses</h3>
-                </div>
-
-                <div className="relative">
-                  <select
-                    value={mobileExpensePeriod}
-                    onChange={(e) => {
-                      const val = e.target.value as 'fiscal' | 'year' | 'quarter' | 'month';
-                      setMobileExpensePeriod(val);
-                      setSelectedPreset(val === 'year' || val === 'fiscal' ? 'ytd' : val === 'quarter' ? 'qtd' : 'mtd');
-                    }}
-                    className="appearance-none rounded-lg border border-slate-200 bg-slate-50 py-1 pl-2.5 pr-6 text-xs font-semibold text-slate-700 outline-none hover:border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 cursor-pointer"
-                  >
-                    <option value="fiscal">This Fiscal Year</option>
-                    <option value="year">This Calendar Year</option>
-                    <option value="quarter">This Quarter</option>
-                    <option value="month">This Month</option>
-                  </select>
-                  <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
-                </div>
-              </div>
-
-              {topExpenseCategories.categories.length === 0 ? (
-                <div className="py-8 text-center px-4">
-                  <p className="text-xs text-slate-500 dark:text-slate-400 max-w-xs mx-auto leading-relaxed">
-                    There's no data available as no transactions were recorded in the selected date range.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => setIsExpenseModalOpen(true)}
-                    className="mt-4 inline-flex items-center gap-1.5 px-4 py-2 rounded-full border border-slate-200 bg-white text-xs font-bold text-slate-800 shadow-xs hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 cursor-pointer transition-all active:scale-95"
-                  >
-                    <Plus className="w-4 h-4 text-slate-700 dark:text-slate-200" />
-                    <span>New Expense</span>
-                  </button>
-                </div>
-              ) : (
-                <div className="mt-4 space-y-3">
-                  {topExpenseCategories.categories.map((cat, idx) => (
-                    <div key={idx} className="space-y-1">
-                      <div className="flex items-center justify-between text-xs">
-                        <div className="flex items-center gap-1.5 truncate">
-                          <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: cat.color }} />
-                          <span className="font-semibold text-slate-800 dark:text-slate-200 truncate">{cat.name}</span>
-                        </div>
-                        <div className="flex items-center gap-2 shrink-0">
-                          <span className="font-financial font-bold text-slate-900 dark:text-white">{money(cat.amount)}</span>
-                          <span className="text-[11px] font-bold text-slate-400">({cat.percent}%)</span>
-                        </div>
-                      </div>
-                      <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
-                        <div style={{ width: `${cat.percent}%`, backgroundColor: cat.color }} className="h-full rounded-full transition-all" />
-                      </div>
-                    </div>
-                  ))}
-
-                  <div className="mt-4 border-t border-slate-100 pt-3 flex items-center justify-between font-bold text-xs text-slate-900 dark:border-slate-800 dark:text-white">
-                    <span>Total Operating Costs</span>
-                    <span className="font-financial">{money(topExpenseCategories.total)}</span>
-                  </div>
-
-                  <div className="pt-1 text-center">
-                    <button
-                      type="button"
-                      onClick={() => setIsExpenseModalOpen(true)}
-                      className="w-full py-2 px-3 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 text-xs font-bold transition-colors cursor-pointer text-center"
-                    >
-                      + New Expense
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
+            {/* 4. TOP EXPENSES WIDGET WITH PIE/DONUT CHART & OTHERS COLUMN */}
+            <TopExpensesWidget
+              expenses={dashboard?.commandCenter?.insights?.topExpenses || []}
+              currencySymbol={settings.currencySymbol}
+              title="Top Expenses"
+              periodLabel={dashboard?.commandCenter?.period?.label}
+              onNavigate={onNavigate}
+              onRecordExpense={() => setIsExpenseModalOpen(true)}
+              selectedPeriod={mobileExpensePeriod}
+              onPeriodChange={(val) => {
+                setMobileExpensePeriod(val);
+                setSelectedPreset(val === 'year' || val === 'fiscal' ? 'ytd' : val === 'quarter' ? 'qtd' : 'mtd');
+              }}
+              isMobile={true}
+            />
 
             {/* 5. BANKING SUMMARY WIDGET (IMAGE 2 PATTERN IN LIGHT MODE) */}
             <div className="rounded-2xl border border-slate-200/90 bg-white p-4 shadow-xs dark:border-slate-800 dark:bg-slate-900">
@@ -1685,59 +1349,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
             </div>
 
             {/* Right: Top Expense Categories */}
-            <div className="lg:col-span-4 min-w-0 rounded-2xl border border-slate-200/90 bg-white p-5 sm:p-6 shadow-xs dark:border-slate-800/90 dark:bg-slate-900 flex flex-col justify-between">
-              <div>
-                <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-slate-800">
-                  <div className="flex items-center gap-2">
-                    <PieChart className="h-4.5 w-4.5 text-rose-600 dark:text-rose-400" />
-                    <h2 className="text-sm font-bold text-slate-900 dark:text-white">
-                      Top Expense Categories
-                    </h2>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => onNavigate('expenses')}
-                    className="text-xs font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
-                  >
-                    All Expenses →
-                  </button>
-                </div>
-
-                {topExpenseCategories.categories.length === 0 ? (
-                  <div className="py-12 text-center text-xs text-slate-400">
-                    <p className="font-semibold text-slate-600 dark:text-slate-400">No operational expenses</p>
-                    <p className="text-[11px] text-slate-400 mt-0.5">Recorded for {dashboard.commandCenter?.period?.label || 'this period'}</p>
-                  </div>
-                ) : (
-                  <div className="mt-4 space-y-3">
-                    {topExpenseCategories.categories.map((cat, idx) => (
-                      <div key={idx} className="space-y-1">
-                        <div className="flex items-center justify-between text-xs">
-                          <div className="flex items-center gap-1.5 truncate">
-                            <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: cat.color }} />
-                            <span className="font-semibold text-slate-800 dark:text-slate-200 truncate">{cat.name}</span>
-                          </div>
-                          <div className="flex items-center gap-2 shrink-0">
-                            <span className="font-financial font-bold text-slate-900 dark:text-white">{money(cat.amount)}</span>
-                            <span className="text-[11px] font-bold text-slate-400">({cat.percent}%)</span>
-                          </div>
-                        </div>
-                        <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
-                          <div style={{ width: `${cat.percent}%`, backgroundColor: cat.color }} className="h-full rounded-full transition-all" />
-                        </div>
-                      </div>
-                    ))}
-                    <div className="mt-4 border-t border-slate-100 pt-3 flex items-center justify-between font-bold text-xs text-slate-900 dark:border-slate-800 dark:text-white">
-                      <span>Total Operating Costs</span>
-                      <span className="font-financial">{money(topExpenseCategories.total)}</span>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <p className="mt-4 text-[11px] text-slate-400 border-t border-slate-100 pt-2 dark:border-slate-800">
-                Operating expenses logged in general ledger for this period.
-              </p>
+            <div className="lg:col-span-4 min-w-0">
+              <TopExpensesWidget
+                expenses={dashboard?.commandCenter?.insights?.topExpenses || []}
+                currencySymbol={settings.currencySymbol}
+                title="Top Expense Categories"
+                periodLabel={dashboard?.commandCenter?.period?.label}
+                onNavigate={onNavigate}
+                onRecordExpense={() => setIsExpenseModalOpen(true)}
+              />
             </div>
           </section>
 

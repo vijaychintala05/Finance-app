@@ -1,12 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ArrowDownToLine, ArrowUpFromLine, Plus, RefreshCw, RotateCcw, Search, X } from 'lucide-react';
 import { apiClient } from '../../api/client';
+import { formatCurrency } from '../../utils/formatters';
 
 type Side = 'receivable' | 'payable';
 type Row = Record<string, any>;
 
 const today = () => new Date().toISOString().slice(0, 10);
-const money = (value: unknown) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(Number(value || 0));
+const money = (value: unknown) => formatCurrency(Number(value || 0), '₹');
 
 const resources = {
   receivable: [

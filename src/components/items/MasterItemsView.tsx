@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Package, Plus, Search, Edit2, Trash2, CheckCircle, X } from 'lucide-react';
 import { ApiClient } from '../../api/client';
+import { formatCurrency } from '../../utils/formatters';
 
 export interface ItemModel {
   id: string;
@@ -126,7 +127,7 @@ export const MasterItemsView: React.FC = () => {
                   <td className="p-3 font-mono text-slate-600">{item.sku || '—'}</td>
                   <td className="p-3 font-mono text-slate-600">{item.hsnSac || '—'}</td>
                   <td className="p-3 text-slate-600">{item.unit}</td>
-                  <td className="p-3 text-right font-medium text-slate-900">₹{Number(item.salesRate).toLocaleString('en-IN')}</td>
+                  <td className="p-3 text-right font-medium text-slate-900">{formatCurrency(item.salesRate, '₹')}</td>
                   <td className="p-3 text-right font-medium text-slate-700">{item.gstRate}%</td>
                   <td className="p-3 text-center">
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 bg-emerald-50 rounded-full">

@@ -7,18 +7,60 @@ const internationalCurrencyFormatter = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 2,
 });
 
-const indianCurrencyFormatter = new Intl.NumberFormat('en-IN', {
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-});
+const FOREIGN_CURRENCIES = /^(USD|\$|EUR|€|GBP|£|CAD|C\$|AUD|A\$|SGD|S\$|AED|JPY|¥|CHF|NZD)$/i;
+
+/**
+ * Formats a number according to the Indian Numbering System (Zoho Books style):
+ * Hundreds, tens, and ones (last 3 digits), then grouped in pairs of 2
+ * (thousands, lakhs, crores, etc.) separated by commas.
+ * Example: 12,34,56,789.00
+ */
+export function formatIndianNumber(amount: number | string, decimals: number = 2): string {
+  const num = typeof amount === 'number' ? amount : parseFloat(String(amount ?? 0));
+  const safeNum = Number.isFinite(num) ? num : 0;
+  const isNegative = safeNum < 0;
+  const fixed = Math.abs(safeNum).toFixed(decimals);
+  const [intPart, decPart] = fixed.split('.');
+
+  let formattedInteger: string;
+  if (intPart.length <= 3) {
+    formattedInteger = intPart;
+  } else {
+    const lastThree = intPart.slice(-3);
+    const otherNumbers = intPart.slice(0, -3);
+    const formattedOther = otherNumbers.replace(/\B(?=(\d{2})+(?!\d))/g, ',');
+    formattedInteger = `${formattedOther},${lastThree}`;
+  }
+
+  const decimalString = decimals > 0 ? `.${decPart}` : '';
+  return `${isNegative ? '-' : ''}${formattedInteger}${decimalString}`;
+}
+
+export const formatNumber = (
+  amount: number | string,
+  decimals: number = 2,
+  forceInternational: boolean = false
+): string => {
+  if (forceInternational) {
+    const num = typeof amount === 'number' ? amount : parseFloat(String(amount ?? 0));
+    const safe = Number.isFinite(num) ? num : 0;
+    return safe.toLocaleString('en-US', {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
+    });
+  }
+  return formatIndianNumber(amount, decimals);
+};
 
 export const formatCurrency = (amount: number | string, symbol: string = ''): string => {
   const numericAmount = typeof amount === 'number' ? amount : parseFloat(String(amount ?? 0));
   const safeAmount = Number.isFinite(numericAmount) ? numericAmount : 0;
   const cleanSymbol = symbol.trim();
-  const isIndianCurrency = /^(INR|₹)$/i.test(cleanSymbol);
-  const formatted = (isIndianCurrency ? indianCurrencyFormatter : internationalCurrencyFormatter).format(Math.abs(safeAmount));
-  const separator = /^[A-Za-z]{2,4}$/.test(cleanSymbol) ? ' ' : '';
+  const isForeign = FOREIGN_CURRENCIES.test(cleanSymbol);
+  const formatted = isForeign
+    ? internationalCurrencyFormatter.format(Math.abs(safeAmount))
+    : formatIndianNumber(Math.abs(safeAmount), 2);
+  const separator = /^[A-Za-z]{2,4}\.?$/i.test(cleanSymbol) ? ' ' : '';
   const prefix = cleanSymbol ? `${cleanSymbol}${separator}` : '';
   return `${safeAmount < 0 ? '-' : ''}${prefix}${formatted}`;
 };

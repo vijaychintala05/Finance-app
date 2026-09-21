@@ -60,3 +60,41 @@ export function centsToSafeNumber(cents: bigint, field: string): number {
 export function databaseMoney(value: unknown, field: string): number {
   return centsToSafeNumber(databaseMoneyToCents(value, field), field);
 }
+
+/**
+ * Deterministic Indian Numbering System formatting (ones, tens, hundreds, thousands, lakhs, crores)
+ */
+export function formatIndianNumber(amount: number | string, decimals: number = 2): string {
+  const num = typeof amount === 'number' ? amount : parseFloat(String(amount ?? 0));
+  const safeNum = Number.isFinite(num) ? num : 0;
+  const isNegative = safeNum < 0;
+  const fixed = Math.abs(safeNum).toFixed(decimals);
+  const [intPart, decPart] = fixed.split('.');
+
+  let formattedInteger: string;
+  if (intPart.length <= 3) {
+    formattedInteger = intPart;
+  } else {
+    const lastThree = intPart.slice(-3);
+    const otherNumbers = intPart.slice(0, -3);
+    const formattedOther = otherNumbers.replace(/\B(?=(\d{2})+(?!\d))/g, ',');
+    formattedInteger = `${formattedOther},${lastThree}`;
+  }
+
+  const decimalString = decimals > 0 ? `.${decPart}` : '';
+  return `${isNegative ? '-' : ''}${formattedInteger}${decimalString}`;
+}
+
+const FOREIGN_CURRENCIES = /^(USD|\$|EUR|€|GBP|£|CAD|C\$|AUD|A\$|SGD|S\$|AED|JPY|¥|CHF|NZD)$/i;
+
+export function formatCurrencyAmount(amount: number, symbol: string = ''): string {
+  const safeAmount = Number.isFinite(amount) ? amount : 0;
+  const cleanSymbol = symbol.trim();
+  const isForeign = FOREIGN_CURRENCIES.test(cleanSymbol);
+  const formatted = isForeign
+    ? Math.abs(safeAmount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    : formatIndianNumber(Math.abs(safeAmount), 2);
+  const separator = /^[A-Za-z]{2,4}\.?$/i.test(cleanSymbol) ? ' ' : '';
+  const prefix = cleanSymbol ? `${cleanSymbol}${separator}` : '';
+  return `${safeAmount < 0 ? '-' : ''}${prefix}${formatted}`;
+}

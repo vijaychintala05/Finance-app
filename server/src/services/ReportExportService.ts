@@ -2,6 +2,7 @@ import { db } from '../database/db';
 import PDFDocument from 'pdfkit';
 import * as XLSX from 'xlsx';
 import type { WorkspaceReportResult } from './ReportWorkspaceService';
+import { formatCurrencyAmount, formatIndianNumber } from '../utils/money';
 
 export interface ReportExportMetadata {
   orgName: string;
@@ -80,10 +81,10 @@ export class ReportExportService {
   private static displayValue(value: unknown, type?: string, currencySymbol = ''): string {
     if (value === null || value === undefined || value === '') return '';
     if (type === 'money') {
-      return `${currencySymbol} ${Number(value).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`.trim();
+      return formatCurrencyAmount(Number(value), currencySymbol);
     }
-    if (type === 'percent') return `${Number(value).toLocaleString('en-IN', { maximumFractionDigits: 2 })}%`;
-    if (type === 'number') return Number(value).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+    if (type === 'percent') return `${formatIndianNumber(Number(value), 2)}%`;
+    if (type === 'number') return formatIndianNumber(Number(value), 2);
     return String(value).replace(/[\r\n\t]+/g, ' ').trim();
   }
 

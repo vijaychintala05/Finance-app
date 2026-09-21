@@ -1,4 +1,5 @@
 import { db } from '../database/db';
+import { formatIndianNumber } from '../utils/money';
 
 export interface SearchResultItem {
   id: string;
@@ -220,13 +221,16 @@ export class GlobalSearchService {
 
     const results: SearchResultItem[] = [];
 
+    const formatSearchAmount = (amount: any): string =>
+      formatIndianNumber(amount, Number(amount) % 1 === 0 ? 0 : 2);
+
     for (const r of invRes.rows) {
       results.push({
         id: r.id,
         category: 'Invoice',
         type: 'INVOICE',
         title: r.invoice_number,
-        subtitle: `${r.client_name} • ₹${Number(r.total_amount).toLocaleString('en-IN')}`,
+        subtitle: `${r.client_name} • ₹${formatSearchAmount(r.total_amount)}`,
         status: r.status,
         amount: Number(r.total_amount),
         date: r.issue_date,
@@ -241,7 +245,7 @@ export class GlobalSearchService {
         category: 'Quotation',
         type: 'QUOTATION',
         title: r.estimate_number,
-        subtitle: `${r.client_name} • ₹${Number(r.total_amount).toLocaleString('en-IN')}`,
+        subtitle: `${r.client_name} • ₹${formatSearchAmount(r.total_amount)}`,
         status: r.status,
         amount: Number(r.total_amount),
         date: r.issue_date,
@@ -256,7 +260,7 @@ export class GlobalSearchService {
         category: 'Sales Order',
         type: 'SALES_ORDER',
         title: r.sales_order_number,
-        subtitle: `${r.customer_name} • ₹${Number(r.total_amount).toLocaleString('en-IN')}`,
+        subtitle: `${r.customer_name} • ₹${formatSearchAmount(r.total_amount)}`,
         status: r.status,
         amount: Number(r.total_amount),
         date: r.order_date,
@@ -295,7 +299,7 @@ export class GlobalSearchService {
         category: 'Vendor Bill',
         type: 'BILL',
         title: r.bill_number || r.vendor_invoice_number || 'Bill',
-        subtitle: `${r.vendor_name} • ₹${Number(r.total_amount).toLocaleString('en-IN')}`,
+        subtitle: `${r.vendor_name} • ₹${formatSearchAmount(r.total_amount)}`,
         status: r.status,
         amount: Number(r.total_amount),
         date: r.bill_date,
@@ -310,7 +314,7 @@ export class GlobalSearchService {
         category: 'Purchase Order',
         type: 'PURCHASE_ORDER',
         title: r.po_number,
-        subtitle: `${r.vendor_name} • ₹${Number(r.total_amount).toLocaleString('en-IN')}`,
+        subtitle: `${r.vendor_name} • ₹${formatSearchAmount(r.total_amount)}`,
         status: r.status,
         amount: Number(r.total_amount),
         date: r.po_date,
@@ -325,7 +329,7 @@ export class GlobalSearchService {
         category: 'Payment Received',
         type: 'PAYMENT_RECEIVED',
         title: r.payment_number || 'Customer Payment',
-        subtitle: `${r.client_name || 'Customer'} • ₹${Number(r.amount).toLocaleString('en-IN')} (${r.payment_mode || 'Cash'})`,
+        subtitle: `${r.client_name || 'Customer'} • ₹${formatSearchAmount(r.amount)} (${r.payment_mode || 'Cash'})`,
         amount: Number(r.amount),
         date: r.payment_date,
         linkRoute: `/sales/payments?id=${r.id}`,
@@ -339,7 +343,7 @@ export class GlobalSearchService {
         category: 'Payment Made',
         type: 'PAYMENT_MADE',
         title: r.payment_number || 'Vendor Payment',
-        subtitle: `${r.vendor_name || 'Vendor'} • ₹${Number(r.amount).toLocaleString('en-IN')} (${r.payment_mode || 'Cash'})`,
+        subtitle: `${r.vendor_name || 'Vendor'} • ₹${formatSearchAmount(r.amount)} (${r.payment_mode || 'Cash'})`,
         amount: Number(r.amount),
         date: r.payment_date,
         linkRoute: `/purchases/payments?id=${r.id}`,
@@ -353,7 +357,7 @@ export class GlobalSearchService {
         category: 'Bank Transaction',
         type: 'BANK_TRANSACTION',
         title: r.narration,
-        subtitle: `Ref: ${r.reference || 'N/A'} • ₹${Number(r.amount).toLocaleString('en-IN')} (${r.direction})`,
+        subtitle: `Ref: ${r.reference || 'N/A'} • ₹${formatSearchAmount(r.amount)} (${r.direction})`,
         status: r.reconciliation_status,
         amount: Number(r.amount),
         date: r.transaction_date,
@@ -380,7 +384,7 @@ export class GlobalSearchService {
         category: 'Credit Note',
         type: 'CREDIT_NOTE',
         title: r.credit_note_number,
-        subtitle: `${r.client_name} • ₹${Number(r.total_amount).toLocaleString('en-IN')}`,
+        subtitle: `${r.client_name} • ₹${formatSearchAmount(r.total_amount)}`,
         status: r.status,
         amount: Number(r.total_amount),
         date: r.date,
@@ -395,7 +399,7 @@ export class GlobalSearchService {
         category: 'Vendor Credit',
         type: 'VENDOR_CREDIT',
         title: r.credit_number,
-        subtitle: `${r.vendor_name} • ₹${Number(r.total_amount).toLocaleString('en-IN')}`,
+        subtitle: `${r.vendor_name} • ₹${formatSearchAmount(r.total_amount)}`,
         status: r.status,
         amount: Number(r.total_amount),
         date: r.date,
@@ -410,7 +414,7 @@ export class GlobalSearchService {
         category: 'Expense',
         type: 'EXPENSE',
         title: r.expense_number,
-        subtitle: `${r.vendor_name || r.expense_account_name || 'General Expense'} • ₹${Number(r.amount).toLocaleString('en-IN')}`,
+        subtitle: `${r.vendor_name || r.expense_account_name || 'General Expense'} • ₹${formatSearchAmount(r.amount)}`,
         status: r.status,
         amount: Number(r.amount),
         date: r.date,

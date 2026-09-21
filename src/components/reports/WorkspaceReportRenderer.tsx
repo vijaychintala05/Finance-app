@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { BarChart3, Check, ChevronLeft, ChevronRight, Columns3, Search, Table2, TriangleAlert } from 'lucide-react';
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { WorkspaceReportResult } from '../../services/reportWorkspaceService';
-import { formatCurrency, formatDate, getStatusBadgeStyle } from '../../utils/formatters';
+import { formatCurrency, formatDate, formatIndianNumber, getStatusBadgeStyle } from '../../utils/formatters';
 
 interface Props {
   report: WorkspaceReportResult;
@@ -39,8 +39,8 @@ export const WorkspaceReportRenderer: React.FC<Props> = ({ report, currencySymbo
   const displayValue = (value: unknown, type: string) => {
     if (value === null || value === undefined || value === '') return '-';
     if (type === 'money') return formatCurrency(Number(value), currencySymbol);
-    if (type === 'percent') return `${Number(value).toLocaleString('en-IN', { maximumFractionDigits: 2 })}%`;
-    if (type === 'number') return Number(value).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+    if (type === 'percent') return `${formatIndianNumber(Number(value), 2)}%`;
+    if (type === 'number') return formatIndianNumber(Number(value), 2);
     if (type === 'date') return formatDate(String(value));
     return String(value);
   };
@@ -89,7 +89,7 @@ export const WorkspaceReportRenderer: React.FC<Props> = ({ report, currencySymbo
     </div>}
 
     <div className="flex flex-col gap-2 text-[11px] text-slate-500 sm:flex-row sm:items-center sm:justify-between">
-      <span>{filteredRows.length.toLocaleString('en-IN')} records · generated {new Date(report.generatedAt).toLocaleString()}</span>
+      <span>{formatIndianNumber(filteredRows.length, 0)} records · generated {new Date(report.generatedAt).toLocaleString()}</span>
       {pages > 1 && <div className="flex items-center gap-2"><button type="button" title="Previous page" disabled={page === 1} onClick={() => setPage((value) => Math.max(1, value - 1))} className="cursor-pointer rounded border p-1 disabled:opacity-30"><ChevronLeft className="h-4 w-4" /></button><span>Page {page} of {pages}</span><button type="button" title="Next page" disabled={page === pages} onClick={() => setPage((value) => Math.min(pages, value + 1))} className="cursor-pointer rounded border p-1 disabled:opacity-30"><ChevronRight className="h-4 w-4" /></button></div>}
     </div>
   </div>;

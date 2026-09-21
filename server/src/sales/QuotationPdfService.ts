@@ -1,5 +1,6 @@
 import PDFDocument from 'pdfkit';
 import { QuotationRenderDTO } from './QuotationRenderModelService';
+import { formatCurrencyAmount } from '../utils/money';
 
 export class QuotationPdfService {
   /**
@@ -14,14 +15,8 @@ export class QuotationPdfService {
    * Format currency numbers safely (e.g. ₹ 10,000.00 / INR 10,000.00 / Rs. 10,000.00)
    */
   public static formatAmount(amount: number, symbol: string): string {
-    const absVal = Math.abs(amount).toLocaleString('en-IN', {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    });
     if (!symbol) throw new Error('A verified currency symbol or ISO code is required');
-    const prefix = symbol;
-    const formatted = `${prefix} ${absVal}`;
-    return amount < 0 ? `-${formatted}` : formatted;
+    return formatCurrencyAmount(amount, symbol);
   }
 
   /**

@@ -3,6 +3,7 @@ import { Download, Plus, Send, Trash2, CheckCircle2, AlertCircle, RefreshCw } fr
 import { apiClient } from '../../api/client';
 import { useBooks } from '../../context/BooksContext';
 import { createBrowserId } from '../../utils/browserIds';
+import { formatCurrency } from '../../utils/formatters';
 
 interface BulkRow {
   id: string;
@@ -42,7 +43,7 @@ const newRow = (): BulkRow => ({
 });
 
 export const BulkUpdatesView: React.FC = () => {
-  const { accounts = [] } = useBooks();
+  const { accounts = [], settings } = useBooks();
   const [rows, setRows] = useState<BulkRow[]>([newRow(), newRow(), newRow()]);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
@@ -160,7 +161,7 @@ export const BulkUpdatesView: React.FC = () => {
             {rows.length} {rows.length === 1 ? 'entry' : 'entries'}
           </span>
           <span className="font-mono text-slate-600 dark:text-slate-400 bg-slate-200/60 dark:bg-slate-800 px-2 py-0.5 rounded text-[11px]">
-            Total: {total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            Total: {formatCurrency(total, settings?.currencySymbol || '')}
           </span>
           <span className="text-[11px] text-slate-500 dark:text-slate-400">
             ({validRows.length} of {rows.length} valid)

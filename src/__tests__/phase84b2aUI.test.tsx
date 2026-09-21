@@ -348,7 +348,7 @@ describe('Phase 8.4B.2A & 2B — Production Quotation Details & Conversion Test 
 
     await waitFor(() => {
       expect(screen.getAllByText(/Grand Total/i).length).toBeGreaterThan(0);
-      expect(screen.getAllByText(/106,200/).length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/1,06,200/).length).toBeGreaterThan(0);
     });
   });
 

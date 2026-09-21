@@ -29,6 +29,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { ApiClient } from '../../api/client';
+import { formatCurrency } from '../../utils/formatters';
 
 interface PortalCustomer {
   id: string;
@@ -543,10 +544,7 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                 <div className="bg-white/10 backdrop-blur-md rounded-xl p-4 text-right border border-white/10 min-w-[200px]">
                   <div className="text-xs text-indigo-200">Total Outstanding Balance</div>
                   <div className="text-2xl font-black text-white mt-1">
-                    {currencySymbol}
-                    {portalData.summary.totalOutstanding.toLocaleString(undefined, {
-                      minimumFractionDigits: 2,
-                    })}
+                    {formatCurrency(portalData.summary.totalOutstanding, currencySymbol)}
                   </div>
                   <div className="text-[11px] text-slate-300 mt-1">
                     {portalData.summary.openInvoicesCount} open invoice{portalData.summary.openInvoicesCount === 1 ? '' : 's'}
@@ -690,10 +688,10 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                                   {inv.dueDate || '—'}
                                 </td>
                                 <td className="p-3 text-right font-medium text-slate-700 dark:text-slate-300">
-                                  {currencySymbol}{inv.totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                  {formatCurrency(inv.totalAmount, currencySymbol)}
                                 </td>
                                 <td className="p-3 text-right font-bold text-slate-900 dark:text-white">
-                                  {currencySymbol}{inv.balanceDue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                  {formatCurrency(inv.balanceDue, currencySymbol)}
                                 </td>
                                 <td className="p-3 text-center">
                                   {isPaid ? (
@@ -766,7 +764,7 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                             <td className="p-3 text-slate-600 dark:text-slate-400">{pmt.paymentDate || '—'}</td>
                             <td className="p-3 text-slate-600 dark:text-slate-400">{pmt.reference || 'Online Portal'}</td>
                             <td className="p-3 text-right font-bold text-emerald-600 dark:text-emerald-400">
-                              {currencySymbol}{pmt.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                              {formatCurrency(pmt.amount, currencySymbol)}
                             </td>
                             <td className="p-3 text-center">
                               <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300">
@@ -829,25 +827,25 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                     <div className="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800">
                       <div className="text-[11px] text-slate-500">Opening Balance</div>
                       <div className="text-base font-bold text-slate-900 dark:text-white mt-1">
-                        {currencySymbol}{statementData.openingBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        {formatCurrency(statementData.openingBalance, currencySymbol)}
                       </div>
                     </div>
                     <div className="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800">
                       <div className="text-[11px] text-slate-500">Total Invoiced</div>
                       <div className="text-base font-bold text-amber-600 dark:text-amber-400 mt-1">
-                        +{currencySymbol}{statementData.totalDebits.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        +{formatCurrency(statementData.totalDebits, currencySymbol)}
                       </div>
                     </div>
                     <div className="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800">
                       <div className="text-[11px] text-slate-500">Total Payments</div>
                       <div className="text-base font-bold text-emerald-600 dark:text-emerald-400 mt-1">
-                        -{currencySymbol}{statementData.totalCredits.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        -{formatCurrency(statementData.totalCredits, currencySymbol)}
                       </div>
                     </div>
                     <div className="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800">
                       <div className="text-[11px] text-slate-500">Closing Balance</div>
                       <div className="text-base font-bold text-indigo-600 dark:text-indigo-400 mt-1">
-                        {currencySymbol}{statementData.closingBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        {formatCurrency(statementData.closingBalance, currencySymbol)}
                       </div>
                     </div>
                   </div>

@@ -10,16 +10,16 @@ test.describe('Procure-to-Pay (P2P) Full Accounting Lifecycle', () => {
     // 1. Create Vendor via + New button
     await page.getByRole('button', { name: '+ New', exact: true }).click();
     await page.getByRole('button', { name: 'New Vendor', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Add New Vendor' })).toBeVisible();
-    await page.getByPlaceholder('e.g. AWS Cloud Services / Century Plywood').fill(vendorName);
-    await page.getByPlaceholder('accounts@vendor.com').fill(`vendor-${suffix}@hardware.test`);
+    await expect(page.getByRole('heading', { name: 'New vendor' })).toBeVisible({ timeout: 15_000 });
+    await page.getByLabel('Display name').fill(vendorName);
+    await page.getByLabel('Email').fill(`vendor-${suffix}@hardware.test`);
 
     const [createVendorResponse] = await Promise.all([
       page.waitForResponse((response) =>
         response.request().method() === 'POST' &&
         new URL(response.url()).pathname.endsWith('/api/v1/finance/vendors')
       ),
-      page.getByRole('button', { name: 'Create Vendor' }).click(),
+      page.getByRole('button', { name: 'Create vendor' }).click(),
     ]);
     expect(createVendorResponse.status()).toBe(201);
 

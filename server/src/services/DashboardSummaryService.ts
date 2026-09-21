@@ -391,7 +391,12 @@ export class DashboardSummaryService {
       performance: { revenue: salesThisMonth, expenses: expensesThisMonth, net: salesThisMonth - expensesThisMonth, marginPercent: salesThisMonth > 0 ? Number((((salesThisMonth - expensesThisMonth) / salesThisMonth) * 100).toFixed(1)) : null, cashMovement: activityTrend },
       scheduledCashOutlook: { windowDays: 30, collections: collectionsDue30Days, bills: billsDue30Days, net: collectionsDue30Days - billsDue30Days },
       attention,
-      insights: { topExpenses: topExpensesRes.rows.map((row: any) => ({ name: String(row.name), amount: databaseMoney(row.amount, `Dashboard top expense for ${row.name}`) })), bankAccounts },
+      insights: {
+        topExpenses: topExpensesRes.rows
+          .filter((row: any) => Number(row.amount) > 0)
+          .map((row: any) => ({ name: String(row.name), amount: databaseMoney(row.amount, `Dashboard top expense for ${row.name}`) })),
+        bankAccounts,
+      },
     };
 
     return { view, asOfDate, generatedAt: new Date().toISOString(), availableViews, overview,

@@ -26,7 +26,20 @@ router.get('/customers', requirePermission(['customers.view', 'invoices.view']),
 router.post('/customers', requirePermission(['customers.create', 'invoices.create']), FinanceController.createCustomer);
 router.get('/customers/:id/summary', requirePermission(['customers.view', 'invoices.view']), FinanceController.getCustomerSummary);
 router.get('/vendors', requirePermission(['vendors.view', 'purchases.view']), FinanceController.getVendors);
+router.get('/vendors/:id', requirePermission(['vendors.view', 'purchases.view']), FinanceController.getVendor);
+router.get('/vendors/:id/activity', requirePermission(['vendors.view', 'purchases.view']), FinanceController.getVendorActivity);
+router.get('/vendors/:id/attachments', requirePermission('vendors.view'), FinanceController.getVendorAttachments);
+router.post('/vendors/:id/attachments', requirePermission('vendors.edit'), FinanceController.createVendorAttachments);
+router.get('/vendors/:id/attachments/:attachmentId', requirePermission('vendors.view'), FinanceController.downloadVendorAttachment);
+router.delete('/vendors/:id/attachments/:attachmentId', requirePermission('vendors.edit'), FinanceController.archiveVendorAttachment);
+router.get('/vendors/:id/mails', requirePermission('vendors.view'), FinanceController.getVendorMails);
+router.post('/vendors/:id/mails', requirePermission('vendors.edit'), FinanceController.sendVendorMail);
+router.get('/vendors/:id/comments', requirePermission('vendors.view'), FinanceController.getVendorComments);
+router.post('/vendors/:id/comments', requirePermission('vendors.edit'), FinanceController.createVendorComment);
 router.post('/vendors', requirePermission(['vendors.create', 'purchases.create']), FinanceController.createVendor);
+router.put('/vendors/:id', requirePermission('vendors.edit'), FinanceController.updateVendor);
+router.post('/vendors/:id/archive', requirePermission('vendors.archive'), FinanceController.archiveVendor);
+router.post('/vendors/:id/restore', requirePermission('vendors.archive'), FinanceController.restoreVendor);
 
 // Projects
 router.get('/projects', requirePermission(['projects.view', 'invoices.view']), FinanceController.getProjects);
@@ -60,6 +73,11 @@ router.post('/delivery-challans', requirePermission(['delivery_challans.create',
 router.get('/invoices', requirePermission(['invoices.view']), FinanceController.getInvoices);
 router.get('/invoices/:id', requirePermission(['invoices.view']), FinanceController.getInvoice);
 router.get('/invoices/:id/pdf', requirePermission(['invoices.view']), FinanceController.getInvoicePdf);
+
+// PDF gallery / live-document endpoint. The service verifies the category and
+// template ID and performs tenant-scoped database reads for every render.
+router.get('/documents/:category/recent', requirePermission(['invoices.view', 'purchases.view', 'expenses.view', 'journals.view', 'reports.view']), FinanceController.getRecentPdfDocuments);
+router.get('/documents/:category/:id/pdf', requirePermission(['invoices.view', 'purchases.view', 'expenses.view', 'journals.view', 'reports.view']), FinanceController.getDocumentPdf);
 router.post('/invoices', requirePermission(['invoices.create']), FinanceController.createInvoice);
 router.put('/invoices/:id', requirePermission(['invoices.edit', 'invoices.create']), FinanceController.updateInvoice);
 router.post('/invoices/:id/post-approved', requirePermission(['invoices.create', 'accounting.post']), FinanceController.postApprovedInvoice);

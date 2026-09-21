@@ -161,7 +161,7 @@ export class QuotationRenderModelService {
     }
 
     // Resolve Organization Branding Details (No fabricated placeholders!)
-    const orgRes = await db.query(`SELECT * FROM organizations WHERE id = $1`, [orgId]);
+    const orgRes = await db.query(`SELECT o.*, p.legal_name, p.trade_name, p.logo_url, p.branding, p.address_line1, p.city as p_city, p.state as p_state, p.country as p_country, p.postal_code, p.gstin as p_gstin, p.email as p_email, p.phone as p_phone FROM organizations o LEFT JOIN organization_profiles p ON p.organization_id = o.id WHERE o.id = $1`, [orgId]);
     const orgRow = orgRes.rows[0] || {};
     const baseCurrency = String(orgRow.base_currency || '');
     if (!/^[A-Z]{3}$/.test(baseCurrency)) throw new Error('Organization base currency is not configured');
@@ -171,8 +171,8 @@ export class QuotationRenderModelService {
       .join(', ');
 
     const orgSnapshot = {
-      legalName: orgRow.name || '',
-      tradeName: orgRow.name || '',
+      legalName: orgRow.legal_name || orgRow.name || '',
+      tradeName: orgRow.trade_name || orgRow.name || '',
       logoUrl: orgRow.logo_url || '',
       address: rawOrgAddress || '',
       gstin: orgRow.tax_id || orgRow.gstin || '',
@@ -201,7 +201,8 @@ export class QuotationRenderModelService {
     }
 
     if (!resolvedTemplate) {
-      resolvedTemplate = { ...this.CLASSIC_FALLBACK_TEMPLATE, organizationId: orgId };
+      const orgBranding = typeof orgRow.branding === 'string' ? JSON.parse(orgRow.branding) : (orgRow.branding || {});
+      resolvedTemplate = { ...this.CLASSIC_FALLBACK_TEMPLATE, organizationId: orgId, primaryColor: orgBranding.primaryColor || '#1e40af', logoUrl: orgRow.logo_url || undefined };
     }
 
     // Map Line Items Snapshot

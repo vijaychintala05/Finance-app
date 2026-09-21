@@ -51,12 +51,13 @@ describe('QA Suite: Vendor 360 Workspace & Purchase-to-Pay Lifecycle Engine', ()
 
     expect(screen.getByText('Vendor 360 Workspace')).toBeDefined();
     expect(screen.getByRole('heading', { name: /century ply & boards ltd/i })).toBeDefined();
-    expect(screen.getByText('Verified Supplier')).toBeDefined();
+    expect(screen.queryByText('Verified Supplier')).toBeNull();
+    expect(screen.getAllByText('Active').length).toBeGreaterThan(0);
     expect(screen.getByRole('button', { name: /record payment/i })).toBeDefined();
     expect(screen.getByRole('button', { name: /edit profile/i })).toBeDefined();
   });
 
-  it('2. Computes Financial KPIs and Payables Aging Radar accurately', () => {
+  it('2. Does not display financial dashboard or aging radar cards in details page', () => {
     render(
       <VendorWorkspace
         vendor={mockVendor}
@@ -66,59 +67,90 @@ describe('QA Suite: Vendor 360 Workspace & Purchase-to-Pay Lifecycle Engine', ()
       { wrapper }
     );
 
-    expect(screen.getByText('Total Payables Due')).toBeDefined();
-    expect(screen.getByText('Total Lifetime Billed')).toBeDefined();
-    expect(screen.getByText('Total Payments Made')).toBeDefined();
-    expect(screen.getByText('Vendor Credits / Advances')).toBeDefined();
-    expect(screen.getByText(/Payables Aging Radar & Supplier Terms/i)).toBeDefined();
-    expect(screen.getByText('Current (0-30d)')).toBeDefined();
-    expect(screen.getByText('31-60 Days')).toBeDefined();
-  });
+    // Dashboard widgets should not exist on vendor details page
+    expect(screen.queryByText('Total Payables Due')).toBeNull();
+    expect(screen.queryByText('Total Lifetime Billed')).toBeNull();
+    expect(screen.queryByText('Total Payments Made')).toBeNull();
+    expect(screen.queryByText('Vendor Credits / Advances')).toBeNull();
+    expect(screen.queryByText(/Payables Aging Radar & Supplier Terms/i)).toBeNull();
+    expect(screen.queryByText('Current (0-30d)')).toBeNull();
+    expect(screen.queryByText('31-60 Days')).toBeNull();
 
-  it('3. Successfully switches between all 7 dedicated tabs in VendorWorkspace', () => {
-    render(
-      <VendorWorkspace
-        vendor={mockVendor}
-        onBack={vi.fn()}
-        onEdit={vi.fn()}
-      />,
-      { wrapper }
-    );
-
-    // Default tab: Details & Profile
+    // Directly focuses on details & profile information
     expect(screen.getByText('Contact & Identity Information')).toBeDefined();
     expect(screen.getByText('Commercial & Tax Settings')).toBeDefined();
+  });
 
-    // Switch to Activity Timeline
-    const activityTab = screen.getByRole('button', { name: /activity timeline/i });
-    fireEvent.click(activityTab);
+  it('3. Successfully switches between the four tabs and 7 transaction sub-views in VendorWorkspace', () => {
+    render(
+      <VendorWorkspace
+        vendor={mockVendor}
+        onBack={vi.fn()}
+        onEdit={vi.fn()}
+      />,
+      { wrapper }
+    );
+
+    // 1. Default tab: Overview
+    expect(screen.getByText('Contact & Identity Information')).toBeDefined();
+    expect(screen.getByText('Commercial & Tax Settings')).toBeDefined();
     expect(screen.getByText('Unified Procurement Audit Trail')).toBeDefined();
 
-    // Switch to Purchase Orders
-    const poTab = screen.getByRole('button', { name: /purchase orders/i });
-    fireEvent.click(poTab);
-    expect(screen.getByText('PO Number')).toBeDefined();
+    // 2. Switch to Comments
+    const commentsTab = screen.getByRole('button', { name: /^comments$/i });
+    fireEvent.click(commentsTab);
+    expect(screen.getByText('Vendor comments')).toBeDefined();
 
-    // Switch to Bills & Payables
-    const billsTab = screen.getByRole('button', { name: /bills & payables/i });
-    fireEvent.click(billsTab);
+    // 3. Switch to Transactions tab and verify all 7 sub-views
+    const transactionsTab = screen.getByRole('button', { name: /^transactions$/i });
+    fireEvent.click(transactionsTab);
+
+    // Sub-view 1: Bills
+    const billsSub = screen.getByRole('button', { name: /^bills/i });
+    fireEvent.click(billsSub);
     expect(screen.getByText('Bill Number')).toBeDefined();
 
-    // Switch to Payments Made
-    const paymentsTab = screen.getByRole('button', { name: /payments made/i });
-    fireEvent.click(paymentsTab);
+    // Sub-view 2: Bill Payments
+    const paymentsSub = screen.getByRole('button', { name: /^bill payments/i });
+    fireEvent.click(paymentsSub);
     expect(screen.getByText('Amount Disbursed')).toBeDefined();
 
-    // Switch to Vendor Credits
-    const creditsTab = screen.getByRole('button', { name: /vendor credits/i });
-    fireEvent.click(creditsTab);
+    // Sub-view 3: Expenses
+    const expensesSub = screen.getByRole('button', { name: /^expenses/i });
+    fireEvent.click(expensesSub);
+    expect(screen.getByText('Category Account')).toBeDefined();
+
+    // Sub-view 4: Recurring Bills
+    const recurringSub = screen.getByRole('button', { name: /^recurring bills/i });
+    fireEvent.click(recurringSub);
+    expect(screen.getByText('Recurring Amount')).toBeDefined();
+
+    // Sub-view 5: Purchase Orders
+    const poSub = screen.getByRole('button', { name: /^purchase orders/i });
+    fireEvent.click(poSub);
+    expect(screen.getByText('PO Number')).toBeDefined();
+
+    // Sub-view 6: Vendor Credits
+    const creditsSub = screen.getByRole('button', { name: /^vendor credits/i });
+    fireEvent.click(creditsSub);
     expect(screen.getByText('Total Credit')).toBeDefined();
 
-    // Switch to Statement of Account
+    // Sub-view 7: Journals
+    const journalsSub = screen.getByRole('button', { name: /^journals/i });
+    fireEvent.click(journalsSub);
+    expect(screen.getByText('Accounts Involved')).toBeDefined();
+
+    // 4. Switch to Mails and Statements
     const statementTab = screen.getByRole('button', { name: /statement of account/i });
     fireEvent.click(statementTab);
     expect(screen.getByText('Vendor Statement of Account')).toBeDefined();
     expect(screen.getByRole('button', { name: /print statement/i })).toBeDefined();
+
+    // Verify Mails sub-view in Mails and Statements
+    const mailsBtn = screen.getByRole('button', { name: /mails & communication/i });
+    fireEvent.click(mailsBtn);
+    expect(screen.getByText('Send Mail to Vendor')).toBeDefined();
+    expect(screen.getByText('Sent Mails & Communication History')).toBeDefined();
   });
 
   it('4. Statement of Account prints without throwing runtime errors', () => {

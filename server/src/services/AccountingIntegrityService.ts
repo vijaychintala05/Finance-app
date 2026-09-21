@@ -40,15 +40,15 @@ export class AccountingIntegrityService {
   public static async verifyAccountBalanceCache(organizationId: string): Promise<IntegrityCheckResult> {
     const now = new Date().toISOString();
     const result = await db.query<any>(
-      `SELECT a.id, a.code, a.name, a.type, a.balance AS cached_balance,
-              COALESCE(SUM(
+      `SELECT a.id, a.code, a.name, a.type, ROUND(COALESCE(a.balance, 0)::numeric, 2) AS cached_balance,
+              ROUND(COALESCE(SUM(
                 CASE
                   WHEN UPPER(je.status) <> 'POSTED' OR je.id IS NULL THEN 0
                   WHEN UPPER(a.type) IN ('ASSET', 'EXPENSE', 'COST OF GOODS SOLD', 'OTHER EXPENSE')
                     THEN jl.debit - jl.credit
                   ELSE jl.credit - jl.debit
                 END
-              ), 0) AS ledger_balance
+              ), 0)::numeric, 2) AS ledger_balance
          FROM accounts a
          LEFT JOIN journal_lines jl ON jl.account_id = a.id
          LEFT JOIN journal_entries je

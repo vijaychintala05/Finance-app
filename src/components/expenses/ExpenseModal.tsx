@@ -247,6 +247,35 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
   const [isAddPaymentModalOpen, setIsAddPaymentModalOpen] = useState(false);
   const [isAddVendorModalOpen, setIsAddVendorModalOpen] = useState(false);
   const [newVendorName, setNewVendorName] = useState('');
+  const [newVendorEmail, setNewVendorEmail] = useState('');
+  const [newVendorPhone, setNewVendorPhone] = useState('');
+  const [newVendorTaxId, setNewVendorTaxId] = useState('');
+  const [newVendorPaymentTerms, setNewVendorPaymentTerms] = useState('Net 30');
+  const [newVendorBillingAddress, setNewVendorBillingAddress] = useState('');
+  const [newVendorCompanyName, setNewVendorCompanyName] = useState('');
+  const [newVendorLegalName, setNewVendorLegalName] = useState('');
+  const [newVendorType, setNewVendorType] = useState<'Business' | 'Individual'>('Business');
+  const [newVendorSalutation, setNewVendorSalutation] = useState('');
+  const [newVendorFirstName, setNewVendorFirstName] = useState('');
+  const [newVendorLastName, setNewVendorLastName] = useState('');
+  const [newVendorGstStatus, setNewVendorGstStatus] = useState<'Registered' | 'Unregistered' | 'Composition' | 'SEZ'>('Unregistered');
+  const [newVendorPan, setNewVendorPan] = useState('');
+  const [newVendorPlaceOfSupply, setNewVendorPlaceOfSupply] = useState('');
+  const [newVendorMobile, setNewVendorMobile] = useState('');
+  const [newVendorWebsite, setNewVendorWebsite] = useState('');
+  const [newVendorShippingAddress, setNewVendorShippingAddress] = useState('');
+  const [newVendorDefaultExpenseAccountId, setNewVendorDefaultExpenseAccountId] = useState('');
+  const [newVendorNotes, setNewVendorNotes] = useState('');
+  const [newVendorBankName, setNewVendorBankName] = useState('');
+  const [newVendorBankAccountName, setNewVendorBankAccountName] = useState('');
+  const [newVendorBankAccountNumber, setNewVendorBankAccountNumber] = useState('');
+  const [newVendorBankIfsc, setNewVendorBankIfsc] = useState('');
+  const [newVendorBankSwift, setNewVendorBankSwift] = useState('');
+  const [newVendorBankBranch, setNewVendorBankBranch] = useState('');
+  const [newVendorBankAccountType, setNewVendorBankAccountType] = useState('');
+  const [newVendorExtraContact, setNewVendorExtraContact] = useState({ name: '', designation: '', email: '', phone: '', mobile: '' });
+  const [newVendorCustomFieldKey, setNewVendorCustomFieldKey] = useState('');
+  const [newVendorCustomFieldValue, setNewVendorCustomFieldValue] = useState('');
   const [newVendorError, setNewVendorError] = useState('');
   const [isCreatingVendor, setIsCreatingVendor] = useState(false);
   const [isItemized, setIsItemized] = useState(false);
@@ -272,6 +301,14 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
     () => vendors.find((v) => v.id === vendorId),
     [vendors, vendorId]
   );
+
+  const handleVendorChange = (nextVendorId: string) => {
+    setVendorId(nextVendorId);
+    const vendor = vendors.find((entry) => entry.id === nextVendorId);
+    if (vendor?.defaultExpenseAccountId && expenseAccounts.some((account) => account.id === vendor.defaultExpenseAccountId)) {
+      setExpenseAccountId(vendor.defaultExpenseAccountId);
+    }
+  };
   const selectedClient = useMemo(
     () => clients.find((c) => c.id === clientId),
     [clients, clientId]
@@ -313,6 +350,40 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
     setIsProjectBillingDialogOpen(false);
   };
 
+  const resetNewVendorDraft = () => {
+    setNewVendorError('');
+    setNewVendorName('');
+    setNewVendorEmail('');
+    setNewVendorPhone('');
+    setNewVendorTaxId('');
+    setNewVendorPaymentTerms('Net 30');
+    setNewVendorBillingAddress('');
+    setNewVendorCompanyName('');
+    setNewVendorLegalName('');
+    setNewVendorType('Business');
+    setNewVendorSalutation('');
+    setNewVendorFirstName('');
+    setNewVendorLastName('');
+    setNewVendorGstStatus('Unregistered');
+    setNewVendorPan('');
+    setNewVendorPlaceOfSupply('');
+    setNewVendorMobile('');
+    setNewVendorWebsite('');
+    setNewVendorShippingAddress('');
+    setNewVendorDefaultExpenseAccountId('');
+    setNewVendorNotes('');
+    setNewVendorBankName('');
+    setNewVendorBankAccountName('');
+    setNewVendorBankAccountNumber('');
+    setNewVendorBankIfsc('');
+    setNewVendorBankSwift('');
+    setNewVendorBankBranch('');
+    setNewVendorBankAccountType('');
+    setNewVendorExtraContact({ name: '', designation: '', email: '', phone: '', mobile: '' });
+    setNewVendorCustomFieldKey('');
+    setNewVendorCustomFieldValue('');
+  };
+
   const handleCreateVendor = async (event: React.FormEvent) => {
     event.preventDefault();
     const name = newVendorName.trim();
@@ -324,14 +395,43 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
     setIsCreatingVendor(true);
     setNewVendorError('');
     try {
+      const contactName = [newVendorFirstName.trim(), newVendorLastName.trim()].filter(Boolean).join(' ');
       const vendor = await addVendor({
         name,
-        companyName: name,
-        paymentTerms: 'Net 30',
+        companyName: newVendorCompanyName.trim() || name,
+        legalName: newVendorLegalName.trim() || newVendorCompanyName.trim() || name,
+        vendorType: newVendorType,
+        gstStatus: newVendorGstStatus,
+        contactPerson: contactName,
+        primaryContact: {
+          salutation: newVendorSalutation, firstName: newVendorFirstName.trim(), lastName: newVendorLastName.trim(),
+          name: contactName, email: newVendorEmail.trim(),
+          phone: newVendorPhone.trim(), mobile: newVendorMobile.trim(), isPrimary: true,
+        },
+        email: newVendorEmail.trim(),
+        phone: newVendorPhone.trim(),
+        mobile: newVendorMobile.trim(),
+        website: newVendorWebsite.trim(),
+        taxId: newVendorTaxId.trim(),
+        gstin: newVendorTaxId.trim().toUpperCase(),
+        pan: newVendorPan.trim().toUpperCase(),
+        placeOfSupply: newVendorPlaceOfSupply.trim(),
+        billingAddress: newVendorBillingAddress.trim(),
+        shippingAddress: newVendorShippingAddress.trim(),
+        paymentTerms: newVendorPaymentTerms,
+        defaultExpenseAccountId: newVendorDefaultExpenseAccountId || undefined,
+        notes: newVendorNotes.trim(),
+        additionalContacts: Object.values(newVendorExtraContact).some((field) => typeof field === 'string' && field.trim().length > 0) ? [newVendorExtraContact] : [],
+        customFields: newVendorCustomFieldKey.trim() ? { [newVendorCustomFieldKey.trim()]: newVendorCustomFieldValue } : {},
+        bankDetails: newVendorBankAccountNumber.trim() ? {
+          bankName: newVendorBankName.trim(), accountName: newVendorBankAccountName.trim(),
+          accountNumber: newVendorBankAccountNumber.trim(), ifsc: newVendorBankIfsc.trim().toUpperCase(),
+          swiftCode: newVendorBankSwift.trim().toUpperCase(), branch: newVendorBankBranch.trim(), accountType: newVendorBankAccountType.trim(),
+        } : undefined,
         status: 'Active',
       });
-      setVendorId(vendor.id);
-      setNewVendorName('');
+      handleVendorChange(vendor.id);
+      resetNewVendorDraft();
       setIsAddVendorModalOpen(false);
     } catch (creationError) {
       setNewVendorError(creationError instanceof Error ? creationError.message : 'Vendor could not be created.');
@@ -1149,6 +1249,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                         <button
                           type="button"
                           onClick={() => {
+                            resetNewVendorDraft();
                             setActivePicker(null);
                             setIsAddVendorModalOpen(true);
                           }}
@@ -1178,7 +1279,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                             <div
                               key={vendor.id}
                               onClick={() => {
-                                setVendorId(vendor.id);
+                                handleVendorChange(vendor.id);
                                 setActivePicker(null);
                               }}
                               className={`pt-1.5 p-3 rounded-xl flex items-center justify-between cursor-pointer transition-colors ${
@@ -1535,7 +1636,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                           <button
                             type="button"
                             onClick={() => {
-                              setNewVendorError('');
+                              resetNewVendorDraft();
                               setIsAddVendorModalOpen(true);
                             }}
                             className="inline-flex items-center gap-0.5 text-[11px] font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
@@ -1547,7 +1648,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                         <select
                           id="expense-vendor-select"
                           value={vendorId}
-                          onChange={(event) => setVendorId(event.target.value)}
+                          onChange={(event) => handleVendorChange(event.target.value)}
                           className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal text-slate-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                         >
                           <option value="">No vendor selected</option>
@@ -1776,8 +1877,8 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
       )}
 
       {isAddVendorModalOpen && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center bg-slate-950/50 p-4" role="dialog" aria-modal="true" aria-label="Add vendor">
-          <form onSubmit={handleCreateVendor} className="w-full max-w-md rounded-xl bg-white p-5 shadow-xl dark:bg-slate-900">
+        <div className="fixed inset-0 z-60 flex items-center justify-center bg-slate-950/50 p-3 sm:p-4" role="dialog" aria-modal="true" aria-label="Add vendor">
+          <form onSubmit={handleCreateVendor} className="max-h-[94dvh] w-full max-w-3xl overflow-y-auto rounded-xl bg-white p-4 shadow-xl dark:bg-slate-900 sm:p-6">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h3 className="text-base font-bold text-slate-900 dark:text-white">Add vendor</h3>
@@ -1798,6 +1899,127 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                 className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal text-slate-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
               />
             </label>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200">
+                <span>Company name</span>
+                <input aria-label="Vendor company name" value={newVendorCompanyName} onChange={(event) => setNewVendorCompanyName(event.target.value)} maxLength={255} className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal dark:border-slate-700 dark:bg-slate-800 dark:text-white" />
+              </label>
+              <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200">
+                <span>Legal name</span>
+                <input aria-label="Vendor legal name" value={newVendorLegalName} onChange={(event) => setNewVendorLegalName(event.target.value)} maxLength={255} className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal dark:border-slate-700 dark:bg-slate-800 dark:text-white" />
+              </label>
+              <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200">
+                <span>Vendor type</span>
+                <select aria-label="Vendor type" value={newVendorType} onChange={(event) => setNewVendorType(event.target.value as 'Business' | 'Individual')} className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal dark:border-slate-700 dark:bg-slate-800 dark:text-white"><option>Business</option><option>Individual</option></select>
+              </label>
+              <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200">
+                <span>GST registration</span>
+                <select aria-label="Vendor GST registration" value={newVendorGstStatus} onChange={(event) => setNewVendorGstStatus(event.target.value as typeof newVendorGstStatus)} className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal dark:border-slate-700 dark:bg-slate-800 dark:text-white"><option>Unregistered</option><option>Registered</option><option>Composition</option><option>SEZ</option></select>
+              </label>
+              <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200">
+                <span>Salutation</span>
+                <select aria-label="Vendor contact salutation" value={newVendorSalutation} onChange={(event) => setNewVendorSalutation(event.target.value)} className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal dark:border-slate-700 dark:bg-slate-800 dark:text-white"><option value="">Select</option><option>Mr.</option><option>Ms.</option><option>Mrs.</option><option>Dr.</option></select>
+              </label>
+              <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200"><span>Contact first name</span><input aria-label="Vendor contact first name" value={newVendorFirstName} onChange={(event) => setNewVendorFirstName(event.target.value)} maxLength={120} className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal dark:border-slate-700 dark:bg-slate-800 dark:text-white" /></label>
+              <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200"><span>Contact last name</span><input aria-label="Vendor contact last name" value={newVendorLastName} onChange={(event) => setNewVendorLastName(event.target.value)} maxLength={120} className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal dark:border-slate-700 dark:bg-slate-800 dark:text-white" /></label>
+              <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200"><span>PAN</span><input aria-label="Vendor PAN" value={newVendorPan} onChange={(event) => setNewVendorPan(event.target.value.toUpperCase())} maxLength={20} className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-mono font-normal dark:border-slate-700 dark:bg-slate-800 dark:text-white" /></label>
+              <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200"><span>Place of supply</span><input aria-label="Vendor place of supply" value={newVendorPlaceOfSupply} onChange={(event) => setNewVendorPlaceOfSupply(event.target.value)} maxLength={100} className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal dark:border-slate-700 dark:bg-slate-800 dark:text-white" /></label>
+            </div>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200">
+                <span>GSTIN / Tax ID</span>
+                <input
+                  value={newVendorTaxId}
+                  onChange={(event) => setNewVendorTaxId(event.target.value)}
+                  placeholder="e.g. 29ABCDE1234F1Z5"
+                  maxLength={50}
+                  className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-mono font-normal text-slate-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                />
+              </label>
+              <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200">
+                <span>Email</span>
+                <input
+                  type="email"
+                  value={newVendorEmail}
+                  onChange={(event) => setNewVendorEmail(event.target.value)}
+                  placeholder="accounts@vendor.com"
+                  maxLength={255}
+                  className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal text-slate-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                />
+              </label>
+              <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200">
+                <span>Phone</span>
+                <input
+                  type="tel"
+                  value={newVendorPhone}
+                  onChange={(event) => setNewVendorPhone(event.target.value)}
+                  placeholder="+91 98765 43210"
+                  maxLength={50}
+                  className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal text-slate-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                />
+              </label>
+            </div>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200"><span>Mobile</span><input aria-label="Vendor mobile" type="tel" value={newVendorMobile} onChange={(event) => setNewVendorMobile(event.target.value)} maxLength={50} className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal dark:border-slate-700 dark:bg-slate-800 dark:text-white" /></label>
+              <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200"><span>Website</span><input aria-label="Vendor website" type="url" value={newVendorWebsite} onChange={(event) => setNewVendorWebsite(event.target.value)} maxLength={255} placeholder="https://" className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal dark:border-slate-700 dark:bg-slate-800 dark:text-white" /></label>
+            </div>
+            <label className="mt-3 block space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200">
+              <span>Payment terms</span>
+              <select
+                value={newVendorPaymentTerms}
+                onChange={(event) => setNewVendorPaymentTerms(event.target.value)}
+                className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal text-slate-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+              >
+                <option value="Due on Receipt">Due on Receipt</option>
+                <option value="Net 15">Net 15 Days</option>
+                <option value="Net 30">Net 30 Days</option>
+                <option value="Net 45">Net 45 Days</option>
+                <option value="Net 60">Net 60 Days</option>
+              </select>
+            </label>
+            <label className="mt-3 block space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200">
+              <span>Shipping address</span>
+              <textarea aria-label="Vendor shipping address" value={newVendorShippingAddress} onChange={(event) => setNewVendorShippingAddress(event.target.value)} rows={2} maxLength={10000} className="w-full resize-y rounded-md border border-slate-300 bg-white px-3 py-2 font-normal dark:border-slate-700 dark:bg-slate-800 dark:text-white" />
+            </label>
+            <label className="mt-3 block space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200">
+              <span>Billing address</span>
+              <textarea
+                value={newVendorBillingAddress}
+                onChange={(event) => setNewVendorBillingAddress(event.target.value)}
+                placeholder="Street, city, state and postal code"
+                rows={2}
+                maxLength={10000}
+                className="w-full resize-y rounded-md border border-slate-300 bg-white px-3 py-2 font-normal text-slate-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+              />
+            </label>
+            <div className="mt-4 rounded-xl border border-slate-200 p-4 dark:border-slate-700">
+              <h4 className="text-sm font-bold text-slate-900 dark:text-white">Purchasing defaults and extra contact</h4>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200"><span>Default expense account</span><select aria-label="Vendor default expense account" value={newVendorDefaultExpenseAccountId} onChange={(event) => setNewVendorDefaultExpenseAccountId(event.target.value)} className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal dark:border-slate-700 dark:bg-slate-800 dark:text-white"><option value="">Choose when recording each expense</option>{expenseAccounts.map((account) => <option key={account.id} value={account.id}>{account.code} — {account.name}</option>)}</select></label>
+                <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200"><span>Additional contact name</span><input aria-label="Vendor additional contact name" value={newVendorExtraContact.name} onChange={(event) => setNewVendorExtraContact((current) => ({ ...current, name: event.target.value }))} maxLength={255} className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal dark:border-slate-700 dark:bg-slate-800 dark:text-white" /></label>
+                <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200"><span>Additional contact role</span><input aria-label="Vendor additional contact role" value={newVendorExtraContact.designation} onChange={(event) => setNewVendorExtraContact((current) => ({ ...current, designation: event.target.value }))} maxLength={120} className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal dark:border-slate-700 dark:bg-slate-800 dark:text-white" /></label>
+                <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200"><span>Additional contact email</span><input aria-label="Vendor additional contact email" type="email" value={newVendorExtraContact.email} onChange={(event) => setNewVendorExtraContact((current) => ({ ...current, email: event.target.value }))} maxLength={255} className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal dark:border-slate-700 dark:bg-slate-800 dark:text-white" /></label>
+                <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200"><span>Additional contact work phone</span><input aria-label="Vendor additional contact phone" type="tel" value={newVendorExtraContact.phone} onChange={(event) => setNewVendorExtraContact((current) => ({ ...current, phone: event.target.value }))} maxLength={50} className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal dark:border-slate-700 dark:bg-slate-800 dark:text-white" /></label>
+                <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200"><span>Additional contact mobile</span><input aria-label="Vendor additional contact mobile" type="tel" value={newVendorExtraContact.mobile} onChange={(event) => setNewVendorExtraContact((current) => ({ ...current, mobile: event.target.value }))} maxLength={50} className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal dark:border-slate-700 dark:bg-slate-800 dark:text-white" /></label>
+              </div>
+            </div>
+            <details className="mt-4 rounded-xl border border-slate-200 p-4 dark:border-slate-700">
+              <summary className="cursor-pointer text-sm font-bold text-slate-900 dark:text-white">Bank details and organization-specific field</summary>
+              <p className="mt-2 text-xs text-slate-500">Bank account numbers are encrypted before storage and never returned in full.</p>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200"><span>Bank name</span><input aria-label="Vendor bank name" value={newVendorBankName} onChange={(event) => setNewVendorBankName(event.target.value)} maxLength={120} className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal dark:border-slate-700 dark:bg-slate-800 dark:text-white" /></label>
+                <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200"><span>Account name</span><input aria-label="Vendor bank account name" value={newVendorBankAccountName} onChange={(event) => setNewVendorBankAccountName(event.target.value)} maxLength={120} className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal dark:border-slate-700 dark:bg-slate-800 dark:text-white" /></label>
+                <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200"><span>Account number</span><input aria-label="Vendor bank account number" type="password" autoComplete="new-password" value={newVendorBankAccountNumber} onChange={(event) => setNewVendorBankAccountNumber(event.target.value)} maxLength={34} className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal dark:border-slate-700 dark:bg-slate-800 dark:text-white" /></label>
+                <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200"><span>IFSC</span><input aria-label="Vendor bank IFSC" value={newVendorBankIfsc} onChange={(event) => setNewVendorBankIfsc(event.target.value.toUpperCase())} maxLength={20} className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal dark:border-slate-700 dark:bg-slate-800 dark:text-white" /></label>
+                <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200"><span>SWIFT</span><input aria-label="Vendor bank SWIFT" value={newVendorBankSwift} onChange={(event) => setNewVendorBankSwift(event.target.value.toUpperCase())} maxLength={11} className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal dark:border-slate-700 dark:bg-slate-800 dark:text-white" /></label>
+                <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200"><span>Branch</span><input aria-label="Vendor bank branch" value={newVendorBankBranch} onChange={(event) => setNewVendorBankBranch(event.target.value)} maxLength={120} className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal dark:border-slate-700 dark:bg-slate-800 dark:text-white" /></label>
+                <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200"><span>Account type</span><input aria-label="Vendor bank account type" value={newVendorBankAccountType} onChange={(event) => setNewVendorBankAccountType(event.target.value)} maxLength={40} className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal dark:border-slate-700 dark:bg-slate-800 dark:text-white" /></label>
+                <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200"><span>Custom field name</span><input aria-label="Vendor custom field name" value={newVendorCustomFieldKey} onChange={(event) => setNewVendorCustomFieldKey(event.target.value)} maxLength={80} className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal dark:border-slate-700 dark:bg-slate-800 dark:text-white" /></label>
+                <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200"><span>Custom field value</span><input aria-label="Vendor custom field value" value={newVendorCustomFieldValue} onChange={(event) => setNewVendorCustomFieldValue(event.target.value)} maxLength={500} className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal dark:border-slate-700 dark:bg-slate-800 dark:text-white" /></label>
+              </div>
+            </details>
+            <div className="mt-4 rounded-lg bg-slate-50 p-3 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300"><strong>Currency:</strong> {settings.currencyCode}. Opening balances are established through an opening bill or verified migration so Accounts Payable and the ledger remain aligned.</div>
+            <label className="mt-3 block space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200"><span>Notes</span><textarea aria-label="Vendor notes" value={newVendorNotes} onChange={(event) => setNewVendorNotes(event.target.value)} rows={3} maxLength={20000} className="w-full resize-y rounded-md border border-slate-300 bg-white px-3 py-2 font-normal dark:border-slate-700 dark:bg-slate-800 dark:text-white" /></label>
             {newVendorError && <p role="alert" className="mt-3 text-xs font-medium text-rose-600 dark:text-rose-400">{newVendorError}</p>}
             <div className="mt-5 flex justify-end gap-2">
               <button type="button" onClick={() => setIsAddVendorModalOpen(false)} disabled={isCreatingVendor} className="rounded-md border border-slate-300 bg-white px-3.5 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 cursor-pointer">Cancel</button>

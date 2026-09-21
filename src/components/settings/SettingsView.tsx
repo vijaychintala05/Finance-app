@@ -9,6 +9,8 @@ import { GovernanceSettings } from './GovernanceSettings';
 import { AuditLogsSettings } from './AuditLogsSettings';
 import { RecoveryCenterView } from './RecoveryCenterView';
 import { OrganizationSettings, type OrganizationSection } from './OrganizationSettings';
+import { BrandingSettings } from './BrandingSettings';
+import { PdfTemplatesSettings } from './PdfTemplatesSettings';
 import { MfaSettings } from './MfaSettings';
 import { useBooks } from '../../context/BooksContext';
 import './settings.css';
@@ -16,6 +18,8 @@ import './settings.css';
 export type SettingsNavTab =
   | 'overview'
   | 'org-profile'
+  | 'org-branding'
+  | 'org-pdf-templates'
   | 'org-tax'
   | 'org-invoicing'
   | 'org-bank'
@@ -49,7 +53,9 @@ interface SettingsItem {
 }
 
 const ITEMS: SettingsItem[] = [
-  { id: 'org-profile', label: 'Organization Profile', detail: 'Business name, contact details & branding', keywords: 'company legal trade brand industry email phone', category: 'organization', section: 'profile' },
+  { id: 'org-profile', label: 'Organization Profile', detail: 'Business name, contact details & identifiers', keywords: 'company legal trade brand industry email phone', category: 'organization', section: 'profile' },
+  { id: 'org-branding', label: 'Company Branding', detail: 'Logo, primary & accent brand colors, palette presets', keywords: 'brand logo color palette hex theme identity', category: 'organization' },
+  { id: 'org-pdf-templates', label: 'PDF & Document Templates', detail: 'PDF layouts, typography, signatory, footer notes & live preview', keywords: 'pdf document template layout font invoice quotation terms signatory watermark preview print export', category: 'organization' },
   { id: 'org-tax', label: 'Taxes & Address', detail: 'Tax identifiers & registered address', keywords: 'gst gstin vat pan cin city state postal zip country', category: 'organization', section: 'tax' },
   { id: 'usr-roles', label: 'Roles & Permissions', detail: 'Custom roles, permission matrix & SoD checks', keywords: 'roles permissions access control rbac sod matrix custom system', category: 'users-access' },
   { id: 'usr-approvals', label: 'Approval Workflows', detail: 'Multi-tier limits & self-approval rules', keywords: 'approvals threshold limits workflow purchase orders vendor bills expenses', category: 'users-access' },
@@ -243,6 +249,12 @@ export const SettingsView: React.FC = () => {
               </div>
 
               {activeTab === 'org-profile' && <OrganizationSettings section="profile" />}
+              {activeTab === 'org-branding' && (
+                <BrandingSettings onNavigateToPdfTemplates={() => navigate('org-pdf-templates')} />
+              )}
+              {activeTab === 'org-pdf-templates' && (
+                <PdfTemplatesSettings onNavigateToBranding={() => navigate('org-branding')} />
+              )}
               {activeTab === 'org-tax' && <OrganizationSettings section="tax" />}
               {activeTab === 'org-invoicing' && <OrganizationSettings section="invoicing" />}
               {activeTab === 'org-bank' && <OrganizationSettings section="bank" />}

@@ -15,9 +15,9 @@ vi.mock('../api/client', () => ({
 vi.mock('../context/BooksContext', () => ({
   useBooks: () => ({
     settings: {
-      currency: 'INR',
-      currencySymbol: 'INR',
-      fiscalYearStartMonth: 4,
+      currency: 'USD',
+      currencySymbol: '$',
+      fiscalYearStartMonth: 1,
     },
     invoices: [],
     expenses: [],
@@ -25,7 +25,10 @@ vi.mock('../context/BooksContext', () => ({
     accounts: [],
     clients: [],
     vendors: [],
+    projects: [],
     journalEntries: [],
+    timeEntries: [],
+    addTimeEntry: vi.fn().mockResolvedValue(true),
   }),
   BooksProvider: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
@@ -97,6 +100,12 @@ describe('DashboardView & Cash Flow Real-Data QA Tests', () => {
           bills: 40000,
           net: 60000,
         },
+      },
+      cashFlow: {
+        movements: [
+          { date: '2026-09-01', cashIn: 80000, cashOut: 20000, net: 60000 },
+          { date: '2026-09-02', cashIn: 40000, cashOut: 25000, net: 15000 },
+        ],
       },
       availableViews: ['overview', 'cash-operations', 'close-controls'],
       asOfDate: '2026-09-03',
@@ -190,6 +199,9 @@ describe('DashboardView & Cash Flow Real-Data QA Tests', () => {
           net: 0,
         },
       },
+      cashFlow: {
+        movements: [],
+      },
       availableViews: ['overview', 'cash-operations', 'close-controls'],
       asOfDate: '2026-09-03',
       view: 'overview',
@@ -278,6 +290,11 @@ describe('DashboardView & Cash Flow Real-Data QA Tests', () => {
           bills: 30000,
           net: 50000,
         },
+      },
+      cashFlow: {
+        movements: [
+          { date: '2026-09-15', cashIn: 80000, cashOut: 20000, net: 60000 },
+        ],
       },
       availableViews: ['overview', 'cash-operations', 'close-controls'],
       asOfDate: '2026-09-16',

@@ -26,6 +26,11 @@ export interface VendorMaster {
   primaryContact?: any;
   email?: string;
   phone?: string;
+  mobile?: string;
+  website?: string;
+  additionalContacts?: any[];
+  customFields?: Record<string, unknown>;
+  notes?: string;
   currency?: string;
   paymentTerms?: string;
   defaultExpenseAccountId?: string;
@@ -293,8 +298,8 @@ export class PurchasesEngine {
     const now = new Date().toISOString();
 
     await db.query(
-      `INSERT INTO vendors (id, organization_id, vendor_id, name, legal_name, company_name, vendor_type, gst_status, gstin, pan, billing_address, shipping_address, place_of_supply, primary_contact, email, phone, currency, payment_terms, default_expense_account_id, payables_balance, unused_credits, advance_balance, active, opening_balance, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)`,
+      `INSERT INTO vendors (id, organization_id, vendor_id, name, legal_name, company_name, vendor_type, gst_status, gstin, pan, billing_address, shipping_address, place_of_supply, primary_contact, email, phone, mobile, website, currency, payment_terms, default_expense_account_id, payables_balance, unused_credits, advance_balance, active, opening_balance, additional_contacts, custom_fields, notes, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)`,
       [
         id,
         orgId,
@@ -312,6 +317,8 @@ export class PurchasesEngine {
         JSON.stringify(data.primaryContact || {}),
         data.email || '',
         data.phone || '',
+        data.mobile || '',
+        data.website || '',
         baseCurrency,
         data.paymentTerms || 'Net 30',
         data.defaultExpenseAccountId || null,
@@ -320,6 +327,9 @@ export class PurchasesEngine {
         0,
         data.active !== undefined ? data.active : true,
         0,
+        JSON.stringify(data.additionalContacts || []),
+        JSON.stringify(data.customFields || {}),
+        data.notes || '',
         now,
       ]
     );
@@ -341,6 +351,11 @@ export class PurchasesEngine {
       primaryContact: data.primaryContact || {},
       email: data.email || '',
       phone: data.phone || '',
+      mobile: data.mobile || '',
+      website: data.website || '',
+      additionalContacts: data.additionalContacts || [],
+      customFields: data.customFields || {},
+      notes: data.notes || '',
       currency: baseCurrency,
       paymentTerms: data.paymentTerms || 'Net 30',
       defaultExpenseAccountId: data.defaultExpenseAccountId,
@@ -378,6 +393,11 @@ export class PurchasesEngine {
       primaryContact: typeof r.primary_contact === 'string' ? JSON.parse(r.primary_contact || '{}') : r.primary_contact,
       email: r.email,
       phone: r.phone,
+      mobile: r.mobile,
+      website: r.website,
+      additionalContacts: typeof r.additional_contacts === 'string' ? JSON.parse(r.additional_contacts || '[]') : (r.additional_contacts || []),
+      customFields: typeof r.custom_fields === 'string' ? JSON.parse(r.custom_fields || '{}') : (r.custom_fields || {}),
+      notes: r.notes,
       currency: r.currency,
       paymentTerms: r.payment_terms,
       defaultExpenseAccountId: r.default_expense_account_id,
@@ -412,6 +432,11 @@ export class PurchasesEngine {
       primaryContact: typeof r.primary_contact === 'string' ? JSON.parse(r.primary_contact || '{}') : r.primary_contact,
       email: r.email,
       phone: r.phone,
+      mobile: r.mobile,
+      website: r.website,
+      additionalContacts: typeof r.additional_contacts === 'string' ? JSON.parse(r.additional_contacts || '[]') : (r.additional_contacts || []),
+      customFields: typeof r.custom_fields === 'string' ? JSON.parse(r.custom_fields || '{}') : (r.custom_fields || {}),
+      notes: r.notes,
       currency: r.currency,
       paymentTerms: r.payment_terms,
       defaultExpenseAccountId: r.default_expense_account_id,
@@ -432,12 +457,13 @@ export class PurchasesEngine {
       throw new Error('Vendor ID is required for purchase orders');
     }
     const vendorRes = await db.query(
-      `SELECT id, name, company_name, email FROM vendors WHERE organization_id = $1 AND id = $2`,
+      `SELECT id, name, company_name, email, active FROM vendors WHERE organization_id = $1 AND id = $2`,
       [orgId, data.vendorId]
     );
     if (vendorRes.rows.length === 0) {
       throw new Error('Purchase order vendor does not belong to this organization or does not exist');
     }
+    if (vendorRes.rows[0].active === false) throw new Error('Archived vendors cannot be used for new purchase orders');
     data.vendorName = vendorRes.rows[0].name || vendorRes.rows[0].company_name || data.vendorName;
 
     const now = new Date().toISOString();
@@ -991,12 +1017,13 @@ export class PurchasesEngine {
       // Validate that vendor belongs to this organization
       if (data.vendorId) {
         const vendorRes = await client.query(
-          `SELECT id, name, email FROM vendors WHERE organization_id = $1 AND id = $2`,
+          `SELECT id, name, email, active FROM vendors WHERE organization_id = $1 AND id = $2`,
           [orgId, data.vendorId]
         );
         if (vendorRes.rows.length === 0) {
           throw new Error('Bill vendor does not belong to this organization');
         }
+        if (vendorRes.rows[0].active === false) throw new Error('Archived vendors cannot be used for new bills');
         data.vendorName = vendorRes.rows[0].name || data.vendorName;
         data.vendorEmail = vendorRes.rows[0].email || data.vendorEmail;
       }

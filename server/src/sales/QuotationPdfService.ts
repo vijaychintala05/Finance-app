@@ -45,6 +45,21 @@ export class QuotationPdfService {
         const lines = renderModel.lineItems;
 
         const primaryColor = tmpl.primaryColor || '#1e40af';
+        const logoUrl = org.logoUrl || tmpl.logoUrl;
+        let logoBuffer: Buffer | null = null;
+        if (logoUrl && typeof logoUrl === 'string') {
+          const trimmed = logoUrl.trim();
+          if (trimmed.startsWith('data:image/')) {
+            const commaIdx = trimmed.indexOf(',');
+            if (commaIdx !== -1) {
+              try {
+                logoBuffer = Buffer.from(trimmed.slice(commaIdx + 1), 'base64');
+              } catch {
+                logoBuffer = null;
+              }
+            }
+          }
+        }
 
         // --- HEADER SECTION ---
         doc.rect(40, 40, 515, 45).fill(primaryColor);
@@ -55,6 +70,14 @@ export class QuotationPdfService {
         let curY = 95;
 
         // Organization Info (Left)
+        if (logoBuffer) {
+          try {
+            doc.image(logoBuffer, 40, curY, { fit: [140, 42] });
+            curY += 46;
+          } catch {
+            // Ignore invalid image
+          }
+        }
         if (org.legalName) {
           doc.fontSize(11).font('Helvetica-Bold').fillColor('#0f172a').text(org.legalName, 40, curY, { width: 260 });
           curY += 14;

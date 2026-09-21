@@ -131,18 +131,18 @@ export class ServerPostingEngine {
       }
 
       for (const line of verified) {
-        const balanceDelta = line.normalBalance === 'Debit' ? line.debit - line.credit : line.credit - line.debit;
+        const balanceDelta = Math.round((line.normalBalance === 'Debit' ? line.debit - line.credit : line.credit - line.debit) * 100) / 100;
         await client.query(
           `UPDATE journal_lines SET account_code = $1, account_name = $2
             WHERE organization_id = $3 AND journal_entry_id = $4 AND account_id = $5`,
           [line.code, line.name, organizationId, journalEntryId, line.accountId]
         );
         await client.query(
-          'UPDATE accounts SET balance = COALESCE(balance, 0) + $1 WHERE id = $2 AND organization_id = $3',
+          'UPDATE accounts SET balance = ROUND((COALESCE(balance, 0) + $1)::numeric, 2) WHERE id = $2 AND organization_id = $3',
           [balanceDelta, line.accountId, organizationId]
         );
         await client.query(
-          'UPDATE bank_accounts SET current_balance = COALESCE(current_balance, 0) + $1, updated_at = CURRENT_TIMESTAMP WHERE (ledger_account_id = $2 OR id = $2) AND organization_id = $3',
+          'UPDATE bank_accounts SET current_balance = ROUND((COALESCE(current_balance, 0) + $1)::numeric, 2), updated_at = CURRENT_TIMESTAMP WHERE (ledger_account_id = $2 OR id = $2) AND organization_id = $3',
           [balanceDelta, line.accountId, organizationId]
         );
       }
@@ -256,13 +256,13 @@ export class ServerPostingEngine {
           [newId('jln'), entryId, payload.organizationId, line.accountId, line.accountCode, line.accountName, line.debit, line.credit, line.description || '', line.projectId || null, line.customerId || null, line.vendorId || null]
         );
         const normalDebit = (line as JournalLineItem & { normalBalance: string }).normalBalance === 'Debit';
-        const balanceDelta = normalDebit ? line.debit - line.credit : line.credit - line.debit;
+        const balanceDelta = Math.round((normalDebit ? line.debit - line.credit : line.credit - line.debit) * 100) / 100;
         await client.query(
-          'UPDATE accounts SET balance = COALESCE(balance, 0) + $1 WHERE id = $2 AND organization_id = $3',
+          'UPDATE accounts SET balance = ROUND((COALESCE(balance, 0) + $1)::numeric, 2) WHERE id = $2 AND organization_id = $3',
           [balanceDelta, line.accountId, payload.organizationId]
         );
         await client.query(
-          'UPDATE bank_accounts SET current_balance = COALESCE(current_balance, 0) + $1, updated_at = CURRENT_TIMESTAMP WHERE (ledger_account_id = $2 OR id = $2) AND organization_id = $3',
+          'UPDATE bank_accounts SET current_balance = ROUND((COALESCE(current_balance, 0) + $1)::numeric, 2), updated_at = CURRENT_TIMESTAMP WHERE (ledger_account_id = $2 OR id = $2) AND organization_id = $3',
           [balanceDelta, line.accountId, payload.organizationId]
         );
       }

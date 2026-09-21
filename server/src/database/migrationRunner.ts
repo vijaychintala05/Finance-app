@@ -7,6 +7,7 @@ import { applyUsabilitySchema } from './usabilitySchema';
 import { applyPaymentAccountingSchema } from './paymentAccountingSchema';
 import { applyBankingStatementSchema } from './bankingStatementSchema';
 import { applyFinancialCommandSchema } from './financialCommandSchema';
+import { applyDocumentTemplateSchema } from './documentTemplateSchema';
 import type { DbQueryResult } from './db';
 
 export const CURRENT_SCHEMA_VERSION = '2026.09.12-v13-financial-command-evidence';
@@ -87,6 +88,8 @@ export class MigrationRunner {
         bank_name VARCHAR(120),
         bank_account_number VARCHAR(60),
         bank_ifsc_swift VARCHAR(40),
+        branding JSONB DEFAULT '{}'::jsonb,
+        document_templates JSONB DEFAULT '{}'::jsonb,
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       )`,
 
@@ -278,13 +281,37 @@ export class MigrationRunner {
       `CREATE TABLE IF NOT EXISTS vendors (
         id VARCHAR(64) PRIMARY KEY,
         organization_id VARCHAR(64) NOT NULL,
+        vendor_id VARCHAR(64),
         name VARCHAR(255) NOT NULL,
+        legal_name VARCHAR(255),
         company_name VARCHAR(255),
+        vendor_type VARCHAR(50) DEFAULT 'Business',
+        gst_status VARCHAR(50) DEFAULT 'Unregistered',
+        gstin VARCHAR(50),
+        pan VARCHAR(50),
+        billing_address TEXT,
+        shipping_address JSONB,
+        place_of_supply VARCHAR(100),
+        primary_contact JSONB,
+        additional_contacts JSONB DEFAULT '[]'::jsonb,
         email VARCHAR(255),
         phone VARCHAR(50),
-        billing_address TEXT,
+        mobile VARCHAR(50),
+        website VARCHAR(255),
+        tax_id VARCHAR(50),
+        currency VARCHAR(3) DEFAULT 'USD',
+        payment_terms VARCHAR(50) DEFAULT 'Net 30',
+        default_expense_account_id VARCHAR(64),
+        bank_details_encrypted TEXT,
+        custom_fields JSONB DEFAULT '{}'::jsonb,
+        notes TEXT,
         payables_balance NUMERIC(15, 2) DEFAULT 0.00,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        unused_credits NUMERIC(15, 2) DEFAULT 0.00,
+        advance_balance NUMERIC(15, 2) DEFAULT 0.00,
+        active BOOLEAN DEFAULT TRUE,
+        opening_balance NUMERIC(15, 2) DEFAULT 0.00,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       )`,
 
       `CREATE TABLE IF NOT EXISTS salespersons (
@@ -1034,6 +1061,14 @@ export class MigrationRunner {
       `ALTER TABLE vendors ADD COLUMN IF NOT EXISTS advance_balance NUMERIC(15, 2) DEFAULT 0.00`,
       `ALTER TABLE vendors ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE`,
       `ALTER TABLE vendors ADD COLUMN IF NOT EXISTS opening_balance NUMERIC(15, 2) DEFAULT 0.00`,
+      `ALTER TABLE vendors ADD COLUMN IF NOT EXISTS mobile VARCHAR(50)`,
+      `ALTER TABLE vendors ADD COLUMN IF NOT EXISTS website VARCHAR(255)`,
+      `ALTER TABLE vendors ADD COLUMN IF NOT EXISTS tax_id VARCHAR(50)`,
+      `ALTER TABLE vendors ADD COLUMN IF NOT EXISTS bank_details_encrypted TEXT`,
+      `ALTER TABLE vendors ADD COLUMN IF NOT EXISTS additional_contacts JSONB DEFAULT '[]'::jsonb`,
+      `ALTER TABLE vendors ADD COLUMN IF NOT EXISTS custom_fields JSONB DEFAULT '{}'::jsonb`,
+      `ALTER TABLE vendors ADD COLUMN IF NOT EXISTS notes TEXT`,
+      `ALTER TABLE vendors ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP`,
       `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS journal_entry_id VARCHAR(64)`,
       `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS vendor_id VARCHAR(64)`,
       `ALTER TABLE expenses ADD COLUMN IF NOT EXISTS vendor_invoice_number VARCHAR(128)`,
@@ -1930,6 +1965,12 @@ export class MigrationRunner {
           ALTER TABLE expenses ADD CONSTRAINT ck_expenses_positive
           CHECK (amount > 0);
         END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'organization_profiles' AND column_name = 'branding') THEN
+          ALTER TABLE organization_profiles ADD COLUMN branding JSONB DEFAULT '{}'::jsonb;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'organization_profiles' AND column_name = 'document_templates') THEN
+          ALTER TABLE organization_profiles ADD COLUMN document_templates JSONB DEFAULT '{}'::jsonb;
+        END IF;
       END $$`,
     ];
 
@@ -1971,6 +2012,14 @@ export class MigrationRunner {
     await applyUsabilitySchema(queryClient);
     await applyBankingStatementSchema(queryClient);
     await applyFinancialCommandSchema(queryClient);
+    await applyDocumentTemplateSchema(queryClient);
+
+    await queryClient.query(
+      `UPDATE accounts SET balance = ROUND(COALESCE(balance, 0)::numeric, 2) WHERE balance IS NOT NULL`
+    );
+    await queryClient.query(
+      `UPDATE bank_accounts SET current_balance = ROUND(COALESCE(current_balance, 0)::numeric, 2) WHERE current_balance IS NOT NULL`
+    );
 
     await queryClient.query(
       `INSERT INTO schema_migrations (version, description)

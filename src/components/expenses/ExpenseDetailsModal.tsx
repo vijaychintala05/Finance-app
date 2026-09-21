@@ -238,7 +238,7 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
     try {
       setIsDownloadingPdf(true);
       setShowMoreMenu(false);
-      const res = await apiClient.getBlob(`/finance/expenses/${activeExpense.id}/pdf`);
+      const res = await apiClient.getBlob(`/finance/documents/expenses/${activeExpense.id}/pdf`);
       if (res.data) {
         const blob = new Blob([res.data], { type: 'application/pdf' });
         const url = window.URL.createObjectURL(blob);
@@ -263,7 +263,7 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
     try {
       setIsDownloadingPdf(true);
       setShowMoreMenu(false);
-      const response = await apiClient.getBlob(`/finance/expenses/${activeExpense.id}/pdf`);
+      const response = await apiClient.getBlob(`/finance/documents/expenses/${activeExpense.id}/pdf`);
       if (!response.data) throw new Error(response.error || 'Voucher PDF could not be generated');
       const url = URL.createObjectURL(new Blob([response.data], { type: 'application/pdf' }));
       if (printWindow) {

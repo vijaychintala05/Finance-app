@@ -58,6 +58,8 @@ export const OPERATIONAL_TABLE_EXCLUSIONS = new Set([
 export const ENCRYPTED_SECRET_COLUMNS: Record<string, string[]> = {
   bank_feed_connections: ['credentials_encrypted'],
   organization_payment_gateways: ['key_secret', 'webhook_secret'],
+  vendors: ['bank_details_encrypted'],
+  vendor_attachments: ['content_encrypted'],
 };
 
 // This is the only source of exportable table and column names. Request data is
@@ -71,7 +73,9 @@ export const POINT1_RECOVERY_SCHEMA: readonly RecoveryTableSchema[] = [
   tenantTable('bank_accounts', ['id', 'organization_id', 'ledger_account_id', 'account_name', 'account_number', 'masked_account_number', 'bank_name', 'account_type', 'currency', 'country', 'current_balance', 'opening_balance_date', 'statement_import_enabled', 'status', 'is_active', 'created_at', 'updated_at']),
   tenantTable('clients', ['id', 'organization_id', 'name', 'company_name', 'email', 'phone', 'billing_address', 'tax_id', 'currency', 'payment_terms', 'notes', 'receivables_balance', 'created_at']),
   tenantTable('customers', ['id', 'organization_id', 'customer_id', 'display_name', 'legal_name', 'customer_type', 'gst_status', 'gstin', 'pan', 'billing_address', 'shipping_addresses', 'place_of_supply', 'primary_contact', 'additional_contacts', 'email', 'phone', 'currency', 'payment_terms', 'credit_limit', 'price_list_id', 'tax_preferences', 'default_sales_account_id', 'salesperson_id', 'notes', 'attachments', 'active', 'opening_balance', 'receivables_balance', 'unused_credits', 'advance_balance', 'created_at']),
-  tenantTable('vendors', ['id', 'organization_id', 'name', 'company_name', 'email', 'phone', 'currency', 'billing_address', 'payables_balance', 'created_at']),
+  tenantTable('vendors', ['id', 'organization_id', 'vendor_id', 'name', 'legal_name', 'company_name', 'vendor_type', 'gst_status', 'gstin', 'pan', 'email', 'phone', 'mobile', 'website', 'tax_id', 'currency', 'billing_address', 'shipping_address', 'place_of_supply', 'primary_contact', 'additional_contacts', 'payment_terms', 'default_expense_account_id', 'bank_details_encrypted', 'custom_fields', 'notes', 'payables_balance', 'unused_credits', 'advance_balance', 'active', 'opening_balance', 'created_at', 'updated_at']),
+  tenantTable('vendor_attachments', ['id', 'organization_id', 'vendor_id', 'file_name', 'mime_type', 'byte_size', 'sha256_hash', 'content_encrypted', 'uploaded_by', 'created_at', 'deleted_at', 'deleted_by']),
+  tenantTable('vendor_comments', ['id', 'organization_id', 'vendor_id', 'user_id', 'body', 'created_at']),
   tenantTable('salespersons', ['id', 'organization_id', 'name', 'email', 'phone', 'commission_rate', 'created_at']),
   tenantTable('projects', ['id', 'organization_id', 'code', 'name', 'client_id', 'client_name', 'description', 'status', 'budget_type', 'total_budget', 'hourly_rate', 'manager', 'created_at']),
   tenantTable('time_entries', ['id', 'organization_id', 'project_id', 'project_name', 'client_name', 'staff_name', 'task_name', 'date', 'hours', 'hourly_rate', 'is_billable', 'is_billed', 'description', 'created_at', 'invoice_id']),

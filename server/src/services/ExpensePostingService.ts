@@ -435,11 +435,14 @@ export class ExpensePostingService {
           throw new Error('EXPENSE_VENDOR_INVALID: Vendor is invalid');
         }
         const vendorCheck = await client.query(
-          `SELECT id, name, company_name FROM vendors WHERE organization_id = $1 AND id = $2`,
+          `SELECT id, name, company_name, active FROM vendors WHERE organization_id = $1 AND id = $2`,
           [organizationId, input.vendorId]
         );
         if (vendorCheck.rows.length !== 1) {
           throw new Error('EXPENSE_VENDOR_INVALID: Vendor was not found in this organization');
+        }
+        if (vendorCheck.rows[0].active === false) {
+          throw new Error('EXPENSE_VENDOR_ARCHIVED: Archived vendors cannot be selected for new expenses');
         }
         vendorId = vendorCheck.rows[0].id;
         vendorName = String(vendorCheck.rows[0].company_name || vendorCheck.rows[0].name || '').trim();

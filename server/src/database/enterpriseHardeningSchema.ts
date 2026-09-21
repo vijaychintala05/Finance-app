@@ -13,6 +13,9 @@ export const TENANT_SCOPED_TABLES = [
   'clients',
   'customers',
   'vendors',
+  'vendor_attachments',
+  'vendor_comments',
+  'vendor_mails',
   'salespersons',
   'projects',
   'time_entries',
@@ -73,7 +76,49 @@ export const TENANT_SCOPED_TABLES = [
 ];
 
 export async function applyEnterpriseHardeningSchema(client: DbQueryClient): Promise<void> {
+  await client.query('ALTER TABLE vendors ADD CONSTRAINT uk_vendors_org_id UNIQUE (organization_id, id)').catch(() => {});
   const additiveStatements = [
+    `CREATE TABLE IF NOT EXISTS vendor_attachments (
+      id VARCHAR(64) PRIMARY KEY,
+      organization_id VARCHAR(64) NOT NULL,
+      vendor_id VARCHAR(64) NOT NULL,
+      file_name VARCHAR(180) NOT NULL,
+      mime_type VARCHAR(32) NOT NULL,
+      byte_size INTEGER NOT NULL,
+      sha256_hash VARCHAR(64) NOT NULL,
+      content_encrypted TEXT NOT NULL,
+      uploaded_by VARCHAR(64) NOT NULL,
+      created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      deleted_at TIMESTAMP WITH TIME ZONE,
+      deleted_by VARCHAR(64),
+      CONSTRAINT fk_vendor_attachment_vendor_org FOREIGN KEY (organization_id, vendor_id) REFERENCES vendors(organization_id, id) ON DELETE RESTRICT,
+      CONSTRAINT ck_vendor_attachment_size CHECK (byte_size > 0 AND byte_size <= 2097152),
+      CONSTRAINT ck_vendor_attachment_mime CHECK (mime_type IN ('application/pdf', 'image/jpeg', 'image/png', 'image/webp'))
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_vendor_attachments_org_vendor ON vendor_attachments (organization_id, vendor_id, created_at DESC) WHERE deleted_at IS NULL`,
+    `CREATE TABLE IF NOT EXISTS vendor_comments (
+      id VARCHAR(64) PRIMARY KEY,
+      organization_id VARCHAR(64) NOT NULL,
+      vendor_id VARCHAR(64) NOT NULL,
+      user_id VARCHAR(64) NOT NULL,
+      body VARCHAR(4000) NOT NULL,
+      created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT fk_vendor_comment_vendor_org FOREIGN KEY (organization_id, vendor_id) REFERENCES vendors(organization_id, id) ON DELETE RESTRICT
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_vendor_comments_org_vendor ON vendor_comments (organization_id, vendor_id, created_at DESC)`,
+    `CREATE TABLE IF NOT EXISTS vendor_mails (
+      id VARCHAR(64) PRIMARY KEY,
+      organization_id VARCHAR(64) NOT NULL,
+      vendor_id VARCHAR(64) NOT NULL,
+      user_id VARCHAR(64),
+      to_email VARCHAR(255) NOT NULL,
+      subject VARCHAR(500) NOT NULL,
+      body TEXT NOT NULL,
+      status VARCHAR(32) NOT NULL DEFAULT 'Sent',
+      created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT fk_vendor_mail_vendor_org FOREIGN KEY (organization_id, vendor_id) REFERENCES vendors(organization_id, id) ON DELETE RESTRICT
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_vendor_mails_org_vendor ON vendor_mails (organization_id, vendor_id, created_at DESC)`,
     `CREATE TABLE IF NOT EXISTS expense_receipt_attachments (
       id VARCHAR(64) PRIMARY KEY,
       organization_id VARCHAR(64) NOT NULL,

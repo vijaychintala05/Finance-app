@@ -1214,7 +1214,7 @@ export const SYSTEM_ROLE_PERMISSIONS: Record<string, PermissionCode[]> = {
     'invoices.view', 'invoices.create', 'invoices.send', 'invoices.void', 'invoices.write_off',
     'customer_payments.view', 'customer_payments.create', 'customer_payments.allocate', 'customer_payments.reverse',
     'credit_notes.view', 'credit_notes.create', 'credit_notes.apply', 'credit_notes.refund', 'credit_notes.void',
-    'vendors.view', 'vendors.create', 'vendors.edit',
+    'vendors.view', 'vendors.create', 'vendors.edit', 'vendors.archive',
     'purchase_orders.view', 'purchase_orders.create', 'purchase_orders.edit', 'purchase_orders.submit', 'purchase_orders.approve', 'purchase_orders.cancel', 'purchase_orders.convert_to_bill',
     'bills.view', 'bills.create', 'bills.void',
     'vendor_payments.view', 'vendor_payments.create', 'vendor_payments.allocate', 'vendor_payments.reverse',
@@ -1241,7 +1241,7 @@ export const SYSTEM_ROLE_PERMISSIONS: Record<string, PermissionCode[]> = {
     'invoices.view', 'invoices.create', 'invoices.send',
     'customer_payments.view', 'customer_payments.create', 'customer_payments.allocate',
     'credit_notes.view', 'credit_notes.create', 'credit_notes.apply', 'credit_notes.refund',
-    'vendors.view', 'vendors.create', 'vendors.edit',
+    'vendors.view', 'vendors.create', 'vendors.edit', 'vendors.archive',
     'purchase_orders.view', 'purchase_orders.create', 'purchase_orders.edit', 'purchase_orders.submit', 'purchase_orders.convert_to_bill',
     'bills.view', 'bills.create',
     'vendor_payments.view', 'vendor_payments.allocate',
@@ -1285,7 +1285,7 @@ export const SYSTEM_ROLE_PERMISSIONS: Record<string, PermissionCode[]> = {
   ],
 
   Purchase: [
-    'vendors.view', 'vendors.create', 'vendors.edit',
+    'vendors.view', 'vendors.create', 'vendors.edit', 'vendors.archive',
     'purchase_orders.view', 'purchase_orders.create', 'purchase_orders.edit', 'purchase_orders.submit', 'purchase_orders.cancel', 'purchase_orders.convert_to_bill',
     'bills.view', 'bills.create',
     'vendor_advances.view',

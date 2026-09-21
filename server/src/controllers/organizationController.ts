@@ -45,6 +45,7 @@ export class OrganizationController {
                 estimate_prefix as "estimatePrefix", po_prefix as "poPrefix", bill_prefix as "billPrefix",
                 logo_url as "logoUrl", invoice_notes as "invoiceNotes", bank_name as "bankName",
                 bank_account_number as "bankAccountNumber", bank_ifsc_swift as "bankIfscSwift",
+                branding, document_templates as "documentTemplates",
                 updated_at as "updatedAt"
          FROM organization_profiles
          WHERE organization_id = $1`,
@@ -82,6 +83,15 @@ export class OrganizationController {
           bankName: profile.bankName || '',
           bankAccountNumber: profile.bankAccountNumber || '',
           bankIfscSwift: profile.bankIfscSwift || '',
+          branding: profile.branding || {
+            primaryColor: '#1e40af',
+            accentColor: '#0f172a',
+            fontFamily: 'Inter',
+            footerNote: 'Thank you for your business.',
+            termsAndConditions: 'Payment is due within payment terms.',
+            authorizedSignatoryTitle: 'Authorized Signatory',
+          },
+          documentTemplates: profile.documentTemplates || {},
           updatedAt: profile.updatedAt || org.createdAt,
         },
       };
@@ -140,7 +150,21 @@ export class OrganizationController {
         bankName,
         bankAccountNumber,
         bankIfscSwift,
+        branding,
+        documentTemplates,
       } = req.body || {};
+
+      if (branding && typeof branding === 'object') {
+        const hexRegex = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+        if (branding.primaryColor && !hexRegex.test(branding.primaryColor)) {
+          res.status(400).json({ error: 'Invalid primary brand color hex format (e.g. #1e40af)' });
+          return;
+        }
+        if (branding.accentColor && !hexRegex.test(branding.accentColor)) {
+          res.status(400).json({ error: 'Invalid accent brand color hex format (e.g. #0f172a)' });
+          return;
+        }
+      }
 
       const trimmedName = typeof name === 'string' ? name.trim() : undefined;
       if (trimmedName !== undefined && (trimmedName.length < 2 || trimmedName.length > 120)) {
@@ -196,10 +220,11 @@ export class OrganizationController {
             phone, email, website, fiscal_year_start, default_payment_terms,
             invoice_prefix, estimate_prefix, po_prefix, bill_prefix,
             logo_url, invoice_notes, bank_name, bank_account_number, bank_ifsc_swift,
+            branding, document_templates,
             updated_at
           ) VALUES (
             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-            $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, CURRENT_TIMESTAMP
+            $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, CURRENT_TIMESTAMP
           )
           ON CONFLICT (organization_id) DO UPDATE SET
             legal_name = EXCLUDED.legal_name,
@@ -227,6 +252,8 @@ export class OrganizationController {
             bank_name = EXCLUDED.bank_name,
             bank_account_number = EXCLUDED.bank_account_number,
             bank_ifsc_swift = EXCLUDED.bank_ifsc_swift,
+            branding = COALESCE(EXCLUDED.branding, organization_profiles.branding),
+            document_templates = COALESCE(EXCLUDED.document_templates, organization_profiles.document_templates),
             updated_at = CURRENT_TIMESTAMP`,
           [
             orgId,
@@ -255,6 +282,8 @@ export class OrganizationController {
             bankName || null,
             bankAccountNumber || null,
             bankIfscSwift || null,
+            branding ? JSON.stringify(branding) : null,
+            documentTemplates ? JSON.stringify(documentTemplates) : null,
           ]
         );
 

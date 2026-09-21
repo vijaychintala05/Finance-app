@@ -2302,9 +2302,9 @@ export class BankReconciliationService {
       }, client);
       const jrnId = posting.entryId;
 
-      const balanceDelta = isDebit ? -statementTx.amount : statementTx.amount;
+      const balanceDelta = Math.round((isDebit ? -statementTx.amount : statementTx.amount) * 100) / 100;
       await client.query(
-        `UPDATE bank_accounts SET current_balance = current_balance + $1, updated_at = CURRENT_TIMESTAMP WHERE organization_id = $2 AND id = $3`,
+        `UPDATE bank_accounts SET current_balance = ROUND((COALESCE(current_balance, 0) + $1)::numeric, 2), updated_at = CURRENT_TIMESTAMP WHERE organization_id = $2 AND id = $3`,
         [balanceDelta, orgId, statementTx.bankAccountId]
       );
 

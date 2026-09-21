@@ -28,6 +28,7 @@ interface CashFlowWidgetProps {
   periodLabel?: string;
   currencySymbol?: string;
   onNavigate?: (tab: any) => void;
+  asOfDate?: string;
   selectedPreset?: string;
   onPresetSelect?: (preset: 'today' | 'mtd' | 'qtd' | 'ytd' | 'last12' | 'custom') => void;
 }
@@ -69,6 +70,7 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
   periodLabel = 'Year to date',
   currencySymbol = '$',
   onNavigate,
+  asOfDate,
   selectedPreset = 'ytd',
   onPresetSelect,
 }) => {
@@ -97,10 +99,10 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
   }, [cashMovements, timelinePoints, userToggledBasis]);
 
   useEffect(() => {
-    if (userSelectedPeriod && selectedPreset && ['ytd', 'qtd', 'mtd', 'last12'].includes(selectedPreset)) {
+    if (selectedPreset && ['ytd', 'qtd', 'mtd', 'last12'].includes(selectedPreset)) {
       setInternalPeriod(selectedPreset);
     }
-  }, [selectedPreset, userSelectedPeriod]);
+  }, [selectedPreset]);
 
   const money = (val: number) => formatCurrency(val, currencySymbol);
 
@@ -116,9 +118,23 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
 
   // Active filtered months based on internal period selector with exact YYYY-MM key mapping
   const activeMonths = useMemo(() => {
-    const now = new Date();
-    const currentYear = now.getFullYear();
-    const currentMonthIdx = now.getMonth();
+    let currentYear: number;
+    let currentMonthIdx: number;
+    if (asOfDate) {
+      const parts = asOfDate.slice(0, 10).split('-').map(Number);
+      if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+        currentYear = parts[0];
+        currentMonthIdx = parts[1] - 1;
+      } else {
+        const d = new Date(asOfDate);
+        currentYear = isNaN(d.getTime()) ? new Date().getFullYear() : d.getFullYear();
+        currentMonthIdx = isNaN(d.getTime()) ? new Date().getMonth() : d.getMonth();
+      }
+    } else {
+      const now = new Date();
+      currentYear = now.getFullYear();
+      currentMonthIdx = now.getMonth();
+    }
     const currentQuarter = Math.floor(currentMonthIdx / 3);
 
     let targetMonths: Array<{
@@ -220,8 +236,10 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
           }
         }
 
-        // Try exact YYYY-MM match first, otherwise monthIdx match
-        const found = targetMonths.find((tm) => tm.ymKey === ptYm) || (ptMonth >= 0 ? targetMonths.find((tm) => tm.monthIdx === ptMonth) : undefined);
+        // Try exact YYYY-MM match first, otherwise fallback to monthIdx only if no year
+        const found = ptYm
+          ? targetMonths.find((tm) => tm.ymKey === ptYm)
+          : (ptMonth >= 0 ? targetMonths.find((tm) => tm.monthIdx === ptMonth) : undefined);
         if (found) {
           found.income += Number(pt.income || 0);
           found.expenses += Number(pt.expenses || 0);
@@ -231,7 +249,7 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
     }
 
     return targetMonths;
-  }, [activePoints, internalPeriod]);
+  }, [activePoints, internalPeriod, asOfDate]);
 
   // Derived active totals based on filtered period
   const totals = useMemo(() => {
@@ -260,13 +278,19 @@ export const CashFlowWidget: React.FC<CashFlowWidgetProps> = ({
 
   // Dynamic period badge text
   const currentPeriodBadge = useMemo(() => {
-    const currentMonthIdx = new Date().getMonth();
+    let currentMonthIdx: number;
+    if (asOfDate) {
+      const parts = asOfDate.slice(0, 10).split('-').map(Number);
+      currentMonthIdx = parts.length >= 2 && !isNaN(parts[1]) ? parts[1] - 1 : new Date().getMonth();
+    } else {
+      currentMonthIdx = new Date().getMonth();
+    }
     const currentQuarter = Math.floor(currentMonthIdx / 3) + 1;
     if (internalPeriod === 'qtd') return `Q${currentQuarter}`;
     if (internalPeriod === 'mtd') return 'MTD';
     if (internalPeriod === 'last12') return 'Last 12M';
     return 'YTD';
-  }, [internalPeriod]);
+  }, [internalPeriod, asOfDate]);
 
   // SVG Chart Layout Metrics
   const chartWidth = 720;

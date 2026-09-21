@@ -70,6 +70,8 @@ interface DashboardData {
     collections: Array<{ partyName: string; amount: number; overdue: boolean; dueDate: string | null }>;
     billsDue: Array<{ partyName: string; amount: number; overdue: boolean; dueDate: string | null }>;
     recentTransactions: Array<{ type: string; documentNumber: string; partyName: string; amount: number; status: string; date: string }>;
+    unbilledHours?: number;
+    unbilledExpenses?: number;
   };
   cashFlow?: {
     movements: Array<{ date: string; cashIn: number; cashOut: number; net: number }>;
@@ -115,7 +117,7 @@ const viewLabels: Record<DashboardViewKey, string> = {
 };
 
 export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
-  const { settings, accounts, timeEntries, expenses } = useBooks();
+  const { settings, accounts, timeEntries, expenses, projects, addTimeEntry } = useBooks();
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [view, setView] = useState<DashboardViewKey>('overview');
   const [asOfDate, setAsOfDate] = useState(localIsoDate);
@@ -133,8 +135,46 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
   const [mobileCashFlowBasis, setMobileCashFlowBasis] = useState<'accrual' | 'cash'>('cash');
   const [mobileExpensePeriod, setMobileExpensePeriod] = useState<'fiscal' | 'year' | 'quarter' | 'month'>('fiscal');
   const [mobileHoverPoint, setMobileHoverPoint] = useState<{ month: string; amount: number } | null>(null);
-  const [isTimerRunning, setIsTimerRunning] = useState(false);
-  const [timerSeconds, setTimerSeconds] = useState(0);
+
+  // Persistent timer state backed by localStorage
+  const [selectedTimerProjectId, setSelectedTimerProjectId] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem('firmbooks_dashboard_timer');
+      if (saved) return JSON.parse(saved).projectId || '';
+    } catch { }
+    return '';
+  });
+  const [timerTaskName, setTimerTaskName] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem('firmbooks_dashboard_timer');
+      if (saved) return JSON.parse(saved).taskName || 'General Work';
+    } catch { }
+    return 'General Work';
+  });
+  const [isTimerRunning, setIsTimerRunning] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('firmbooks_dashboard_timer');
+      if (saved) return !!JSON.parse(saved).isRunning;
+    } catch { }
+    return false;
+  });
+  const [timerSeconds, setTimerSeconds] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('firmbooks_dashboard_timer');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        let sec = Number(parsed.elapsedSeconds) || 0;
+        if (parsed.isRunning && parsed.startTime) {
+          const delta = Math.floor((Date.now() - Number(parsed.startTime)) / 1000);
+          if (delta > 0) sec += delta;
+        }
+        return sec;
+      }
+    } catch { }
+    return 0;
+  });
+  const [isSavingTimer, setIsSavingTimer] = useState(false);
+  const [timerFeedback, setTimerFeedback] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -247,6 +287,65 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     };
   }, [isTimerRunning]);
 
+  // Sync timer state to localStorage
+  useEffect(() => {
+    try {
+      if (isTimerRunning || timerSeconds > 0) {
+        localStorage.setItem('firmbooks_dashboard_timer', JSON.stringify({
+          projectId: selectedTimerProjectId,
+          taskName: timerTaskName,
+          startTime: isTimerRunning ? Date.now() : null,
+          elapsedSeconds: timerSeconds,
+          isRunning: isTimerRunning,
+        }));
+      } else {
+        localStorage.removeItem('firmbooks_dashboard_timer');
+      }
+    } catch { }
+  }, [isTimerRunning, timerSeconds, selectedTimerProjectId, timerTaskName]);
+
+  const handleSaveTimerEntry = async () => {
+    if (timerSeconds <= 0) return;
+    setIsSavingTimer(true);
+    try {
+      const activeProject = (projects || []).find((p) => p.id === selectedTimerProjectId) || projects?.[0];
+      const hours = Math.max(0.01, Number((timerSeconds / 3600).toFixed(2)));
+      await addTimeEntry({
+        projectId: activeProject?.id || 'general',
+        projectName: activeProject?.name || 'General Operations',
+        clientName: activeProject?.clientName || 'Internal Client',
+        staffName: 'Current User',
+        taskName: timerTaskName || 'General Work',
+        date: localIsoDate(),
+        hours,
+        hourlyRate: activeProject?.hourlyRate ? Number(activeProject.hourlyRate) : 0,
+        isBillable: true,
+        isBilled: false,
+        description: `Logged from Dashboard Timer session: ${timerTaskName || 'General Work'}`,
+      });
+      setIsTimerRunning(false);
+      setTimerSeconds(0);
+      try {
+        localStorage.removeItem('firmbooks_dashboard_timer');
+      } catch { }
+      setTimerFeedback(`Saved ${hours} hr(s) successfully!`);
+      setTimeout(() => setTimerFeedback(null), 3000);
+      setReloadToken((prev) => prev + 1);
+    } catch (err: any) {
+      alert(err.message || 'Failed to save time entry');
+    } finally {
+      setIsSavingTimer(false);
+    }
+  };
+
+  const handleResetTimer = () => {
+    setIsTimerRunning(false);
+    setTimerSeconds(0);
+    try {
+      localStorage.removeItem('firmbooks_dashboard_timer');
+    } catch { }
+  };
+
   const formattedTimer = useMemo(() => {
     const hrs = Math.floor(timerSeconds / 3600);
     const mins = Math.floor((timerSeconds % 3600) / 60);
@@ -254,9 +353,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   }, [timerSeconds]);
 
+  // Use authoritative unbilledHours from dashboard overview when available, fallback to client cache
   const unbilledHoursCount = useMemo(() => {
+    if (dashboard?.overview?.unbilledHours !== undefined && dashboard?.overview?.unbilledHours !== null) {
+      return Number(dashboard.overview.unbilledHours);
+    }
     return (timeEntries || []).filter((t) => t.isBillable && !t.isBilled).reduce((acc, t) => acc + (Number(t.hours) || 0), 0);
-  }, [timeEntries]);
+  }, [dashboard?.overview?.unbilledHours, timeEntries]);
 
   const formattedUnbilledHours = useMemo(() => {
     const h = Math.floor(unbilledHoursCount);
@@ -264,9 +367,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     return `${h}:${m.toString().padStart(2, '0')}`;
   }, [unbilledHoursCount]);
 
+  // Use authoritative unbilledExpenses from dashboard overview when available, fallback to client cache
   const unbilledExpensesCount = useMemo(() => {
+    if (dashboard?.overview?.unbilledExpenses !== undefined && dashboard?.overview?.unbilledExpenses !== null) {
+      return Number(dashboard.overview.unbilledExpenses);
+    }
     return (expenses || []).filter((e) => e.isBillable && !e.isBilled).reduce((acc, e) => acc + (Number(e.amount) || 0), 0);
-  }, [expenses]);
+  }, [dashboard?.overview?.unbilledExpenses, expenses]);
 
   // Real timeline points from authoritative backend response
   const timelinePoints = useMemo(() => {
@@ -295,6 +402,46 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       net: Number(movement.net || 0),
     }));
   }, [dashboard]);
+
+  // Dynamic calculation for mobile cash flow mini metrics filtered strictly to the selected period
+  const mobilePeriodTotals = useMemo(() => {
+    const activePoints = mobileCashFlowBasis === 'cash' ? cashTimelinePoints : timelinePoints;
+    const asOf = new Date(`${asOfDate}T00:00:00Z`);
+    const asOfYear = Number.isNaN(asOf.getTime()) ? new Date().getFullYear() : asOf.getUTCFullYear();
+    const asOfMonth = Number.isNaN(asOf.getTime()) ? new Date().getMonth() : asOf.getUTCMonth();
+    const fiscalStartMonth = Math.max(1, Math.min(12, Number(settings.fiscalYearStartMonth) || 1));
+
+    let targetYmKeys: string[] = [];
+    if (mobileCashFlowPeriod === 'month') {
+      targetYmKeys = [`${asOfYear}-${String(asOfMonth + 1).padStart(2, '0')}`];
+    } else if (mobileCashFlowPeriod === 'quarter') {
+      const qStart = Math.floor(asOfMonth / 3) * 3;
+      targetYmKeys = [0, 1, 2].map((offset) => `${asOfYear}-${String(qStart + offset + 1).padStart(2, '0')}`);
+    } else if (mobileCashFlowPeriod === 'year') {
+      targetYmKeys = Array.from({ length: 12 }, (_, m) => `${asOfYear}-${String(m + 1).padStart(2, '0')}`);
+    } else {
+      // 'fiscal'
+      const fiscalStartYear = (asOfMonth + 1 < fiscalStartMonth) ? asOfYear - 1 : asOfYear;
+      targetYmKeys = Array.from({ length: 12 }, (_, i) => {
+        const totalMonth = (fiscalStartMonth - 1) + i;
+        const y = fiscalStartYear + Math.floor(totalMonth / 12);
+        const m = totalMonth % 12;
+        return `${y}-${String(m + 1).padStart(2, '0')}`;
+      });
+    }
+
+    const keySet = new Set(targetYmKeys);
+    const filtered = activePoints.filter((p) => {
+      const raw = String(p.rawDate || p.date || '');
+      const iso = raw.slice(0, 7);
+      return keySet.has(iso);
+    });
+
+    const totalIncome = filtered.reduce((acc, p) => acc + p.income, 0);
+    const totalExpenses = filtered.reduce((acc, p) => acc + p.expenses, 0);
+    const totalNet = totalIncome - totalExpenses;
+    return { totalIncome, totalExpenses, totalNet };
+  }, [mobileCashFlowBasis, mobileCashFlowPeriod, asOfDate, cashTimelinePoints, timelinePoints, settings.fiscalYearStartMonth]);
 
   const chartTotals = useMemo(() => {
     const totalIncome = timelinePoints.reduce((acc, p) => acc + p.income, 0);
@@ -596,7 +743,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                 >
                   <span className="text-[11px] font-medium text-blue-100/90 block">Total Receivables</span>
                   <div className="mt-1 flex items-center gap-1">
-                    <span className="font-financial text-lg sm:text-2xl font-black text-white truncate">
+                    <span className="min-w-0 break-words font-financial text-base leading-tight sm:text-2xl font-black text-white">
                       {money(dashboard.overview?.receivables ?? 0)}
                     </span>
                     <ChevronDown className="w-3.5 h-3.5 text-blue-200 shrink-0 group-hover:translate-y-0.5 transition-transform" />
@@ -613,7 +760,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                 >
                   <span className="text-[11px] font-medium text-blue-100/90 block">Total Payables</span>
                   <div className="mt-1 flex items-center gap-1">
-                    <span className="font-financial text-base sm:text-xl font-black text-white truncate">
+                    <span className="min-w-0 break-words font-financial text-sm leading-tight sm:text-xl font-black text-white">
                       {money(dashboard.overview?.payables ?? 0)}
                     </span>
                     <ChevronDown className="w-3.5 h-3.5 text-blue-200 shrink-0 group-hover:translate-y-0.5 transition-transform" />
@@ -776,36 +923,99 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                     </linearGradient>
                   </defs>
 
-                  {/* Values are matched to their actual ledger month; empty months remain zero. */}
+                  {/* Values are matched to exact YYYY-MM ledger months without cross-year collisions */}
                   {(() => {
                     const activePoints = mobileCashFlowBasis === 'cash' ? cashTimelinePoints : timelinePoints;
                     const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-                    const currentMonth = new Date(`${asOfDate}T00:00:00Z`).getUTCMonth();
-                    const fiscalStart = Math.max(0, Math.min(11, (Number(settings.fiscalYearStartMonth) || 1) - 1));
-                    const startMonth = mobileCashFlowPeriod === 'fiscal' ? fiscalStart
-                      : mobileCashFlowPeriod === 'quarter' ? Math.floor(currentMonth / 3) * 3
-                      : mobileCashFlowPeriod === 'month' ? currentMonth : 0;
-                    const monthCount = mobileCashFlowPeriod === 'quarter' ? 3 : mobileCashFlowPeriod === 'month' ? 1 : 12;
-                    const months = Array.from({ length: monthCount }, (_, index) => (startMonth + index) % 12);
-                    const dataByMonth = new Map<number, { net: number }>();
+                    const asOf = new Date(`${asOfDate}T00:00:00Z`);
+                    const asOfYear = Number.isNaN(asOf.getTime()) ? new Date().getFullYear() : asOf.getUTCFullYear();
+                    const asOfMonth = Number.isNaN(asOf.getTime()) ? new Date().getMonth() : asOf.getUTCMonth();
+                    const fiscalStartMonth = Math.max(1, Math.min(12, Number(settings.fiscalYearStartMonth) || 1));
+
+                    let targetMonths: Array<{ ymKey: string; year: number; month: number; label: string }> = [];
+
+                    if (mobileCashFlowPeriod === 'month') {
+                      targetMonths = [{
+                        ymKey: `${asOfYear}-${String(asOfMonth + 1).padStart(2, '0')}`,
+                        year: asOfYear,
+                        month: asOfMonth,
+                        label: monthNames[asOfMonth],
+                      }];
+                    } else if (mobileCashFlowPeriod === 'quarter') {
+                      const qStart = Math.floor(asOfMonth / 3) * 3;
+                      targetMonths = [0, 1, 2].map((offset) => {
+                        const m = qStart + offset;
+                        return {
+                          ymKey: `${asOfYear}-${String(m + 1).padStart(2, '0')}`,
+                          year: asOfYear,
+                          month: m,
+                          label: monthNames[m],
+                        };
+                      });
+                    } else if (mobileCashFlowPeriod === 'year') {
+                      targetMonths = Array.from({ length: 12 }, (_, m) => ({
+                        ymKey: `${asOfYear}-${String(m + 1).padStart(2, '0')}`,
+                        year: asOfYear,
+                        month: m,
+                        label: monthNames[m],
+                      }));
+                    } else {
+                      // 'fiscal'
+                      const fiscalStartYear = (asOfMonth + 1 < fiscalStartMonth) ? asOfYear - 1 : asOfYear;
+                      targetMonths = Array.from({ length: 12 }, (_, i) => {
+                        const totalMonth = (fiscalStartMonth - 1) + i;
+                        const y = fiscalStartYear + Math.floor(totalMonth / 12);
+                        const m = totalMonth % 12;
+                        return {
+                          ymKey: `${y}-${String(m + 1).padStart(2, '0')}`,
+                          year: y,
+                          month: m,
+                          label: monthNames[m],
+                        };
+                      });
+                    }
+
+                    // Map movements strictly to their matching target YYYY-MM
+                    const dataByYm = new Map<string, { income: number; expenses: number; net: number }>();
                     activePoints.forEach((point) => {
-                      const pointDate = new Date(`${point.rawDate}T00:00:00Z`);
-                      if (Number.isNaN(pointDate.getTime())) return;
-                      const month = pointDate.getUTCMonth();
-                      const prior = dataByMonth.get(month) || { net: 0 };
-                      dataByMonth.set(month, { net: prior.net + point.net });
-                    });
-                    const stepX = months.length > 1 ? (340 - 32) / (months.length - 1) : 0;
-                    const peak = Math.max(1, ...Array.from(dataByMonth.values()).map((point) => Math.abs(point.net)));
-                    const compact = (value: number) => value >= 1_000_000 ? `${(value / 1_000_000).toFixed(1)}M` : value >= 1_000 ? `${Math.round(value / 1_000)}K` : `${Math.round(value)}`;
-                    const points = months.map((month, i) => {
-                      const x = 32 + i * stepX;
-                      const value = dataByMonth.get(month)?.net || 0;
-                      const y = Math.max(16, Math.min(112, 65 - (value / peak) * 46));
-                      return { x, y, month: monthNames[month], amount: value };
+                      const raw = String(point.rawDate || point.date || '');
+                      const isoMatch = raw.match(/^(\d{4})-(\d{2})/);
+                      let ymKey = '';
+                      if (isoMatch) {
+                        ymKey = `${isoMatch[1]}-${isoMatch[2]}`;
+                      } else {
+                        const d = new Date(raw);
+                        if (!isNaN(d.getTime())) {
+                          ymKey = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+                        }
+                      }
+                      if (!ymKey) return;
+                      const prior = dataByYm.get(ymKey) || { income: 0, expenses: 0, net: 0 };
+                      dataByYm.set(ymKey, {
+                        income: prior.income + point.income,
+                        expenses: prior.expenses + point.expenses,
+                        net: prior.net + point.net,
+                      });
                     });
 
-                    const linePath = `M ${points.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' L ')}`;
+                    const periodValues = targetMonths.map((tm) => dataByYm.get(tm.ymKey)?.net || 0);
+                    const peak = Math.max(1, ...periodValues.map((v) => Math.abs(v)));
+                    const compact = (value: number) =>
+                      value >= 1_000_000
+                        ? `${(value / 1_000_000).toFixed(1)}M`
+                        : value >= 1_000
+                        ? `${Math.round(value / 1_000)}K`
+                        : `${Math.round(value)}`;
+
+                    const stepX = targetMonths.length > 1 ? (340 - 32) / (targetMonths.length - 1) : 0;
+                    const points = targetMonths.map((tm, i) => {
+                      const x = targetMonths.length > 1 ? 32 + i * stepX : 170;
+                      const value = dataByYm.get(tm.ymKey)?.net || 0;
+                      const y = Math.max(16, Math.min(112, 65 - (value / peak) * 46));
+                      return { x, y, month: tm.label, fullKey: tm.ymKey, amount: value };
+                    });
+
+                    const linePath = `M ${points.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' L ')}`;
                     const areaPath = `${linePath} L ${points[points.length - 1].x},65 L ${points[0].x},65 Z`;
 
                     return (
@@ -820,7 +1030,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                         <path d={linePath} fill="none" stroke="#2563eb" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
                         {points.map((p) => (
                           <circle
-                            key={p.month}
+                            key={p.fullKey}
                             cx={p.x}
                             cy={p.y}
                             r={mobileHoverPoint?.month === p.month ? 4.5 : 2.5}
@@ -832,7 +1042,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                           />
                         ))}
                         {points.map((p) => (
-                          <text key={`${p.month}-label`} x={p.x} y="132" fill="#94a3b8" fontSize="8.5" fontWeight="600" textAnchor="middle">
+                          <text key={`${p.fullKey}-label`} x={p.x} y="132" fill="#94a3b8" fontSize="8.5" fontWeight="600" textAnchor="middle">
                             {p.month}
                           </text>
                         ))}
@@ -848,25 +1058,25 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                 )}
               </div>
 
-              {/* Bottom Mini Metrics */}
+              {/* Bottom Mini Metrics Strictly Filtered to Selected Period */}
               {mobileCashFlowBasis === 'cash' ? (
                 <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 grid grid-cols-3 gap-2 text-center">
                   <div className="p-2 rounded-xl bg-slate-50/80 dark:bg-slate-800/50">
                     <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Cash In</span>
                     <span className="font-financial font-bold text-xs text-emerald-600 dark:text-emerald-400 mt-0.5 block truncate">
-                      {money(cashTimelinePoints.reduce((acc, p) => acc + p.income, 0))}
+                      {money(mobilePeriodTotals.totalIncome)}
                     </span>
                   </div>
                   <div className="p-2 rounded-xl bg-slate-50/80 dark:bg-slate-800/50">
                     <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Cash Out</span>
                     <span className="font-financial font-bold text-xs text-rose-600 dark:text-rose-400 mt-0.5 block truncate">
-                      {money(cashTimelinePoints.reduce((acc, p) => acc + p.expenses, 0))}
+                      {money(mobilePeriodTotals.totalExpenses)}
                     </span>
                   </div>
                   <div className="p-2 rounded-xl bg-slate-50/80 dark:bg-slate-800/50">
                     <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Net Cash</span>
                     <span className="font-financial font-bold text-xs text-blue-600 dark:text-blue-400 mt-0.5 block truncate">
-                      {money(cashTimelinePoints.reduce((acc, p) => acc + p.net, 0))}
+                      {money(mobilePeriodTotals.totalNet)}
                     </span>
                   </div>
                 </div>
@@ -875,26 +1085,26 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                   <div className="p-2 rounded-xl bg-slate-50/80 dark:bg-slate-800/50">
                     <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Total Income</span>
                     <span className="font-financial font-bold text-xs text-blue-600 dark:text-blue-400 mt-0.5 block truncate">
-                      {money(dashboard?.overview?.salesThisMonth ?? 0)}
+                      {money(mobilePeriodTotals.totalIncome)}
                     </span>
                   </div>
                   <div className="p-2 rounded-xl bg-slate-50/80 dark:bg-slate-800/50">
                     <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Total Expenses</span>
                     <span className="font-financial font-bold text-xs text-amber-600 dark:text-amber-400 mt-0.5 block truncate">
-                      {money(dashboard?.overview?.expensesThisMonth ?? 0)}
+                      {money(mobilePeriodTotals.totalExpenses)}
                     </span>
                   </div>
                   <div className="p-2 rounded-xl bg-slate-50/80 dark:bg-slate-800/50">
                     <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Net Profit</span>
                     <span className="font-financial font-bold text-xs text-emerald-600 dark:text-emerald-400 mt-0.5 block truncate">
-                      {money((dashboard?.overview?.salesThisMonth ?? 0) - (dashboard?.overview?.expensesThisMonth ?? 0))}
+                      {money(mobilePeriodTotals.totalNet)}
                     </span>
                   </div>
                 </div>
               )}
             </div>
 
-            {/* 3.5. PROJECT TIMER & UNBILLED HOURS WIDGET (MATCHING IMAGE 2 IN LIGHT MODE) */}
+            {/* 3.5. PROJECT TIMER & UNBILLED HOURS WIDGET */}
             <div className="space-y-2.5">
               {/* Main Timer Card */}
               <div className="rounded-2xl bg-gradient-to-br from-[#122e4c] via-[#0f263e] to-[#0a1b2d] p-5 shadow-sm text-white border border-slate-200/40 dark:border-slate-800">
@@ -908,24 +1118,61 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                   </span>
                 </div>
 
+                {/* Project Selector & Task Name */}
+                <div className="mt-3.5 space-y-2">
+                  <div className="relative">
+                    <select
+                      value={selectedTimerProjectId}
+                      onChange={(e) => setSelectedTimerProjectId(e.target.value)}
+                      className="w-full appearance-none rounded-xl bg-[#091522]/90 border border-white/15 px-3 py-1.5 text-xs text-white placeholder-slate-400 focus:outline-none focus:border-blue-400 cursor-pointer"
+                    >
+                      <option value="" className="bg-slate-900 text-white">Select Project (Optional)</option>
+                      {(projects || []).map((p) => (
+                        <option key={p.id} value={p.id} className="bg-slate-900 text-white">
+                          {p.name} {p.clientName ? `(${p.clientName})` : ''}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+                  </div>
+                  <input
+                    type="text"
+                    value={timerTaskName}
+                    onChange={(e) => setTimerTaskName(e.target.value)}
+                    placeholder="Task name or description"
+                    className="w-full rounded-xl bg-[#091522]/90 border border-white/15 px-3 py-1.5 text-xs text-white placeholder-slate-400 focus:outline-none focus:border-blue-400"
+                  />
+                </div>
+
+                {timerFeedback && (
+                  <div className="mt-2 text-center text-xs font-semibold text-emerald-400 bg-emerald-950/60 py-1 px-2 rounded-lg border border-emerald-800">
+                    {timerFeedback}
+                  </div>
+                )}
+
                 <div className="grid grid-cols-2 gap-3 mt-4 sm:mt-5">
-                  <button
-                    type="button"
-                    onClick={() => onNavigate('time_logs')}
-                    className="w-full py-2.5 px-4 rounded-xl bg-[#091522]/90 hover:bg-[#091522] text-white font-bold text-xs shadow-xs border border-white/10 transition-all active:scale-95 cursor-pointer text-center"
-                  >
-                    Log Time
-                  </button>
+                  {timerSeconds > 0 ? (
+                    <button
+                      type="button"
+                      disabled={isSavingTimer}
+                      onClick={handleSaveTimerEntry}
+                      className="w-full py-2.5 px-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs shadow-xs border border-blue-400/30 transition-all active:scale-95 cursor-pointer text-center disabled:opacity-50"
+                    >
+                      {isSavingTimer ? 'Saving...' : 'Save Entry'}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => onNavigate('time_logs')}
+                      className="w-full py-2.5 px-4 rounded-xl bg-[#091522]/90 hover:bg-[#091522] text-white font-bold text-xs shadow-xs border border-white/10 transition-all active:scale-95 cursor-pointer text-center"
+                    >
+                      Log Time
+                    </button>
+                  )}
 
                   <button
                     type="button"
-                    onClick={() => {
-                      if (isTimerRunning) {
-                        setIsTimerRunning(false);
-                      } else {
-                        setIsTimerRunning(true);
-                      }
-                    }}
+                    onClick={() => setIsTimerRunning((prev) => !prev)}
                     className="w-full py-2.5 px-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-bold text-xs shadow-sm flex items-center justify-center gap-1.5 transition-all active:scale-95 cursor-pointer text-center"
                   >
                     {isTimerRunning ? (
@@ -936,11 +1183,23 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                     ) : (
                       <>
                         <Play className="w-3.5 h-3.5 fill-current text-slate-900" />
-                        <span>Start Timer</span>
+                        <span>{timerSeconds > 0 ? 'Resume' : 'Start Timer'}</span>
                       </>
                     )}
                   </button>
                 </div>
+
+                {timerSeconds > 0 && !isTimerRunning && (
+                  <div className="mt-2 text-center">
+                    <button
+                      type="button"
+                      onClick={handleResetTimer}
+                      className="text-[11px] text-slate-400 hover:text-rose-400 transition-colors cursor-pointer"
+                    >
+                      Reset Timer
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* Unbilled Hours Card */}
@@ -1419,6 +1678,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                 periodLabel={dashboard.commandCenter?.period?.label}
                 currencySymbol={settings.currencySymbol}
                 onNavigate={onNavigate}
+                asOfDate={asOfDate}
                 selectedPreset={selectedPreset}
                 onPresetSelect={handlePresetSelect}
               />

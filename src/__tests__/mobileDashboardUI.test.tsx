@@ -143,6 +143,9 @@ describe('Mobile Dashboard UI (Light Mode) Test Suite', () => {
     expect(within(mobile).getByText('Overdue Bills')).toBeTruthy();
     expect(within(mobile).getByText('11')).toBeTruthy();
     expect(within(mobile).getByText('2')).toBeTruthy();
+    const receivablesAmount = within(mobile).getByText('₹13,47,270.00');
+    expect(receivablesAmount.className).not.toContain('truncate');
+    expect(within(mobile).queryByText('₹1,347,270.00')).toBeNull();
 
     // Click Overdue Invoices card
     fireEvent.click(within(mobile).getByText('Overdue Invoices'));

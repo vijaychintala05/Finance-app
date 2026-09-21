@@ -174,10 +174,14 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
   // Pre-fill email dialog
   useEffect(() => {
     if (currentInvoice && isSendEmailOpen) {
+      const emailSignature = (settings.branding as any)?.emailSignature || `Best regards,\n${settings.firmName || 'FirmBooks'}`;
+      const greetingTemplate = (settings.branding as any)?.emailGreeting
+        ? (settings.branding as any).emailGreeting.replace('{invoiceNumber}', currentInvoice.invoiceNumber).replace('{clientName}', currentInvoice.clientName || 'Valued Customer')
+        : `Dear ${currentInvoice.clientName || 'Valued Customer'},\n\nPlease find attached tax invoice ${currentInvoice.invoiceNumber} for ${formatCurrency(currentInvoice.totalAmount, settings.currencySymbol || '$')}.\n\nDue Date: ${formatDate(currentInvoice.dueDate)}\nBalance Due: ${formatCurrency(currentInvoice.balanceDue, settings.currencySymbol || '$')}\n\nPlease remit payment to our designated bank account. Thank you for your business!`;
       setEmailForm({
         recipientEmail: currentInvoice.clientEmail || '',
         subject: `Tax Invoice ${currentInvoice.invoiceNumber} from ${settings.firmName || 'FirmBooks'}`,
-        message: `Dear ${currentInvoice.clientName || 'Valued Customer'},\n\nPlease find attached tax invoice ${currentInvoice.invoiceNumber} for ${formatCurrency(currentInvoice.totalAmount, settings.currencySymbol || '$')}.\n\nDue Date: ${formatDate(currentInvoice.dueDate)}\nBalance Due: ${formatCurrency(currentInvoice.balanceDue, settings.currencySymbol || '$')}\n\nPlease remit payment to our designated bank account. Thank you for your business!\n\nBest regards,\n${settings.firmName || 'FirmBooks'}`,
+        message: `${greetingTemplate}\n\n${emailSignature}`,
       });
     }
   }, [isSendEmailOpen, currentInvoice, settings]);
@@ -186,6 +190,16 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
 
   const currencySymbol = settings.currencySymbol || '$';
   const wordsRepresentation = amountToWords(currentInvoice.totalAmount, settings.currencySymbol || settings.currencyCode || 'USD');
+
+  // Real-time Document Template Configuration
+  const invoiceTemplateConfig = (settings.documentTemplates as any)?.invoices || (settings.documentTemplates as any)?.invoice || {};
+  const activeTemplate = invoiceTemplateConfig.defaultTemplate || 'standard';
+  const customDocTitle = isDeliveryChallanMode
+    ? 'DELIVERY CHALLAN'
+    : (invoiceTemplateConfig.templateTitle || 'TAX INVOICE');
+  const signatoryTitle = invoiceTemplateConfig.signatoryTitle || settings.branding?.authorizedSignatoryTitle || 'Authorized Signatory';
+  const termsText = currentInvoice.terms || invoiceTemplateConfig.termsAndConditions || settings.branding?.termsAndConditions || 'Payment is due per designated terms. Overdue balances are subject to statutory interest of 1.5% per month. Goods once sold will not be taken back without prior written authorization.';
+  const footerText = invoiceTemplateConfig.footerNote || settings.branding?.footerNote || 'This is a computer-generated tax invoice issued by FirmBooks.';
 
   // Print handler
   const handlePrint = () => {
@@ -907,12 +921,28 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
           )}
 
           {/* Executive Header Bar */}
-          <div className="flex flex-col sm:flex-row justify-between items-start border-b-2 border-slate-900 dark:border-slate-700 print:border-slate-900 pb-5 gap-6">
+          <div
+            className="flex flex-col sm:flex-row justify-between items-start border-b-2 pb-5 gap-6"
+            style={{ borderColor: settings.branding?.primaryColor || '#0f172a' }}
+          >
             <div className="space-y-2 max-w-md">
               <div className="flex items-center space-x-3">
-                <div className="w-11 h-11 rounded-xl bg-slate-900 text-white flex items-center justify-center font-bold shadow-md print:bg-slate-900">
-                  <Building2 className="w-6 h-6 text-white" />
-                </div>
+                {settings.branding?.logoUrl ? (
+                  <div className="h-12 max-w-[170px] flex items-center">
+                    <img
+                      src={settings.branding.logoUrl}
+                      alt={settings.firmName}
+                      className="max-h-full max-w-full object-contain"
+                    />
+                  </div>
+                ) : (
+                  <div
+                    className="w-11 h-11 rounded-xl text-white flex items-center justify-center font-bold shadow-md"
+                    style={{ backgroundColor: settings.branding?.primaryColor || '#0f172a' }}
+                  >
+                    <Building2 className="w-6 h-6 text-white" />
+                  </div>
+                )}
                 <div>
                   <h2 className="text-xl font-black text-slate-900 dark:text-slate-100 print:text-slate-900 tracking-tight">
                     {settings.firmName}
@@ -938,10 +968,16 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
             </div>
 
             <div className="text-left sm:text-right space-y-1.5 w-full sm:w-auto">
-              <div className="inline-block px-3 py-1 bg-slate-900 text-white font-black tracking-widest uppercase text-sm rounded-md shadow-xs print:bg-slate-900 print:text-white">
-                {isDeliveryChallanMode ? 'DELIVERY CHALLAN' : 'TAX INVOICE'}
+              <div
+                className="inline-block px-3 py-1 text-white font-black tracking-widest uppercase text-sm rounded-md shadow-xs print:text-white"
+                style={{ backgroundColor: settings.branding?.primaryColor || '#0f172a' }}
+              >
+                {customDocTitle}
               </div>
-              <p className="font-mono text-base font-black text-blue-600 dark:text-blue-400 print:text-blue-600">
+              <p
+                className="font-mono text-base font-black"
+                style={{ color: settings.branding?.primaryColor || '#2563eb' }}
+              >
                 {currentInvoice.invoiceNumber}
               </p>
               
@@ -1010,9 +1046,16 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
           </div>
 
           {/* Itemized Table */}
-          <div className="rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-2xs print:border-slate-300">
+          <div className={`overflow-hidden shadow-2xs print:border-slate-300 ${
+            activeTemplate === 'spreadsheet'
+              ? 'rounded-none border-2 border-slate-400 dark:border-slate-600'
+              : 'rounded-xl border border-slate-200 dark:border-slate-800'
+          }`}>
             <table className="w-full text-left text-xs">
-              <thead className="bg-slate-900 text-white font-semibold text-[11px] uppercase tracking-wider print:bg-slate-900 print:text-white">
+              <thead
+                className="text-white font-semibold text-[11px] uppercase tracking-wider print:text-white"
+                style={{ backgroundColor: settings.branding?.primaryColor || '#0f172a' }}
+              >
                 {isDeliveryChallanMode ? (
                   <tr>
                     <th className="p-3 pl-4">#</th>
@@ -1241,7 +1284,7 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
                   Terms & Conditions:
                 </span>
                 <p className="leading-relaxed">
-                  {currentInvoice.terms || 'Payment is due per designated terms. Overdue balances are subject to statutory interest of 1.5% per month. Goods once sold will not be taken back without prior written authorization.'}
+                  {termsText}
                 </p>
               </div>
 
@@ -1259,8 +1302,11 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
                   For {settings.firmName}
                 </span>
                 <div className="border-t border-slate-400 dark:border-slate-600 print:border-slate-400 pt-2">
-                  <span className="text-[11px] font-semibold text-slate-900 dark:text-slate-100 print:text-slate-900 block">
-                    Authorized Signatory
+                  <span
+                    className="text-[11px] font-semibold text-slate-900 dark:text-slate-100 print:text-slate-900 block"
+                    style={{ color: settings.branding?.accentColor || undefined }}
+                  >
+                    {signatoryTitle}
                   </span>
                 </div>
               </div>
@@ -1269,7 +1315,7 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
 
           {/* Statutory Footer */}
           <div className="pt-4 border-t border-slate-200 dark:border-slate-800 print:border-slate-300 flex justify-between items-center text-[10px] text-slate-400 print:text-slate-500">
-            <span>This is a computer-generated tax invoice issued by FirmBooks.</span>
+            <span>{footerText}</span>
             <span>E. & O.E.</span>
           </div>
 

@@ -93,7 +93,8 @@ export class InvoicePdfService {
       `SELECT o.*, p.legal_name, p.trade_name, p.tax_id AS profile_tax_id, p.gstin AS profile_gstin,
               p.pan, p.address_line1, p.address_line2, p.city AS profile_city, p.state AS profile_state,
               p.postal_code, p.phone AS profile_phone, p.email AS profile_email, p.website,
-              p.bank_name, p.bank_account_number, p.bank_ifsc_swift, p.invoice_notes
+              p.bank_name, p.bank_account_number, p.bank_ifsc_swift, p.invoice_notes,
+              p.logo_url, p.branding, p.document_templates
          FROM organizations o
          LEFT JOIN organization_profiles p ON p.organization_id = o.id
         WHERE o.id = $1`,
@@ -189,8 +190,36 @@ export class InvoicePdfService {
       }
     }
 
-    const primaryColor = '#1e40af'; // Refined corporate deep navy
-    const accentColor = '#0f172a'; // Deep slate ink
+    let branding: any = {};
+    if (org.branding) {
+      branding = typeof org.branding === 'string' ? JSON.parse(org.branding) : org.branding;
+    }
+    let docTemplates: any = {};
+    if (org.document_templates) {
+      docTemplates = typeof org.document_templates === 'string' ? JSON.parse(org.document_templates) : org.document_templates;
+    }
+    const invoiceTemplateConfig = docTemplates.invoices || docTemplates.invoice || {};
+    const defaultTemplate = invoiceTemplateConfig.defaultTemplate || 'standard';
+    const documentTitle = invoiceTemplateConfig.templateTitle || 'TAX INVOICE';
+    const primaryColor = branding.primaryColor || '#1e40af';
+    const accentColor = branding.accentColor || '#0f172a';
+    const signatoryTitle = invoiceTemplateConfig.signatoryTitle || branding.authorizedSignatoryTitle || 'Authorized Signatory';
+    const customFooterNote = invoiceTemplateConfig.footerNote || branding.footerNote || 'This is a computer-generated tax invoice issued by FirmBooks.';
+
+    let logoBuffer: Buffer | null = null;
+    if (org.logo_url && typeof org.logo_url === 'string') {
+      const trimmed = org.logo_url.trim();
+      if (trimmed.startsWith('data:image/')) {
+        const commaIdx = trimmed.indexOf(',');
+        if (commaIdx !== -1) {
+          try {
+            logoBuffer = Buffer.from(trimmed.slice(commaIdx + 1), 'base64');
+          } catch {
+            logoBuffer = null;
+          }
+        }
+      }
+    }
 
     return new Promise((resolve, reject) => {
       try {
@@ -202,16 +231,22 @@ export class InvoicePdfService {
         doc.on('error', (err) => reject(err));
 
         // --- TOP BRAND HEADER BAR ---
-        doc.rect(40, 40, 515, 48).fill(primaryColor);
-
-        // Document Title & Subtitle
-        doc.fillColor('#ffffff').fontSize(16).font('Helvetica-Bold').text('TAX INVOICE', 52, 48, { width: 240 });
-        doc.fontSize(8).font('Helvetica').text('ORIGINAL FOR RECIPIENT', 52, 68, { width: 240 });
-        
-        // Invoice Number & Status Pill
-        doc.fontSize(13).font('Helvetica-Bold').text(inv.invoice_number, 320, 48, { width: 225, align: 'right' });
-        const statusText = (inv.status || 'DRAFT').toUpperCase();
-        doc.fontSize(8.5).font('Helvetica').text(`Status: ${statusText}`, 320, 68, { width: 225, align: 'right' });
+        if (defaultTemplate === 'spreadsheet') {
+          doc.rect(40, 40, 515, 50).strokeColor('#cbd5e1').lineWidth(1).stroke();
+          doc.fillColor(accentColor).fontSize(16).font('Helvetica-Bold').text(documentTitle, 320, 48, { width: 225, align: 'right' });
+          doc.fontSize(8.5).font('Helvetica').fillColor('#64748b').text(`Invoice #: ${inv.invoice_number}`, 320, 68, { width: 225, align: 'right' });
+        } else if (defaultTemplate === 'modern') {
+          doc.rect(40, 40, 515, 3.5).fill(primaryColor);
+          doc.fillColor(primaryColor).fontSize(16).font('Helvetica-Bold').text(documentTitle, 320, 48, { width: 225, align: 'right' });
+          doc.fontSize(8.5).font('Helvetica').fillColor('#64748b').text(`Invoice #: ${inv.invoice_number}`, 320, 68, { width: 225, align: 'right' });
+        } else {
+          doc.rect(40, 40, 515, 48).fill(primaryColor);
+          doc.fillColor('#ffffff').fontSize(16).font('Helvetica-Bold').text(documentTitle, 52, 48, { width: 240 });
+          doc.fontSize(8).font('Helvetica').text('ORIGINAL FOR RECIPIENT', 52, 68, { width: 240 });
+          doc.fontSize(13).font('Helvetica-Bold').text(inv.invoice_number, 320, 48, { width: 225, align: 'right' });
+          const statusText = (inv.status || 'DRAFT').toUpperCase();
+          doc.fontSize(8.5).font('Helvetica').text(`Status: ${statusText}`, 320, 68, { width: 225, align: 'right' });
+        }
 
         let curY = 100;
 
@@ -220,6 +255,14 @@ export class InvoicePdfService {
         const rightColX = 330;
 
         // Issuer Details (Left)
+        if (logoBuffer) {
+          try {
+            doc.image(logoBuffer, leftColX, curY, { fit: [140, 42] });
+            curY += 46;
+          } catch {
+            // Ignore if image format unsupported by PDFKit
+          }
+        }
         doc.fontSize(11).font('Helvetica-Bold').fillColor(accentColor).text(orgLegalName, leftColX, curY, { width: 260 });
         curY += 15;
 
@@ -514,7 +557,7 @@ export class InvoicePdfService {
           leftY += doc.heightOfString(notes, { width: 270 }) + 6;
         }
 
-        const terms = inv.terms || 'Payment is due per invoice payment terms. Late payments subject to statutory interest.';
+        const terms = inv.terms || invoiceTemplateConfig.termsAndConditions || branding.termsAndConditions || 'Payment is due per invoice payment terms. Late payments subject to statutory interest.';
         if (terms) {
           doc.fontSize(8).font('Helvetica-Bold').fillColor('#475569').text('Terms & Conditions:', 40, leftY);
           leftY += 10;
@@ -542,7 +585,7 @@ export class InvoicePdfService {
         const sigX = 390;
         doc.fontSize(8.5).font('Helvetica').fillColor('#475569').text(`For ${orgLegalName}`, sigX, curY + 10, { width: 165, align: 'center' });
         doc.moveTo(sigX + 10, curY + 45).lineTo(sigX + 155, curY + 45).strokeColor('#94a3b8').lineWidth(0.75).stroke();
-        doc.fontSize(8).font('Helvetica-Bold').fillColor('#334155').text('Authorized Signatory', sigX, curY + 48, { width: 165, align: 'center' });
+        doc.fontSize(8).font('Helvetica-Bold').fillColor('#334155').text(signatoryTitle, sigX, curY + 48, { width: 165, align: 'center' });
 
         // --- FOOTER & RUNNING PAGE NUMBERS ACROSS ALL PAGES ---
         const pages = doc.bufferedPageRange();
@@ -550,7 +593,7 @@ export class InvoicePdfService {
           doc.switchToPage(i);
           doc.moveTo(40, 755).lineTo(555, 755).strokeColor('#e2e8f0').lineWidth(0.5).stroke();
           doc.fontSize(8).font('Helvetica').fillColor('#64748b');
-          doc.text('This is a computer-generated tax invoice issued by FirmBooks.', 40, 762, { width: 350 });
+          doc.text(customFooterNote, 40, 762, { width: 350 });
           doc.text(`Page ${i + 1} of ${pages.count}`, 400, 762, { width: 155, align: 'right' });
         }
 

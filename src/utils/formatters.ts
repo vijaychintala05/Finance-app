@@ -2,7 +2,12 @@
  * Utility formatting functions for FirmBooks
  */
 
-const currencyFormatter = new Intl.NumberFormat('en-US', {
+const internationalCurrencyFormatter = new Intl.NumberFormat('en-US', {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+const indianCurrencyFormatter = new Intl.NumberFormat('en-IN', {
   minimumFractionDigits: 2,
   maximumFractionDigits: 2,
 });
@@ -10,8 +15,9 @@ const currencyFormatter = new Intl.NumberFormat('en-US', {
 export const formatCurrency = (amount: number | string, symbol: string = ''): string => {
   const numericAmount = typeof amount === 'number' ? amount : parseFloat(String(amount ?? 0));
   const safeAmount = Number.isFinite(numericAmount) ? numericAmount : 0;
-  const formatted = currencyFormatter.format(Math.abs(safeAmount));
   const cleanSymbol = symbol.trim();
+  const isIndianCurrency = /^(INR|₹)$/i.test(cleanSymbol);
+  const formatted = (isIndianCurrency ? indianCurrencyFormatter : internationalCurrencyFormatter).format(Math.abs(safeAmount));
   const separator = /^[A-Za-z]{2,4}$/.test(cleanSymbol) ? ' ' : '';
   const prefix = cleanSymbol ? `${cleanSymbol}${separator}` : '';
   return `${safeAmount < 0 ? '-' : ''}${prefix}${formatted}`;

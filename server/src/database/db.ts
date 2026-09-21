@@ -143,6 +143,22 @@ class DatabaseService {
         returns: DataType.text,
         implementation: (s: any) => (s == null ? '' : String(s).trim()),
       });
+      memDb.public.registerFunction({
+        name: 'round',
+        args: [DataType.float, DataType.integer],
+        returns: DataType.float,
+        implementation: (val: any, decimals: any) => {
+          if (val == null) return null;
+          const factor = Math.pow(10, decimals ?? 0);
+          return Math.round(Number(val) * factor) / factor;
+        },
+      });
+      memDb.public.registerFunction({
+        name: 'round',
+        args: [DataType.float],
+        returns: DataType.float,
+        implementation: (val: any) => (val == null ? null : Math.round(Number(val))),
+      });
       const { Pool: MemPool } = memDb.adapters.createPg();
       this.pool = new MemPool() as any;
       this.memDbInstance = memDb;

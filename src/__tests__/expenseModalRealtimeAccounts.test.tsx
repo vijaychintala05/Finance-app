@@ -60,9 +60,9 @@ const mockAccounts: Account[] = [
 
 const mockRefreshAccounts = vi.fn().mockResolvedValue(undefined);
 const mockAddExpense = vi.fn().mockResolvedValue(undefined);
-const mockVendors: Array<{ id: string; name: string; companyName: string }> = [];
-const mockAddVendor = vi.fn(async () => {
-  const vendor = { id: 'vendor-new', name: 'Acme Supplies', companyName: 'Acme Supplies' };
+const mockVendors: Array<{ id: string; name: string; companyName: string; defaultExpenseAccountId?: string }> = [];
+const mockAddVendor = vi.fn(async (vendorData: any) => {
+  const vendor = { id: 'vendor-new', name: 'Acme Supplies', companyName: 'Acme Supplies', defaultExpenseAccountId: vendorData.defaultExpenseAccountId };
   mockVendors.push(vendor);
   return vendor;
 });
@@ -129,19 +129,49 @@ describe('ExpenseModal Realtime Chart of Accounts Integration', () => {
     expect(screen.getByRole('button', { name: /new bank\/card/i })).toBeDefined();
   });
 
-  it('creates and selects a vendor without leaving the expense form', async () => {
+  it('creates a complete vendor and selects it without leaving the expense form', async () => {
     render(<ExpenseModal isOpen={true} onClose={vi.fn()} />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Add vendor' }));
     fireEvent.change(screen.getByLabelText(/vendor name/i), { target: { value: 'Acme Supplies' } });
+    fireEvent.change(screen.getByLabelText(/vendor company name/i), { target: { value: 'Acme Hardware Ltd.' } });
+    fireEvent.change(screen.getByLabelText(/vendor contact first name/i), { target: { value: 'Priya' } });
+    fireEvent.change(screen.getByLabelText(/vendor contact last name/i), { target: { value: 'Shah' } });
+    fireEvent.change(screen.getByLabelText(/gstin/i), { target: { value: '29ABCDE1234F1Z5' } });
+    fireEvent.change(screen.getByLabelText(/^email$/i), { target: { value: 'accounts@acme.test' } });
+    fireEvent.change(screen.getByLabelText(/^phone$/i), { target: { value: '+91 98765 43210' } });
+    fireEvent.change(screen.getByLabelText(/vendor mobile/i), { target: { value: '+91 98765 40000' } });
+    fireEvent.change(screen.getByLabelText(/vendor website/i), { target: { value: 'https://acme.test' } });
+    fireEvent.change(screen.getByLabelText(/vendor default expense account/i), { target: { value: 'acc-exp-1' } });
+    fireEvent.change(screen.getByLabelText(/payment terms/i), { target: { value: 'Net 45' } });
+    fireEvent.change(screen.getByLabelText(/billing address/i), { target: { value: '42 Market Road, Bengaluru' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create vendor' }));
 
-    await waitFor(() => expect(mockAddVendor).toHaveBeenCalledWith({
+    await waitFor(() => expect(mockAddVendor).toHaveBeenCalledWith(expect.objectContaining({
       name: 'Acme Supplies',
-      companyName: 'Acme Supplies',
-      paymentTerms: 'Net 30',
+      companyName: 'Acme Hardware Ltd.',
+      contactPerson: 'Priya Shah',
+      email: 'accounts@acme.test',
+      phone: '+91 98765 43210',
+      mobile: '+91 98765 40000',
+      website: 'https://acme.test',
+      defaultExpenseAccountId: 'acc-exp-1',
+      taxId: '29ABCDE1234F1Z5',
+      billingAddress: '42 Market Road, Bengaluru',
+      paymentTerms: 'Net 45',
       status: 'Active',
-    }));
+      primaryContact: expect.objectContaining({ firstName: 'Priya', lastName: 'Shah', email: 'accounts@acme.test' }),
+    })));
     expect((screen.getByRole('combobox', { name: 'Vendor' }) as HTMLSelectElement).value).toBe('vendor-new');
+    await waitFor(() => expect(screen.getByRole('button', { name: /expense account: 6010 - office rent/i })).toBeDefined());
+  });
+
+  it('applies a selected vendor default expense account to the expense', async () => {
+    mockVendors.push({ id: 'vendor-default-expense', name: 'Preferred Supplier', companyName: 'Preferred Supplier', defaultExpenseAccountId: 'acc-oth-1' });
+    render(<ExpenseModal isOpen={true} onClose={vi.fn()} />);
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Vendor' }), { target: { value: 'vendor-default-expense' } });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /expense account: 6900 - interest & finance charges/i })).toBeDefined());
   });
 });

@@ -39,6 +39,7 @@ import { toFinancialCommandError } from '../accounting/FinancialCommandError';
 import { ExpenseReceiptService } from '../services/ExpenseReceiptService';
 import { ExpensePdfService } from '../services/ExpensePdfService';
 import { InvoicePdfService } from '../services/InvoicePdfService';
+import { DocumentPdfService } from '../services/DocumentPdfService';
 import { GSTComplianceService } from '../services/GSTComplianceService';
 import { DrillDownService } from '../services/DrillDownService';
 import { ReportExportService } from '../services/ReportExportService';
@@ -47,6 +48,168 @@ import { ApprovalWorkflowService } from '../approvals/ApprovalWorkflowService';
 import { TreasuryTransactionService } from '../services/TreasuryTransactionService';
 import { EmployeeReimbursementService } from '../services/EmployeeReimbursementService';
 import { EmailOutboxService } from '../services/EmailOutboxService';
+import { VendorRecordsService } from '../purchases/VendorRecordsService';
+import { MfaService } from '../auth/MfaService';
+
+function parseVendorJson(value: unknown, fallback: unknown): unknown {
+  if (value === null || value === undefined || value === '') return fallback;
+  if (typeof value !== 'string') return value;
+  try { return JSON.parse(value); } catch { return value; }
+}
+
+function vendorResponse(row: any): Record<string, unknown> {
+  const primaryContact = (parseVendorJson(row.primary_contact, {}) || {}) as Record<string, unknown>;
+  let bankDetails: Record<string, string> | null = null;
+  if (row.bank_details_encrypted) {
+    try { bankDetails = JSON.parse(MfaService.decryptSecret(row.bank_details_encrypted)); } catch { bankDetails = null; }
+  }
+  const accountNumber = typeof bankDetails?.accountNumber === 'string' ? bankDetails.accountNumber.replace(/\s/g, '') : '';
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    vendorId: row.vendor_id || '',
+    name: row.name,
+    legalName: row.legal_name || '',
+    companyName: row.company_name || '',
+    vendorType: row.vendor_type || 'Business',
+    gstStatus: row.gst_status || 'Unregistered',
+    gstin: row.gstin || '',
+    pan: row.pan || '',
+    placeOfSupply: row.place_of_supply || '',
+    primaryContact,
+    additionalContacts: parseVendorJson(row.additional_contacts, []) || [],
+    contactPerson: typeof primaryContact.name === 'string' ? primaryContact.name : '',
+    email: row.email || '',
+    phone: row.phone || '',
+    mobile: row.mobile || '',
+    website: row.website || '',
+    taxId: row.tax_id || row.gstin || '',
+    billingAddress: parseVendorJson(row.billing_address, ''),
+    shippingAddress: parseVendorJson(row.shipping_address, ''),
+    paymentTerms: row.payment_terms || 'Net 30',
+    currency: row.currency || '',
+    defaultExpenseAccountId: row.default_expense_account_id || '',
+    bankDetails: bankDetails ? {
+      bankName: bankDetails.bankName || '', accountName: bankDetails.accountName || '',
+      maskedAccountNumber: accountNumber ? `•••• ${accountNumber.slice(-4)}` : '',
+      accountNumberLast4: accountNumber.slice(-4), ifsc: bankDetails.ifsc || '',
+      swiftCode: bankDetails.swiftCode || '', branch: bankDetails.branch || '', accountType: bankDetails.accountType || '',
+    } : undefined,
+    customFields: parseVendorJson(row.custom_fields, {}) || {},
+    notes: row.notes || '',
+    payablesBalance: Number(row.calculated_payables ?? row.payables_balance ?? 0),
+    unusedCredits: Number(row.calculated_credits ?? row.unused_credits ?? 0),
+    advanceBalance: Number(row.calculated_advances ?? row.advance_balance ?? 0),
+    active: row.active !== false,
+    status: row.active === false ? 'Inactive' : 'Active',
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function validVendorEmail(value: unknown): boolean {
+  return value === undefined || value === null || value === '' || (typeof value === 'string' && value.length <= 255 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value));
+}
+
+function boundedText(value: unknown, max: number): value is string {
+  return value === undefined || value === null || (typeof value === 'string' && value.length <= max);
+}
+
+function validVendorAddress(value: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  if (typeof value === 'string') return value.length <= 10000;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const allowed = new Set(['attention', 'street', 'street2', 'city', 'state', 'postalCode', 'country', 'phone']);
+  return Object.entries(value).length <= allowed.size && Object.entries(value).every(([key, field]) =>
+    allowed.has(key) && (field === undefined || field === null || (typeof field === 'string' && field.length <= 500))
+  );
+}
+
+function validVendorCustomFields(value: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  if (typeof value !== 'object' || Array.isArray(value)) return false;
+  return Object.entries(value).length <= 50 && Object.entries(value).every(([key, field]) =>
+    key.trim().length > 0 && key.length <= 80 &&
+    (field === null || typeof field === 'string' || typeof field === 'number' || typeof field === 'boolean') &&
+    (typeof field !== 'string' || field.length <= 500) && (typeof field !== 'number' || Number.isFinite(field))
+  );
+}
+
+function validVendorContact(value: unknown, allowEmpty = false): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const contact = value as Record<string, unknown>;
+  const limits: Record<string, number> = {
+    salutation: 32, firstName: 120, lastName: 120, name: 255, email: 255,
+    phoneCode: 8, phone: 50, mobileCode: 8, mobile: 50, designation: 120,
+  };
+  const validPhoneCode = (code: unknown) => code === undefined || code === null || code === '' || (typeof code === 'string' && /^\+\d{1,4}$/.test(code));
+  return Object.keys(contact).every((key) => key in limits || key === 'isPrimary') &&
+    (contact.isPrimary === undefined || typeof contact.isPrimary === 'boolean') &&
+    Object.entries(limits).every(([key, max]) => boundedText(contact[key], max)) &&
+    validPhoneCode(contact.phoneCode) && validPhoneCode(contact.mobileCode) &&
+    validVendorEmail(contact.email) &&
+    (allowEmpty || Boolean(String(contact.name || '').trim() || String(contact.firstName || '').trim()));
+}
+
+function normalizeVendorBankDetails(value: unknown): Record<string, string> | null {
+  if (value === undefined || value === null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Vendor bank details are invalid');
+  const input = value as Record<string, unknown>;
+  const fields: Array<[string, number]> = [
+    ['bankName', 120], ['accountName', 120], ['accountNumber', 34], ['ifsc', 20], ['swiftCode', 11], ['branch', 120], ['accountType', 40],
+  ];
+  if (fields.some(([key, max]) => !boundedText(input[key], max))) throw new Error('Vendor bank details are invalid');
+  const details = Object.fromEntries(fields.map(([key]) => [key, String(input[key] || '').trim()]).filter(([, text]) => text));
+  if (!Object.keys(details).length) return null;
+  if (!details.accountNumber || !/^[A-Za-z0-9 -]{4,34}$/.test(details.accountNumber)) {
+    throw new Error('Enter a valid bank account number to save supplier bank details');
+  }
+  return details;
+}
+
+async function withCalculatedVendorBalances(
+  organizationId: string,
+  vendors: Array<Record<string, any>>,
+  queryClient: DbQueryClient = db,
+): Promise<Array<Record<string, any>>> {
+  if (vendors.length === 0) return vendors;
+  const [bills, credits, advances] = await Promise.all([
+    queryClient.query(
+      `SELECT vendor_id, COALESCE(SUM(balance_due), 0) AS total
+         FROM bills
+        WHERE organization_id = $1 AND vendor_id IS NOT NULL
+          AND upper(COALESCE(status, '')) NOT IN ('DRAFT', 'SUBMITTED', 'VOIDED', 'CANCELLED', 'REVERSED')
+        GROUP BY vendor_id`,
+      [organizationId],
+    ),
+    queryClient.query(
+      `SELECT vendor_id, COALESCE(SUM(remaining_credit), 0) AS total
+         FROM vendor_credits
+        WHERE organization_id = $1 AND vendor_id IS NOT NULL
+          AND upper(COALESCE(status, '')) NOT IN ('VOIDED', 'REVERSED')
+        GROUP BY vendor_id`,
+      [organizationId],
+    ),
+    queryClient.query(
+      `SELECT vendor_id, COALESCE(SUM(unapplied_amount), 0) AS total
+         FROM vendor_advances
+        WHERE organization_id = $1 AND vendor_id IS NOT NULL
+          AND upper(COALESCE(status, '')) NOT IN ('VOIDED', 'REVERSED')
+        GROUP BY vendor_id`,
+      [organizationId],
+    ),
+  ]);
+  const totalsByVendor = (rows: Array<Record<string, any>>) => new Map(rows.map((row) => [row.vendor_id, Number(row.total || 0)]));
+  const payableTotals = totalsByVendor(bills.rows);
+  const creditTotals = totalsByVendor(credits.rows);
+  const advanceTotals = totalsByVendor(advances.rows);
+  return vendors.map((vendor) => ({
+    ...vendor,
+    calculated_payables: payableTotals.get(vendor.id) ?? 0,
+    calculated_credits: creditTotals.get(vendor.id) ?? 0,
+    calculated_advances: advanceTotals.get(vendor.id) ?? 0,
+  }));
+}
 
 export class FinanceController {
   private static employeeClaimErrorStatus(message: string): number {
@@ -603,13 +766,175 @@ export class FinanceController {
   // --- VENDORS ---
   public static async getVendors(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
-    const result = await db.query('SELECT * FROM vendors WHERE organization_id = $1 ORDER BY name ASC', [orgId]);
-    res.json(result.rows);
+    const status = String(req.query.status || 'all').toLowerCase();
+    if (!['all', 'active', 'inactive'].includes(status)) {
+      res.status(400).json({ error: 'Vendor status filter is invalid' });
+      return;
+    }
+    const search = typeof req.query.search === 'string' ? req.query.search.trim().slice(0, 200) : '';
+    const paginated = req.query.paginate === 'true';
+    const limit = Number(req.query.limit ?? 25);
+    const offset = Number(req.query.offset ?? 0);
+    if (paginated && (!Number.isInteger(limit) || limit < 1 || limit > 100 || !Number.isInteger(offset) || offset < 0 || offset > 100000000)) {
+      res.status(400).json({ error: 'Vendor pagination values are invalid' });
+      return;
+    }
+    const filterSql = `v.organization_id = $1
+      AND ($2 = 'all' OR ($2 = 'active' AND (v.active = TRUE OR v.active IS NULL)) OR ($2 = 'inactive' AND v.active = FALSE))
+      AND ($3 = '' OR v.name ILIKE '%' || $3 || '%' OR COALESCE(v.company_name, '') ILIKE '%' || $3 || '%'
+        OR COALESCE(v.email, '') ILIKE '%' || $3 || '%' OR COALESCE(v.phone, '') ILIKE '%' || $3 || '%'
+        OR COALESCE(v.mobile, '') ILIKE '%' || $3 || '%' OR COALESCE(v.website, '') ILIKE '%' || $3 || '%'
+        OR COALESCE(v.gstin, '') ILIKE '%' || $3 || '%' OR COALESCE(v.pan, '') ILIKE '%' || $3 || '%'
+        OR COALESCE(v.vendor_id, '') ILIKE '%' || $3 || '%'
+        OR COALESCE(v.primary_contact->>'name', '') ILIKE '%' || $3 || '%'
+        OR COALESCE(v.additional_contacts::text, '') ILIKE '%' || $3 || '%')`;
+    const params: unknown[] = [orgId, status, search];
+    const pageSql = paginated ? ' LIMIT $4 OFFSET $5' : '';
+    if (paginated) params.push(limit, offset);
+    const result = await db.query(
+      `SELECT v.* FROM vendors v WHERE ${filterSql}
+       ORDER BY lower(v.name), v.id${pageSql}`,
+      params
+    );
+    const items = (await withCalculatedVendorBalances(orgId, result.rows)).map(vendorResponse);
+    if (!paginated) { res.json(items); return; }
+    const count = await db.query(`SELECT COUNT(*)::int AS total FROM vendors v WHERE ${filterSql}`, [orgId, status, search]);
+    res.json({ items, total: Number(count.rows[0]?.total || 0), limit, offset });
+  }
+
+  public static async getVendor(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const result = await db.query(
+      'SELECT v.* FROM vendors v WHERE v.organization_id = $1 AND v.id = $2',
+      [orgId, req.params.id]
+    );
+    if (!result.rows[0]) {
+      res.status(404).json({ error: 'Vendor not found' });
+      return;
+    }
+    const [vendor] = await withCalculatedVendorBalances(orgId, result.rows);
+    res.json(vendorResponse(vendor));
+  }
+
+  public static async getVendorActivity(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const result = await db.query(
+      `SELECT id, action, timestamp, user_id, after_state
+         FROM audit_logs
+        WHERE organization_id = $1 AND entity_type = 'Vendor' AND entity_id = $2
+        ORDER BY timestamp DESC, id DESC LIMIT 100`,
+      [req.auth!.organizationId, req.params.id]
+    );
+    res.json(result.rows.map((row: any) => {
+      const state = parseVendorJson(row.after_state, {}) as Record<string, unknown>;
+      return {
+        id: row.id,
+        action: row.action,
+        timestamp: row.timestamp,
+        userId: row.user_id,
+        changedFields: Array.isArray(state.changedFields) ? state.changedFields : [],
+      };
+    }));
+  }
+
+  public static async getVendorAttachments(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const organizationId = req.auth!.organizationId;
+    const vendor = await db.query('SELECT id FROM vendors WHERE organization_id = $1 AND id = $2', [organizationId, req.params.id]);
+    if (!vendor.rows.length) { res.status(404).json({ error: 'Vendor not found' }); return; }
+    res.json(await VendorRecordsService.listAttachments(db, organizationId, req.params.id));
+  }
+
+  public static async createVendorAttachments(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const organizationId = req.auth!.organizationId;
+    try {
+      const attachments = await db.transaction(async (client) => {
+        const added = await VendorRecordsService.addAttachments(client, organizationId, req.params.id, req.auth!.userId, req.body?.files);
+        await FinanceController.logAudit(organizationId, req.auth!.userId, 'VENDOR_ATTACHMENTS_ADDED', 'Vendor', req.params.id,
+          { attachmentIds: added.map((attachment) => attachment.id), count: added.length }, client, true);
+        return added;
+      });
+      res.status(201).json({ attachments });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Vendor documents could not be saved';
+      const status = message.startsWith('VENDOR_NOT_FOUND') ? 404 : message.startsWith('VENDOR_ATTACHMENT_LIMIT') ? 409 : 400;
+      res.status(status).json({ error: message });
+    }
+  }
+
+  public static async downloadVendorAttachment(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const attachment = await VendorRecordsService.getAttachment(db, req.auth!.organizationId, req.params.id, req.params.attachmentId);
+    if (!attachment) { res.status(404).json({ error: 'Vendor document not found' }); return; }
+    res.setHeader('Content-Type', attachment.mimeType);
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(attachment.fileName)}`);
+    res.setHeader('Content-Length', attachment.content.length);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.send(attachment.content);
+  }
+
+  public static async archiveVendorAttachment(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const organizationId = req.auth!.organizationId;
+    const changed = await db.transaction(async (client) => {
+      const archived = await VendorRecordsService.archiveAttachment(client, organizationId, req.params.id, req.params.attachmentId, req.auth!.userId);
+      if (archived) await FinanceController.logAudit(organizationId, req.auth!.userId, 'VENDOR_ATTACHMENT_ARCHIVED', 'Vendor', req.params.id,
+        { attachmentId: req.params.attachmentId }, client, true);
+      return archived;
+    });
+    if (!changed) { res.status(404).json({ error: 'Vendor document not found' }); return; }
+    res.json({ id: req.params.attachmentId, archived: true });
+  }
+
+  public static async getVendorMails(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const organizationId = req.auth!.organizationId;
+    const vendor = await db.query('SELECT id FROM vendors WHERE organization_id = $1 AND id = $2', [organizationId, req.params.id]);
+    if (!vendor.rows.length) { res.status(404).json({ error: 'Vendor not found' }); return; }
+    res.json(await VendorRecordsService.listMails(db, organizationId, req.params.id));
+  }
+
+  public static async sendVendorMail(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const organizationId = req.auth!.organizationId;
+    try {
+      const mail = await db.transaction(async (client) => {
+        const added = await VendorRecordsService.sendMail(client, organizationId, req.params.id, req.auth!.userId, req.body || {});
+        await FinanceController.logAudit(organizationId, req.auth!.userId, 'VENDOR_MAIL_SENT', 'Vendor', req.params.id,
+          { mailId: added.id, toEmail: added.toEmail, subject: added.subject }, client, true);
+        return added;
+      });
+      res.status(201).json(mail);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Vendor email could not be recorded';
+      res.status(message.startsWith('VENDOR_NOT_FOUND') ? 404 : 400).json({ error: message });
+    }
+  }
+
+  public static async getVendorComments(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const organizationId = req.auth!.organizationId;
+    const vendor = await db.query('SELECT id FROM vendors WHERE organization_id = $1 AND id = $2', [organizationId, req.params.id]);
+    if (!vendor.rows.length) { res.status(404).json({ error: 'Vendor not found' }); return; }
+    res.json(await VendorRecordsService.listComments(db, organizationId, req.params.id));
+  }
+
+  public static async createVendorComment(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const organizationId = req.auth!.organizationId;
+    try {
+      const comment = await db.transaction(async (client) => {
+        const added = await VendorRecordsService.addComment(client, organizationId, req.params.id, req.auth!.userId, req.body?.body);
+        await FinanceController.logAudit(organizationId, req.auth!.userId, 'VENDOR_COMMENT_ADDED', 'Vendor', req.params.id,
+          { commentId: added.id }, client, true);
+        return added;
+      });
+      res.status(201).json(comment);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Vendor comment could not be saved';
+      res.status(message.startsWith('VENDOR_NOT_FOUND') ? 404 : 400).json({ error: message });
+    }
   }
 
   public static async createVendor(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
-    const { name, companyName, email, phone, billingAddress, taxId, currency, paymentTerms } = req.body;
+    const body = req.body || {};
+    const { name, companyName, legalName, vendorType, gstStatus, gstin, pan, placeOfSupply,
+      contactPerson, primaryContact, additionalContacts, email, phone, mobile, website,
+      billingAddress, shippingAddress, taxId, currency, paymentTerms, defaultExpenseAccountId, bankDetails, customFields, notes } = body;
     if (typeof name !== 'string' || !name.trim() || name.trim().length > 255) {
       res.status(400).json({ error: 'Vendor name is required' });
       return;
@@ -623,16 +948,42 @@ export class FinanceController {
       res.status(400).json({ error: 'Vendor balances must be established through balanced financial transactions' });
       return;
     }
-    if (
-      (companyName !== undefined && (typeof companyName !== 'string' || companyName.length > 255)) ||
-      (email !== undefined && email !== '' && (typeof email !== 'string' || email.length > 255 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) ||
-      (phone !== undefined && (typeof phone !== 'string' || phone.length > 50)) ||
-      (billingAddress !== undefined && (typeof billingAddress !== 'string' || billingAddress.length > 10000)) ||
-      (taxId !== undefined && (typeof taxId !== 'string' || taxId.length > 50)) ||
-      (currency !== undefined && (typeof currency !== 'string' || !/^[A-Za-z]{3}$/.test(currency))) ||
-      (paymentTerms !== undefined && (typeof paymentTerms !== 'string' || paymentTerms.length > 50))
+    if (!boundedText(companyName, 255) || !boundedText(legalName, 255) || !boundedText(contactPerson, 255) ||
+      !boundedText(phone, 50) || !boundedText(mobile, 50) || !boundedText(website, 255) ||
+      !boundedText(placeOfSupply, 100) || !boundedText(taxId, 50) || !boundedText(gstin, 50) ||
+      !boundedText(pan, 20) || !boundedText(paymentTerms, 50) || !boundedText(notes, 20000) ||
+      !validVendorEmail(email) ||
+      !['Business', 'Individual'].includes(vendorType || 'Business') ||
+      !['Registered', 'Unregistered', 'Composition', 'SEZ'].includes(gstStatus || 'Unregistered') ||
+      !validVendorAddress(billingAddress) || !validVendorAddress(shippingAddress) ||
+      (additionalContacts !== undefined && (!Array.isArray(additionalContacts) || additionalContacts.length > 20)) ||
+      (primaryContact !== undefined && (!primaryContact || typeof primaryContact !== 'object' || Array.isArray(primaryContact))) ||
+      !validVendorCustomFields(customFields) ||
+      (currency !== undefined && (typeof currency !== 'string' || !/^[A-Za-z]{3}$/.test(currency)))
     ) {
       res.status(400).json({ error: 'Vendor metadata is invalid or exceeds the allowed length' });
+      return;
+    }
+    if (primaryContact && !validVendorContact(primaryContact, true)) {
+      res.status(400).json({ error: 'Primary contact details are invalid' });
+      return;
+    }
+    const gstinValue = String(gstin || taxId || '').trim().toUpperCase();
+    const panValue = String(pan || '').trim().toUpperCase();
+    if ((gstinValue && !/^[0-9A-Z]{15}$/.test(gstinValue)) || (panValue && !/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(panValue)) ||
+      ((gstStatus || 'Unregistered') === 'Registered' && !gstinValue)) {
+      res.status(400).json({ error: 'GSTIN or PAN format is invalid' });
+      return;
+    }
+    if (Array.isArray(additionalContacts) && additionalContacts.some((item: any) => !validVendorContact(item))) {
+      res.status(400).json({ error: 'Vendor contact details are invalid' });
+      return;
+    }
+    let normalizedBankDetails: Record<string, string> | null;
+    try {
+      normalizedBankDetails = normalizeVendorBankDetails(bankDetails);
+    } catch (error) {
+      res.status(400).json({ error: error instanceof Error ? error.message : 'Vendor bank details are invalid' });
       return;
     }
     const organization = await db.query('SELECT base_currency FROM organizations WHERE id = $1', [orgId]);
@@ -645,17 +996,146 @@ export class FinanceController {
       res.status(400).json({ error: 'Foreign-currency vendors require the audited exchange-rate workflow' });
       return;
     }
+    if (defaultExpenseAccountId) {
+      const account = await db.query("SELECT id FROM accounts WHERE organization_id = $1 AND id = $2 AND status = $3 AND type IN ('Expense', 'Other Expense')", [orgId, defaultExpenseAccountId, 'Active']);
+      if (!account.rows.length) { res.status(400).json({ error: 'Default expense account does not belong to this organization or is inactive' }); return; }
+    }
     const venId = newId('ven');
-    const record = { id: venId, name: name.trim(), companyName: companyName?.trim() || name.trim(), email: email?.trim().toLowerCase() || '', phone: phone?.trim() || '', billingAddress: billingAddress?.trim() || '', taxId: taxId?.trim() || '', currency: organizationCurrency, paymentTerms: paymentTerms?.trim() || 'Net 30' };
-    await db.transaction(async (client) => {
+    const normalizedPrimaryContact = { ...(primaryContact || {}), ...(contactPerson ? { name: String(contactPerson).trim() } : {}) };
+    const record = {
+      id: venId, organizationId: orgId, vendorId: newId('VDR'), name: name.trim(),
+      legalName: String(legalName || companyName || name).trim(), companyName: String(companyName || name).trim(),
+      vendorType: vendorType || 'Business', gstStatus: gstStatus || 'Unregistered', gstin: gstinValue,
+      pan: panValue, placeOfSupply: String(placeOfSupply || '').trim(), primaryContact: normalizedPrimaryContact,
+      additionalContacts: additionalContacts || [], contactPerson: normalizedPrimaryContact.name || '',
+      email: String(email || '').trim().toLowerCase(), phone: String(phone || '').trim(), mobile: String(mobile || '').trim(),
+      website: String(website || '').trim(), billingAddress: billingAddress || '', shippingAddress: shippingAddress || '',
+      taxId: gstinValue, currency: organizationCurrency, paymentTerms: String(paymentTerms || 'Net 30').trim(),
+      defaultExpenseAccountId: defaultExpenseAccountId || '', customFields: customFields || {}, notes: String(notes || '').trim(),
+      bankDetailsEncrypted: normalizedBankDetails ? MfaService.encryptSecret(JSON.stringify(normalizedBankDetails)) : null,
+      active: true, payablesBalance: 0, unusedCredits: 0, advanceBalance: 0,
+    };
+    const created = await db.transaction(async (client) => {
       await client.query(
-        `INSERT INTO vendors (id, organization_id, name, company_name, email, phone, billing_address, tax_id, currency, payment_terms)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-        [record.id, orgId, record.name, record.companyName, record.email, record.phone, record.billingAddress, record.taxId, record.currency, record.paymentTerms]
+        `INSERT INTO vendors (id, organization_id, vendor_id, name, legal_name, company_name, vendor_type, gst_status, gstin, pan, place_of_supply, primary_contact, additional_contacts, email, phone, mobile, website, billing_address, shipping_address, tax_id, currency, payment_terms, default_expense_account_id, bank_details_encrypted, custom_fields, notes, active, payables_balance, unused_credits, advance_balance, opening_balance)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,TRUE,0,0,0,0)
+         RETURNING *`,
+        [record.id, orgId, record.vendorId, record.name, record.legalName, record.companyName, record.vendorType,
+          record.gstStatus, record.gstin, record.pan, record.placeOfSupply, JSON.stringify(record.primaryContact),
+          JSON.stringify(record.additionalContacts), record.email, record.phone, record.mobile, record.website,
+          typeof record.billingAddress === 'string' ? record.billingAddress : JSON.stringify(record.billingAddress),
+          JSON.stringify(record.shippingAddress),
+          record.taxId, record.currency, record.paymentTerms, record.defaultExpenseAccountId || null, record.bankDetailsEncrypted,
+          JSON.stringify(record.customFields), record.notes]
       );
-      await client.query(`INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state) VALUES ($1, $2, $3, 'VENDOR_CREATED', 'Vendor', $4, $5)`, [newId('aud'), orgId, req.auth!.userId, venId, JSON.stringify(record)]);
+      await FinanceController.logAudit(orgId, req.auth!.userId, 'VENDOR_CREATED', 'Vendor', venId,
+        { changedFields: Object.keys(record).filter((field) => !['id', 'organizationId', 'payablesBalance', 'unusedCredits', 'advanceBalance', 'bankDetailsEncrypted'].includes(field)) }, client, true);
+      const row = await client.query('SELECT * FROM vendors WHERE organization_id = $1 AND id = $2', [orgId, venId]);
+      return vendorResponse(row.rows[0]);
     });
-    res.status(201).json(record);
+    res.status(201).json(created);
+  }
+
+  public static async updateVendor(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const body = req.body || {};
+    if (Object.prototype.hasOwnProperty.call(body, 'taxId') && !Object.prototype.hasOwnProperty.call(body, 'gstin')) body.gstin = body.taxId;
+    const protectedFields = ['openingBalance', 'payablesBalance', 'unusedCredits', 'advanceBalance'];
+    if (protectedFields.some((field) => Object.prototype.hasOwnProperty.call(body, field))) {
+      res.status(400).json({ error: 'Vendor balances are derived from financial transactions and cannot be edited' });
+      return;
+    }
+    let updated: Record<string, unknown> | null;
+    try {
+      updated = await db.transaction(async (client) => {
+      const result = await client.query('SELECT * FROM vendors WHERE organization_id = $1 AND id = $2 FOR UPDATE', [orgId, req.params.id]);
+      const current = result.rows[0];
+      if (!current) return null;
+      const fields: Array<[string, string, (value: any) => any]> = [
+        ['name', 'name', (v) => String(v || '').trim()], ['legalName', 'legal_name', (v) => String(v || '').trim()],
+        ['companyName', 'company_name', (v) => String(v || '').trim()], ['vendorType', 'vendor_type', (v) => v],
+        ['gstStatus', 'gst_status', (v) => v], ['gstin', 'gstin', (v) => String(v || '').trim().toUpperCase()],
+        ['pan', 'pan', (v) => String(v || '').trim().toUpperCase()], ['placeOfSupply', 'place_of_supply', (v) => String(v || '').trim()],
+        ['email', 'email', (v) => String(v || '').trim().toLowerCase()], ['phone', 'phone', (v) => String(v || '').trim()],
+        ['mobile', 'mobile', (v) => String(v || '').trim()], ['website', 'website', (v) => String(v || '').trim()],
+        ['paymentTerms', 'payment_terms', (v) => String(v || '').trim()], ['notes', 'notes', (v) => String(v || '').trim()],
+        ['defaultExpenseAccountId', 'default_expense_account_id', (v) => v || null],
+        ['bankDetails', 'bank_details_encrypted', (v) => {
+          const details = normalizeVendorBankDetails(v);
+          return details ? MfaService.encryptSecret(JSON.stringify(details)) : null;
+        }],
+        ['billingAddress', 'billing_address', (v) => typeof v === 'string' ? v : JSON.stringify(v || {})],
+        ['shippingAddress', 'shipping_address', (v) => JSON.stringify(v || {})],
+        ['primaryContact', 'primary_contact', (v) => JSON.stringify(v || {})],
+        ['additionalContacts', 'additional_contacts', (v) => JSON.stringify(v || [])],
+        ['customFields', 'custom_fields', (v) => JSON.stringify(v || {})],
+      ];
+      for (const [input, column] of fields) {
+        if (!Object.prototype.hasOwnProperty.call(body, input)) continue;
+        const value = body[input];
+        const limits: Record<string, number> = { name: 255, legalName: 255, companyName: 255, email: 255, phone: 50, mobile: 50, website: 255, gstin: 50, pan: 20, placeOfSupply: 100, paymentTerms: 50, notes: 20000 };
+        if (limits[input] !== undefined && !boundedText(value, limits[input])) throw new Error(`Invalid ${input}`);
+        if (input === 'name' && (!value || !String(value).trim())) throw new Error('Vendor name is required');
+        if (input === 'email' && !validVendorEmail(value)) throw new Error('Vendor email is invalid');
+        if (input === 'vendorType' && !['Business', 'Individual'].includes(value)) throw new Error('Vendor type is invalid');
+        if (input === 'gstStatus' && !['Registered', 'Unregistered', 'Composition', 'SEZ'].includes(value)) throw new Error('GST status is invalid');
+        if (input === 'gstin' && value && !/^[0-9A-Z]{15}$/.test(String(value).trim().toUpperCase())) throw new Error('GSTIN format is invalid');
+        if (input === 'pan' && value && !/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(String(value).trim().toUpperCase())) throw new Error('PAN format is invalid');
+        if (['billingAddress', 'shippingAddress'].includes(input) && !validVendorAddress(value)) throw new Error(`${input} is invalid`);
+        if (input === 'additionalContacts' && (!Array.isArray(value) || value.length > 20 || value.some((contact: any) => !validVendorContact(contact)))) throw new Error('Vendor contacts are invalid');
+        if (input === 'primaryContact' && !validVendorContact(value, true)) throw new Error('Primary contact is invalid');
+        if (input === 'customFields' && !validVendorCustomFields(value)) throw new Error('Vendor custom fields are invalid');
+        if (input === 'bankDetails') normalizeVendorBankDetails(value);
+        if (input === 'defaultExpenseAccountId' && value) {
+          const account = await client.query("SELECT id FROM accounts WHERE organization_id = $1 AND id = $2 AND status = $3 AND type IN ('Expense', 'Other Expense')", [orgId, value, 'Active']);
+          if (!account.rows.length) throw new Error('Default expense account does not belong to this organization or is inactive');
+        }
+      }
+      const effectiveGstin = String(body.gstin ?? current.gstin ?? '').trim();
+      const effectiveGstStatus = body.gstStatus ?? current.gst_status ?? 'Unregistered';
+      if (effectiveGstStatus === 'Registered' && !effectiveGstin) throw new Error('GSTIN is required for a registered vendor');
+      const columns = fields.filter(([input]) => Object.prototype.hasOwnProperty.call(body, input));
+      if (!columns.length) return vendorResponse(current);
+      const values = columns.map(([input, , normalize]) => normalize(body[input]));
+      const assignments = columns.map(([, column], index) => `${column} = $${index + 1}`);
+      const changedFields = columns.map(([input]) => input);
+      values.push(orgId, req.params.id);
+      const saved = await client.query(
+        `UPDATE vendors SET ${assignments.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE organization_id = $${values.length - 1} AND id = $${values.length} RETURNING *`, values
+      );
+      await FinanceController.logAudit(orgId, req.auth!.userId, 'VENDOR_UPDATED', 'Vendor', req.params.id, { changedFields }, client, true);
+      return vendorResponse(saved.rows[0]);
+      });
+    } catch (error) {
+      res.status(400).json({ error: error instanceof Error ? error.message : 'Vendor could not be updated' });
+      return;
+    }
+    if (!updated) { res.status(404).json({ error: 'Vendor not found' }); return; }
+    res.json(updated);
+  }
+
+  public static async archiveVendor(req: AuthenticatedRequest, res: Response): Promise<void> {
+    await FinanceController.setVendorActive(req, res, false);
+  }
+
+  public static async restoreVendor(req: AuthenticatedRequest, res: Response): Promise<void> {
+    await FinanceController.setVendorActive(req, res, true);
+  }
+
+  private static async setVendorActive(req: AuthenticatedRequest, res: Response, active: boolean): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const changed = await db.transaction(async (client) => {
+      const result = await client.query('UPDATE vendors SET active = $1, updated_at = CURRENT_TIMESTAMP WHERE organization_id = $2 AND id = $3 AND (active <> $1 OR active IS NULL) RETURNING id', [active, orgId, req.params.id]);
+      if (result.rows.length) {
+        await FinanceController.logAudit(orgId, req.auth!.userId, active ? 'VENDOR_RESTORED' : 'VENDOR_ARCHIVED', 'Vendor', req.params.id, { active }, client, true);
+        return true;
+      }
+      const exists = await client.query('SELECT active FROM vendors WHERE organization_id = $1 AND id = $2', [orgId, req.params.id]);
+      if (!exists.rows.length) return null;
+      return false;
+    });
+    if (changed === null) { res.status(404).json({ error: 'Vendor not found' }); return; }
+    res.json({ id: req.params.id, active });
   }
 
   // --- PROJECTS ---
@@ -1102,6 +1582,55 @@ export class FinanceController {
       } else {
         res.status(500).json({ error: err.message || 'Failed to generate invoice PDF' });
       }
+    }
+  }
+
+  /**
+   * Canonical PDF endpoint for every document family.  The category and
+   * template are allow-listed by DocumentPdfService; all source data remains
+   * scoped to the authenticated organization in the query itself.
+   */
+  public static async getDocumentPdf(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const category = String(req.params.category || '');
+      if (!DocumentPdfService.isSupportedCategory(category)) {
+        res.status(400).json({ error: `Unsupported document PDF category: ${category}` });
+        return;
+      }
+      const result = await DocumentPdfService.generatePdf(
+        db,
+        req.auth!.organizationId,
+        category,
+        req.params.id,
+        typeof req.query.templateId === 'string' ? req.query.templateId : undefined,
+        {
+          fromDate: typeof req.query.fromDate === 'string' ? req.query.fromDate : undefined,
+          toDate: typeof req.query.toDate === 'string' ? req.query.toDate : undefined,
+        }
+      );
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Length', String(result.pdf.length));
+      res.setHeader('Content-Disposition', `inline; filename="${result.filename}"`);
+      res.setHeader('X-Document-Pdf-Template', result.templateId);
+      res.send(result.pdf);
+    } catch (err: any) {
+      const message = err?.message || 'Failed to generate document PDF';
+      const status = /not found/i.test(message) ? 404 : /Unsupported/i.test(message) ? 400 : 500;
+      res.status(status).json({ error: message });
+    }
+  }
+
+  public static async getRecentPdfDocuments(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const category = String(req.params.category || '');
+      if (!DocumentPdfService.isSupportedCategory(category)) {
+        res.status(400).json({ error: `Unsupported document PDF category: ${category}` });
+        return;
+      }
+      const documents = await DocumentPdfService.listRecentDocuments(db, req.auth!.organizationId, category);
+      res.json({ category, templateIds: DocumentPdfService.getTemplateIds(category), documents });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Failed to list recent documents' });
     }
   }
 

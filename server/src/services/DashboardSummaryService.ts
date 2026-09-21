@@ -33,6 +33,8 @@ export interface DashboardResponse {
     collections: Array<{ partyName: string; amount: number; overdue: boolean; dueDate: string | null }>;
     billsDue: Array<{ partyName: string; amount: number; overdue: boolean; dueDate: string | null }>;
     recentTransactions: DashboardSummaryData['recentTransactions'];
+    unbilledHours: number;
+    unbilledExpenses: number;
   };
   cashFlow: {
     /**
@@ -82,6 +84,17 @@ const isIsoDate = (value: string): boolean => {
 };
 const endOfMonth = (date: Date): string => isoDate(new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)));
 const addDays = (date: string, days: number): string => isoDate(new Date(new Date(`${date}T00:00:00Z`).getTime() + days * 86_400_000));
+export const toIsoDateString = (val: any): string | null => {
+  if (!val) return null;
+  if (val instanceof Date) {
+    return Number.isNaN(val.getTime()) ? null : val.toISOString().slice(0, 10);
+  }
+  const str = String(val).trim();
+  const match = str.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (match) return match[1];
+  const parsed = new Date(str);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString().slice(0, 10);
+};
 
 export function calculatePeriodBounds(
   asOfDate: string,
@@ -169,7 +182,7 @@ export class DashboardSummaryService {
     if (canSeeControls) availableViews.push('close-controls');
     if (!availableViews.includes(view)) throw new Error('DASHBOARD_VIEW_FORBIDDEN: You are not authorized to view this dashboard');
 
-    const [documentsRes, bankRes, activityTrendRes, cashMovementRes, collectionsRes, billsRes, bankQueueRes, quotationRes, journalRes, recentRes, topExpensesRes] = await Promise.all([
+    const [documentsRes, bankRes, activityTrendRes, cashMovementRes, collectionsRes, billsRes, bankQueueRes, quotationRes, journalRes, recentRes, topExpensesRes, unbilledHoursRes, unbilledExpensesRes] = await Promise.all([
       db.query(`WITH documents AS (
           SELECT 'invoice' AS kind, balance_due, due_date, issue_date AS document_date
             FROM invoices
@@ -255,6 +268,8 @@ export class DashboardSummaryService {
         GROUP BY a.id, a.name
         ORDER BY amount DESC, a.name ASC
         LIMIT 5`, [organizationId, periodStart, asOfDate]),
+      db.query(`SELECT COALESCE(SUM(hours), 0) AS unbilled_hours FROM time_entries WHERE organization_id = $1 AND is_billable = TRUE AND is_billed = FALSE`, [organizationId]),
+      db.query(`SELECT COALESCE(SUM(amount), 0) AS unbilled_expenses FROM expenses WHERE organization_id = $1 AND is_billable = TRUE AND is_billed = FALSE AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT')`, [organizationId]),
     ]);
 
     const documents = documentsRes.rows[0] || {};
@@ -306,9 +321,27 @@ export class DashboardSummaryService {
       overduePayables: databaseMoney(documents.payables_overdue_total, 'Dashboard overdue payables'), overdueBillsCount: Number(documents.bill_overdue_count || 0),
       bankBalance, salesThisMonth, expensesThisMonth, activityTrend,
       bankReconciliationAttentionCount: Number(bankQueueRes.rows[0]?.count || 0), quotationsAwaitingResponseCount: Number(quotationRes.rows[0]?.count || 0), pendingJournalsCount: canSeeAccounting ? Number(journalRes.rows[0]?.count || 0) : null,
-      collections: collectionsRes.rows.map((row: any) => ({ partyName: row.party_name, amount: databaseMoney(row.balance_due, 'Dashboard collection amount'), overdue: Boolean(row.due_date && String(row.due_date).slice(0, 10) < asOfDate), dueDate: row.due_date ? String(row.due_date).slice(0, 10) : null })),
-      billsDue: billsRes.rows.map((row: any) => ({ partyName: row.party_name, amount: databaseMoney(row.balance_due, 'Dashboard bill amount'), overdue: Boolean(row.due_date && String(row.due_date).slice(0, 10) < asOfDate), dueDate: row.due_date ? String(row.due_date).slice(0, 10) : null })),
+      collections: collectionsRes.rows.map((row: any) => {
+        const dueDate = toIsoDateString(row.due_date);
+        return {
+          partyName: row.party_name,
+          amount: databaseMoney(row.balance_due, 'Dashboard collection amount'),
+          overdue: Boolean(dueDate && dueDate < asOfDate),
+          dueDate,
+        };
+      }),
+      billsDue: billsRes.rows.map((row: any) => {
+        const dueDate = toIsoDateString(row.due_date);
+        return {
+          partyName: row.party_name,
+          amount: databaseMoney(row.balance_due, 'Dashboard bill amount'),
+          overdue: Boolean(dueDate && dueDate < asOfDate),
+          dueDate,
+        };
+      }),
       recentTransactions: recentRes.rows.map((row: any) => ({ type: row.type, documentNumber: row.doc_num, partyName: row.party_name, amount: databaseMoney(row.amount, `Dashboard amount for ${row.doc_num}`), status: row.status, date: row.doc_date })),
+      unbilledHours: Number(unbilledHoursRes.rows[0]?.unbilled_hours || 0),
+      unbilledExpenses: databaseMoney(unbilledExpensesRes.rows[0]?.unbilled_expenses, 'Dashboard unbilled expenses'),
     };
 
     let closeControls: DashboardResponse['closeControls'] = { available: false, periodClose: null, integrity: null };

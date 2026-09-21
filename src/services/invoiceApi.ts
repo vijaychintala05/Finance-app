@@ -5,7 +5,9 @@ export const invoiceApi = {
    * Downloads certified Tax Invoice PDF blob from backend
    */
   async getInvoicePdf(id: string): Promise<Blob> {
-    const res = await apiClient.getBlob(`/finance/invoices/${id}/pdf`);
+    // The PDF catalogue owns the active invoice template and loads the
+    // authoritative invoice, organization profile, and ledger details server-side.
+    const res = await apiClient.getBlob(`/finance/documents/invoices/${id}/pdf`);
     if (res.error || !res.data) {
       throw new Error(res.error || 'Failed to download invoice PDF');
     }

@@ -249,8 +249,10 @@ interface BooksContextType {
 
   vendors: Vendor[];
   addVendor: (vendor: Omit<Vendor, 'id'>) => Promise<Vendor>;
-  updateVendor: (id: string, vendor: Partial<Vendor>) => void;
-  deleteVendor: (id: string) => void;
+  updateVendor: (id: string, vendor: Partial<Vendor>) => Promise<Vendor>;
+  archiveVendor: (id: string) => Promise<void>;
+  restoreVendor: (id: string) => Promise<void>;
+  deleteVendor: (id: string) => Promise<void>;
 
   projects: Project[];
   addProject: (project: Omit<Project, 'id' | 'createdAt'>) => Promise<Project>;
@@ -739,6 +741,32 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setCreditNotes(data['credit-notes']);
       setBills((data.bills || []).map(normalizeBillForUi));
       setPaymentsMade(data['vendor-payments'] || []);
+      void apiClient.get<any>('/organizations/current').then((orgRes) => {
+        if (activeOrgIdRef.current !== requestedOrgId) return;
+        const prof = orgRes.data?.profile;
+        if (prof?.branding || prof?.logoUrl || prof?.documentTemplates) {
+          let b = prof.branding;
+          if (typeof b === 'string') {
+            try { b = JSON.parse(b); } catch { b = {}; }
+          }
+          let dt = prof.documentTemplates;
+          if (typeof dt === 'string') {
+            try { dt = JSON.parse(dt); } catch { dt = {}; }
+          }
+          setSettings((prev) => ({
+            ...prev,
+            branding: {
+              ...(prev.branding || {}),
+              ...(b || {}),
+              logoUrl: prof.logoUrl || prev.branding?.logoUrl,
+            },
+            documentTemplates: {
+              ...(prev.documentTemplates || {}),
+              ...(dt || {}),
+            },
+          }));
+        }
+      }).catch(() => {});
       setAuditLogs((data.audit || []).map((row: any) => {
         const metadata = typeof row.metadata === 'string'
           ? (() => { try { return JSON.parse(row.metadata); } catch { return {}; } })()
@@ -986,12 +1014,16 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const updateSettings = (newSettings: Partial<FirmSettings>) => {
     const keys = Object.keys(newSettings);
-    if (keys.length === 1 && keys[0] === 'userPreferences') {
+    if (newSettings.branding || newSettings.userPreferences || newSettings.documentTemplates) {
       setSettings((prev) => ({
         ...prev,
-        userPreferences: { ...prev.userPreferences, ...newSettings.userPreferences },
+        ...(newSettings.userPreferences ? { userPreferences: { ...prev.userPreferences, ...newSettings.userPreferences } } : {}),
+        ...(newSettings.branding ? { branding: { ...(prev.branding || {}), ...newSettings.branding } } : {}),
+        ...(newSettings.documentTemplates ? { documentTemplates: { ...(prev.documentTemplates || {}), ...newSettings.documentTemplates } } : {}),
       }));
-      return;
+      if (keys.every((k) => k === 'userPreferences' || k === 'branding' || k === 'documentTemplates')) {
+        return;
+      }
     }
     window.alert('Business and compliance settings require an audited server workflow and are currently read-only.');
   };
@@ -1076,16 +1108,32 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const response = await apiClient.post<Partial<Vendor>>('/finance/vendors', vendorData);
     if (!response.data?.id) throw new Error(response.error || 'Vendor could not be created');
     const newVendor: Vendor = { ...vendorData, ...response.data, id: response.data.id } as Vendor;
-    await refreshAfterCommittedWrite();
+    await refreshAfterCommittedWrite(['vendors']);
     return newVendor;
   };
 
-  const updateVendor = (id: string, vendorData: Partial<Vendor>) => {
-    window.alert('Vendor edits require an audited server workflow and are not enabled yet.');
+  const updateVendor = async (id: string, vendorData: Partial<Vendor>): Promise<Vendor> => {
+    const response = await apiClient.put<Partial<Vendor>>(`/finance/vendors/${id}`, vendorData);
+    if (!response.data?.id) throw new Error(response.error || 'Vendor could not be updated');
+    const updatedVendor = { ...response.data, id } as Vendor;
+    await refreshAfterCommittedWrite(['vendors']);
+    return updatedVendor;
   };
 
-  const deleteVendor = (id: string) => {
-    window.alert('Vendors with financial history cannot be deleted. Archival is not enabled yet.');
+  const archiveVendor = async (id: string): Promise<void> => {
+    const response = await apiClient.post<{ id: string; active: boolean }>(`/finance/vendors/${id}/archive`, {});
+    if (response.error || response.data?.active !== false) throw new Error(response.error || 'Vendor could not be archived');
+    await refreshAfterCommittedWrite(['vendors']);
+  };
+
+  const restoreVendor = async (id: string): Promise<void> => {
+    const response = await apiClient.post<{ id: string; active: boolean }>(`/finance/vendors/${id}/restore`, {});
+    if (response.error || response.data?.active !== true) throw new Error(response.error || 'Vendor could not be restored');
+    await refreshAfterCommittedWrite(['vendors']);
+  };
+
+  const deleteVendor = async (id: string): Promise<void> => {
+    await archiveVendor(id);
   };
 
   const addProject = async (projectData: Omit<Project, 'id' | 'createdAt'>): Promise<Project> => {
@@ -1878,6 +1926,8 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       vendors,
       addVendor,
       updateVendor,
+      archiveVendor,
+      restoreVendor,
       deleteVendor,
       projects,
       addProject,

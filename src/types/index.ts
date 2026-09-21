@@ -217,17 +217,76 @@ export interface Client {
 export interface Vendor {
   id: string;
   organizationId?: string;
+  vendorId?: string;
   name: string;
+  legalName?: string;
   companyName?: string;
+  vendorType?: 'Business' | 'Individual';
+  gstStatus?: 'Registered' | 'Unregistered' | 'Composition' | 'SEZ';
+  gstin?: string;
+  pan?: string;
+  placeOfSupply?: string;
+  primaryContact?: VendorContact;
+  additionalContacts?: VendorContact[];
   contactPerson?: string;
   email?: string;
   phone?: string;
+  mobile?: string;
+  website?: string;
   taxId?: string;
   category?: string;
   paymentTerms?: string;
+  billingAddress?: VendorAddress | string;
+  shippingAddress?: VendorAddress | string;
   address?: string;
+  defaultExpenseAccountId?: string;
+  bankDetails?: VendorBankDetails;
+  customFields?: Record<string, string | number | boolean | null>;
+  notes?: string;
+  currency?: string;
   payablesBalance?: number;
+  unusedCredits?: number;
+  advanceBalance?: number;
+  active?: boolean;
   status?: string;
+  createdAt?: string;
+}
+
+export interface VendorAddress {
+  attention?: string;
+  street?: string;
+  street2?: string;
+  city?: string;
+  state?: string;
+  postalCode?: string;
+  country?: string;
+  phone?: string;
+}
+
+export interface VendorBankDetails {
+  bankName?: string;
+  accountName?: string;
+  accountNumber?: string;
+  maskedAccountNumber?: string;
+  accountNumberLast4?: string;
+  ifsc?: string;
+  swiftCode?: string;
+  branch?: string;
+  accountType?: string;
+}
+
+export interface VendorContact {
+  salutation?: string;
+  firstName?: string;
+  lastName?: string;
+  name?: string;
+  email?: string;
+  phoneCode?: string;
+  phone?: string;
+  mobileCode?: string;
+  mobile?: string;
+  designation?: string;
+  isPrimary?: boolean;
 }
 
 export type ProjectStatus = 'Active' | 'On Hold' | 'Completed' | 'Cancelled';
@@ -578,6 +637,55 @@ export interface OrgProfileDetails {
   additionalFields: OrgAdditionalField[];
 }
 
+export type DocumentTemplateCategory =
+  | 'quotes'
+  | 'sales-orders'
+  | 'delivery-challans'
+  | 'invoices'
+  | 'credit-notes'
+  | 'purchase-orders'
+  | 'payment-receipts'
+  | 'customer-statements'
+  | 'bills'
+  | 'expenses'
+  | 'vendor-credits'
+  | 'vendor-payments'
+  | 'vendor-statements'
+  | 'journals';
+
+export interface DocumentTemplateConfig {
+  defaultTemplate?: 'spreadsheet' | 'standard' | 'modern' | 'compact' | string;
+  templateTitle?: string;
+  showHsnSac?: boolean;
+  showDiscount?: boolean;
+  showTaxBreakdown?: boolean;
+  showBankDetails?: boolean;
+  showUpiQr?: boolean;
+  showPricing?: boolean;
+  showTransportDetails?: boolean;
+  showShippingAddress?: boolean;
+  showVendorTerms?: boolean;
+  showInvoiceAllocations?: boolean;
+  showPaymentModeBadge?: boolean;
+  showAgingBuckets?: boolean;
+  showRunningBalance?: boolean;
+  showNarration?: boolean;
+  showDebitCreditTotals?: boolean;
+  showVehicleDetails?: boolean;
+  showEWayBill?: boolean;
+  showReceiverAck?: boolean;
+  showInvoicesSettled?: boolean;
+  showThreeTierSignatures?: boolean;
+  showIncoterms?: boolean;
+  signatoryTitle?: string;
+  termsAndConditions?: string;
+  footerNote?: string;
+  watermarkText?: string;
+  showWatermark?: boolean;
+  headerLayout?: 'split' | 'centered' | string;
+  [key: string]: any;
+}
+
 export interface FirmSettings {
   firmName: string;
   firmEmail: string;
@@ -596,10 +704,18 @@ export interface FirmSettings {
   // Extended settings
   branding?: {
     primaryColor: string;
-    watermarkText: string;
-    headerLayout: string;
+    accentColor?: string;
+    fontFamily?: string;
+    footerNote?: string;
+    termsAndConditions?: string;
+    authorizedSignatoryTitle?: string;
+    sealUrl?: string | null;
+    watermarkText?: string;
+    showWatermark?: boolean;
+    headerLayout?: string;
     logoUrl?: string;
   };
+  documentTemplates?: Record<string, DocumentTemplateConfig>;
   customDomain?: {
     domainName: string;
     sslActive: boolean;
@@ -914,6 +1030,7 @@ export interface RecurringBill {
 
 export interface VendorCredit {
   id: string;
+  vendorId?: string;
   creditNoteNumber: string;
   vendorName: string;
   billNumber: string;
@@ -926,6 +1043,7 @@ export interface VendorCredit {
 
 export interface PaymentMade {
   id: string;
+  vendorId?: string;
   paymentNumber: string;
   vendorName: string;
   billNumber: string;

@@ -76,7 +76,17 @@ export const TENANT_SCOPED_TABLES = [
 ];
 
 export async function applyEnterpriseHardeningSchema(client: DbQueryClient): Promise<void> {
-  await client.query('ALTER TABLE vendors ADD CONSTRAINT uk_vendors_org_id UNIQUE (organization_id, id)').catch(() => {});
+  if (!db.isMemoryMode()) {
+    await client.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uk_vendors_org_id') THEN
+          ALTER TABLE vendors ADD CONSTRAINT uk_vendors_org_id UNIQUE (organization_id, id);
+        END IF;
+      END $$;
+    `);
+  } else {
+    await client.query('ALTER TABLE vendors ADD CONSTRAINT uk_vendors_org_id UNIQUE (organization_id, id)').catch(() => {});
+  }
   const additiveStatements = [
     `CREATE TABLE IF NOT EXISTS vendor_attachments (
       id VARCHAR(64) PRIMARY KEY,
@@ -210,7 +220,7 @@ export async function applyEnterpriseHardeningSchema(client: DbQueryClient): Pro
       }
       await client.query(statement);
     } catch (error) {
-      if (process.env.NODE_ENV === 'production') throw error;
+      if (!db.isMemoryMode() || process.env.NODE_ENV === 'production') throw error;
     }
   }
 
@@ -229,7 +239,7 @@ export async function applyEnterpriseHardeningSchema(client: DbQueryClient): Pro
       try {
         await client.query(rlsSql);
       } catch (err) {
-        if (process.env.NODE_ENV === 'production') {
+        if (!db.isMemoryMode() || process.env.NODE_ENV === 'production') {
           throw err;
         }
       }

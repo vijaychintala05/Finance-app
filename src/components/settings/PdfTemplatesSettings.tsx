@@ -574,7 +574,7 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
             </span>
           </div>
 
-          <nav className="p-2 space-y-0.5 overflow-y-auto max-h-[calc(100vh-220px)] flex-1 text-xs">
+          <nav className="p-2 flex gap-1.5 overflow-x-auto md:block md:space-y-0.5 md:overflow-x-hidden md:overflow-y-auto md:max-h-[calc(100vh-220px)] md:flex-1 text-xs">
             {DOCUMENT_CATEGORIES.map((cat) => {
               const isActive = activeCategory === cat.id;
               const catTemplates = CATEGORY_TEMPLATES[cat.id] || [];
@@ -586,7 +586,7 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
                   type="button"
                   key={cat.id}
                   onClick={() => setActiveCategory(cat.id)}
-                  className={`w-full text-left px-3.5 py-2.5 rounded-xl transition-all flex items-center justify-between cursor-pointer group ${
+                  className={`w-full min-w-[156px] md:min-w-0 shrink-0 text-left px-3.5 py-2.5 rounded-xl transition-all flex items-center justify-between cursor-pointer group ${
                     isActive
                       ? 'bg-blue-600 text-white font-bold shadow-xs'
                       : 'text-slate-700 dark:text-slate-300 hover:bg-slate-200/60 dark:hover:bg-slate-800/60 font-medium'
@@ -816,11 +816,11 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
             </div>
 
             {/* Options Tabs */}
-            <div className="flex border-b border-slate-100 dark:border-slate-800 px-6 bg-slate-50/50 dark:bg-slate-900/40 text-xs font-bold">
+            <div className="flex border-b border-slate-100 dark:border-slate-800 px-6 bg-slate-50/50 dark:bg-slate-900/40 overflow-x-auto text-xs font-bold">
               <button
                 type="button"
                 onClick={() => setOptionsActiveTab('properties')}
-                className={`py-3 px-4 border-b-2 cursor-pointer transition-colors ${
+                className={`py-3 px-4 min-w-max whitespace-nowrap border-b-2 cursor-pointer transition-colors ${
                   optionsActiveTab === 'properties'
                     ? 'border-blue-600 text-blue-600 dark:text-blue-400'
                     : 'border-transparent text-slate-500 hover:text-slate-700'
@@ -831,7 +831,7 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
               <button
                 type="button"
                 onClick={() => setOptionsActiveTab('fields')}
-                className={`py-3 px-4 border-b-2 cursor-pointer transition-colors ${
+                className={`py-3 px-4 min-w-max whitespace-nowrap border-b-2 cursor-pointer transition-colors ${
                   optionsActiveTab === 'fields'
                     ? 'border-blue-600 text-blue-600 dark:text-blue-400'
                     : 'border-transparent text-slate-500 hover:text-slate-700'
@@ -842,7 +842,7 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
               <button
                 type="button"
                 onClick={() => setOptionsActiveTab('footer')}
-                className={`py-3 px-4 border-b-2 cursor-pointer transition-colors ${
+                className={`py-3 px-4 min-w-max whitespace-nowrap border-b-2 cursor-pointer transition-colors ${
                   optionsActiveTab === 'footer'
                     ? 'border-blue-600 text-blue-600 dark:text-blue-400'
                     : 'border-transparent text-slate-500 hover:text-slate-700'
@@ -1524,11 +1524,11 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
             </div>
 
             {/* Modal Actions */}
-            <div className="p-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/60 flex items-center justify-between">
-              <span className="text-[11px] text-slate-400">
+            <div className="p-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/60 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <span className="text-[11px] text-slate-400 max-w-xs">
                 Changes apply instantly across all new document exports.
               </span>
-              <div className="flex items-center space-x-2">
+              <div className="flex items-center justify-end space-x-2 w-full sm:w-auto">
                 <button
                   type="button"
                   onClick={() => setIsOptionsOpen(false)}
@@ -1540,7 +1540,7 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
                   type="button"
                   disabled={savingOptions}
                   onClick={handleSaveOptions}
-                  className="px-4 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-xl shadow-xs transition-all cursor-pointer disabled:opacity-50"
+                  className="px-4 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-xl shadow-xs transition-all cursor-pointer disabled:opacity-50 whitespace-nowrap"
                 >
                   {savingOptions ? 'Saving…' : 'Save & Apply in Real Time'}
                 </button>
@@ -1588,8 +1588,8 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
               </div>
             </div>
 
-            <div className="p-6 overflow-y-auto bg-slate-100/60 dark:bg-slate-950/60 flex justify-center">
-              <div className="w-full max-w-2xl space-y-3">
+            <div className="p-3 sm:p-6 overflow-auto bg-slate-100/60 dark:bg-slate-950/60 flex justify-center">
+              <div className="w-full max-w-2xl min-w-0 space-y-3">
                 <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-xs text-blue-950 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-100">
                   <div className="font-bold">Layout sample only</div>
                   <p className="mt-0.5 text-blue-800 dark:text-blue-200">Use a current record below to open the server-rendered PDF with your organization’s real data.</p>
@@ -2248,7 +2248,7 @@ const FullCategorySpecializedRenderer: React.FC<FullCategorySpecializedRendererP
   return (
     <div className="space-y-6 text-slate-800 dark:text-slate-200">
       {/* Document Header Banner */}
-      <div className="flex justify-between items-start pb-6 border-b-2" style={{ borderColor: primaryColor }}>
+      <div className="flex flex-col gap-4 sm:flex-row sm:justify-between items-start pb-6 border-b-2" style={{ borderColor: primaryColor }}>
         <div className="flex items-center space-x-3">
           {logoUrl ? (
             <img src={logoUrl} alt="Logo" className="h-10 max-w-[120px] object-contain" />
@@ -2266,8 +2266,8 @@ const FullCategorySpecializedRenderer: React.FC<FullCategorySpecializedRendererP
           </div>
         </div>
 
-        <div className="text-right">
-          <h1 className="text-2xl font-black tracking-tight" style={{ color: primaryColor }}>
+        <div className="text-left sm:text-right min-w-0 max-w-full">
+          <h1 className="text-xl sm:text-2xl font-black tracking-tight break-words" style={{ color: primaryColor }}>
             {docTitle}
           </h1>
           <p className="font-mono font-bold text-xs text-slate-500 mt-0.5"># DOC-2026-0042</p>
@@ -2278,7 +2278,7 @@ const FullCategorySpecializedRenderer: React.FC<FullCategorySpecializedRendererP
       {/* Category Specific Detailed Bodies */}
       {category === 'quotes' && (
         <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-4 p-4 bg-slate-50 dark:bg-slate-800/40 rounded-xl border text-xs">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 p-4 bg-slate-50 dark:bg-slate-800/40 rounded-xl border text-xs">
             <div>
               <span className="text-slate-400 font-bold uppercase text-[10px]">Client / Estimate For</span>
               <p className="font-bold text-slate-800 dark:text-slate-200 mt-1">Rob & Joe Traders</p>

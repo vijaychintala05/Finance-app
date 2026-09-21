@@ -34,9 +34,15 @@ import { formatCurrency } from '../../utils/formatters';
 interface PortalCustomer {
   id: string;
   name: string;
+  display_name?: string;
+  company_name?: string;
   email?: string;
   phone?: string;
 }
+
+type PortalCustomerListResponse =
+  | PortalCustomer[]
+  | { clients?: PortalCustomer[]; customers?: PortalCustomer[] };
 
 interface PortalOrg {
   id: string;
@@ -165,24 +171,27 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
   useEffect(() => {
     const fetchCustomers = async () => {
       try {
-        const res = await apiClient.get<{ clients?: any[]; customers?: any[] }>('/finance/clients');
-        const list = res.data?.clients || res.data?.customers || [];
-        setCustomersList(
-          list.map((c: any) => ({
+        const res = await apiClient.get<PortalCustomerListResponse>('/finance/clients');
+        if (res.error) throw new Error(res.error);
+
+        const payload = res.data;
+        const list = Array.isArray(payload)
+          ? payload
+          : payload?.clients || payload?.customers || [];
+        const normalizedCustomers = list.map((c) => ({
             id: c.id,
             name: c.display_name || c.name || c.company_name || 'Customer',
             email: c.email || undefined,
-          }))
-        );
-        if (list.length > 0 && !selectedCustomerId) {
-          setSelectedCustomerId(list[0].id);
-        }
+          }));
+
+        setCustomersList(normalizedCustomers);
+        setSelectedCustomerId((current) => current || normalizedCustomers[0]?.id || '');
       } catch {
         // May be in external public context where internal auth isn't available
       }
     };
     fetchCustomers();
-  }, [apiClient, selectedCustomerId]);
+  }, [apiClient]);
 
   // Fetch Public Portal Context when activeToken is present
   const fetchPortalContext = useCallback(async (token: string) => {
@@ -407,6 +416,7 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
           {customersList.length > 0 && (
             <div className="flex flex-wrap items-center gap-2">
               <select
+                aria-label="Customer"
                 value={selectedCustomerId}
                 onChange={(e) => setSelectedCustomerId(e.target.value)}
                 className="text-xs px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-indigo-500"
@@ -419,6 +429,7 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
               </select>
 
               <select
+                aria-label="Portal link expiry"
                 value={tokenExpiryDays}
                 onChange={(e) => setTokenExpiryDays(Number(e.target.value))}
                 className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100"

@@ -77,6 +77,8 @@ router.get('/invoices/:id/pdf', requirePermission(['invoices.view']), FinanceCon
 // PDF gallery / live-document endpoint. The service verifies the category and
 // template ID and performs tenant-scoped database reads for every render.
 router.get('/documents/:category/recent', requirePermission(['invoices.view', 'purchases.view', 'expenses.view', 'journals.view', 'reports.view']), FinanceController.getRecentPdfDocuments);
+router.get('/documents/:category/templates', requirePermission(['invoices.view', 'purchases.view', 'expenses.view', 'journals.view', 'reports.view']), FinanceController.getDocumentTemplates);
+router.patch('/documents/:category/templates/:templateId/default', requirePermission('settings.manage'), FinanceController.setDocumentTemplateDefault);
 router.get('/documents/:category/:id/pdf', requirePermission(['invoices.view', 'purchases.view', 'expenses.view', 'journals.view', 'reports.view']), FinanceController.getDocumentPdf);
 router.post('/invoices', requirePermission(['invoices.create']), FinanceController.createInvoice);
 router.put('/invoices/:id', requirePermission(['invoices.edit', 'invoices.create']), FinanceController.updateInvoice);

@@ -3,6 +3,7 @@ import { type DbQueryClient, db } from '../database/db';
 import { amountToWords } from '../utils/numberToWords';
 import { CustomerStatementService } from './CustomerStatementService';
 import { VendorStatementService } from './VendorStatementService';
+import { DocumentTemplateService, type DocumentTemplateRecord } from './DocumentTemplateService';
 
 /**
  * The document PDF catalogue is deliberately owned by the server.  A browser
@@ -51,6 +52,7 @@ type RenderModel = {
   balance?: number;
   notes?: string;
   journalLines: PdfLine[];
+  versionedTemplate?: DocumentTemplateRecord | null;
 };
 
 const CATEGORY_META: Record<DocumentPdfCategory, { table?: string; title: string; number: string; date: string; party: string; amount: string; lineDocument?: boolean }> = {
@@ -144,6 +146,10 @@ export class DocumentPdfService {
   public static async generatePdf(client: DbQueryClient, organizationId: string, category: DocumentPdfCategory, documentId: string, requestedTemplateId?: string, options: { fromDate?: string; toDate?: string } = {}): Promise<{ pdf: Buffer; filename: string; templateId: string }> {
     const model = await this.buildModel(client, organizationId, category, documentId, requestedTemplateId, options);
     const pdf = await this.render(model);
+    const snapshotStatus = ['POSTED', 'SENT', 'PAID', 'PARTIALLY_PAID', 'ACCEPTED', 'CONVERTED', 'RECEIVED', 'APPROVED', 'ISSUED'];
+    if (snapshotStatus.includes(model.status) || category === 'customer-statements' || category === 'vendor-statements') {
+      await DocumentTemplateService.persistSnapshot(client, organizationId, category, documentId, model.versionedTemplate || null, model, pdf.length);
+    }
     const filename = `${sanitize(model.title).replace(/[^A-Za-z0-9]+/g, '-')}-${sanitize(model.number).replace(/[^A-Za-z0-9_-]+/g, '-') || documentId}.pdf`;
     return { pdf, filename, templateId: model.templateId };
   }
@@ -158,15 +164,19 @@ export class DocumentPdfService {
     if (!orgResult.rows[0]) throw new Error('Organization not found');
     const organization = orgResult.rows[0] as Record<string, any>;
     const documentTemplates = parseJson(organization.document_templates) || {};
-    const templateConfig = this.templateConfig(documentTemplates, category);
+    const legacyTemplateConfig = this.templateConfig(documentTemplates, category);
+    const versionedTemplate = await DocumentTemplateService.resolve(client, organizationId, category, requestedTemplateId);
+    const templateConfig = versionedTemplate?.configuration && Object.keys(versionedTemplate.configuration).length
+      ? { ...legacyTemplateConfig, ...versionedTemplate.configuration }
+      : legacyTemplateConfig;
     const savedTemplate = templateConfig.defaultTemplate;
-    const templateId = requestedTemplateId || savedTemplate || DOCUMENT_PDF_CATALOG[category][0];
-    if (!(DOCUMENT_PDF_CATALOG[category] as readonly string[]).includes(templateId)) {
+    const templateId = requestedTemplateId || versionedTemplate?.modelId || savedTemplate || DOCUMENT_PDF_CATALOG[category][0];
+    if (!(DOCUMENT_PDF_CATALOG[category] as readonly string[]).includes(templateId) && !(versionedTemplate && templateId === versionedTemplate.modelId)) {
       throw new Error(`Unsupported ${category} PDF template: ${sanitize(templateId)}`);
     }
 
     if (category === 'customer-statements' || category === 'vendor-statements') {
-      return this.buildStatementModel(organizationId, category, documentId, templateId, organization, templateConfig, options);
+      return this.buildStatementModel(organizationId, category, documentId, templateId, organization, templateConfig, options, versionedTemplate);
     }
     const sourceResult = await client.query(`SELECT * FROM ${meta.table} WHERE organization_id = $1 AND id = $2`, [organizationId, documentId]);
     if (!sourceResult.rows[0]) throw new Error(`${meta.title} record not found: ${documentId}`);
@@ -183,11 +193,11 @@ export class DocumentPdfService {
       category, templateId, title: sanitize(templateConfig.templateTitle || meta.title),
       number: sanitize(source[meta.number] || source.id), status: sanitize(source.status || 'DRAFT').toUpperCase(), date: isoDate(source[meta.date]), dueDate: isoDate(source.due_date || source.expected_delivery),
       partyLabel: category === 'journals' ? 'LEDGER' : category.includes('vendor') || category === 'bills' ? 'VENDOR' : 'CUSTOMER', partyName, partyDetails,
-      organization, source, templateConfig, lines, subtotal, tax, discount, total, balance: number(source.balance_due ?? source.remaining_credit ?? source.unallocated_amount), notes: sanitize(source.notes || source.reason || source.description), journalLines,
+      organization, source, templateConfig, lines, subtotal, tax, discount, total, balance: number(source.balance_due ?? source.remaining_credit ?? source.unallocated_amount), notes: sanitize(source.notes || source.reason || source.description), journalLines, versionedTemplate,
     };
   }
 
-  private static async buildStatementModel(organizationId: string, category: 'customer-statements' | 'vendor-statements', partyId: string, templateId: string, organization: Record<string, any>, config: Record<string, any>, options: { fromDate?: string; toDate?: string }): Promise<RenderModel> {
+  private static async buildStatementModel(organizationId: string, category: 'customer-statements' | 'vendor-statements', partyId: string, templateId: string, organization: Record<string, any>, config: Record<string, any>, options: { fromDate?: string; toDate?: string }, versionedTemplate: DocumentTemplateRecord | null): Promise<RenderModel> {
     const toDate = options.toDate || new Date().toISOString().split('T')[0];
     const fromDate = options.fromDate || `${new Date(toDate).getUTCFullYear()}-04-01`;
     const statement = category === 'customer-statements'
@@ -198,7 +208,7 @@ export class DocumentPdfService {
       category, templateId, title, number: `${fromDate} to ${toDate}`, status: 'ISSUED', date: toDate,
       partyLabel: category === 'customer-statements' ? 'CUSTOMER' : 'VENDOR', partyName: sanitize((statement as any).customerName || (statement as any).vendorName), partyDetails: [`Period: ${fromDate} to ${toDate}`], organization, source: statement as any, templateConfig: config,
       lines: statement.transactions.map((line: any) => ({ date: isoDate(line.date), description: `${line.type} — ${line.reference}`, debit: number(line.debit), credit: number(line.credit), balance: number(line.runningBalance) })),
-      subtotal: number((statement as any).totalInvoices || (statement as any).totalBills), tax: 0, discount: 0, total: number(statement.closingBalance), balance: number(statement.closingBalance), notes: '', journalLines: [],
+      subtotal: number((statement as any).totalInvoices || (statement as any).totalBills), tax: 0, discount: 0, total: number(statement.closingBalance), balance: number(statement.closingBalance), notes: '', journalLines: [], versionedTemplate,
     };
   }
 

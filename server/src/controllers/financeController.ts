@@ -40,6 +40,7 @@ import { ExpenseReceiptService } from '../services/ExpenseReceiptService';
 import { ExpensePdfService } from '../services/ExpensePdfService';
 import { InvoicePdfService } from '../services/InvoicePdfService';
 import { DocumentPdfService } from '../services/DocumentPdfService';
+import { DocumentTemplateService } from '../services/DocumentTemplateService';
 import { GSTComplianceService } from '../services/GSTComplianceService';
 import { DrillDownService } from '../services/DrillDownService';
 import { ReportExportService } from '../services/ReportExportService';
@@ -1631,6 +1632,40 @@ export class FinanceController {
       res.json({ category, templateIds: DocumentPdfService.getTemplateIds(category), documents });
     } catch (err: any) {
       res.status(500).json({ error: err?.message || 'Failed to list recent documents' });
+    }
+  }
+
+  public static async getDocumentTemplates(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const category = String(req.params.category || '');
+      if (!DocumentPdfService.isSupportedCategory(category)) {
+        res.status(400).json({ error: `Unsupported document PDF category: ${category}` });
+        return;
+      }
+      const templates = await DocumentTemplateService.list(db, req.auth!.organizationId, category);
+      res.json({ category, templates, templateIds: DocumentPdfService.getTemplateIds(category) });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Failed to list document templates' });
+    }
+  }
+
+  public static async setDocumentTemplateDefault(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const category = String(req.params.category || '');
+      if (!DocumentPdfService.isSupportedCategory(category)) {
+        res.status(400).json({ error: `Unsupported document PDF category: ${category}` });
+        return;
+      }
+      const template = await DocumentTemplateService.setOrganizationDefault(
+        db,
+        req.auth!.organizationId,
+        category,
+        String(req.params.templateId || '')
+      );
+      res.json({ category, template });
+    } catch (err: any) {
+      const message = err?.message || 'Failed to set document template default';
+      res.status(/not found/i.test(message) ? 404 : 400).json({ error: message });
     }
   }
 

@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { apiClient } from '../api/client';
+import type { FinanceCapabilityKey } from './financeCapabilityRegistry';
 
 export type CapabilityState = 'enabled' | 'disabled' | 'unavailable';
 
 export interface FinanceCapability {
-  key: string;
+  key: FinanceCapabilityKey;
   label: string;
   state: CapabilityState;
   certified: boolean;
@@ -40,7 +41,7 @@ export function useFinanceCapabilities() {
   return {
     loading,
     capabilities,
-    getCapability: (key: string) => byKey.get(key),
-    isEnabled: (key: string) => byKey.get(key)?.state === 'enabled',
+    getCapability: (key: FinanceCapabilityKey) => byKey.get(key),
+    isEnabled: (key: FinanceCapabilityKey) => byKey.get(key)?.state === 'enabled',
   };
 }

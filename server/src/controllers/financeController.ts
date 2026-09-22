@@ -2132,7 +2132,7 @@ export class FinanceController {
       vendorId: expense.vendor_id || undefined,
       vendorName: expense.vendor_name || undefined, accountId: expense.expense_account_id,
       invoiceNumber: expense.vendor_invoice_number || undefined,
-      accountName: expense.expense_account_name || '',
+      accountName: Boolean(expense.is_itemized) ? 'Itemized' : (expense.expense_account_name || ''),
       paidFromAccountId: expense.paid_from_account_id,
       paidFromAccountName: expense.paid_from_account_name || '',
       date: expense.date,
@@ -2595,8 +2595,250 @@ export class FinanceController {
   // --- AUDIT LOGS ---
   public static async getAuditLogs(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
-    const result = await db.query('SELECT * FROM audit_logs WHERE organization_id = $1 ORDER BY timestamp DESC LIMIT 100', [orgId]);
-    res.json(result.rows);
+    const entityId = req.query.entityId ? String(req.query.entityId).trim() : null;
+    const entityType = req.query.entityType ? String(req.query.entityType).trim() : null;
+
+    if (!entityId) {
+      const result = await db.query(
+        `SELECT al.*, u.full_name as user_name, u.email as user_email
+           FROM audit_logs al
+      LEFT JOIN users u ON u.id = al.user_id
+          WHERE al.organization_id = $1
+       ORDER BY al.timestamp DESC
+          LIMIT 100`,
+        [orgId]
+      );
+      res.json(result.rows);
+      return;
+    }
+
+    try {
+      const auditRes = await db.query(
+        `SELECT al.*, u.full_name as user_name, u.email as user_email
+           FROM audit_logs al
+      LEFT JOIN users u ON u.id = al.user_id
+          WHERE al.organization_id = $1
+            AND (
+              al.entity_id = $2
+              OR (
+                al.entity_type IN ('Expense', 'expense') AND al.entity_id IN (
+                  SELECT id FROM expenses WHERE organization_id = $1 AND (id = $2 OR reversal_journal_id = $2)
+                )
+              )
+            )
+       ORDER BY al.timestamp DESC`,
+        [orgId, entityId]
+      );
+
+      const events: any[] = [];
+      for (const row of auditRes.rows) {
+        const before = typeof row.before_state === 'string' ? JSON.parse(row.before_state) : row.before_state || null;
+        const after = typeof row.after_state === 'string' ? JSON.parse(row.after_state) : row.after_state || null;
+        const meta = typeof row.metadata === 'string' ? JSON.parse(row.metadata) : row.metadata || null;
+
+        const reason = after?.reason || after?.editReason || after?.reversalReason || after?.correctionReason ||
+          before?.reason || meta?.reason || meta?.reversalReason || meta?.changeSummary || undefined;
+
+        let summary = '';
+        if (after?.totalAmount !== undefined && before?.totalAmount !== undefined && after.totalAmount !== before.totalAmount) {
+          summary = `Amount adjusted from ${before.totalAmount} to ${after.totalAmount}`;
+        } else if (after?.amount !== undefined && before?.amount !== undefined && Number(after.amount) !== Number(before.amount)) {
+          summary = `Amount adjusted from ${before.amount} to ${after.amount}`;
+        } else if (after?.status && before?.status && after.status !== before.status) {
+          summary = `Status transitioned from ${before.status} to ${after.status}`;
+        } else if (row.action.includes('CORRECTED') || row.action.includes('UPDATED')) {
+          summary = reason ? `Updated: ${reason}` : 'Expense updated with balanced GL entry';
+        } else if (row.action.includes('REVERSED')) {
+          summary = reason ? `Reversed: ${reason}` : 'Transaction reversed with balanced reversing entry';
+        } else if (row.action.includes('CREATED') || row.action.includes('POSTED')) {
+          summary = after?.totalAmount || after?.amount ? `Created for amount ${after.totalAmount || after.amount}` : 'Initial creation posted';
+        } else if (reason) {
+          summary = reason;
+        }
+
+        const actionLabels: Record<string, string> = {
+          EXPENSE_CREATED: 'Expense Created',
+          EXPENSE_UPDATED: 'Expense Updated',
+          EXPENSE_CORRECTED: 'Expense Corrected / Edited',
+          EXPENSE_VOIDED: 'Expense Voided',
+          PROJECT_TIME_INVOICED: 'Billed to Customer Invoice',
+          MANUAL_JOURNAL_CREATED: 'Journal Entry Created',
+          MANUAL_JOURNAL_POSTED: 'Journal Entry Posted',
+          MANUAL_JOURNAL_SUBMITTED: 'Journal Entry Submitted for Approval',
+          MANUAL_JOURNAL_UPDATED: 'Journal Entry Draft Updated',
+          MANUAL_JOURNAL_REVERSED: 'Journal Entry Reversed',
+          INVOICE_CREATED: 'Invoice Created',
+          INVOICE_POSTED: 'Invoice Posted',
+          INVOICE_UPDATED: 'Invoice Revised / Edited',
+          INVOICE_VOIDED: 'Invoice Voided',
+          PAYMENT_RECORDED: 'Payment Applied',
+          BILL_CREATED: 'Bill Created',
+          BILL_VOIDED: 'Bill Voided',
+          VENDOR_PAYMENT_RECORDED: 'Vendor Payment Made',
+          QUOTATION_CREATED: 'Quotation Created',
+          QUOTATION_REVISED: 'Quotation Revised',
+        };
+
+        const actionLabel = actionLabels[row.action] || row.action.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase());
+
+        events.push({
+          id: row.id,
+          action: row.action,
+          actionLabel,
+          entityType: row.entity_type,
+          entityId: row.entity_id,
+          timestamp: row.timestamp,
+          userId: row.user_id,
+          userName: row.user_name || 'Staff User',
+          userEmail: row.user_email || '',
+          reason,
+          summary,
+          details: after || before || meta || {},
+          beforeState: before,
+          afterState: after,
+        });
+      }
+
+      // If Quotation/Estimate: merge quotation_revisions
+      const normType = (entityType || '').toLowerCase();
+      if (['quotation', 'estimate'].includes(normType) || events.some((e) => ['Quotation', 'Estimate'].includes(e.entityType))) {
+        try {
+          const revRes = await db.query(
+            `SELECT qr.*, u.full_name as user_name, u.email as user_email
+               FROM quotation_revisions qr
+          LEFT JOIN users u ON u.id = qr.created_by
+              WHERE qr.organization_id = $1 AND qr.quotation_id = $2
+           ORDER BY qr.created_at DESC`,
+            [orgId, entityId]
+          );
+
+          for (const rev of revRes.rows) {
+            const isCreation = Number(rev.revision_number) === 0;
+            const revId = `rev-${rev.id}`;
+            if (!events.some((e) => e.details?.revisionNumber === rev.revision_number)) {
+              events.push({
+                id: revId,
+                action: isCreation ? 'QUOTATION_CREATED' : 'QUOTATION_REVISED',
+                actionLabel: isCreation ? 'Quotation Created' : `Revision #${rev.revision_number}`,
+                entityType: 'Quotation',
+                entityId: rev.quotation_id,
+                timestamp: rev.created_at,
+                userId: rev.created_by,
+                userName: rev.user_name || rev.created_by || 'Staff User',
+                userEmail: rev.user_email || '',
+                reason: rev.change_summary || undefined,
+                summary: rev.change_summary || (isCreation ? `Quotation created with initial total ${rev.total_amount}` : `Quotation revised to ${rev.total_amount}`),
+                details: {
+                  revisionNumber: rev.revision_number,
+                  totalAmount: Number(rev.total_amount || 0),
+                  status: rev.status,
+                },
+              });
+            }
+          }
+        } catch {
+          // quotation_revisions may not be available or empty
+        }
+      }
+
+      // Check if a baseline CREATED event exists
+      const hasCreation = events.some((e) => e.action.includes('CREATED') || e.action.includes('POSTED') || (e.actionLabel && e.actionLabel.includes('Created')));
+      if (!hasCreation) {
+        if (normType === 'expense') {
+          const expRes = await db.query('SELECT id, expense_number, amount, date, description, created_at, status FROM expenses WHERE organization_id = $1 AND id = $2', [orgId, entityId]);
+          if (expRes.rows.length > 0) {
+            const exp = expRes.rows[0];
+            events.push({
+              id: `init-${exp.id}`,
+              action: 'EXPENSE_CREATED',
+              actionLabel: 'Expense Created',
+              entityType: 'Expense',
+              entityId: exp.id,
+              timestamp: exp.created_at || exp.date,
+              userName: 'System',
+              userEmail: '',
+              summary: `Expense #${exp.expense_number || ''} created for ${exp.amount}`,
+              details: { amount: exp.amount, status: exp.status, date: exp.date },
+            });
+          }
+        } else if (normType === 'estimate' || normType === 'quotation') {
+          const estRes = await db.query('SELECT id, estimate_number, total_amount, issue_date, status, created_at FROM estimates WHERE organization_id = $1 AND id = $2', [orgId, entityId]);
+          if (estRes.rows.length > 0) {
+            const est = estRes.rows[0];
+            events.push({
+              id: `init-${est.id}`,
+              action: 'QUOTATION_CREATED',
+              actionLabel: 'Quotation Created',
+              entityType: 'Quotation',
+              entityId: est.id,
+              timestamp: est.created_at || est.issue_date,
+              userName: 'System',
+              userEmail: '',
+              summary: `Quotation #${est.estimate_number || ''} created for ${est.total_amount}`,
+              details: { totalAmount: est.total_amount, status: est.status, issueDate: est.issue_date },
+            });
+          }
+        } else if (normType === 'journal' || normType === 'journalentry') {
+          const jrnRes = await db.query('SELECT id, entry_number, reference, description, date, status, created_at FROM journal_entries WHERE organization_id = $1 AND id = $2', [orgId, entityId]);
+          if (jrnRes.rows.length > 0) {
+            const jrn = jrnRes.rows[0];
+            events.push({
+              id: `init-${jrn.id}`,
+              action: 'MANUAL_JOURNAL_CREATED',
+              actionLabel: 'Journal Entry Posted',
+              entityType: 'JournalEntry',
+              entityId: jrn.id,
+              timestamp: jrn.created_at || jrn.date,
+              userName: 'System',
+              userEmail: '',
+              summary: `Journal #${jrn.entry_number || ''} posted (${jrn.reference || jrn.description || ''})`,
+              details: { entryNumber: jrn.entry_number, status: jrn.status, date: jrn.date },
+            });
+          }
+        } else if (normType === 'invoice') {
+          const invRes = await db.query('SELECT id, invoice_number, total_amount, issue_date, status, created_at FROM invoices WHERE organization_id = $1 AND id = $2', [orgId, entityId]);
+          if (invRes.rows.length > 0) {
+            const inv = invRes.rows[0];
+            events.push({
+              id: `init-${inv.id}`,
+              action: 'INVOICE_CREATED',
+              actionLabel: 'Invoice Created',
+              entityType: 'Invoice',
+              entityId: inv.id,
+              timestamp: inv.created_at || inv.issue_date,
+              userName: 'System',
+              userEmail: '',
+              summary: `Invoice #${inv.invoice_number || ''} created for ${inv.total_amount}`,
+              details: { totalAmount: inv.total_amount, status: inv.status, issueDate: inv.issue_date },
+            });
+          }
+        } else if (normType === 'bill') {
+          const billRes = await db.query('SELECT id, bill_number, total_amount, bill_date, status, created_at FROM bills WHERE organization_id = $1 AND id = $2', [orgId, entityId]);
+          if (billRes.rows.length > 0) {
+            const bill = billRes.rows[0];
+            events.push({
+              id: `init-${bill.id}`,
+              action: 'BILL_CREATED',
+              actionLabel: 'Bill Created',
+              entityType: 'Bill',
+              entityId: bill.id,
+              timestamp: bill.created_at || bill.bill_date,
+              userName: 'System',
+              userEmail: '',
+              summary: `Bill #${bill.bill_number || ''} created for ${bill.total_amount}`,
+              details: { totalAmount: bill.total_amount, status: bill.status, billDate: bill.bill_date },
+            });
+          }
+        }
+      }
+
+      // Sort chronological descending (most recent first)
+      events.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+      res.json(events);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to load transaction history' });
+    }
   }
 
   public static async getFinancialCommand(req: AuthenticatedRequest, res: Response): Promise<void> {
@@ -3968,24 +4210,9 @@ export class FinanceController {
       const expenseId = req.params.id;
       const body = req.body || {};
 
-      const hasFinancialChanges = body.amount !== undefined || body.expenseAccountId !== undefined ||
-        body.paidFromAccountId !== undefined || body.date !== undefined || body.items !== undefined;
-
-      if (hasFinancialChanges) {
-        const reason = String(body.reason || '').trim();
-        if (!reason) {
-          res.status(409).json({
-            error: 'POSTED_EXPENSE_IMMUTABLE: Use the expense correction workflow with a documented correction reason.',
-          });
-          return;
-        }
-        const result = await ExpensePostingService.correctAndPost(orgId, userId, expenseId, body, reason);
-        res.json({ success: true, expense: result.replacement, correction: result });
-        return;
-      }
-
-      const updated = await ExpensePostingService.updateExpense(orgId, expenseId, body);
-      res.json({ expense: updated });
+      const reason = String(body.reason || body.editReason || 'Expense updated').trim();
+      const updated = await ExpensePostingService.updateExpense(orgId, expenseId, body, userId, reason);
+      res.json({ success: true, expense: updated });
     } catch (error: any) {
       res.status(422).json({ error: error.message || 'Expense could not be updated' });
     }

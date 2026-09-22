@@ -1,6 +1,15 @@
 import { Account, JournalEntry, PeriodLock } from '../types';
+import { apiClient } from '../api/client';
 
 export class AccountingService {
+  /**
+   * Reverses a posted journal entry with a mandatory audited reason
+   */
+  static async reverseJournal(journalId: string, reason: string): Promise<any> {
+    const res = await apiClient.post(`/finance/journals/${journalId}/reverse`, { reason });
+    if (res.error) throw new Error(res.error);
+    return res.data;
+  }
   /**
    * Validates if a journal entry balances (Debit === Credit)
    */

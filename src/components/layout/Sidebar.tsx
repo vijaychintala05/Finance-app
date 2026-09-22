@@ -1,23 +1,21 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Building2,
   Calculator,
   ChevronDown,
   ChevronRight,
   FolderKanban,
-  Hash,
   Landmark,
   LayoutDashboard,
   LogOut,
   PieChart,
-  Plus,
   Settings,
   ShoppingBag,
   TrendingUp,
 } from 'lucide-react';
-import { NavigationTab } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 import { useOptionalAuth } from '../../context/AuthContext';
+import type { FinanceCapability } from '../../capabilities/useFinanceCapabilities';
+import { resolveFinanceNavigation, type FinanceNavigationIcon } from '../../navigation/financeNavigation';
 
 interface SidebarProps {
   activeTab: string;
@@ -25,22 +23,19 @@ interface SidebarProps {
   onOpenQuickCreate?: () => void;
   onOpenOrgSwitcher?: () => void;
   onOpenOrgWizard?: () => void;
-  enabledCapabilities?: ReadonlySet<string>;
+  capabilities?: readonly FinanceCapability[];
 }
 
-interface SubNavItem {
-  id: NavigationTab;
-  label: string;
-  badge?: string;
-}
-
-interface NavSection {
-  id: string;
-  label: string;
-  icon: React.ReactNode;
-  defaultTab: NavigationTab;
-  subItems: SubNavItem[];
-}
+const NAV_ICONS: Record<FinanceNavigationIcon, React.ReactNode> = {
+  dashboard: <LayoutDashboard className="w-4 h-4" />,
+  projects: <FolderKanban className="w-4 h-4" />,
+  banking: <Landmark className="w-4 h-4" />,
+  sales: <TrendingUp className="w-4 h-4" />,
+  purchases: <ShoppingBag className="w-4 h-4" />,
+  accounting: <Calculator className="w-4 h-4" />,
+  reports: <PieChart className="w-4 h-4" />,
+  settings: <Settings className="w-4 h-4" />,
+};
 
 export const Sidebar: React.FC<SidebarProps> = ({
   activeTab,
@@ -48,7 +43,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenQuickCreate,
   onOpenOrgSwitcher,
   onOpenOrgWizard,
-  enabledCapabilities = new Set(),
+  capabilities = [],
 }) => {
   const auth = useOptionalAuth();
   const { settings, currentOrg, organizations, currentUser } = useBooks();
@@ -68,112 +63,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
   };
 
-  const navSections: NavSection[] = [
-    {
-      id: 'dashboard_section',
-      label: 'Dashboard',
-      icon: <LayoutDashboard className="w-4 h-4" />,
-      defaultTab: 'dashboard',
-      subItems: [
-        { id: 'dashboard', label: 'Dashboard' },
-      ],
-    },
-    {
-      id: 'projects_section',
-      label: 'Projects',
-      icon: <FolderKanban className="w-4 h-4" />,
-      defaultTab: 'projects',
-      subItems: [
-        { id: 'projects', label: 'All Projects' },
-      ],
-    },
-    {
-      id: 'banking_section',
-      label: 'Banking & Cash',
-      icon: <Landmark className="w-4 h-4" />,
-      defaultTab: 'banking',
-      subItems: [
-        { id: 'banking', label: 'Bank & Cash Accounts' },
-      ],
-    },
-    {
-      id: 'sales_section',
-      label: 'Sales',
-      icon: <TrendingUp className="w-4 h-4" />,
-      defaultTab: 'invoices',
-      subItems: [
-        { id: 'clients', label: 'Customers' },
-        { id: 'invoices', label: 'Invoices' },
-        { id: 'payments_received', label: 'Payments Received' },
-        { id: 'customer_portal' as NavigationTab, label: 'Customer Portal', badge: 'Portal' },
-        ...(enabledCapabilities.has('receivables-corrections')
-          ? [{ id: 'credit_notes' as NavigationTab, label: 'Credit Notes' }]
-          : []),
-        ...(enabledCapabilities.has('recurring-transactions')
-          ? [{ id: 'recurring_invoices' as NavigationTab, label: 'Recurring Invoices' }]
-          : []),
-      ],
-    },
-    {
-      id: 'purchases_section',
-      label: 'Purchases',
-      icon: <ShoppingBag className="w-4 h-4" />,
-      defaultTab: 'expenses',
-      subItems: [
-        { id: 'vendors', label: 'Vendors' },
-        { id: 'expenses', label: 'Expenses' },
-        { id: 'bills', label: 'Bills' },
-        { id: 'document_inbox' as NavigationTab, label: 'Document Inbox & OCR', badge: 'OCR' },
-        ...(enabledCapabilities.has('payables-settlement')
-          ? [
-              { id: 'payments_made' as NavigationTab, label: 'Payments Made' },
-              { id: 'vendor_credits' as NavigationTab, label: 'Vendor Credits' },
-            ]
-          : []),
-        ...(enabledCapabilities.has('recurring-transactions')
-          ? [
-              { id: 'recurring_bills' as NavigationTab, label: 'Recurring Bills' },
-              { id: 'recurring_expenses' as NavigationTab, label: 'Recurring Expenses' },
-            ]
-          : []),
-      ],
-    },
-    {
-      id: 'accounting_section',
-      label: 'Accounting',
-      icon: <Calculator className="w-4 h-4" />,
-      defaultTab: 'journals',
-      subItems: [
-        { id: 'journals', label: 'Manual Journals' },
-        { id: 'coa', label: 'Chart of Accounts' },
-        { id: 'data_migration' as NavigationTab, label: 'Data Migration & Balances' },
-        { id: 'transaction_locking', label: 'Period Locks' },
-        { id: 'gst_compliance', label: 'GST Compliance' },
-        ...(enabledCapabilities.has('fixed-assets') ? [{ id: 'fixed_assets' as NavigationTab, label: 'Fixed Assets' }] : []),
-        ...(enabledCapabilities.has('period-close') ? [{ id: 'period_close' as NavigationTab, label: 'Period Close' }] : []),
-      ],
-    },
-    {
-      id: 'reports_section',
-      label: 'Reports',
-      icon: <PieChart className="w-4 h-4" />,
-      defaultTab: 'reports',
-      subItems: [
-        { id: 'reports', label: 'Financial Reports' },
-      ],
-    },
-    {
-      id: 'settings_section',
-      label: 'Settings',
-      icon: <Settings className="w-4 h-4" />,
-      defaultTab: 'settings',
-      subItems: [
-        { id: 'settings', label: 'Settings' },
-        ...(enabledCapabilities.has('team-access') ? [{ id: 'team_access' as NavigationTab, label: 'Team Access' }] : []),
-        ...(enabledCapabilities.has('recovery-center') ? [{ id: 'recovery_center' as NavigationTab, label: 'Recovery Center' }] : []),
-      ],
-    },
-  ];
+  const navSections = resolveFinanceNavigation(capabilities);
 
   // Track expanded sections
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
@@ -293,7 +183,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               >
                 <div className="flex items-center space-x-3">
                   <span className={isSectionActive ? 'text-white' : 'text-blue-200'}>
-                    {section.icon}
+                    {NAV_ICONS[section.icon]}
                   </span>
                   <span>{section.label}</span>
                 </div>
@@ -320,14 +210,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     return (
                       <button
                         key={sub.id}
-                        onClick={() => setActiveTab(sub.id)}
+                        onClick={() => !sub.disabled && setActiveTab(sub.id)}
+                        disabled={sub.disabled}
+                        title={sub.disabled ? sub.disabledReason : sub.label}
+                        aria-label={sub.label}
+                        aria-describedby={sub.disabled ? `${sub.id}-availability` : undefined}
                         className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-all cursor-pointer ${
-                          isSubActive
+                          sub.disabled
+                            ? 'text-blue-200/60 cursor-not-allowed'
+                            : isSubActive
                             ? 'bg-white text-[#1d50bd] font-bold shadow-2xs'
                             : 'text-blue-100 hover:text-white hover:bg-white/10'
                         }`}
                       >
                         <span>{sub.label}</span>
+                        {sub.disabled && <span id={`${sub.id}-availability`} className="sr-only">{sub.disabledReason}</span>}
                         {sub.badge && (
                           <span className="text-[9px] bg-emerald-400/30 text-white px-1.5 py-0.2 rounded font-semibold">
                             {sub.badge}

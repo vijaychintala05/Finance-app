@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Globe,
   ShieldCheck,
@@ -43,6 +43,12 @@ interface PortalCustomer {
 type PortalCustomerListResponse =
   | PortalCustomer[]
   | { clients?: PortalCustomer[]; customers?: PortalCustomer[] };
+
+interface PortalOperationNotice {
+  type: 'success' | 'error' | 'info';
+  title: string;
+  message: string;
+}
 
 interface PortalOrg {
   id: string;
@@ -129,6 +135,11 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
   const [generatedToken, setGeneratedToken] = useState<string | null>(null);
   const [copiedLink, setCopiedLink] = useState<boolean>(false);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
+  const [isRevoking, setIsRevoking] = useState<boolean>(false);
+  const [showRevokeConfirmation, setShowRevokeConfirmation] = useState<boolean>(false);
+  const [adminNotice, setAdminNotice] = useState<PortalOperationNotice | null>(null);
+  const revokeTriggerRef = useRef<HTMLButtonElement>(null);
+  const confirmRevokeRef = useRef<HTMLButtonElement>(null);
 
   // Statement Filters
   const [statementFrom, setStatementFrom] = useState<string>(() => {
@@ -166,6 +177,21 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
   const [searchQuery, setSearchQuery] = useState<string>('');
 
   const apiClient = useMemo(() => new ApiClient(), []);
+
+  const closeRevokeConfirmation = useCallback(() => {
+    setShowRevokeConfirmation(false);
+    window.setTimeout(() => revokeTriggerRef.current?.focus(), 0);
+  }, []);
+
+  useEffect(() => {
+    if (!showRevokeConfirmation) return;
+    confirmRevokeRef.current?.focus();
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !isRevoking) closeRevokeConfirmation();
+    };
+    document.addEventListener('keydown', handleEscape);
+    return () => document.removeEventListener('keydown', handleEscape);
+  }, [closeRevokeConfirmation, isRevoking, showRevokeConfirmation]);
 
   // Fetch Customers List for Admin mode
   useEffect(() => {
@@ -250,6 +276,7 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
   const handleGenerateToken = async () => {
     if (!selectedCustomerId) return;
     setIsGenerating(true);
+    setAdminNotice(null);
     try {
       const res = await apiClient.post<{ token: string; portalUrl: string }>('/stage6/portal/tokens', {
         customerId: selectedCustomerId,
@@ -257,10 +284,20 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
       });
       if (res.error) throw new Error(res.error);
       const token = res.data?.token || '';
+      if (!token) throw new Error('The server returned no portal token. No customer access was changed.');
       setGeneratedToken(token);
       setActiveToken(token);
+      setAdminNotice({
+        type: 'success',
+        title: 'Portal link ready',
+        message: `Access was generated for ${customersList.find((customer) => customer.id === selectedCustomerId)?.name || 'the selected customer'} and expires in ${tokenExpiryDays} days.`,
+      });
     } catch (err: any) {
-      alert(err.message || 'Failed to generate portal link');
+      setAdminNotice({
+        type: 'error',
+        title: 'Portal link was not generated',
+        message: `${err.message || 'The portal token service did not complete the request.'} Check the customer selection and retry.`,
+      });
     } finally {
       setIsGenerating(false);
     }
@@ -269,7 +306,8 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
   // Revoke Token Handler
   const handleRevokeToken = async () => {
     if (!selectedCustomerId) return;
-    if (!confirm('Are you sure you want to revoke customer portal access for this customer?')) return;
+    setIsRevoking(true);
+    setAdminNotice(null);
     try {
       const res = await apiClient.delete(`/stage6/portal/tokens/${selectedCustomerId}`);
       if (res.error) throw new Error(res.error);
@@ -277,10 +315,23 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
       if (activeToken) {
         setActiveToken('');
         setPortalData(null);
+        setErrorMessage(null);
       }
-      alert('Customer portal access revoked successfully.');
+      setAdminNotice({
+        type: 'success',
+        title: 'Portal access revoked',
+        message: 'Existing links for this customer can no longer open the portal. Generate a new link if access is needed again.',
+      });
+      closeRevokeConfirmation();
     } catch (err: any) {
-      alert(err.message || 'Failed to revoke portal access');
+      setAdminNotice({
+        type: 'error',
+        title: 'Portal access was not revoked',
+        message: `${err.message || 'The revocation request did not complete.'} Existing links may still work; retry before treating access as revoked.`,
+      });
+      closeRevokeConfirmation();
+    } finally {
+      setIsRevoking(false);
     }
   };
 
@@ -307,7 +358,7 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
   const handleInitiateCheckout = async () => {
     if (!activeToken || !payingInvoice) return;
     if (payAmount <= 0 || payAmount > payingInvoice.balanceDue) {
-      alert('Please enter a valid payment amount up to the balance due.');
+      setSessionStatusNotice(`Enter an amount greater than zero and no more than the ${currencySymbol}${payingInvoice.balanceDue.toFixed(2)} balance due.`);
       return;
     }
 
@@ -328,7 +379,7 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
       }
       setCheckoutSession(data.session);
     } catch (err: any) {
-      alert(err.message || 'Unable to initiate checkout session');
+      setSessionStatusNotice(`${err.message || 'Unable to initiate checkout session'}. No payment was submitted; check the amount and retry.`);
     } finally {
       setIsInitiatingSession(false);
     }
@@ -460,7 +511,9 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                   </button>
 
                   <button
-                    onClick={handleRevokeToken}
+                    ref={revokeTriggerRef}
+                    onClick={() => setShowRevokeConfirmation(true)}
+                    aria-label="Revoke portal access"
                     className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-red-300 dark:border-red-900/60 hover:bg-red-50 dark:hover:bg-red-950/40 text-xs text-red-600 dark:text-red-400 transition-colors"
                     title="Revoke access"
                   >
@@ -471,7 +524,56 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
             </div>
           )}
         </div>
+
+        {adminNotice && (
+          <div
+            role={adminNotice.type === 'error' ? 'alert' : 'status'}
+            aria-live={adminNotice.type === 'error' ? 'assertive' : 'polite'}
+            className={`mx-auto mt-3 flex max-w-7xl items-start gap-3 rounded-xl border px-4 py-3 text-sm ${
+              adminNotice.type === 'error'
+                ? 'border-rose-200 bg-rose-50 text-rose-900 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-200'
+                : adminNotice.type === 'success'
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-200'
+                  : 'border-blue-200 bg-blue-50 text-blue-900 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-200'
+            }`}
+          >
+            {adminNotice.type === 'error' ? <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" /> : <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />}
+            <div>
+              <p className="font-semibold">{adminNotice.title}</p>
+              <p className="mt-0.5 text-xs leading-5 opacity-90">{adminNotice.message}</p>
+            </div>
+          </div>
+        )}
       </div>
+
+      {showRevokeConfirmation && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 p-4" role="presentation">
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="revoke-portal-title"
+            aria-describedby="revoke-portal-description"
+            className="w-full max-w-md rounded-2xl border border-rose-200 bg-white p-5 shadow-2xl dark:border-rose-900 dark:bg-slate-900"
+          >
+            <div className="flex items-start gap-3">
+              <div className="rounded-xl bg-rose-100 p-2 text-rose-700 dark:bg-rose-950 dark:text-rose-300"><Ban className="h-5 w-5" /></div>
+              <div>
+                <h2 id="revoke-portal-title" className="text-base font-bold text-slate-900 dark:text-white">Revoke customer portal access?</h2>
+                <p id="revoke-portal-description" className="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-300">
+                  Every active portal link for <strong>{customersList.find((customer) => customer.id === selectedCustomerId)?.name || 'this customer'}</strong> will stop working. Financial records and prior portal activity are not deleted.
+                </p>
+              </div>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={closeRevokeConfirmation} disabled={isRevoking} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 disabled:opacity-50 dark:border-slate-700 dark:text-slate-200">Keep access</button>
+              <button ref={confirmRevokeRef} type="button" onClick={() => void handleRevokeToken()} disabled={isRevoking} className="inline-flex items-center gap-2 rounded-lg bg-rose-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">
+                {isRevoking && <RefreshCw className="h-4 w-4 animate-spin" />}
+                Confirm revoke
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
 
       {/* Main Portal Content Container */}
       <div className="flex-1 p-4 md:p-8 max-w-7xl mx-auto w-full">
@@ -921,7 +1023,7 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
       {/* Pay Invoice Modal */}
       {payingInvoice && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl max-w-md w-full shadow-2xl p-6 overflow-hidden">
+          <div role="dialog" aria-modal="true" aria-labelledby="portal-payment-title" className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl max-w-md w-full shadow-2xl p-6 overflow-hidden">
             {!paymentSuccessReceipt ? (
               <div className="space-y-4">
                 <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
@@ -930,12 +1032,13 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                       <CreditCard className="w-4 h-4" />
                     </div>
                     <div>
-                      <h3 className="text-sm font-bold text-slate-900 dark:text-white">Pay Invoice</h3>
+                      <h3 id="portal-payment-title" className="text-sm font-bold text-slate-900 dark:text-white">Pay Invoice</h3>
                       <p className="text-xs text-slate-500">{payingInvoice.invoiceNumber}</p>
                     </div>
                   </div>
                   <button
                     onClick={() => setPayingInvoice(null)}
+                    aria-label="Close payment dialog"
                     className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
                   >
                     &times;
@@ -950,10 +1053,11 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  <label htmlFor="portal-payment-amount" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                     Amount to Pay ({currencySymbol})
                   </label>
                   <input
+                    id="portal-payment-amount"
                     type="number"
                     step="0.01"
                     min="0.01"
@@ -981,6 +1085,12 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                     )}
                   </div>
                 </div>
+
+                {sessionStatusNotice && (
+                  <div role="status" aria-live="polite" className="rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-center text-xs font-medium text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+                    {sessionStatusNotice}
+                  </div>
+                )}
 
                 {!checkoutSession ? (
                   <>
@@ -1043,12 +1153,6 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                         </a>
                       </div>
                     </div>
-
-                    {sessionStatusNotice && (
-                      <div className="p-2.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs text-center font-medium">
-                        {sessionStatusNotice}
-                      </div>
-                    )}
 
                     <div className="flex items-center justify-between pt-3 border-t border-slate-200 dark:border-slate-800">
                       <button

@@ -8,6 +8,22 @@ export interface ApiResponse<T> {
   status: number;
   errorCode?: string;
   recovery?: string;
+  requestId?: string;
+  retryable?: boolean;
+  cause?: string;
+  fix?: string;
+  docUrl?: string;
+  currentState?: unknown;
+}
+
+export class ApiRequestError extends Error {
+  readonly response: ApiResponse<unknown>;
+
+  constructor(response: ApiResponse<unknown>, fallbackMessage: string) {
+    super(response.error || fallbackMessage);
+    this.name = 'ApiRequestError';
+    this.response = response;
+  }
 }
 
 export class ApiClient {
@@ -26,6 +42,29 @@ export class ApiClient {
       return `web-${Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
     }
     throw new Error('Secure randomness is unavailable; mutation was not sent');
+  }
+
+  private createRequestId(): string {
+    if (globalThis.crypto?.randomUUID) return `web-${globalThis.crypto.randomUUID()}`;
+    if (globalThis.crypto?.getRandomValues) {
+      const bytes = new Uint8Array(12);
+      globalThis.crypto.getRandomValues(bytes);
+      return `web-${Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
+    }
+    return `web-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  private responseMetadata(response: Partial<Response>, body: Record<string, any>, fallbackRequestId: string) {
+    return {
+      requestId: String(body.requestId || response.headers?.get?.('x-request-id') || fallbackRequestId),
+      errorCode: body.code,
+      recovery: body.recovery,
+      retryable: typeof body.retryable === 'boolean' ? body.retryable : undefined,
+      cause: body.cause,
+      fix: body.fix,
+      docUrl: body.docUrl,
+      currentState: body.currentState,
+    };
   }
 
   private async pendingMutationStorageKey(fingerprint: string): Promise<string | undefined> {
@@ -85,6 +124,8 @@ export class ApiClient {
     endpoint: string,
     options: RequestInit = {}
   ): Promise<ApiResponse<T>> {
+    const providedHeaders = new Headers(options.headers);
+    const requestId = providedHeaders.get('x-request-id') || this.createRequestId();
     try {
       const authHeaders = this.getAuthHeaders();
       const method = (options.method || 'GET').toUpperCase();
@@ -104,18 +145,20 @@ export class ApiClient {
         this.persistMutationKey(mutationStorageKey, idempotencyKey);
         mutationHeaders['Idempotency-Key'] = idempotencyKey;
       }
+      const requestHeaders = new Headers(authHeaders);
+      Object.entries(mutationHeaders).forEach(([name, value]) => requestHeaders.set(name, value));
+      providedHeaders.forEach((value, name) => requestHeaders.set(name, value));
+      requestHeaders.set('X-Request-ID', requestId);
+
       const response = await fetch(`${this.baseUrl}${endpoint}`, {
         ...options,
         credentials: 'same-origin',
-        headers: {
-          ...authHeaders,
-          ...mutationHeaders,
-          ...options.headers,
-        },
+        headers: requestHeaders,
       });
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ message: response.statusText, error: response.statusText }));
+        const parsedError = await response.json().catch(() => ({ message: response.statusText, error: response.statusText }));
+        const errorData = parsedError && typeof parsedError === 'object' ? parsedError : { error: response.statusText };
         // Preserve the key for an uncertain server outcome or an in-flight
         // duplicate. A corrected payload gets a different fingerprint/key.
         if (mutationFingerprint && response.status < 500 && response.status !== 409) {
@@ -125,8 +168,7 @@ export class ApiClient {
           data: null,
           error: errorData.details || errorData.error || errorData.message || `HTTP Error ${response.status}`,
           status: response.status,
-          errorCode: errorData.code,
-          recovery: errorData.recovery,
+          ...this.responseMetadata(response, errorData, requestId),
         };
       }
 
@@ -136,6 +178,7 @@ export class ApiClient {
         data,
         error: null,
         status: response.status,
+        requestId: response.headers?.get?.('x-request-id') || requestId,
       };
     } catch (err: any) {
       return {
@@ -144,6 +187,8 @@ export class ApiClient {
         status: 500,
         errorCode: 'NETWORK_FAILURE',
         recovery: 'Check your connection, then reload before retrying this financial action.',
+        requestId,
+        retryable: true,
       };
     }
   }
@@ -153,18 +198,22 @@ export class ApiClient {
   }
 
   async getBlob(endpoint: string): Promise<ApiResponse<Blob>> {
+    const requestId = this.createRequestId();
     try {
+      const headers = new Headers(this.getAuthHeaders());
+      headers.set('X-Request-ID', requestId);
       const response = await fetch(`${this.baseUrl}${endpoint}`, {
         credentials: 'same-origin',
-        headers: this.getAuthHeaders(),
+        headers,
       });
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: response.statusText }));
-        return { data: null, error: errorData.error || response.statusText, status: response.status, errorCode: errorData.code, recovery: errorData.recovery };
+        const parsedError = await response.json().catch(() => ({ error: response.statusText }));
+        const errorData = parsedError && typeof parsedError === 'object' ? parsedError : { error: response.statusText };
+        return { data: null, error: errorData.error || response.statusText, status: response.status, ...this.responseMetadata(response, errorData, requestId) };
       }
-      return { data: await response.blob(), error: null, status: response.status };
+      return { data: await response.blob(), error: null, status: response.status, requestId: response.headers?.get?.('x-request-id') || requestId };
     } catch (error: any) {
-      return { data: null, error: error.message || 'Receipt image could not be loaded', status: 500, errorCode: 'NETWORK_FAILURE', recovery: 'Check your connection and retry loading the receipt.' };
+      return { data: null, error: error.message || 'Receipt image could not be loaded', status: 500, errorCode: 'NETWORK_FAILURE', recovery: 'Check your connection and retry loading the receipt.', requestId, retryable: true };
     }
   }
 

@@ -9,7 +9,6 @@ import {
   History,
   Plus,
   Search,
-  Trash2,
 } from 'lucide-react';
 import { Invoice } from '../../types';
 import { useBooks } from '../../context/BooksContext';
@@ -19,6 +18,8 @@ import { InvoiceEditorModal } from './InvoiceEditorModal';
 import { InvoicePreviewModal } from './InvoicePreviewModal';
 import { RecordCustomerPaymentModal } from '../sales/RecordCustomerPaymentModal';
 import { invoiceApi } from '../../services/invoiceApi';
+import { OperationNoticeBanner } from '../common/OperationNoticeBanner';
+import { mutationExceptionNotice, type OperationNotice } from '../../utils/operationNotice';
 
 interface InvoicesViewProps {
   autoOpenCreateModal?: boolean;
@@ -33,7 +34,7 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
   selectedEntityId,
   onSelectedEntityClosed,
 }) => {
-  const { invoices, settings, deleteInvoice } = useBooks();
+  const { invoices, settings } = useBooks();
 
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
@@ -44,6 +45,7 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
   const [previewInvoice, setPreviewInvoice] = useState<Invoice | null>(null);
   const [payingInvoice, setPayingInvoice] = useState<Invoice | null>(null);
   const [downloadingPdfId, setDownloadingPdfId] = useState<string | null>(null);
+  const [notice, setNotice] = useState<OperationNotice | null>(null);
 
   const activePreviewInvoice = useMemo(() => {
     if (!previewInvoice) return null;
@@ -65,7 +67,12 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
       window.URL.revokeObjectURL(url);
     } catch (err: any) {
       console.error('Invoice PDF download error:', err);
-      window.alert(err.message || 'Failed to download invoice PDF');
+      setNotice(mutationExceptionNotice(err, {
+        action: 'PDF download',
+        failureTitle: 'Invoice PDF was not downloaded',
+        uncertainTitle: 'Invoice PDF could not be downloaded',
+        uncertainRecovery: 'Check your connection and retry the download. The invoice itself was not changed.',
+      }));
     } finally {
       setDownloadingPdfId(null);
     }
@@ -120,6 +127,8 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
           <span>New Invoice</span>
         </button>
       </div>
+
+      {notice && <OperationNoticeBanner notice={notice} />}
 
       {/* KPI Summary Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -426,18 +435,6 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
                         title="View / Print Invoice"
                       >
                         <Eye className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (window.confirm(`Void invoice ${inv.invoiceNumber} by posting an audited reversal?`)) {
-                            void deleteInvoice(inv.id).catch((error) => window.alert(error.message));
-                          }
-                        }}
-                        className="p-1.5 text-rose-500 hover:bg-rose-100 dark:hover:bg-slate-700 rounded-lg cursor-pointer"
-                        title="Void invoice with an audited reversal"
-                      >
-                        <Trash2 className="w-4 h-4" />
                       </button>
                     </td>
                   </tr>

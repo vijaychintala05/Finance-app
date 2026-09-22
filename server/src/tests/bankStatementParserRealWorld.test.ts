@@ -17,7 +17,7 @@ describe('Real-World Bank Statement Parsing & Import Suite', () => {
     );
   });
 
-  it('1. Parses ICICI Bank OpTransactionHistory statement with 12+ preamble lines and 2-digit years', () => {
+  it('1. Parses ICICI Bank OpTransactionHistory statement with 12+ preamble lines and 2-digit years', async () => {
     const iciciExport = `
 <html>
 <body>
@@ -79,7 +79,7 @@ describe('Real-World Bank Statement Parsing & Import Suite', () => {
 </html>
 `;
 
-    const parsed = BankStatementParserFactory.parseStatement(
+    const parsed = await BankStatementParserFactory.parseStatement(
       iciciExport,
       'acc-icici-1',
       'XLS',
@@ -109,7 +109,7 @@ describe('Real-World Bank Statement Parsing & Import Suite', () => {
     expect(parsed.transactions[2].chequeNumber).toBe('401928');
   });
 
-  it('2. UPI VPA handles (@okhdfcbank, @okaxis) in narrations do not misidentify bank name', () => {
+  it('2. UPI VPA handles (@okhdfcbank, @okaxis) in narrations do not misidentify bank name', async () => {
     const csvWithVpas = `
 ICICI Bank Limited - Statement of Account
 Account Number: 998877665544
@@ -118,7 +118,7 @@ Txn Date,Description,Debit,Credit,Balance
 2026-09-02,UPI/445566/Refund/merchant@okaxis,,350.00,49150.00
 2026-09-03,UPI/778899/Settlement/client@oksbi,,2000.00,51150.00
 `;
-    const parsed = BankStatementParserFactory.parseStatement(
+    const parsed = await BankStatementParserFactory.parseStatement(
       csvWithVpas,
       'acc-icici-2',
       'CSV',
@@ -130,7 +130,7 @@ Txn Date,Description,Debit,Credit,Balance
     expect(parsed.transactions.length).toBe(3);
   });
 
-  it('3. Handles diverse Indian netbanking date formats (timestamps, 2-digit years, text months)', () => {
+  it('3. Handles diverse Indian netbanking date formats (timestamps, 2-digit years, text months)', async () => {
     const multiDateCsv = `
 Transaction Date,Narration,Withdrawal,Deposit,Balance
 13/09/2026 14:32:00,ATM Cash Withdrawal,2000.00,,98000.00
@@ -138,7 +138,7 @@ Transaction Date,Narration,Withdrawal,Deposit,Balance
 10-Sep-2026,Software Subscription AWS,3500.00,,109500.00
 2026-09-12,Interest Credit,,450.00,109950.00
 `;
-    const parsed = BankStatementParserFactory.parseStatement(
+    const parsed = await BankStatementParserFactory.parseStatement(
       multiDateCsv,
       'acc-multi-1',
       'CSV',
@@ -196,6 +196,17 @@ S No.,Value Date,Transaction Date,Cheque Number,Transaction Remarks,Withdrawal A
     expect(confirmed.newTransactionsCount).toBe(2);
     expect(confirmed.exactDuplicatesCount).toBe(0);
     expect(confirmed.ledgerAccountId).toBeDefined();
+
+    const importEvidence = await db.query(
+      `SELECT source_format, parser_version FROM bank_statement_imports
+        WHERE organization_id = $1 AND bank_account_id = $2
+        ORDER BY imported_at DESC LIMIT 1`,
+      [ORG_ID, confirmed.bankAccountId]
+    );
+    expect(importEvidence.rows[0]).toEqual(expect.objectContaining({
+      source_format: 'XLS',
+      parser_version: '3.0',
+    }));
 
     // 3. Verify workspace fetch returns the transactions
     const workspace = await BankReconciliationService.getWorkspace(ORG_ID, confirmed.bankAccountId, {

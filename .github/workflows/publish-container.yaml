@@ -43,6 +43,9 @@ jobs:
       - name: Build production artifacts
         run: npm run build
 
+      - name: Install Chromium for release browser qualification
+        run: npx playwright install --with-deps chromium
+
       - name: Run unit and integration tests
         env:
           JWT_SECRET: firmbooks-ci-jwt-secret-with-at-least-thirty-two-characters
@@ -79,6 +82,29 @@ jobs:
             -e TRUSTED_FINANCE_FEATURES=period-close,recovery-center,bank-statement-import,bank-reconciliation,receivables-corrections,payables-settlement,recurring-transactions,fixed-assets,team-access \
             firmbooks-ci:${{ github.sha }}
           TEST_BASE_URL="http://127.0.0.1:3000" node scripts/ci-smoke-test.mjs
+
+      - name: Run critical browser journeys against the PostgreSQL release image
+        env:
+          PLAYWRIGHT_SKIP_WEBSERVER: "true"
+          PLAYWRIGHT_TEST_BASE_URL: http://127.0.0.1:3000
+          REQUIRE_REAL_POSTGRES_E2E: "true"
+          CI: "true"
+        run: >-
+          npx playwright test
+          e2e/order-to-cash-lifecycle.spec.ts
+          e2e/procure-to-pay-lifecycle.spec.ts
+          e2e/payment-allocation-workflow.spec.ts
+          e2e/bank-reconciliation.spec.ts
+          e2e/period-close-and-lock-lifecycle.spec.ts
+          --project=chromium-desktop
+
+      - name: Upload release browser evidence on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-playwright-report
+          path: playwright-report/
+          retention-days: 14
 
       - name: Show smoke-test logs on failure
         if: failure()

@@ -79,4 +79,50 @@ describe('API mutation reliability', () => {
     expect(keys[1]).not.toBe(keys[0]);
     expect(keys[2]).not.toBe(keys[1]);
   });
+
+  it('sends a trace ID and preserves the structured server recovery contract', async () => {
+    let sentRequestId = '';
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      sentRequestId = new Headers(init?.headers).get('X-Request-ID') || '';
+      return new Response(JSON.stringify({
+        error: 'The posting period is locked',
+        code: 'PERIOD_LOCKED',
+        recovery: 'Choose an open posting date.',
+        retryable: false,
+        cause: 'September 2026 is closed.',
+        fix: 'Choose an October posting date.',
+        requestId: 'server-trace-42',
+      }), {
+        status: 409,
+        headers: { 'Content-Type': 'application/json', 'X-Request-ID': 'header-trace-42' },
+      });
+    }));
+
+    const response = await new ApiClient('/api/v1').post('/finance/expenses', { amount: 10 });
+
+    expect(sentRequestId).toMatch(/^web-/);
+    expect(response).toMatchObject({
+      error: 'The posting period is locked',
+      status: 409,
+      errorCode: 'PERIOD_LOCKED',
+      recovery: 'Choose an open posting date.',
+      retryable: false,
+      cause: 'September 2026 is closed.',
+      fix: 'Choose an October posting date.',
+      requestId: 'server-trace-42',
+    });
+  });
+
+  it('retains the outbound trace ID when the network outcome is unknown', async () => {
+    let sentRequestId = '';
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      sentRequestId = new Headers(init?.headers).get('X-Request-ID') || '';
+      throw new Error('connection reset');
+    }));
+
+    const response = await new ApiClient('/api/v1').post('/finance/vendor-payments', { amount: 20 });
+
+    expect(response.requestId).toBe(sentRequestId);
+    expect(response).toMatchObject({ errorCode: 'NETWORK_FAILURE', retryable: true });
+  });
 });

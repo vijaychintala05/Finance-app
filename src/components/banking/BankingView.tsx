@@ -417,9 +417,16 @@ export const BankingView: React.FC<BankingViewProps> = ({
 
               // 5. Visual notification feedback
               const count = result?.newTransactionsCount ?? 0;
+              const exactDuplicates = result?.exactDuplicatesCount ?? 0;
+              const possibleDuplicates = result?.possibleDuplicatesCount ?? 0;
+              const importDetails = [
+                `${count} new`,
+                exactDuplicates > 0 ? `${exactDuplicates} exact duplicate${exactDuplicates === 1 ? '' : 's'} skipped` : null,
+                possibleDuplicates > 0 ? `${possibleDuplicates} possible duplicate${possibleDuplicates === 1 ? '' : 's'} to review` : null,
+              ].filter(Boolean).join(' · ');
               setImportNotification({
                 type: 'success',
-                message: `Imported ${count} statement transaction${count === 1 ? '' : 's'} successfully.`,
+                message: `Statement recorded: ${importDetails}.`,
               });
               setTimeout(() => setImportNotification(null), 6000);
             } catch (e) {

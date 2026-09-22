@@ -26,6 +26,7 @@ import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate } from '../../utils/formatters';
 import { apiClient } from '../../api/client';
 import { compressReceiptImage, MAX_RECEIPT_IMAGES } from './receiptUpload';
+import { TransactionHistoryTab } from '../common/TransactionHistoryTab';
 
 interface ExpenseDetailsModalProps {
   isOpen: boolean;
@@ -141,7 +142,7 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
   const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
   const [isConvertingToInvoice, setIsConvertingToInvoice] = useState(false);
   const [showJournal, setShowJournal] = useState(false);
-  const [viewMode, setViewMode] = useState<'details' | 'voucher' | 'activity'>('details');
+  const [viewMode, setViewMode] = useState<'details' | 'voucher' | 'activity' | 'history'>('details');
   const [isAttachingReceipts, setIsAttachingReceipts] = useState(false);
   const [isReceiptDragActive, setIsReceiptDragActive] = useState(false);
   const [evidence, setEvidence] = useState<ExpenseEvidenceLink[]>([]);
@@ -319,6 +320,7 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
           <div className="flex items-center space-x-3">
             <button
               onClick={onClose}
+              aria-label="Back to expenses"
               className="p-2 -ml-2 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 cursor-pointer transition-colors"
             >
               <ArrowLeft className="w-5 h-5" />
@@ -408,7 +410,7 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
                     className="w-full text-left px-4 py-2 text-xs font-semibold text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950 flex items-center space-x-2"
                   >
                     <FileText className="w-4 h-4" />
-                    <span>Edit & correct</span>
+                    <span>Edit Expense</span>
                   </button>
                 )}
 
@@ -444,6 +446,7 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
             <button type="button" role="tab" aria-selected={viewMode === 'details'} onClick={() => setViewMode('details')} className={`rounded px-3 py-1.5 text-xs font-semibold transition-colors ${viewMode === 'details' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-700'}`}>Details</button>
             <button type="button" role="tab" aria-selected={viewMode === 'voucher'} onClick={() => setViewMode('voucher')} className={`rounded px-3 py-1.5 text-xs font-semibold transition-colors ${viewMode === 'voucher' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-700'}`}>Voucher view</button>
             <button type="button" role="tab" aria-selected={viewMode === 'activity'} onClick={() => setViewMode('activity')} className={`rounded px-3 py-1.5 text-xs font-semibold transition-colors ${viewMode === 'activity' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-700'}`}>Activity</button>
+            <button type="button" role="tab" aria-selected={viewMode === 'history'} onClick={() => setViewMode('history')} className={`rounded px-3 py-1.5 text-xs font-semibold transition-colors ${viewMode === 'history' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-700'}`}>History & Edits</button>
           </div>
           <p className="hidden text-xs text-slate-500 sm:block">Evidence can be added without correcting the posted record.</p>
         </div>
@@ -476,6 +479,12 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
                 ))}
               </ol>
             )}
+          </section>
+        )}
+
+        {viewMode === 'history' && (
+          <section role="tabpanel" aria-label="Expense history" className="max-h-[80vh] overflow-y-auto">
+            <TransactionHistoryTab entityType="Expense" entityId={activeExpense.id} entity={activeExpense} />
           </section>
         )}
 
@@ -588,7 +597,9 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
               Expense Account / Category
             </p>
             <p className="text-sm font-bold text-sky-900 dark:text-sky-200 mt-0.5">
-              {activeExpense.accountName || 'Uncategorized Expense'}
+              {activeExpense.isItemized || (Array.isArray(activeExpense.items) && activeExpense.items.length > 0)
+                ? 'Itemized'
+                : (activeExpense.accountName || 'Uncategorized Expense')}
             </p>
 
             {/* Itemized breakdown if present */}
@@ -627,7 +638,11 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
             <div className="grid gap-3 px-4 py-3 sm:grid-cols-2">
               <div>
                 <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Debit</p>
-                <p className="mt-0.5 text-xs font-semibold text-slate-800 dark:text-slate-200">{activeExpense.accountName || 'Expense category'}</p>
+                <p className="mt-0.5 text-xs font-semibold text-slate-800 dark:text-slate-200">
+                  {activeExpense.isItemized || (Array.isArray(activeExpense.items) && activeExpense.items.length > 0)
+                    ? 'Itemized Accounts'
+                    : (activeExpense.accountName || 'Expense category')}
+                </p>
               </div>
               <div>
                 <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Credit</p>

@@ -3,8 +3,10 @@ import { Calculator, Plus, Search } from 'lucide-react';
 import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate } from '../../utils/formatters';
 import { JournalModal } from './JournalModal';
+import { JournalDetailsModal } from './JournalDetailsModal';
 import { EmptyStateCard } from '../common/EmptyStateCard';
 import { displayJournalNumber, isInternalExpenseJournalNumber } from '../../utils/journalDisplay';
+import { JournalEntry } from '../../types';
 
 interface JournalEntriesViewProps {
   autoOpenCreateModal?: boolean;
@@ -19,6 +21,7 @@ export const JournalEntriesView: React.FC<JournalEntriesViewProps> = ({
 
   const [search, setSearch] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [selectedJournal, setSelectedJournal] = useState<JournalEntry | null>(null);
 
   React.useEffect(() => {
     if (autoOpenCreateModal) {
@@ -112,6 +115,13 @@ export const JournalEntriesView: React.FC<JournalEntriesViewProps> = ({
                     <span className="font-mono font-bold text-xs text-slate-900 dark:text-slate-100 tabular-nums">
                       {formatCurrency(totalDebit, settings.currencySymbol)}
                     </span>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedJournal(jrn)}
+                      className="px-2.5 py-1 text-2xs font-bold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 hover:bg-blue-100 dark:hover:bg-blue-900/50 rounded-lg transition-colors cursor-pointer border border-blue-200 dark:border-blue-800"
+                    >
+                      History & Details
+                    </button>
                   </div>
                 </div>
 
@@ -155,6 +165,11 @@ export const JournalEntriesView: React.FC<JournalEntriesViewProps> = ({
       </div>
 
       <JournalModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} />
+      <JournalDetailsModal
+        isOpen={!!selectedJournal}
+        onClose={() => setSelectedJournal(null)}
+        journal={selectedJournal}
+      />
     </div>
   );
 };

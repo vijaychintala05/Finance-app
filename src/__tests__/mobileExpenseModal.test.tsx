@@ -1,4 +1,4 @@
-﻿// @vitest-environment jsdom
+// @vitest-environment jsdom
 import React from 'react';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react';
@@ -43,10 +43,22 @@ const mockVendors: Vendor[] = [
 ];
 
 const mockClients: Client[] = [
-  { id: 'cli-1', name: 'Acme Corp', companyName: 'Acme Corp', status: 'Active' },
+  {
+    id: 'cli-1',
+    name: 'Acme Corp',
+    companyName: 'Acme Corp',
+    email: 'billing@acme.com',
+    phone: '555-0100',
+    billingAddress: '123 Main St',
+    currency: 'INR',
+    paymentTerms: 'Net 30',
+    createdAt: '2026-01-01',
+  },
 ];
 
 const mockAddExpense = vi.fn().mockResolvedValue({ id: 'exp-new-1' });
+const mockUpdateExpense = vi.fn().mockResolvedValue(undefined);
+const mockCorrectExpense = vi.fn().mockResolvedValue(undefined);
 const mockOnClose = vi.fn();
 
 vi.mock('../context/BooksContext', () => ({
@@ -58,7 +70,8 @@ vi.mock('../context/BooksContext', () => ({
     clients: mockClients,
     addVendor: vi.fn(),
     addExpense: mockAddExpense,
-    correctExpense: vi.fn(),
+    updateExpense: mockUpdateExpense,
+    correctExpense: mockCorrectExpense,
     settings: { currencyCode: 'INR', currencySymbol: '₹' },
   }),
 }));
@@ -204,6 +217,79 @@ describe('Mobile Expense Modal (Light Mode) Test Suite', () => {
         })
       );
       expect(mockOnClose).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('6. Changes posting date on mobile form and persists new date on submission', async () => {
+    render(<ExpenseModal isOpen={true} onClose={mockOnClose} />);
+
+    const modal = screen.getByTestId('mobile-expense-modal');
+    const dateInput = within(modal).getByLabelText('Posting date');
+
+    // Change date to a custom date
+    fireEvent.change(dateInput, { target: { value: '2026-08-15' } });
+
+    // Verify formatDisplayDate updates in the row (15/08/2026)
+    expect(within(modal).getByText('15/08/2026')).toBeDefined();
+
+    // Fill amount and submit
+    const amountInput = within(modal).getByPlaceholderText('0.00');
+    fireEvent.change(amountInput, { target: { value: '250.00' } });
+
+    const saveBtn = within(modal).getByRole('button', { name: 'Save' });
+    fireEvent.click(saveBtn);
+
+    await waitFor(() => {
+      expect(mockAddExpense).toHaveBeenCalledWith(
+        expect.objectContaining({
+          date: '2026-08-15',
+          amount: 250,
+        })
+      );
+    });
+  });
+
+  it('7. When editing expense, correctly displays existing date and updates when user changes date', async () => {
+    const existingExpense = {
+      id: 'exp-edit-1',
+      referenceNumber: 'EXP-2026-001',
+      date: '2026-07-20',
+      amount: 1200,
+      taxAmount: 0,
+      accountId: 'acc-exp-1',
+      accountName: 'Office Rent',
+      paidFromAccountId: 'acc-bank-1',
+      paidFromAccountName: 'HDFC Current Bank Account',
+      description: 'Monthly office space rental',
+    };
+
+    render(<ExpenseModal isOpen={true} onClose={mockOnClose} expenseToEdit={existingExpense} />);
+
+    const modal = screen.getByTestId('mobile-expense-modal');
+    expect(within(modal).getByText('20/07/2026')).toBeDefined();
+
+    const dateInput = within(modal).getByLabelText('Posting date');
+    expect((dateInput as HTMLInputElement).value).toBe('2026-07-20');
+
+    // Change date to 2026-07-25
+    fireEvent.change(dateInput, { target: { value: '2026-07-25' } });
+    expect(within(modal).getByText('25/07/2026')).toBeDefined();
+
+    // Fill edit reason
+    const reasonInput = within(modal).getByPlaceholderText('e.g., Updated amount, vendor invoice correction...');
+    fireEvent.change(reasonInput, { target: { value: 'Corrected invoice posting date' } });
+
+    const saveBtn = within(modal).getByRole('button', { name: 'Save' });
+    fireEvent.click(saveBtn);
+
+    await waitFor(() => {
+      expect(mockUpdateExpense).toHaveBeenCalledWith(
+        'exp-edit-1',
+        expect.objectContaining({
+          date: '2026-07-25',
+        }),
+        'Corrected invoice posting date'
+      );
     });
   });
 });

@@ -1,4 +1,19 @@
-export type BankStatementSourceFormat = 'CSV' | 'XLSX' | 'XLS' | 'OFX' | 'MT940' | 'CAMT053';
+/**
+ * Formats admitted by the product import boundary. Parser code existing for a
+ * format does not make that format certified or safe to expose in the UI.
+ */
+export const SUPPORTED_BANK_STATEMENT_FORMATS = ['CSV', 'XLSX', 'XLS'] as const;
+export const SUPPORTED_BANK_STATEMENT_EXTENSIONS = ['csv', 'xlsx', 'xls'] as const;
+export const BANK_STATEMENT_FILE_ACCEPT = SUPPORTED_BANK_STATEMENT_EXTENSIONS.map((extension) => `.${extension}`).join(',');
+export const BANK_STATEMENT_FORMAT_LABEL = 'CSV, XLSX, or text-based XLS exports';
+
+export type SupportedBankStatementFormat = (typeof SUPPORTED_BANK_STATEMENT_FORMATS)[number];
+export type BankStatementSourceFormat = SupportedBankStatementFormat | 'OFX' | 'MT940' | 'CAMT053';
+
+export const isSupportedBankStatementExtension = (
+  extension: string | undefined
+): extension is (typeof SUPPORTED_BANK_STATEMENT_EXTENSIONS)[number] =>
+  Boolean(extension && SUPPORTED_BANK_STATEMENT_EXTENSIONS.some((candidate) => candidate === extension.toLowerCase()));
 
 export type BankTransactionDirection = 'CREDIT' | 'DEBIT';
 

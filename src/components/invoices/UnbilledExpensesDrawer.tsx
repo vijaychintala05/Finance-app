@@ -246,10 +246,10 @@ export const UnbilledExpensesDrawer: React.FC<UnbilledExpensesDrawerProps> = ({
                         <Calendar className="w-3.5 h-3.5 text-slate-400" />
                         {expense.date}
                       </span>
-                      {expense.accountName && (
+                      {(expense.accountName || expense.isItemized) && (
                         <span className="flex items-center gap-1">
                           <Tag className="w-3.5 h-3.5 text-slate-400" />
-                          {expense.accountName}
+                          {expense.isItemized ? 'Itemized' : expense.accountName}
                         </span>
                       )}
                       {expense.projectName && (

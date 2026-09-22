@@ -16,6 +16,7 @@ import { Bill } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate } from '../../utils/formatters';
 import { RecordVendorPaymentModal } from './RecordVendorPaymentModal';
+import { TransactionHistoryTab } from '../common/TransactionHistoryTab';
 
 interface BillDetailsModalProps {
   isOpen: boolean;
@@ -35,6 +36,7 @@ export const BillDetailsModal: React.FC<BillDetailsModalProps> = ({
   const { settings, deleteBill } = useBooks();
   const [showMoreMenu, setShowMoreMenu] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [activeTab, setActiveTab] = useState<'details' | 'history'>('details');
 
   if (!isOpen || !bill) return null;
 
@@ -126,8 +128,54 @@ export const BillDetailsModal: React.FC<BillDetailsModalProps> = ({
           </div>
         </div>
 
+        {/* SUBHEADER TABS */}
+        <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900 px-5 py-2.5 shrink-0 select-none">
+          <div role="tablist" aria-label="Bill view modes" className="inline-flex rounded-xl border border-slate-200 bg-white p-1 dark:border-slate-700 dark:bg-slate-800">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'details'}
+              onClick={() => setActiveTab('details')}
+              className={`rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-colors cursor-pointer ${
+                activeTab === 'details'
+                  ? 'bg-amber-600 text-white shadow-xs'
+                  : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700'
+              }`}
+            >
+              Bill Details
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'history'}
+              onClick={() => setActiveTab('history')}
+              className={`rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-colors cursor-pointer ${
+                activeTab === 'history'
+                  ? 'bg-amber-600 text-white shadow-xs'
+                  : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700'
+              }`}
+            >
+              History & Audit Trail
+            </button>
+          </div>
+          <span className="font-mono text-2xs font-bold text-slate-500">
+            {bill.billNumber}
+          </span>
+        </div>
+
+        {activeTab === 'history' && (
+          <div className="flex-1 max-h-[80vh] overflow-y-auto">
+            <TransactionHistoryTab
+              entityType="Bill"
+              entityId={bill.id}
+              entity={bill}
+              title={`Bill #${bill.billNumber} History & Audit Trail`}
+            />
+          </div>
+        )}
+
         {/* DETAILS BODY */}
-        <div className="p-5 space-y-6 max-h-[80vh] overflow-y-auto">
+        <div className={`p-5 space-y-6 max-h-[80vh] overflow-y-auto ${activeTab !== 'details' ? 'hidden' : ''}`}>
           {/* AMOUNT & STATUS */}
           <div className="flex items-start justify-between gap-4">
             <div>

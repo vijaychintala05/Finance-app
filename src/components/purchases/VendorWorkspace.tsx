@@ -37,7 +37,7 @@ import {
   Zap,
   BookOpen,
 } from 'lucide-react';
-import { Vendor, Bill, PurchaseOrder, PaymentMade, VendorCredit, Expense, RecurringBill, JournalEntry } from '../../types';
+import { Vendor, Bill, PurchaseOrder, PaymentMade, Expense, JournalEntry } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate } from '../../utils/formatters';
 import { RecordVendorPaymentModal } from './RecordVendorPaymentModal';
@@ -78,6 +78,26 @@ type VendorAuditEvent = { id: string; action: string; timestamp: string; userId:
 type VendorAttachment = { id: string; fileName: string; mimeType: string; byteSize: number; sha256Hash: string; uploadedBy: string; createdAt: string };
 type VendorCommentRecord = { id: string; body: string; userId: string; authorName: string; createdAt: string };
 type VendorMailRecord = { id: string; vendorId: string; toEmail: string; subject: string; body: string; userId: string; authorName: string; status: string; createdAt: string };
+type RecurringBillProfile = {
+  id: string;
+  name: string;
+  kind: 'BILL';
+  frequency: string;
+  next_run_date: string;
+  status: 'ACTIVE' | 'PAUSED';
+  template: Record<string, any> | string;
+};
+type VendorCreditRecord = {
+  id: string;
+  vendor_id?: string;
+  vendor_name?: string;
+  credit_number?: string;
+  date?: string;
+  bill_id?: string;
+  total_amount?: number;
+  remaining_credit?: number;
+  status?: string;
+};
 
 export const VendorWorkspace: React.FC<VendorWorkspaceProps> = ({
   vendor,
@@ -90,9 +110,7 @@ export const VendorWorkspace: React.FC<VendorWorkspaceProps> = ({
     bills,
     purchaseOrders,
     paymentsMade,
-    vendorCredits,
     expenses,
-    recurringBills,
     journalEntries,
     settings,
     accounts,
@@ -139,6 +157,12 @@ export const VendorWorkspace: React.FC<VendorWorkspaceProps> = ({
   const [isSendingMail, setIsSendingMail] = useState(false);
   const [isUploadingAttachments, setIsUploadingAttachments] = useState(false);
   const [transactionSearch, setTransactionSearch] = useState('');
+  const [recurringBillProfiles, setRecurringBillProfiles] = useState<RecurringBillProfile[]>([]);
+  const [recurringBillsLoading, setRecurringBillsLoading] = useState(false);
+  const [recurringBillsError, setRecurringBillsError] = useState('');
+  const [vendorCreditRecords, setVendorCreditRecords] = useState<VendorCreditRecord[]>([]);
+  const [vendorCreditsLoading, setVendorCreditsLoading] = useState(false);
+  const [vendorCreditsError, setVendorCreditsError] = useState('');
 
   const readFileAsBase64 = (file: File): Promise<string> => new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -183,6 +207,40 @@ export const VendorWorkspace: React.FC<VendorWorkspaceProps> = ({
     setMailDraft((prev) => ({ ...prev, toEmail: vendor.email || '' }));
   }, [vendor.email]);
 
+  useEffect(() => {
+    if (resolvedMainTab !== 'transactions' || transactionSubTab !== 'recurring_bills') return;
+    let current = true;
+    setRecurringBillsLoading(true);
+    apiClient.get<RecurringBillProfile[]>('/recurring/profiles').then((response) => {
+      if (!current) return;
+      setRecurringBillsLoading(false);
+      if (response.error) {
+        setRecurringBillsError(response.error);
+        return;
+      }
+      setRecurringBillProfiles((response.data || []).filter((profile) => profile.kind === 'BILL'));
+      setRecurringBillsError('');
+    });
+    return () => { current = false; };
+  }, [resolvedMainTab, transactionSubTab]);
+
+  useEffect(() => {
+    if (resolvedMainTab !== 'transactions' || transactionSubTab !== 'vendor_credits') return;
+    let current = true;
+    setVendorCreditsLoading(true);
+    apiClient.get<VendorCreditRecord[]>('/finance/debit-notes').then((response) => {
+      if (!current) return;
+      setVendorCreditsLoading(false);
+      if (response.error) {
+        setVendorCreditsError(response.error);
+        return;
+      }
+      setVendorCreditRecords(response.data || []);
+      setVendorCreditsError('');
+    });
+    return () => { current = false; };
+  }, [resolvedMainTab, transactionSubTab]);
+
   // Filtered vendor records
   const vendorBills = useMemo(
     () => bills.filter((b) => (b.vendorId === vendor.id || b.vendorName === vendor.name) && b.status !== 'Void'),
@@ -200,8 +258,18 @@ export const VendorWorkspace: React.FC<VendorWorkspaceProps> = ({
   );
 
   const vendorCreditNotes = useMemo(
-    () => vendorCredits.filter((c) => c.vendorId === vendor.id || c.vendorName === vendor.name),
-    [vendorCredits, vendor]
+    () => vendorCreditRecords
+      .filter((credit) => credit.vendor_id === vendor.id || credit.vendor_name === vendor.name)
+      .map((credit) => ({
+        id: credit.id,
+        creditNoteNumber: credit.credit_number || credit.id,
+        issueDate: credit.date || '',
+        billNumber: credit.bill_id || '',
+        creditAmount: Number(credit.total_amount || 0),
+        remainingAmount: Number(credit.remaining_credit || 0),
+        status: credit.status || 'Open',
+      })),
+    [vendorCreditRecords, vendor]
   );
 
   const vendorExpenses = useMemo(
@@ -215,13 +283,32 @@ export const VendorWorkspace: React.FC<VendorWorkspaceProps> = ({
   );
 
   const vendorRecurringBills = useMemo(
-    () => (recurringBills || []).filter((rb) => {
-      if ((rb as any).vendorId && (rb as any).vendorId === vendor.id) return true;
-      if (rb.vendorName && rb.vendorName.toLowerCase() === vendor.name.toLowerCase()) return true;
-      if (vendor.companyName && rb.vendorName && rb.vendorName.toLowerCase() === vendor.companyName.toLowerCase()) return true;
-      return false;
+    () => recurringBillProfiles.flatMap((profile) => {
+      let template: Record<string, any>;
+      try {
+        template = typeof profile.template === 'string' ? JSON.parse(profile.template) : profile.template;
+      } catch {
+        return [];
+      }
+      const vendorName = String(template.vendorName || '');
+      if (template.vendorId !== vendor.id
+        && vendorName.toLowerCase() !== vendor.name.toLowerCase()
+        && (!vendor.companyName || vendorName.toLowerCase() !== vendor.companyName.toLowerCase())) return [];
+      const lines = Array.isArray(template.lineItems) ? template.lineItems : [];
+      const amount = lines.length > 0
+        ? lines.reduce((total, line) => total + (Number(line?.amount ?? (Number(line?.quantity ?? 1) * Number(line?.unitPrice ?? line?.rate ?? 0))) || 0), 0)
+        : Number(template.amount ?? 0);
+      return [{
+        id: profile.id,
+        profileName: profile.name,
+        vendorName,
+        frequency: profile.frequency,
+        nextBillDate: profile.next_run_date,
+        amount,
+        status: profile.status === 'ACTIVE' ? 'Active' as const : 'Paused' as const,
+      }];
     }),
-    [recurringBills, vendor]
+    [recurringBillProfiles, vendor]
   );
 
   const vendorJournals = useMemo(() => {
@@ -1217,7 +1304,11 @@ export const VendorWorkspace: React.FC<VendorWorkspaceProps> = ({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
-                    {vendorRecurringBills
+                    {recurringBillsLoading ? (
+                      <tr><td colSpan={5} className="p-8 text-center text-slate-500">Loading recurring bill schedules…</td></tr>
+                    ) : recurringBillsError ? (
+                      <tr><td colSpan={5} className="p-6 text-center"><div role="alert" className="text-rose-700">Recurring schedules could not be loaded: {recurringBillsError}</div></td></tr>
+                    ) : vendorRecurringBills
                       .filter((rb) => !transactionSearch || rb.profileName.toLowerCase().includes(transactionSearch.toLowerCase()) || rb.frequency.toLowerCase().includes(transactionSearch.toLowerCase()))
                       .length === 0 ? (
                       <tr>
@@ -1327,7 +1418,11 @@ export const VendorWorkspace: React.FC<VendorWorkspaceProps> = ({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
-                    {vendorCreditNotes
+                    {vendorCreditsLoading ? (
+                      <tr><td colSpan={6} className="p-8 text-center text-slate-500">Loading vendor credits…</td></tr>
+                    ) : vendorCreditsError ? (
+                      <tr><td colSpan={6} className="p-6 text-center"><div role="alert" className="text-rose-700">Vendor credits could not be loaded: {vendorCreditsError}</div></td></tr>
+                    ) : vendorCreditNotes
                       .filter((c) => !transactionSearch || c.creditNoteNumber.toLowerCase().includes(transactionSearch.toLowerCase()) || (c.billNumber || '').toLowerCase().includes(transactionSearch.toLowerCase()))
                       .length === 0 ? (
                       <tr>

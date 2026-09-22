@@ -143,7 +143,7 @@ export class Phase8Controller {
         orgId,
         req.params.id,
         req.body,
-        req.body.changeSummary || 'Updated quotation',
+        req.body.changeSummary || req.body.reason || req.body.editReason || 'Updated quotation',
         createdBy
       );
       res.json({ quotation });

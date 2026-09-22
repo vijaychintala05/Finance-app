@@ -73,6 +73,14 @@ const emptyDraft = (): VendorDraft => ({
   defaultExpenseAccountId: '', notes: '', additionalContacts: [], customFields: [],
 });
 
+const formatInitialPhone = (code?: string, num?: string) => {
+  const c = (code || '').trim();
+  const n = (num || '').trim();
+  if (!n) return c;
+  if (!c || n.startsWith(c)) return n;
+  return `${c} ${n}`;
+};
+
 const draftFromVendor = (vendor: Vendor): VendorDraft => ({
   ...emptyDraft(),
   name: vendor.name || '', companyName: vendor.companyName || '', legalName: vendor.legalName || '',
@@ -80,8 +88,11 @@ const draftFromVendor = (vendor: Vendor): VendorDraft => ({
   gstin: vendor.gstin || vendor.taxId || '', pan: vendor.pan || '', placeOfSupply: vendor.placeOfSupply || '',
   salutation: vendor.primaryContact?.salutation || '', firstName: vendor.primaryContact?.firstName || '',
   lastName: vendor.primaryContact?.lastName || '', contactName: vendor.primaryContact?.name || vendor.contactPerson || '', email: vendor.email || '',
-  phoneCode: vendor.primaryContact?.phoneCode || '', phone: vendor.primaryContact?.phone || vendor.phone || '',
-  mobileCode: vendor.primaryContact?.mobileCode || '', mobile: vendor.primaryContact?.mobile || vendor.mobile || '', website: vendor.website || '',
+  phoneCode: vendor.primaryContact?.phoneCode || '',
+  phone: formatInitialPhone(vendor.primaryContact?.phoneCode, vendor.primaryContact?.phone || vendor.phone),
+  mobileCode: vendor.primaryContact?.mobileCode || '',
+  mobile: formatInitialPhone(vendor.primaryContact?.mobileCode, vendor.primaryContact?.mobile || vendor.mobile),
+  website: vendor.website || '',
   bankName: vendor.bankDetails?.bankName || '', bankAccountName: vendor.bankDetails?.accountName || '',
   bankIfsc: vendor.bankDetails?.ifsc || '', bankSwiftCode: vendor.bankDetails?.swiftCode || '',
   bankBranch: vendor.bankDetails?.branch || '', bankAccountType: vendor.bankDetails?.accountType || '',
@@ -254,15 +265,42 @@ export const VendorsView: React.FC<VendorsViewProps> = ({
     setError('');
     setIsSaving(true);
     const primaryContactName = draft.contactName.trim() || [draft.firstName.trim(), draft.lastName.trim()].filter(Boolean).join(' ');
+    const splitPhoneCode = (val: string, fallbackCode?: string) => {
+      const trimmed = val.trim();
+      const match = trimmed.match(/^(\+\d{1,4})(?:[\s.-]+(.*))?$/);
+      if (match) {
+        return { code: match[1], number: (match[2] || '').trim() };
+      }
+      const safeFallback = fallbackCode && /^\+\d{1,4}$/.test(fallbackCode.trim()) ? fallbackCode.trim() : undefined;
+      return { code: safeFallback, number: trimmed };
+    };
+    const workPhone = splitPhoneCode(draft.phone, draft.phoneCode);
+    const mobilePhone = splitPhoneCode(draft.mobile, draft.mobileCode);
     const payload: Partial<Vendor> = {
       name: draft.name.trim(), companyName: draft.companyName.trim(), legalName: draft.legalName.trim(),
       vendorType: draft.vendorType, gstStatus: draft.gstStatus, gstin: draft.gstin.trim().toUpperCase(),
       taxId: draft.gstin.trim().toUpperCase(), pan: draft.pan.trim().toUpperCase(),
       placeOfSupply: draft.placeOfSupply.trim(),
-      primaryContact: { salutation: draft.salutation, firstName: draft.firstName.trim(), lastName: draft.lastName.trim(), name: primaryContactName, email: draft.email.trim(), phoneCode: draft.phoneCode, phone: draft.phone.trim(), mobileCode: draft.mobileCode, mobile: draft.mobile.trim(), isPrimary: true },
-      contactPerson: primaryContactName, email: draft.email.trim(), phone: [draft.phoneCode, draft.phone.trim()].filter(Boolean).join(' '),
-      mobile: [draft.mobileCode, draft.mobile.trim()].filter(Boolean).join(' '), website: draft.website.trim(), billingAddress: draft.billingAddress,
-      shippingAddress: draft.shippingAddress, paymentTerms: draft.paymentTerms,
+      primaryContact: {
+        salutation: draft.salutation,
+        firstName: draft.firstName.trim(),
+        lastName: draft.lastName.trim(),
+        name: primaryContactName,
+        email: draft.email.trim(),
+        phoneCode: workPhone.code,
+        phone: workPhone.number || draft.phone.trim(),
+        mobileCode: mobilePhone.code,
+        mobile: mobilePhone.number || draft.mobile.trim(),
+        isPrimary: true,
+      },
+      contactPerson: primaryContactName,
+      email: draft.email.trim(),
+      phone: draft.phone.trim(),
+      mobile: draft.mobile.trim(),
+      website: draft.website.trim(),
+      billingAddress: draft.billingAddress,
+      shippingAddress: draft.shippingAddress,
+      paymentTerms: draft.paymentTerms,
       defaultExpenseAccountId: draft.defaultExpenseAccountId || undefined,
       additionalContacts: draft.additionalContacts.filter((contact) => contact.name || contact.email || contact.phone || contact.mobile),
       customFields: Object.fromEntries(draft.customFields.filter((field) => field.key.trim()).map((field) => [field.key.trim(), field.value])),
@@ -327,8 +365,8 @@ export const VendorsView: React.FC<VendorsViewProps> = ({
                   <label><span className={labelClass}>Last name</span><input className={fieldClass} maxLength={120} value={draft.lastName} onChange={(e) => setField('lastName', e.target.value)} /></label>
                   <label><span className={labelClass}>Contact name (if different)</span><input className={fieldClass} maxLength={255} value={draft.contactName} onChange={(e) => setField('contactName', e.target.value)} /></label>
                   <label><span className={labelClass}>Email</span><input className={fieldClass} type="email" maxLength={255} value={draft.email} onChange={(e) => setField('email', e.target.value)} /></label>
-                  <label><span className={labelClass}>Phone code and work phone</span><span className="flex gap-2"><input aria-label="Work phone country code" className={`${fieldClass} w-28 shrink-0`} type="tel" inputMode="tel" maxLength={5} placeholder="+91" value={draft.phoneCode} onChange={(e) => setField('phoneCode', e.target.value.replace(/[^+\d]/g, '').replace(/(?!^)\+/g, '').slice(0, 5))} /><input className={fieldClass} type="tel" maxLength={40} value={draft.phone} onChange={(e) => setField('phone', e.target.value)} /></span></label>
-                  <label><span className={labelClass}>Mobile code and number</span><span className="flex gap-2"><input aria-label="Mobile country code" className={`${fieldClass} w-28 shrink-0`} type="tel" inputMode="tel" maxLength={5} placeholder="+91" value={draft.mobileCode} onChange={(e) => setField('mobileCode', e.target.value.replace(/[^+\d]/g, '').replace(/(?!^)\+/g, '').slice(0, 5))} /><input className={fieldClass} type="tel" maxLength={40} value={draft.mobile} onChange={(e) => setField('mobile', e.target.value)} /></span></label>
+                  <label><span className={labelClass}>Work phone</span><input aria-label="Work phone" className={fieldClass} type="tel" maxLength={50} placeholder="+91 98765 43210" value={draft.phone} onChange={(e) => setField('phone', e.target.value)} /></label>
+                  <label><span className={labelClass}>Mobile number</span><input aria-label="Mobile number" className={fieldClass} type="tel" maxLength={50} placeholder="+91 98765 43210" value={draft.mobile} onChange={(e) => setField('mobile', e.target.value)} /></label>
                   <label className="sm:col-span-2"><span className={labelClass}>Website</span><input className={fieldClass} type="url" maxLength={255} placeholder="https://example.com" value={draft.website} onChange={(e) => setField('website', e.target.value)} /></label>
                 </div>
               </section>
@@ -369,7 +407,7 @@ export const VendorsView: React.FC<VendorsViewProps> = ({
               </section>
               <section>
                 <div className="mb-3 flex items-center justify-between"><h3 className="text-sm font-bold text-slate-900 dark:text-white">Contact persons</h3><button type="button" onClick={() => setField('additionalContacts', [...draft.additionalContacts, { name: '', email: '', phone: '', mobile: '', designation: '' }])} className="text-xs font-semibold text-purple-700 dark:text-purple-300">Add contact</button></div>
-                <div className="space-y-3">{draft.additionalContacts.map((contact, index) => <div key={index} className="grid gap-2 rounded-xl border border-slate-200 p-3 dark:border-slate-700 sm:grid-cols-2"><input aria-label={`Contact ${index + 1} name`} placeholder="Name" className={fieldClass} value={contact.name || ''} onChange={(e) => setField('additionalContacts', draft.additionalContacts.map((row, i) => i === index ? { ...row, name: e.target.value } : row))} /><input aria-label={`Contact ${index + 1} designation`} placeholder="Role / designation" className={fieldClass} value={contact.designation || ''} onChange={(e) => setField('additionalContacts', draft.additionalContacts.map((row, i) => i === index ? { ...row, designation: e.target.value } : row))} /><input aria-label={`Contact ${index + 1} email`} placeholder="Email" type="email" className={fieldClass} value={contact.email || ''} onChange={(e) => setField('additionalContacts', draft.additionalContacts.map((row, i) => i === index ? { ...row, email: e.target.value } : row))} /><input aria-label={`Contact ${index + 1} phone`} placeholder="Work phone" type="tel" className={fieldClass} value={contact.phone || ''} onChange={(e) => setField('additionalContacts', draft.additionalContacts.map((row, i) => i === index ? { ...row, phone: e.target.value } : row))} /><input aria-label={`Contact ${index + 1} mobile`} placeholder="Mobile" type="tel" className={fieldClass} value={contact.mobile || ''} onChange={(e) => setField('additionalContacts', draft.additionalContacts.map((row, i) => i === index ? { ...row, mobile: e.target.value } : row))} /><button type="button" onClick={() => setField('additionalContacts', draft.additionalContacts.filter((_, i) => i !== index))} className="rounded-xl px-3 text-sm text-rose-600 hover:bg-rose-50">Remove contact</button></div>)}</div>
+                <div className="space-y-3">{draft.additionalContacts.map((contact, index) => <div key={index} className="grid gap-2 rounded-xl border border-slate-200 p-3 dark:border-slate-700 sm:grid-cols-2"><input aria-label={`Contact ${index + 1} name`} placeholder="Name" className={fieldClass} value={contact.name || ''} onChange={(e) => setField('additionalContacts', draft.additionalContacts.map((row, i) => i === index ? { ...row, name: e.target.value } : row))} /><input aria-label={`Contact ${index + 1} designation`} placeholder="Role / designation" className={fieldClass} value={contact.designation || ''} onChange={(e) => setField('additionalContacts', draft.additionalContacts.map((row, i) => i === index ? { ...row, designation: e.target.value } : row))} /><input aria-label={`Contact ${index + 1} email`} placeholder="Email" type="email" className={fieldClass} value={contact.email || ''} onChange={(e) => setField('additionalContacts', draft.additionalContacts.map((row, i) => i === index ? { ...row, email: e.target.value } : row))} /><input aria-label={`Contact ${index + 1} phone`} placeholder="Work phone" type="tel" maxLength={50} className={fieldClass} value={contact.phone || ''} onChange={(e) => setField('additionalContacts', draft.additionalContacts.map((row, i) => i === index ? { ...row, phone: e.target.value } : row))} /><input aria-label={`Contact ${index + 1} mobile`} placeholder="Mobile" type="tel" maxLength={50} className={fieldClass} value={contact.mobile || ''} onChange={(e) => setField('additionalContacts', draft.additionalContacts.map((row, i) => i === index ? { ...row, mobile: e.target.value } : row))} /><button type="button" onClick={() => setField('additionalContacts', draft.additionalContacts.filter((_, i) => i !== index))} className="rounded-xl px-3 text-sm text-rose-600 hover:bg-rose-50">Remove contact</button></div>)}</div>
               </section>
               <section>
                 <div className="mb-3 flex items-center justify-between"><h3 className="text-sm font-bold text-slate-900 dark:text-white">Custom fields</h3><button type="button" onClick={() => setField('customFields', [...draft.customFields, { key: '', value: '' }])} className="text-xs font-semibold text-purple-700 dark:text-purple-300">Add field</button></div>

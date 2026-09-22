@@ -334,6 +334,7 @@ export class ManualJournalService {
       date?: string;
       reference?: string;
       narration?: string;
+      reason?: string;
       lines?: any[];
     }
   ): Promise<any> {
@@ -361,6 +362,19 @@ export class ManualJournalService {
           );
         }
       }
+      const reason = input.reason || 'Draft modified';
+      await tx.query(
+        `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state, after_state)
+         VALUES ($1, $2, $3, 'MANUAL_JOURNAL_UPDATED', 'JournalEntry', $4, $5, $6)`,
+        [
+          newId('aud'),
+          orgId,
+          userId,
+          draftId,
+          JSON.stringify({ status: draftRes.rows[0].status, date: draftRes.rows[0].date }),
+          JSON.stringify({ status: 'Draft', date: input.date || draftRes.rows[0].date, reason }),
+        ]
+      );
       return { id: draftId, status: 'Draft' };
     });
   }

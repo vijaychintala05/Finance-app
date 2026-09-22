@@ -147,6 +147,27 @@
     margin-right: auto;
   }
 
+  /* Banking overview has three actions; release the generic 42% label reservation. */
+  .mobile-record-table tbody td.mobile-record-actions::before {
+    flex: 0 0 auto;
+  }
+
+  .mobile-record-table tbody td.mobile-record-actions {
+    position: static;
+    z-index: auto;
+    box-shadow: none;
+  }
+
+  .mobile-record-table tbody td.mobile-record-actions > div {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .mobile-record-table tbody td.mobile-record-actions button {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+
   .mobile-record-table tbody td button {
     min-height: 40px;
     min-width: 40px;

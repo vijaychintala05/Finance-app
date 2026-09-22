@@ -15,6 +15,7 @@ import {
   Search,
   Upload,
   Wallet,
+  XCircle,
 } from 'lucide-react';
 import { Account, JournalEntry } from '../../types';
 import { BankAccount, BankStatementTransaction } from '../../types/banking';
@@ -57,9 +58,11 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
   const [statementRows, setStatementRows] = useState<BankStatementTransaction[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<
-    'ALL' | 'TO_REVIEW' | 'MATCHED' | 'CATEGORIZED' | 'RECONCILED'
+    'ALL' | 'TO_REVIEW' | 'POSSIBLE_DUPLICATES' | 'MATCHED' | 'CATEGORIZED' | 'RECONCILED'
   >('ALL');
   const [searchQuery, setSearchQuery] = useState('');
+  const [resolvingTransactionId, setResolvingTransactionId] = useState<string | null>(null);
+  const [resolutionError, setResolutionError] = useState<string | null>(null);
 
   const [workspaceBalances, setWorkspaceBalances] = useState<{
     bookBalance: number | null;
@@ -144,9 +147,10 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
           tx.status === 'UNMATCHED' ||
           tx.status === 'TO_REVIEW' ||
           tx.status === 'RECOGNIZED' ||
-          tx.status === 'POSSIBLE_DUPLICATE' ||
           tx.status === 'POSTED'
       );
+    } else if (activeTab === 'POSSIBLE_DUPLICATES') {
+      list = list.filter((tx) => tx.status === 'POSSIBLE_DUPLICATE');
     } else if (activeTab === 'MATCHED') {
       list = list.filter((tx) => tx.status === 'MATCHED');
     } else if (activeTab === 'CATEGORIZED') {
@@ -187,9 +191,26 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
     (tx) =>
       tx.status === 'UNMATCHED' ||
       tx.status === 'TO_REVIEW' ||
-      tx.status === 'RECOGNIZED' ||
-      tx.status === 'POSSIBLE_DUPLICATE'
+      tx.status === 'RECOGNIZED'
   ).length;
+  const possibleDuplicatesCount = mergedTransactions.filter((tx) => tx.status === 'POSSIBLE_DUPLICATE').length;
+
+  const resolvePossibleDuplicate = async (transactionId: string, keepAsNew: boolean) => {
+    setResolvingTransactionId(transactionId);
+    setResolutionError(null);
+    try {
+      // The existing audited ignore endpoint also restores a row to TO_REVIEW
+      // when isIgnored=false. That is the explicit "keep" decision here.
+      await BankingService.ignoreTransaction(transactionId, !keepAsNew);
+      await loadWorkspaceTransactions();
+      setActiveTab(keepAsNew ? 'TO_REVIEW' : 'ALL');
+      onRefresh?.();
+    } catch (error) {
+      setResolutionError(error instanceof Error ? error.message : 'Could not resolve the possible duplicate.');
+    } finally {
+      setResolvingTransactionId(null);
+    }
+  };
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -326,6 +347,14 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
       </div>
 
       {/* 4. TABS & SEARCH TOOLBAR */}
+      {resolutionError && (
+        <div role="alert" className="flex items-start justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-semibold text-rose-800 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-300">
+          <span>{resolutionError}</span>
+          <button type="button" onClick={() => setResolutionError(null)} className="shrink-0 opacity-70 hover:opacity-100" aria-label="Dismiss duplicate resolution error">
+            <XCircle className="h-4 w-4" />
+          </button>
+        </div>
+      )}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white dark:bg-slate-900 p-3 rounded-2xl border border-slate-200 dark:border-slate-800">
         <div className="flex items-center space-x-1 overflow-x-auto">
           <button
@@ -348,6 +377,18 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
           >
             To Review ({toReviewCount})
           </button>
+          {possibleDuplicatesCount > 0 && (
+            <button
+              onClick={() => setActiveTab('POSSIBLE_DUPLICATES')}
+              className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer whitespace-nowrap ${
+                activeTab === 'POSSIBLE_DUPLICATES'
+                  ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800 shadow-2xs'
+                  : 'text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/30'
+              }`}
+            >
+              Possible duplicates ({possibleDuplicatesCount})
+            </button>
+          )}
           <button
             onClick={() => setActiveTab('MATCHED')}
             className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
@@ -408,7 +449,7 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
       {/* 5. THE ZOHO BOOKS BANKING TABLE COLUMNS */}
       <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs border-collapse">
+          <table className="mobile-record-table w-full text-left text-xs border-collapse">
             <thead>
               <tr className="bg-slate-50 dark:bg-slate-950 text-slate-500 dark:text-slate-400 font-extrabold uppercase text-[10px] tracking-wider border-b border-slate-200 dark:border-slate-800">
                 <th className="py-3.5 px-5">Date</th>
@@ -416,7 +457,9 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
                 <th className="py-3.5 px-5 text-right">Withdrawals (DR)</th>
                 <th className="py-3.5 px-5 text-right">Deposits (CR)</th>
                 <th className="py-3.5 px-5 text-center">Status</th>
-                <th className="py-3.5 px-5 text-right">Actions</th>
+                <th className="sticky right-0 z-10 bg-slate-50 py-3.5 px-5 text-right shadow-[-8px_0_12px_-12px_rgba(15,23,42,0.45)] dark:bg-slate-950">
+                  Actions
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -439,6 +482,8 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
                   const isMatched = tx.status === 'MATCHED';
                   const isCategorized = tx.status === 'CATEGORIZED';
                   const isReconciled = tx.status === 'RECONCILED';
+                  const isPossibleDuplicate = tx.status === 'POSSIBLE_DUPLICATE';
+                  const isResolving = resolvingTransactionId === tx.id;
 
                   return (
                     <tr
@@ -493,7 +538,11 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
 
                       {/* 5. STATUS */}
                       <td className="py-3.5 px-5 text-center whitespace-nowrap">
-                        {isUnmatched ? (
+                        {isPossibleDuplicate ? (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 dark:bg-amber-950/60 dark:text-amber-300">
+                            Possible duplicate
+                          </span>
+                        ) : isUnmatched ? (
                           <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300">
                             Uncategorized
                           </span>
@@ -517,9 +566,35 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
                       </td>
 
                       {/* 6. ACTIONS */}
-                      <td className="py-3.5 px-5 text-right" onClick={(e) => e.stopPropagation()}>
+                      <td
+                        className="mobile-record-actions sticky right-0 z-[1] bg-white py-3.5 px-5 text-right shadow-[-8px_0_12px_-12px_rgba(15,23,42,0.45)] group-hover:bg-blue-50 dark:bg-slate-900 dark:group-hover:bg-slate-800"
+                        onClick={(e) => e.stopPropagation()}
+                      >
                         <div className="flex items-center justify-end space-x-1.5">
-                          {isUnmatched && (
+                          {isPossibleDuplicate ? (
+                            <>
+                              <button
+                                type="button"
+                                disabled={isResolving}
+                                onClick={() => void resolvePossibleDuplicate(tx.id, true)}
+                                className="px-2.5 py-1 text-xs font-bold text-blue-700 hover:bg-blue-50 dark:text-blue-300 dark:hover:bg-blue-950/40 rounded-lg transition-colors cursor-pointer disabled:cursor-wait disabled:opacity-50 inline-flex items-center space-x-1 whitespace-nowrap"
+                                title="Keep this row and move it to To Review"
+                              >
+                                <CheckCircle2 className="w-3.5 h-3.5" />
+                                <span>{isResolving ? 'Saving…' : 'Keep as new'}</span>
+                              </button>
+                              <button
+                                type="button"
+                                disabled={isResolving}
+                                onClick={() => void resolvePossibleDuplicate(tx.id, false)}
+                                className="px-2.5 py-1 text-xs font-bold text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800 rounded-lg transition-colors cursor-pointer disabled:cursor-wait disabled:opacity-50 inline-flex items-center space-x-1"
+                                title="Ignore this duplicate candidate without changing the ledger"
+                              >
+                                <XCircle className="w-3.5 h-3.5" />
+                                <span>Ignore</span>
+                              </button>
+                            </>
+                          ) : isUnmatched && (
                             <>
                               <button
                                 type="button"

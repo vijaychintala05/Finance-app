@@ -1,6 +1,6 @@
 import { db } from '../database/db';
 import PDFDocument from 'pdfkit';
-import * as XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
 import type { WorkspaceReportResult } from './ReportWorkspaceService';
 import { formatCurrencyAmount, formatIndianNumber } from '../utils/money';
 
@@ -88,12 +88,12 @@ export class ReportExportService {
     return String(value).replace(/[\r\n\t]+/g, ' ').trim();
   }
 
-  public static exportWorkspaceReport(
+  public static async exportWorkspaceReport(
     report: WorkspaceReportResult,
     metadata: ReportExportMetadata,
     format: 'csv' | 'xlsx' | 'pdf',
     selectedColumns?: string[],
-  ): Promise<Buffer> | Buffer {
+  ): Promise<Buffer> {
     const allowedColumns = new Set(selectedColumns || report.columns.map((column) => column.key));
     const columns = report.columns.filter((column) => allowedColumns.has(column.key));
     if (columns.length === 0) throw new Error('Select at least one report column');
@@ -109,19 +109,36 @@ export class ReportExportService {
     }
 
     if (format === 'xlsx') {
-      const workbook = XLSX.utils.book_new();
-      const heading = [
+      const workbook = new ExcelJS.Workbook();
+      workbook.creator = 'FirmBooks';
+      workbook.created = new Date(metadata.generatedAt.replace(' ', 'T') + 'Z');
+      const worksheet = workbook.addWorksheet('Report', {
+        views: [{ state: 'frozen', ySplit: 6 }],
+      });
+      worksheet.addRows([
         [metadata.orgName],
         [metadata.reportName],
         [metadata.reportingPeriod],
         [`Generated ${metadata.generatedAt} by ${metadata.generatedBy}`],
         [],
-      ];
-      const worksheet = XLSX.utils.aoa_to_sheet(heading);
-      XLSX.utils.sheet_add_json(worksheet, rows, { origin: 'A6' });
-      worksheet['!cols'] = columns.map((column) => ({ wch: Math.min(42, Math.max(14, column.label.length + 2)) }));
-      XLSX.utils.book_append_sheet(workbook, worksheet, 'Report');
-      return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+        columns.map((column) => column.label),
+      ]);
+      for (const row of rows) {
+        worksheet.addRow(columns.map((column) => row[column.label]));
+      }
+      worksheet.columns = columns.map((column) => ({
+        width: Math.min(42, Math.max(14, column.label.length + 2)),
+      }));
+      worksheet.getRow(1).font = { bold: true, size: 12, color: { argb: 'FF2563EB' } };
+      worksheet.getRow(2).font = { bold: true, size: 16, color: { argb: 'FF0F172A' } };
+      worksheet.getRow(6).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      worksheet.getRow(6).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF334155' } };
+      worksheet.autoFilter = {
+        from: { row: 6, column: 1 },
+        to: { row: 6, column: columns.length },
+      };
+      const output = await workbook.xlsx.writeBuffer({ useStyles: true, useSharedStrings: true });
+      return Buffer.from(output);
     }
 
     return new Promise<Buffer>((resolve, reject) => {

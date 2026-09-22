@@ -32,6 +32,13 @@ import { LedgerQueryService } from '../services/LedgerQueryService';
  * General Ledger at any time using rebuildBankBalancesFromGL(orgId).
  */
 export class BankReconciliationService {
+  private static statementSourceFormat(filename: string): 'CSV' | 'XLSX' | 'XLS' {
+    const extension = filename.toLowerCase().split('.').pop();
+    if (extension === 'xlsx') return 'XLSX';
+    if (extension === 'xls') return 'XLS';
+    return 'CSV';
+  }
+
   private static async loadStatementImportCandidates(
     client: DbQueryClient,
     orgId: string,
@@ -409,7 +416,7 @@ export class BankReconciliationService {
     // 2. Parse statement
     let parsed: any;
     try {
-      parsed = BankStatementParserFactory.parseStatement(content, bankAccountId, detectedFormat, mapping);
+      parsed = await BankStatementParserFactory.parseStatement(content, bankAccountId, detectedFormat, mapping);
     } catch (err: any) {
       validationErrors.push(`Failed to parse statement format ${detectedFormat}: ${err?.message || err}`);
       return {
@@ -501,7 +508,7 @@ export class BankReconciliationService {
     }
 
     // Parse Statement
-    const parsed = BankStatementParserFactory.parseStatement(content, bankAccountId, sourceFormat, mapping);
+    const parsed = await BankStatementParserFactory.parseStatement(content, bankAccountId, sourceFormat, mapping);
     const accountResult = await db.query(
       `SELECT currency FROM bank_accounts WHERE organization_id = $1 AND id = $2 AND is_active = TRUE`,
       [orgId, bankAccountId]
@@ -1710,7 +1717,7 @@ export class BankReconciliationService {
     }
   ): Promise<any> {
     const filename = payload.filename || 'statement.csv';
-    const parsed = BankStatementParserFactory.parseStatement(
+    const parsed = await BankStatementParserFactory.parseStatement(
       payload.fileContent,
       payload.bankAccountId || 'unbound',
       undefined,
@@ -1781,7 +1788,7 @@ export class BankReconciliationService {
     return {
       fileHash: parsed.fileHash,
       filename,
-      sourceFormat: 'CSV',
+      sourceFormat: this.statementSourceFormat(filename),
       detectedBankName: parsed.detectedBankName,
       detectedAccountNumber: parsed.detectedAccountNumber,
       currency: parsed.currency || 'INR',
@@ -1873,7 +1880,7 @@ export class BankReconciliationService {
         targetBankAccountId = bnkId;
       }
 
-      const parsed = BankStatementParserFactory.parseStatement(
+      const parsed = await BankStatementParserFactory.parseStatement(
         payload.fileContent,
         targetBankAccountId!,
         undefined,
@@ -1894,10 +1901,10 @@ export class BankReconciliationService {
           importId,
           orgId,
           targetBankAccountId,
-          'CSV',
+          this.statementSourceFormat(filename),
           filename,
           parsed.fileHash,
-          parsed.parserVersion || '2.0',
+          parsed.parserVersion || '3.0',
           parsed.statementFrom || null,
           parsed.statementTo || null,
           parsed.openingBalance || 0,
@@ -2380,14 +2387,22 @@ export class BankReconciliationService {
     userId: string
   ): Promise<boolean> {
     const status = isIgnored ? 'IGNORED' : 'TO_REVIEW';
-    await db.query(
-      `UPDATE bank_statement_transactions SET is_ignored = $1, reconciliation_status = $2 WHERE organization_id = $3 AND id = $4`,
+    const updateResult = await db.query(
+      `UPDATE bank_statement_transactions
+       SET is_ignored = $1, reconciliation_status = $2
+       WHERE organization_id = $3 AND id = $4
+       RETURNING id`,
       [isIgnored, status, orgId, statementTxId]
     );
+    if (!updateResult.rows?.length) {
+      throw new Error('BANK_TRANSACTION_NOT_FOUND: Statement transaction does not exist in this organization.');
+    }
+
+    const auditAction = isIgnored ? 'BANK_TRANSACTION_IGNORED' : 'BANK_TRANSACTION_RESTORED';
     await db.query(
       `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state)
-       VALUES ($1, $2, $3, 'BANK_TRANSACTION_IGNORED', 'BankStatementTransaction', $4, $5)`,
-      [newId('aud'), orgId, userId || 'System', statementTxId, JSON.stringify({ isIgnored, status })]
+       VALUES ($1, $2, $3, $4, 'BankStatementTransaction', $5, $6)`,
+      [newId('aud'), orgId, userId || 'System', auditAction, statementTxId, JSON.stringify({ isIgnored, status })]
     );
     return true;
   }

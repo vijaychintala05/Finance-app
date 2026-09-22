@@ -128,6 +128,17 @@ export const BankingOverviewTable: React.FC<BankingOverviewTableProps> = ({
     () => mergedAccounts.reduce((sum, a) => sum + a.toReviewCount, 0),
     [mergedAccounts]
   );
+  const statementEligibleAccounts = useMemo(
+    () => mergedAccounts.filter((a) => a.subType !== 'Cash' && a.subType !== 'Cash & Bank'),
+    [mergedAccounts]
+  );
+  const coveredStatementAccounts = useMemo(
+    () => statementEligibleAccounts.filter((a) => a.hasStatement),
+    [statementEligibleAccounts]
+  );
+  const nextUncoveredAccount = statementEligibleAccounts.find((a) => !a.hasStatement)?.account ?? null;
+  const needsStatementCoverage =
+    statementEligibleAccounts.length > 0 && coveredStatementAccounts.length < statementEligibleAccounts.length;
 
   return (
     <div className="space-y-6">
@@ -169,8 +180,9 @@ export const BankingOverviewTable: React.FC<BankingOverviewTableProps> = ({
         </div>
       </div>
 
+      <div className="flex flex-col gap-6">
       {/* 2. ZOHO-STYLE 3 SUMMARY METRIC CARDS */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div className="order-2 grid grid-cols-1 gap-4 sm:order-1 sm:grid-cols-3">
         <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-2xs">
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500 dark:text-slate-400">
@@ -205,6 +217,52 @@ export const BankingOverviewTable: React.FC<BankingOverviewTableProps> = ({
           </div>
           <p className="text-[11px] text-slate-400 mt-1">Uncategorized transactions awaiting match</p>
         </div>
+      </div>
+
+      {needsStatementCoverage && (
+        <section
+          aria-labelledby="statement-coverage-title"
+          className="order-1 rounded-2xl border border-blue-200 bg-blue-50/70 p-4 dark:border-blue-900 dark:bg-blue-950/30 sm:order-2 sm:p-5"
+        >
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="min-w-0">
+              <div className="flex items-start gap-3">
+                <FileSpreadsheet className="mt-0.5 h-5 w-5 shrink-0 text-blue-600 dark:text-blue-400" />
+                <div>
+                  <h2 id="statement-coverage-title" className="text-sm font-extrabold text-slate-900 dark:text-white">
+                    {coveredStatementAccounts.length === 0
+                      ? 'Finish your first bank reconciliation'
+                      : 'Complete statement coverage'}
+                  </h2>
+                  <p className="mt-1 text-xs leading-5 text-slate-600 dark:text-slate-300">
+                    {coveredStatementAccounts.length} of {statementEligibleAccounts.length} statement accounts have imported bank evidence.
+                    Importing does not post to your ledger until you explicitly match or categorize a row.
+                  </p>
+                </div>
+              </div>
+
+              <ol className="mt-3 grid gap-2 text-xs font-semibold text-slate-700 dark:text-slate-200 sm:grid-cols-3 sm:gap-4">
+                <li><span className="mr-1.5 text-blue-600 dark:text-blue-400">1.</span>Import the latest statement</li>
+                <li><span className="mr-1.5 text-blue-600 dark:text-blue-400">2.</span>Review unmatched rows</li>
+                <li><span className="mr-1.5 text-blue-600 dark:text-blue-400">3.</span>Confirm the closing balance</li>
+              </ol>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => onImportStatement(
+                statementEligibleAccounts.length - coveredStatementAccounts.length === 1
+                  ? nextUncoveredAccount
+                  : null
+              )}
+              className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 self-start rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-bold text-white shadow-sm transition-colors hover:bg-blue-500 lg:self-center"
+            >
+              <span>{coveredStatementAccounts.length === 0 ? 'Import first statement' : 'Import missing statement'}</span>
+              <ArrowRight className="h-4 w-4" />
+            </button>
+          </div>
+        </section>
+      )}
       </div>
 
       {/* 3. TABS & SEARCH TOOLBAR */}
@@ -380,12 +438,12 @@ export const BankingOverviewTable: React.FC<BankingOverviewTableProps> = ({
                       </td>
 
                       {/* 7. ACTIONS */}
-                      <td className="py-4 px-5 text-right" onClick={(e) => e.stopPropagation()}>
+                      <td className="mobile-record-actions py-4 px-5 text-right" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center justify-end space-x-2">
                           <button
                             type="button"
                             onClick={() => onImportStatement(item.account)}
-                            className="px-2.5 py-1.5 text-xs font-bold text-blue-600 hover:text-blue-700 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40 rounded-lg transition-colors cursor-pointer"
+                            className="shrink-0 whitespace-nowrap px-2.5 py-1.5 text-xs font-bold text-blue-600 hover:text-blue-700 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40 rounded-lg transition-colors cursor-pointer"
                             title="Import statement for this bank"
                           >
                             Import
@@ -393,7 +451,7 @@ export const BankingOverviewTable: React.FC<BankingOverviewTableProps> = ({
                           <button
                             type="button"
                             onClick={() => onReconcile(item.account)}
-                            className="px-2.5 py-1.5 text-xs font-bold text-slate-700 hover:text-slate-900 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
+                            className="shrink-0 whitespace-nowrap px-2.5 py-1.5 text-xs font-bold text-slate-700 hover:text-slate-900 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
                             title="Reconcile bank account"
                           >
                             Reconcile
@@ -401,7 +459,7 @@ export const BankingOverviewTable: React.FC<BankingOverviewTableProps> = ({
                           <button
                             type="button"
                             onClick={() => onSelectAccount(item.id)}
-                            className="p-1.5 text-slate-400 group-hover:text-blue-600 dark:group-hover:text-blue-400 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                            className="shrink-0 p-1.5 text-slate-400 group-hover:text-blue-600 dark:group-hover:text-blue-400 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
                             title="Open workspace"
                           >
                             <ChevronRight className="w-4 h-4" />

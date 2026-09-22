@@ -9,7 +9,14 @@ import {
   X,
 } from 'lucide-react';
 import { Account } from '../../types';
-import { BankAccount, BankStatementSourceFormat, StatementImportPreviewResponse } from '../../types/banking';
+import {
+  BANK_STATEMENT_FILE_ACCEPT,
+  BANK_STATEMENT_FORMAT_LABEL,
+  BankAccount,
+  isSupportedBankStatementExtension,
+  StatementImportPreviewResponse,
+  SupportedBankStatementFormat,
+} from '../../types/banking';
 import { BankingService } from '../../services/bankingService';
 import { formatCurrency, formatDate } from '../../utils/formatters';
 
@@ -31,7 +38,7 @@ export const ImportStatementModal: React.FC<ImportStatementModalProps> = ({
   const [file, setFile] = useState<File | null>(null);
   const [fileContent, setFileContent] = useState<string>('');
   const [isReadingFile, setIsReadingFile] = useState<boolean>(false);
-  const [format, setFormat] = useState<BankStatementSourceFormat>('CSV');
+  const [format, setFormat] = useState<SupportedBankStatementFormat>('CSV');
   const [error, setError] = useState<string>('');
   const [busy, setBusy] = useState<boolean>(false);
   const [preview, setPreview] = useState<StatementImportPreviewResponse | null>(null);
@@ -54,22 +61,22 @@ export const ImportStatementModal: React.FC<ImportStatementModalProps> = ({
     // Strict validation: Reject PDF, images, OFX, MT940, CAMT
     if (['pdf', 'png', 'jpg', 'jpeg', 'webp', 'ofx', 'qif', 'mt940', 'sta', 'xml'].includes(extension || '')) {
       setError(
-        'FirmBooks Banking accepts only CSV, XLSX, and XLS statement files. PDF, image scans, OFX, MT940, and CAMT formats are not supported.'
+        `FirmBooks Banking accepts only ${BANK_STATEMENT_FORMAT_LABEL} statement files. PDF, image scans, OFX, MT940, and CAMT formats are not supported.`
       );
       setFile(null);
       setFileContent('');
       return;
     }
 
-    if (!['csv', 'xlsx', 'xls'].includes(extension || '')) {
-      setError('Please upload a valid CSV, XLSX, or XLS bank statement file.');
+    if (!isSupportedBankStatementExtension(extension)) {
+      setError(`Please upload a valid ${BANK_STATEMENT_FORMAT_LABEL} bank statement file.`);
       setFile(null);
       setFileContent('');
       return;
     }
 
     setFile(selectedFile);
-    const sourceFmt: BankStatementSourceFormat =
+    const sourceFmt: SupportedBankStatementFormat =
       extension === 'xlsx' ? 'XLSX' : extension === 'xls' ? 'XLS' : 'CSV';
     setFormat(sourceFmt);
 
@@ -99,7 +106,7 @@ export const ImportStatementModal: React.FC<ImportStatementModalProps> = ({
 
   const handlePreview = async () => {
     if (!file || !fileContent) {
-      setError('Please choose a supported CSV or Excel statement file.');
+      setError(`Please choose a supported ${BANK_STATEMENT_FORMAT_LABEL} statement file.`);
       return;
     }
 
@@ -214,11 +221,11 @@ export const ImportStatementModal: React.FC<ImportStatementModalProps> = ({
                   {file ? file.name : 'Click to select or drag and drop statement file'}
                 </span>
                 <span className="text-xs text-slate-400 mt-1">
-                  Supported: <strong>CSV, XLSX, XLS</strong> (Standard netbanking exports)
+                  Supported: <strong>{BANK_STATEMENT_FORMAT_LABEL}</strong> (Standard netbanking exports)
                 </span>
                 <input
                   type="file"
-                  accept=".csv,.xlsx,.xls"
+                  accept={BANK_STATEMENT_FILE_ACCEPT}
                   onChange={(e) => handleFileChange(e.target.files?.[0] || null)}
                   className="hidden"
                 />
@@ -267,15 +274,24 @@ export const ImportStatementModal: React.FC<ImportStatementModalProps> = ({
                 </div>
               )}
 
+              {(preview?.exactDuplicatesCount || preview?.possibleDuplicatesCount) ? (
+                <div className="rounded-xl border border-blue-200 bg-blue-50/70 px-3.5 py-3 text-[11px] leading-relaxed text-blue-900 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200">
+                  Exact duplicates are skipped but retained in the import audit trail. Possible duplicates are imported into a dedicated review queue and do not change the General Ledger.
+                </div>
+              ) : null}
+
               {/* Preview Rows Table */}
-              <div className="border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden max-h-48 overflow-y-auto">
-                <table className="w-full text-left text-xs border-collapse">
+              <div className="border border-slate-200 dark:border-slate-800 rounded-2xl overflow-auto max-h-48">
+                <table className="w-full min-w-[600px] text-left text-xs border-collapse">
                   <thead className="bg-slate-100 dark:bg-slate-800 text-[10px] font-extrabold uppercase text-slate-500 sticky top-0">
                     <tr>
                       <th className="py-2 px-3">Date</th>
                       <th className="py-2 px-3">Narration</th>
                       <th className="py-2 px-3 text-right">Money In</th>
                       <th className="py-2 px-3 text-right">Money Out</th>
+                      <th className="sticky right-0 z-10 bg-slate-100 py-2 px-3 text-right shadow-[-8px_0_12px_-12px_rgba(15,23,42,0.45)] dark:bg-slate-800">
+                        Disposition
+                      </th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -288,6 +304,23 @@ export const ImportStatementModal: React.FC<ImportStatementModalProps> = ({
                         </td>
                         <td className="py-2 px-3 text-right font-mono text-rose-600">
                           {row.moneyOut ? formatCurrency(row.moneyOut, preview?.currency || 'INR') : '—'}
+                        </td>
+                        <td className="sticky right-0 bg-white py-2 px-3 text-right whitespace-nowrap shadow-[-8px_0_12px_-12px_rgba(15,23,42,0.45)] dark:bg-slate-900">
+                          <span
+                            className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                              row.status === 'EXACT_DUPLICATE'
+                                ? 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
+                                : row.status === 'POSSIBLE_DUPLICATE'
+                                  ? 'bg-amber-100 text-amber-900 dark:bg-amber-950/60 dark:text-amber-300'
+                                  : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300'
+                            }`}
+                          >
+                            {row.status === 'EXACT_DUPLICATE'
+                              ? 'Skip exact duplicate'
+                              : row.status === 'POSSIBLE_DUPLICATE'
+                                ? 'Review after import'
+                                : 'Ready to import'}
+                          </span>
                         </td>
                       </tr>
                     ))}
@@ -310,7 +343,7 @@ export const ImportStatementModal: React.FC<ImportStatementModalProps> = ({
             </button>
           ) : (
             <div className="text-[11px] text-slate-400">
-              Supported: CSV, XLSX, XLS
+              Supported: {BANK_STATEMENT_FORMAT_LABEL}
             </div>
           )}
 
@@ -339,7 +372,13 @@ export const ImportStatementModal: React.FC<ImportStatementModalProps> = ({
                 className="rounded-xl bg-emerald-600 hover:bg-emerald-700 px-5 py-2.5 text-xs font-bold text-white shadow-xs disabled:opacity-50 transition-colors cursor-pointer flex items-center gap-1.5"
               >
                 <CheckCircle2 className="w-4 h-4" />
-                <span>{busy ? 'Importing…' : 'Confirm & Import Statement'}</span>
+                <span>
+                  {busy
+                    ? 'Importing…'
+                    : preview?.newRowsCount === 0 && preview?.possibleDuplicatesCount === 0
+                      ? 'Record Duplicate Statement'
+                      : `Import ${Number(preview?.newRowsCount || 0) + Number(preview?.possibleDuplicatesCount || 0)} Row${Number(preview?.newRowsCount || 0) + Number(preview?.possibleDuplicatesCount || 0) === 1 ? '' : 's'}`}
+                </span>
               </button>
             )}
           </div>

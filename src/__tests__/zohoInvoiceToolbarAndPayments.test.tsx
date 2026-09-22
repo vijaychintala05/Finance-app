@@ -212,4 +212,27 @@ describe('Zoho Books Invoice Toolbar & Payment Actions', () => {
       );
     });
   });
+
+  it('6. voids through one reason-required in-app confirmation without browser dialogs', async () => {
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => undefined);
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const promptSpy = vi.spyOn(window, 'prompt').mockReturnValue(null);
+    render(<InvoicePreviewModal invoice={mockInvoice as any} onClose={() => {}} />);
+
+    fireEvent.click(screen.getByTitle('More actions'));
+    fireEvent.click(screen.getByText('Void Invoice'));
+
+    expect(screen.getByRole('dialog', { name: 'Void invoice INV-2026-0099?' })).toBeTruthy();
+    expect(screen.getByText(/does not delete history/i)).toBeTruthy();
+    expect(mockDeleteInvoice).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText('Reason for voiding'), { target: { value: 'Duplicate customer invoice' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Void with reversal' }));
+
+    await waitFor(() => expect(mockDeleteInvoice).toHaveBeenCalledWith('inv-test-101', 'Duplicate customer invoice'));
+    expect(await screen.findByText(/original remains in history/i)).toBeTruthy();
+    expect(alertSpy).not.toHaveBeenCalled();
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(promptSpy).not.toHaveBeenCalled();
+  });
 });

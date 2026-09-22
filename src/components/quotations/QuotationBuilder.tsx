@@ -56,6 +56,7 @@ export const QuotationBuilder: React.FC<QuotationBuilderProps> = ({
   const [localAddedProjects, setLocalAddedProjects] = useState<any[]>([]);
   const [saving, setSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [editReason, setEditReason] = useState<string>('');
 
   const initialData: Partial<QuotationBuilderData> | undefined = useMemo(() => initialQuotation
     ? ({
@@ -127,6 +128,16 @@ export const QuotationBuilder: React.FC<QuotationBuilderProps> = ({
       }
     }
 
+    const isNonDraftRevision = Boolean(
+      initialQuotation?.id && builder.status && builder.status !== 'DRAFT'
+    );
+    if (isNonDraftRevision) {
+      if (!editReason.trim() || editReason.trim().length < 3) {
+        setErrorMessage('Please provide a reason for modifying this quotation (at least 3 characters).');
+        return;
+      }
+    }
+
     setSaving(true);
     setErrorMessage(null);
 
@@ -155,6 +166,8 @@ export const QuotationBuilder: React.FC<QuotationBuilderProps> = ({
         notes: builder.notes,
         terms: builder.terms,
         status: builder.status || 'DRAFT',
+        changeSummary: editReason.trim() || undefined,
+        reason: editReason.trim() || undefined,
       };
 
       let savedQuotation: any;
@@ -304,6 +317,27 @@ export const QuotationBuilder: React.FC<QuotationBuilderProps> = ({
               />
             </div>
           </div>
+
+          {/* Audit Reason for Non-Draft Quotation Revision */}
+          {Boolean(initialQuotation?.id && builder.status && builder.status !== 'DRAFT') && (
+            <div className="p-4 bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl space-y-1.5">
+              <label htmlFor="quotation-edit-reason" className="block text-xs font-bold text-amber-900 dark:text-amber-300">
+                Reason for Modification / Revision <span className="text-rose-500">*</span>
+              </label>
+              <input
+                id="quotation-edit-reason"
+                type="text"
+                value={editReason}
+                onChange={(e) => setEditReason(e.target.value)}
+                placeholder="e.g. Scope adjusted, negotiated rate change, items updated after client request"
+                className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-700 rounded-lg text-slate-800 dark:text-slate-200 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                required
+              />
+              <p className="text-2xs text-amber-700/80 dark:text-amber-400/80">
+                Mandatory for audit tracking: This reason will be logged in the permanent History & Revisions timeline.
+              </p>
+            </div>
+          )}
 
           {/* Footer Actions */}
           <div className="pt-4 border-t border-slate-200 dark:border-slate-800 flex justify-end items-center space-x-3">

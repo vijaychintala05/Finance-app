@@ -8,6 +8,7 @@ import { CreateOrganizationWizardModal } from './components/organization/CreateO
 import { OrganizationSwitcherModal } from './components/organization/OrganizationSwitcherModal';
 import { CapabilityUnavailable } from './components/common/CapabilityUnavailable';
 import { useFinanceCapabilities } from './capabilities/useFinanceCapabilities';
+import { getRequiredFinanceCapability } from './capabilities/financeCapabilityRegistry';
 import { DevModeBanner } from './components/layout/DevModeBanner';
 
 const lazyNamed = <T extends React.ComponentType<any>>(loader: () => Promise<any>, name: string) =>
@@ -68,10 +69,6 @@ const parseHashRoute = (): { tab: string; entityId?: string } => {
 
 function MainAppLayout() {
   const financeCapabilities = useFinanceCapabilities();
-  const enabledCapabilities = React.useMemo(
-    () => new Set(financeCapabilities.capabilities.filter((item) => item.state === 'enabled').map((item) => item.key)),
-    [financeCapabilities.capabilities]
-  );
   const [activeTab, setActiveTab] = useState(() => parseHashRoute().tab);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [isOrgWizardOpen, setIsOrgWizardOpen] = useState(false);
@@ -137,19 +134,7 @@ function MainAppLayout() {
   };
 
   const renderActiveView = () => {
-    const optionalCapabilityByTab: Record<string, string> = {
-      recurring_invoices: 'recurring-transactions',
-      recurring_bills: 'recurring-transactions',
-      recurring_expenses: 'recurring-transactions',
-      credit_notes: 'receivables-corrections',
-      payments_made: 'payables-settlement',
-      vendor_credits: 'payables-settlement',
-      fixed_assets: 'fixed-assets',
-      period_close: 'period-close',
-      team_access: 'team-access',
-      recovery_center: 'recovery-center',
-    };
-    const requiredCapability = optionalCapabilityByTab[activeTab];
+    const requiredCapability = getRequiredFinanceCapability(activeTab);
     if (requiredCapability && !financeCapabilities.isEnabled(requiredCapability)) {
       return (
         <CapabilityUnavailable
@@ -258,6 +243,8 @@ function MainAppLayout() {
             autoOpenCreateModal={autoOpenExpenseModal}
             onModalClosed={() => setAutoOpenExpenseModal(false)}
             onExit={() => setActiveTab('dashboard')}
+            selectedEntityId={selectedEntityId}
+            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
           />
         );
       case 'recurring_expenses':
@@ -283,9 +270,9 @@ function MainAppLayout() {
       case 'recurring_bills':
         return <RecurringTransactionsView kind="BILL" />;
       case 'payments_made':
-        return <SettlementWorkspace side="payable" initialResource="payments" autoOpenCreateModal={autoOpenPaymentMadeModal} onModalClosed={() => setAutoOpenPaymentMadeModal(false)} />;
+        return <SettlementWorkspace side="payable" initialResource="payments" autoOpenCreateModal={autoOpenPaymentMadeModal} onModalClosed={() => setAutoOpenPaymentMadeModal(false)} selectedEntityId={selectedEntityId} onSelectedEntityClosed={() => setSelectedEntityId(undefined)} />;
       case 'vendor_credits':
-        return <SettlementWorkspace side="payable" initialResource="credits" autoOpenCreateModal={autoOpenVendorCreditModal} onModalClosed={() => setAutoOpenVendorCreditModal(false)} />;
+        return <SettlementWorkspace side="payable" initialResource="credits" autoOpenCreateModal={autoOpenVendorCreditModal} onModalClosed={() => setAutoOpenVendorCreditModal(false)} selectedEntityId={selectedEntityId} onSelectedEntityClosed={() => setSelectedEntityId(undefined)} />;
 
       // Accounting Sub-Tabs
       case 'accounting_overview':
@@ -356,7 +343,7 @@ function MainAppLayout() {
       <Sidebar
         activeTab={activeTab}
         setActiveTab={(tab) => handleNavigate(tab)}
-        enabledCapabilities={enabledCapabilities}
+        capabilities={financeCapabilities.capabilities}
         onOpenQuickCreate={() => handleNavigate('invoices', { autoCreate: true })}
         onOpenOrgSwitcher={() => setIsOrgSwitcherOpen(true)}
         onOpenOrgWizard={() => setIsOrgWizardOpen(true)}
@@ -366,7 +353,7 @@ function MainAppLayout() {
       <MobileNav
         activeTab={activeTab}
         setActiveTab={(tab) => handleNavigate(tab)}
-        enabledCapabilities={enabledCapabilities}
+        capabilities={financeCapabilities.capabilities}
         onOpenQuickCreate={() => handleNavigate('invoices', { autoCreate: true })}
         isOpen={mobileNavOpen}
         onClose={() => setMobileNavOpen(false)}

@@ -79,6 +79,10 @@ router.get('/occurrences', requirePermission(['invoices.view', 'purchases.view',
   );
   res.json(result.rows);
 });
+router.post('/occurrences/:id/retry', requirePermission('accounting.post'), async (req: AuthenticatedRequest, res) => {
+  await service(req.auth!.userId).retryQuarantined(req.auth!.organizationId, req.params.id);
+  res.json({ id: req.params.id, status: 'RETRY' });
+});
 router.post('/run', requirePermission('accounting.post'), async (req: AuthenticatedRequest, res) => {
   const runtime = service(req.auth!.userId);
   const asOfDate = String(req.body?.asOfDate || new Date().toISOString().slice(0, 10));

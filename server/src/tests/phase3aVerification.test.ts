@@ -47,12 +47,12 @@ describe('Phase 3A: Bank Statement Parsers, Reference Extraction & Rules Engine 
     });
   });
 
-  it('1. Bank Statement Multi-Format Parser Engine (CSV, OFX, MT940, CAMT.053)', () => {
+  it('1. Bank Statement Multi-Format Parser Engine (CSV, OFX, MT940, CAMT.053)', async () => {
     // CSV Test
     const csvContent = `Transaction Date,Description,Ref No,Withdrawal,Deposit,Balance
 2026-08-01,UPI/324156789012/P2A/SENSE STUDIOS,UPI324156789012,,25000.00,125000.00
 2026-08-02,NEFT-N123456789012-SUPPLIER PAY,N123456789012,10000.00,,115000.00`;
-    const csvParsed = BankStatementParserFactory.parseStatement(csvContent, HDFC_ACC_ID, 'CSV');
+    const csvParsed = await BankStatementParserFactory.parseStatement(csvContent, HDFC_ACC_ID, 'CSV');
     expect(csvParsed.transactions.length).toBe(2);
     expect(csvParsed.transactions[0].amount).toBe(25000);
     expect(csvParsed.transactions[0].direction).toBe('CREDIT');
@@ -82,9 +82,9 @@ DATA:OFXSGML
     const camtContent = '<?xml version="1.0" encoding="UTF-8"?><Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.02"><BkToCstmrStmt></BkToCstmrStmt></Document>';
 
     // Unsupported formats (OFX, MT940, CAMT.053) must be strictly rejected per product requirements
-    expect(() => BankStatementParserFactory.parseStatement(ofxContent, HDFC_ACC_ID, 'OFX')).toThrow('UNSUPPORTED_FORMAT');
-    expect(() => BankStatementParserFactory.parseStatement(mt940Content, HDFC_ACC_ID, 'MT940')).toThrow('UNSUPPORTED_FORMAT');
-    expect(() => BankStatementParserFactory.parseStatement(camtContent, HDFC_ACC_ID, 'CAMT053')).toThrow('UNSUPPORTED_FORMAT');
+    await expect(BankStatementParserFactory.parseStatement(ofxContent, HDFC_ACC_ID, 'OFX')).rejects.toThrow('UNSUPPORTED_FORMAT');
+    await expect(BankStatementParserFactory.parseStatement(mt940Content, HDFC_ACC_ID, 'MT940')).rejects.toThrow('UNSUPPORTED_FORMAT');
+    await expect(BankStatementParserFactory.parseStatement(camtContent, HDFC_ACC_ID, 'CAMT053')).rejects.toThrow('UNSUPPORTED_FORMAT');
   });
 
   it('2. Indian Banking Reference Extractor (UTR, UPI, RRN, IMPS, Cheque)', () => {

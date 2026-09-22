@@ -22,18 +22,12 @@ import {
   Project,
   ProjectFinancialSummary,
   PurchaseOrder,
-  RecurringBill,
-  RecurringExpense,
-  RecurringInvoiceProfile,
   SalesOrder,
   Salesperson,
   TimeEntry,
   Vendor,
-  VendorCredit,
   UserIdentity,
-  Membership as OrgMembership,
   AuditLog,
-  UserSession,
   RolePermissionDefinition,
   OrgInvitation,
 } from '../types';
@@ -267,7 +261,7 @@ interface BooksContextType {
   invoices: Invoice[];
   addInvoice: (invoice: Omit<Invoice, 'id' | 'createdAt' | 'invoiceNumber'> & { expenseIds?: string[] }) => Promise<Invoice>;
   updateInvoice: (id: string, invoice: Partial<Invoice>) => Promise<Invoice>;
-  deleteInvoice: (id: string) => Promise<void>;
+  deleteInvoice: (id: string, reason: string) => Promise<void>;
 
   estimates: Estimate[];
   addEstimate: (estimate: Omit<Estimate, 'id' | 'createdAt' | 'estimateNumber'>) => void;
@@ -275,6 +269,7 @@ interface BooksContextType {
 
   expenses: Expense[];
   addExpense: (expense: Omit<Expense, 'id' | 'createdAt' | 'referenceNumber'>) => Promise<void>;
+  updateExpense: (id: string, expense: Partial<Expense> & { accountId?: string; paidFromAccountId?: string; invoiceNumber?: string; receiptImages?: any }, reason?: string) => Promise<void>;
   correctExpense: (id: string, expense: Omit<Expense, 'id' | 'createdAt' | 'referenceNumber'>, reason: string) => Promise<void>;
   deleteExpense: (id: string) => Promise<void>;
   convertExpenseToInvoice: (expenseId: string, issueDate?: string, dueDate?: string) => Promise<any>;
@@ -312,11 +307,6 @@ interface BooksContextType {
   updatePaymentReceived: (id: string, payment: Partial<PaymentReceipt> & { invoiceId?: string; clientId?: string; depositToAccountId?: string; reason?: string }) => Promise<PaymentReceipt>;
   deletePaymentReceived: (id: string) => Promise<void>;
 
-  recurringInvoices: RecurringInvoiceProfile[];
-  addRecurringInvoice: (profile: Omit<RecurringInvoiceProfile, 'id'>) => RecurringInvoiceProfile | null;
-  updateRecurringInvoice: (id: string, updated: Partial<RecurringInvoiceProfile>) => void;
-  deleteRecurringInvoice: (id: string) => void;
-
   purchaseOrders: PurchaseOrder[];
   addPurchaseOrder: (order: Omit<PurchaseOrder, 'id'>) => Promise<PurchaseOrder | null>;
   updatePurchaseOrder: (id: string, updated: Partial<PurchaseOrder>) => Promise<void>;
@@ -329,19 +319,8 @@ interface BooksContextType {
   updateBill: (id: string, updated: Partial<Bill>) => void;
   deleteBill: (id: string) => Promise<void>;
 
-  recurringBills: RecurringBill[];
-  addRecurringBill: (bill: Omit<RecurringBill, 'id'>) => RecurringBill | null;
-  updateRecurringBill: (id: string, updated: Partial<RecurringBill>) => void;
-  deleteRecurringBill: (id: string) => void;
-
-  vendorCredits: VendorCredit[];
-  addVendorCredit: (credit: Omit<VendorCredit, 'id'>) => VendorCredit | null;
-  updateVendorCredit: (id: string, updated: Partial<VendorCredit>) => void;
-  deleteVendorCredit: (id: string) => void;
-
   paymentsMade: PaymentMade[];
   addPaymentMade: (payment: Omit<PaymentMade, 'id'> & { vendorId?: string; billId?: string; paidFromAccountId?: string; allocations?: Array<{ billId: string; amount: number }> }) => Promise<PaymentMade>;
-  deletePaymentMade: (id: string) => Promise<void>;
   addVendorAdvance: (advance: {
     vendorId: string;
     vendorName?: string;
@@ -359,11 +338,6 @@ interface BooksContextType {
     amount: number;
     appliedDate?: string;
   }) => Promise<any>;
-
-  recurringExpenses: RecurringExpense[];
-  addRecurringExpense: (expense: Omit<RecurringExpense, 'id'>) => RecurringExpense | null;
-  updateRecurringExpense: (id: string, updated: Partial<RecurringExpense>) => void;
-  deleteRecurringExpense: (id: string) => void;
 
   toggleAccountLock: (
     accountId: string,
@@ -383,19 +357,8 @@ interface BooksContextType {
 
   // Identity & Governance Architecture
   currentUser: UserIdentity;
-  updateUserIdentity: (updates: Partial<UserIdentity>) => void;
-  updateCurrentUser: (updates: Partial<UserIdentity>) => void;
-  memberships: OrgMembership[];
-  orgMemberships: OrgMembership[];
-  inviteMember: (input: { orgUuid: string; userEmail: string; userName: string; role: any }) => void;
-  revokeMembership: (membershipId: string) => void;
   auditLogs: AuditLog[];
   addAuditLog: (log: Omit<AuditLog, 'id' | 'timestamp' | 'orgUuid' | 'publicOrgId' | 'orgName' | 'userId' | 'userName' | 'userEmail'>) => void;
-  sessions: UserSession[];
-  revokeSession: (sessionId: string) => void;
-  revokeAllOtherSessions: () => void;
-  transferOwnership: (newOwnerEmail: string) => boolean;
-  toggleOrgStatus: (status: 'Active' | 'Suspended') => void;
 }
 
 const BooksContext = createContext<BooksContextType | undefined>(undefined);
@@ -504,13 +467,9 @@ const loadOrgData = (orgId: string, orgMeta?: OrganizationMeta) => {
         deliveryChallans: [],
         creditNotes: [],
         paymentsReceived: [],
-        recurringInvoices: [],
         purchaseOrders: [],
         bills: [],
-        recurringBills: [],
-        vendorCredits: [],
         paymentsMade: [],
-        recurringExpenses: [],
       };
     }
   } catch (e) {
@@ -536,13 +495,9 @@ const loadOrgData = (orgId: string, orgMeta?: OrganizationMeta) => {
     deliveryChallans: [],
     creditNotes: [],
     paymentsReceived: [],
-    recurringInvoices: [],
     purchaseOrders: [],
     bills: [],
-    recurringBills: [],
-    vendorCredits: [],
     paymentsMade: [],
-    recurringExpenses: [],
   };
 };
 
@@ -611,50 +566,11 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     });
   }, []);
 
-  const updateUserIdentity = (updates: Partial<UserIdentity>) => {
-    window.alert('Identity changes require a verified server workflow and are not enabled yet.');
-  };
-
-  // Organization Memberships State
-  const [memberships, setMemberships] = useState<OrgMembership[]>([]);
-
-  const orgMemberships = useMemo(() => {
-    return memberships.filter((m) => m.orgUuid === currentOrg.uuid);
-  }, [memberships, currentOrg.uuid]);
-
-  const inviteMember = (input: { orgUuid: string; userEmail: string; userName: string; role: any }) => {
-    window.alert('Member invitations require email verification and a server-backed invitation workflow.');
-  };
-
-  const revokeMembership = (membershipId: string) => {
-    window.alert('Membership revocation requires an audited server workflow.');
-  };
-
   // Audit Logs State
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
 
   const addAuditLog = (log: Omit<AuditLog, 'id' | 'timestamp' | 'orgUuid' | 'publicOrgId' | 'orgName' | 'userId' | 'userName' | 'userEmail'>) => {
     console.warn('Client-generated audit events are ignored; audit records are server authoritative.');
-  };
-
-  // User Sessions State
-  const [sessions, setSessions] = useState<UserSession[]>([]);
-
-  const revokeSession = (sessionId: string) => {
-    window.alert('Individual session management is not enabled yet.');
-  };
-
-  const revokeAllOtherSessions = () => {
-    window.alert('Session listing and targeted revocation are not enabled yet. Changing your password revokes every token.');
-  };
-
-  const transferOwnership = (newOwnerEmail: string): boolean => {
-    window.alert('Ownership transfer requires verified acceptance and an audited server workflow.');
-    return false;
-  };
-
-  const toggleOrgStatus = (status: 'Active' | 'Suspended') => {
-    window.alert('Organization status changes require an audited server governance workflow.');
   };
 
   // Active Org Tracker Ref to prevent cross-organization state saving during switches
@@ -694,13 +610,9 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [deliveryChallans, setDeliveryChallans] = useState<DeliveryChallan[]>(initialData.deliveryChallans);
   const [creditNotes, setCreditNotes] = useState<CreditNote[]>(initialData.creditNotes);
   const [paymentsReceived, setPaymentsReceived] = useState<PaymentReceipt[]>(initialData.paymentsReceived);
-  const [recurringInvoices, setRecurringInvoices] = useState<RecurringInvoiceProfile[]>(initialData.recurringInvoices);
   const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>(initialData.purchaseOrders);
   const [bills, setBills] = useState<Bill[]>(initialData.bills);
-  const [recurringBills, setRecurringBills] = useState<RecurringBill[]>(initialData.recurringBills);
-  const [vendorCredits, setVendorCredits] = useState<VendorCredit[]>(initialData.vendorCredits);
   const [paymentsMade, setPaymentsMade] = useState<PaymentMade[]>(initialData.paymentsMade);
-  const [recurringExpenses, setRecurringExpenses] = useState<RecurringExpense[]>(initialData.recurringExpenses);
 
   const refreshAuthoritativeData = useCallback(async (): Promise<void> => {
       if (!currentOrgId || !localStorage.getItem('firmbooks_authenticated')) return;
@@ -948,13 +860,9 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setDeliveryChallans([]);
     setCreditNotes([]);
     setPaymentsReceived([]);
-    setRecurringInvoices(targetData.recurringInvoices);
     setPurchaseOrders(targetData.purchaseOrders);
     setBills([]);
-    setRecurringBills(targetData.recurringBills);
-    setVendorCredits(targetData.vendorCredits);
     setPaymentsMade(targetData.paymentsMade);
-    setRecurringExpenses(targetData.recurringExpenses);
   };
 
   // Create Organization (Wizard Integration)
@@ -1229,10 +1137,10 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return updated;
   };
 
-  const deleteInvoice = async (id: string): Promise<void> => {
-    const reason = window.prompt('Reason for voiding this invoice (required for the audit trail):')?.trim();
-    if (!reason) return;
-    const response = await apiClient.post('/security/void-invoice', { invoiceId: id, reason });
+  const deleteInvoice = async (id: string, reason: string): Promise<void> => {
+    const auditReason = reason.trim();
+    if (auditReason.length < 3) throw new Error('A meaningful void reason is required for the audit trail.');
+    const response = await apiClient.post('/security/void-invoice', { invoiceId: id, reason: auditReason });
     if (!response.data) throw new Error(response.error || 'Invoice could not be voided');
     await refreshAfterCommittedWrite();
   };
@@ -1293,13 +1201,18 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     await refreshAfterCommittedWrite();
   };
 
-  const correctExpense = async (
+  const updateExpense = async (
     id: string,
-    expenseData: Omit<Expense, 'id' | 'createdAt' | 'referenceNumber'>,
-    reason: string
+    expenseData: Partial<Expense> & { accountId?: string; paidFromAccountId?: string; invoiceNumber?: string; receiptImages?: any },
+    reason?: string
   ): Promise<void> => {
-    const response = await apiClient.post(`/finance/expenses/${id}/correct`, {
-      reason,
+    if (expenseData.currency && expenseData.currency !== settings.currencyCode) {
+      throw new Error('Foreign-currency expenses require a server-verified exchange-rate workflow.');
+    }
+    const editReason = reason?.trim() || 'Expense updated';
+    const response = await apiClient.put<any>(`/finance/expenses/${id}`, {
+      reason: editReason,
+      editReason,
       expenseAccountId: expenseData.accountId,
       paidFromAccountId: expenseData.paidFromAccountId,
       vendorId: expenseData.vendorId,
@@ -1327,8 +1240,18 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       items: expenseData.items,
       receiptImages: expenseData.receiptImages,
     });
-    if (!response.data) throw new Error(response.error || 'Expense could not be corrected');
+    if (!response.data) {
+      throw new Error([response.error || 'Expense could not be updated', response.recovery].filter(Boolean).join(' '));
+    }
     await refreshAfterCommittedWrite();
+  };
+
+  const correctExpense = async (
+    id: string,
+    expenseData: Omit<Expense, 'id' | 'createdAt' | 'referenceNumber'>,
+    reason: string
+  ): Promise<void> => {
+    await updateExpense(id, expenseData, reason);
   };
 
   const convertExpenseToInvoice = async (expenseId: string, issueDate?: string, dueDate?: string): Promise<any> => {
@@ -1638,17 +1561,6 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     await refreshAfterCommittedWrite(['payments-received', 'invoices', 'accounts', 'clients', 'journals']);
   };
 
-  const addRecurringInvoice = (profileData: Omit<RecurringInvoiceProfile, 'id'>): RecurringInvoiceProfile | null => {
-    window.alert('Recurring invoices require a server scheduler and are not enabled yet.');
-    return null;
-  };
-  const updateRecurringInvoice = (id: string, updated: Partial<RecurringInvoiceProfile>) => {
-    window.alert('Recurring invoices require a server scheduler and are not enabled yet.');
-  };
-  const deleteRecurringInvoice = (id: string) => {
-    window.alert('Recurring invoices require a server scheduler and are not enabled yet.');
-  };
-
   const addPurchaseOrder = async (orderData: Omit<PurchaseOrder, 'id'>): Promise<PurchaseOrder | null> => {
     const matchedVendor = vendors.find((v) => v.name === orderData.vendorName || v.id === orderData.vendorId);
     const vendorId = orderData.vendorId || matchedVendor?.id || vendors[0]?.id;
@@ -1726,28 +1638,6 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const response = await apiClient.post(`/finance/bills/${id}/void`, { reason });
     if (!response.data) throw new Error(response.error || 'Bill could not be voided');
     await refreshAfterCommittedWrite(['bills', 'accounts', 'vendor-payments', 'vendors', 'journals']);
-  };
-
-  const addRecurringBill = (billData: Omit<RecurringBill, 'id'>): RecurringBill | null => {
-    window.alert('Recurring bills require a server scheduler and are not enabled yet.');
-    return null;
-  };
-  const updateRecurringBill = (id: string, updated: Partial<RecurringBill>) => {
-    window.alert('Recurring bills require a server scheduler and are not enabled yet.');
-  };
-  const deleteRecurringBill = (id: string) => {
-    window.alert('Recurring bills require a server scheduler and are not enabled yet.');
-  };
-
-  const addVendorCredit = (creditData: Omit<VendorCredit, 'id'>): VendorCredit | null => {
-    window.alert('Vendor credits are paused until their atomic posting workflow is certified.');
-    return null;
-  };
-  const updateVendorCredit = (id: string, updated: Partial<VendorCredit>) => {
-    window.alert('Vendor credits require an audited server workflow.');
-  };
-  const deleteVendorCredit = (id: string) => {
-    window.alert('Posted vendor credits are immutable and require an audited reversal.');
   };
 
   const addPaymentMade = async (
@@ -1855,27 +1745,6 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return response.data;
   };
 
-  const deletePaymentMade = async (id: string): Promise<void> => {
-    const reason = window.prompt('Reason for reversing this payment (required for the audit trail):')?.trim();
-    if (!reason) return;
-    const response = await apiClient.post<any>(`/finance/vendor-payments/${id}/reverse`, { reason });
-    if (response.error || !response.data) {
-      throw new Error(response.error || 'Vendor payment could not be reversed.');
-    }
-    await refreshAfterCommittedWrite(['vendor-payments', 'bills', 'accounts', 'vendors', 'journals']);
-  };
-
-  const addRecurringExpense = (expenseData: Omit<RecurringExpense, 'id'>): RecurringExpense | null => {
-    window.alert('Recurring expenses require a server scheduler and are not enabled yet.');
-    return null;
-  };
-  const updateRecurringExpense = (id: string, updated: Partial<RecurringExpense>) => {
-    window.alert('Recurring expenses require a server scheduler and are not enabled yet.');
-  };
-  const deleteRecurringExpense = (id: string) => {
-    window.alert('Recurring expenses require a server scheduler and are not enabled yet.');
-  };
-
   const clearAllData = () => {
     window.alert('Financial data cannot be cleared from the browser. Use retention-governed server workflows.');
   };
@@ -1946,6 +1815,7 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       convertEstimateToInvoice,
       expenses,
       addExpense,
+      updateExpense,
       correctExpense,
       deleteExpense,
       convertExpenseToInvoice,
@@ -1975,10 +1845,6 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       addPaymentReceived,
       updatePaymentReceived,
       deletePaymentReceived,
-      recurringInvoices,
-      addRecurringInvoice,
-      updateRecurringInvoice,
-      deleteRecurringInvoice,
       purchaseOrders,
       addPurchaseOrder,
       updatePurchaseOrder,
@@ -1989,23 +1855,10 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       addBill,
       updateBill,
       deleteBill,
-      recurringBills,
-      addRecurringBill,
-      updateRecurringBill,
-      deleteRecurringBill,
-      vendorCredits,
-      addVendorCredit,
-      updateVendorCredit,
-      deleteVendorCredit,
       paymentsMade,
       addPaymentMade,
-      deletePaymentMade,
       addVendorAdvance,
       applyVendorAdvance,
-      recurringExpenses,
-      addRecurringExpense,
-      updateRecurringExpense,
-      deleteRecurringExpense,
       toggleAccountLock,
       bulkUpdateAccounts,
       bulkUpdateJournals,
@@ -2017,19 +1870,8 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       exportDataJSON,
       importDataJSON,
       currentUser,
-      updateUserIdentity,
-      updateCurrentUser: updateUserIdentity,
-      memberships,
-      orgMemberships,
-      inviteMember,
-      revokeMembership,
       auditLogs,
       addAuditLog,
-      sessions,
-      revokeSession,
-      revokeAllOtherSessions,
-      transferOwnership,
-      toggleOrgStatus,
     }),
     [
       organizations,
@@ -2050,18 +1892,11 @@ export const BooksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       deliveryChallans,
       creditNotes,
       paymentsReceived,
-      recurringInvoices,
       purchaseOrders,
       bills,
-      recurringBills,
-      vendorCredits,
       paymentsMade,
-      recurringExpenses,
       currentUser,
-      memberships,
-      orgMemberships,
       auditLogs,
-      sessions,
     ]
   );
 

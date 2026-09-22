@@ -50,7 +50,9 @@ export type NavigationTab =
   | 'settings_overview'
   | 'document_inbox'
   | 'data_migration'
-  | 'customer_portal';
+  | 'customer_portal'
+  | 'security_center'
+  | 'identity_center';
 
 export type AccountType =
   | 'Asset'

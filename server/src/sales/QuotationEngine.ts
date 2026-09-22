@@ -763,7 +763,7 @@ export class QuotationEngine {
           createdBy,
           quotationId,
           JSON.stringify({ revisionNumber: q.revision_number || 0, status: q.status, totalAmount: Number(q.total_amount || 0) }),
-          JSON.stringify({ revisionNumber: nextRev, status: targetStatus, totalAmount: totals.totalAmount }),
+          JSON.stringify({ revisionNumber: nextRev, status: targetStatus, totalAmount: totals.totalAmount, reason: changeSummary }),
         ]
       );
     });

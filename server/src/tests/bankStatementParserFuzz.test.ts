@@ -8,11 +8,11 @@ import { IndiaReferenceExtractor } from '../banking/parsers/IndiaReferenceExtrac
 describe('Bank Statement Parser Robustness, Edge-Case & Fuzz Test Suite', () => {
   const TEST_ACC_ID = 'acc-fuzz-bank-1';
 
-  it('1. Parses CSV with UTF-8 Byte Order Mark (BOM) cleanly', () => {
+  it('1. Parses CSV with UTF-8 Byte Order Mark (BOM) cleanly', async () => {
     const csvWithBom = `\uFEFFDate,Description,Ref No,Withdrawal,Deposit,Balance
 2026-08-01,SALARY DEPOSIT,SAL101,,75000.00,175000.00`;
 
-    const parsed = BankStatementParserFactory.parseStatement(csvWithBom, TEST_ACC_ID, 'CSV');
+    const parsed = await BankStatementParserFactory.parseStatement(csvWithBom, TEST_ACC_ID, 'CSV');
     expect(parsed.transactions.length).toBe(1);
     expect(parsed.transactions[0].amount).toBe(75000);
     expect(parsed.transactions[0].direction).toBe('CREDIT');
@@ -121,13 +121,13 @@ describe('Bank Statement Parser Robustness, Edge-Case & Fuzz Test Suite', () => 
     expect(parsed.transactions[0].narration).toContain('AWS Cloud');
   });
 
-  it('9. Deterministic fingerprint generation prevents transaction collision and duplicate imports', () => {
+  it('9. Deterministic fingerprint generation prevents transaction collision and duplicate imports', async () => {
     const content = `Date,Description,Ref No,Withdrawal,Deposit
 2026-08-01,SERVER HOSTING,INV-101,500.00,`;
 
-    const res1 = BankStatementParserFactory.parseStatement(content, 'acc-1', 'CSV');
-    const res2 = BankStatementParserFactory.parseStatement(content, 'acc-1', 'CSV');
-    const resDifferentAcc = BankStatementParserFactory.parseStatement(content, 'acc-2', 'CSV');
+    const res1 = await BankStatementParserFactory.parseStatement(content, 'acc-1', 'CSV');
+    const res2 = await BankStatementParserFactory.parseStatement(content, 'acc-1', 'CSV');
+    const resDifferentAcc = await BankStatementParserFactory.parseStatement(content, 'acc-2', 'CSV');
 
     expect(res1.transactions[0].fingerprint).toBe(res2.transactions[0].fingerprint);
     expect(res1.transactions[0].fingerprint).not.toBe(resDifferentAcc.transactions[0].fingerprint);

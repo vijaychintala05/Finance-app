@@ -110,7 +110,18 @@ describe('Log Out Option & User Profile Accessibility Test Suite', () => {
   it('5a. Mobile module drawer exposes the app routes and section headers only expand', () => {
     const onClose = vi.fn();
     const setActiveTab = vi.fn();
-    render(<MobileNav isOpen={true} onClose={onClose} activeTab="dashboard" setActiveTab={setActiveTab} />);
+    render(
+      <MobileNav
+        isOpen={true}
+        onClose={onClose}
+        activeTab="dashboard"
+        setActiveTab={setActiveTab}
+        capabilities={[
+          { key: 'delivery-challans', label: 'Delivery challans', state: 'enabled', certified: true },
+          { key: 'bank-reconciliation', label: 'Bank reconciliation', state: 'enabled', certified: true },
+        ]}
+      />
+    );
 
     // Sales starts expanded, including the modules previously absent on phones.
     expect(screen.getByRole('button', { name: 'Estimates' })).toBeTruthy();

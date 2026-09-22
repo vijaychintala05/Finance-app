@@ -247,8 +247,9 @@ router.put('/bills/:id', requirePermission(['bills.create', 'purchases.create', 
 router.get('/period-locks', requirePermission(['periods.view', 'accounting.view']), FinanceController.getPeriodLocks);
 router.post('/period-locks', requirePermission(['periods.lock', 'settings.close_period']), FinanceController.createPeriodLock);
 
-// Audit Logs
-router.get('/audit', requirePermission(['audit.view', 'reports.audit']), FinanceController.getAuditLogs);
+// Audit Logs & Transaction History
+router.get('/audit', requirePermission(['audit.view', 'reports.audit', 'expenses.view', 'invoices.view', 'purchases.view', 'journals.view', 'accounting.view']), FinanceController.getAuditLogs);
+router.get('/audit-logs', requirePermission(['audit.view', 'reports.audit', 'expenses.view', 'invoices.view', 'purchases.view', 'journals.view', 'accounting.view']), FinanceController.getAuditLogs);
 router.get('/financial-commands/:id', requirePermission(['accounting.view', 'audit.view', 'reports.audit']), FinanceController.getFinancialCommand);
 
 export default protectAsyncRoutes(router);

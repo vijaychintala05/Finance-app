@@ -1,8 +1,13 @@
 import { defineConfig, devices } from '@playwright/test';
 
-// Local browser work remains zero-setup, while CI supplies DATABASE_URL and
-// exercises the same PostgreSQL-backed server used by the release image.
-const useMemoryDatabase = !process.env.DATABASE_URL || process.env.USE_PG_MEM === 'true';
+// Local browser work remains zero-setup. Qualification must explicitly prove
+// PostgreSQL, and release-image tests attach to the already-running container.
+const useExternalServer = process.env.PLAYWRIGHT_SKIP_WEBSERVER === 'true';
+const useMemoryDatabase = !useExternalServer && (!process.env.DATABASE_URL || process.env.USE_PG_MEM === 'true');
+
+if (process.env.REQUIRE_REAL_POSTGRES_E2E === 'true' && !useExternalServer && useMemoryDatabase) {
+  throw new Error('Playwright PostgreSQL qualification requires DATABASE_URL and USE_PG_MEM=false.');
+}
 
 export default defineConfig({
   testDir: './e2e',
@@ -35,7 +40,7 @@ export default defineConfig({
       },
     },
   ],
-  webServer: {
+  webServer: useExternalServer ? undefined : {
     command: 'npx tsx server.ts',
     env: {
       ...process.env,

@@ -68,7 +68,7 @@ describe('Point-1 recurring transaction API', () => {
     expect(run.body.completed).toHaveLength(1);
 
     const occurrence = (await db.query(
-      `SELECT status, document_id, occurrence_key FROM recurring_transaction_occurrences
+      `SELECT id, status, document_id, occurrence_key FROM recurring_transaction_occurrences
         WHERE organization_id = $1 AND profile_id = $2`,
       [registration.body.organizationId, created.body.id]
     )).rows[0];
@@ -79,5 +79,23 @@ describe('Point-1 recurring transaction API', () => {
     )).rows[0];
     expect(invoice.source_occurrence_key).toBe(occurrence.occurrence_key);
     expect(Number(invoice.total_amount)).toBe(125);
+
+    await db.query(
+      `UPDATE recurring_transaction_occurrences
+          SET status = 'QUARANTINED', attempt_count = 5, last_error_code = 'TEST_FAILURE',
+              last_error_message = 'Qualification failure'
+        WHERE organization_id = $1 AND id = $2`,
+      [registration.body.organizationId, occurrence.id]
+    );
+    const retry = await request(app)
+      .post(`/api/v1/recurring/occurrences/${occurrence.id}/retry`)
+      .set(auth).set('Idempotency-Key', `retry-${Date.now()}`);
+    expect(retry.status).toBe(200);
+    expect(retry.body).toEqual({ id: occurrence.id, status: 'RETRY' });
+    const retried = (await db.query(
+      'SELECT status, attempt_count FROM recurring_transaction_occurrences WHERE organization_id = $1 AND id = $2',
+      [registration.body.organizationId, occurrence.id]
+    )).rows[0];
+    expect(retried).toMatchObject({ status: 'RETRY', attempt_count: 0 });
   });
 });

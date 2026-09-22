@@ -4,6 +4,12 @@ import { MigrationRunner } from '../database/migrationRunner';
 import { BankReconciliationService } from '../banking/BankReconciliationService';
 import { BankStatementParserFactory } from '../banking/parsers/BankStatementParserFactory';
 import { newId } from '../utils/ids';
+import {
+  BANK_STATEMENT_FILE_ACCEPT,
+  BANK_STATEMENT_FORMAT_LABEL,
+  SUPPORTED_BANK_STATEMENT_EXTENSIONS,
+  SUPPORTED_BANK_STATEMENT_FORMATS,
+} from '../../../src/types/banking';
 
 describe('Zoho-Style Statement-First Banking Integration Suite', () => {
   const ORG_ID = 'org-zoho-banking-test';
@@ -29,6 +35,16 @@ describe('Zoho-Style Statement-First Banking Integration Suite', () => {
   });
 
   it('1. File Support: strictly rejects PDF, OFX, MT940, and Google Sheets links', () => {
+    expect(SUPPORTED_BANK_STATEMENT_FORMATS).toEqual(['CSV', 'XLSX', 'XLS']);
+    expect(SUPPORTED_BANK_STATEMENT_EXTENSIONS).toEqual(['csv', 'xlsx', 'xls']);
+    expect(BANK_STATEMENT_FILE_ACCEPT).toBe('.csv,.xlsx,.xls');
+    expect(BANK_STATEMENT_FORMAT_LABEL).toBe('CSV, XLSX, or text-based XLS exports');
+    for (const extension of SUPPORTED_BANK_STATEMENT_EXTENSIONS) {
+      expect(() =>
+        BankStatementParserFactory.validateAllowedFormat(`statement.${extension}`, 'Date,Description,Amount')
+      ).not.toThrow();
+    }
+
     // PDF
     expect(() =>
       BankStatementParserFactory.validateAllowedFormat('statement.pdf', '%PDF-1.4 file content...')
@@ -292,5 +308,73 @@ Date,Narration,Ref No,Withdrawal,Deposit,Balance
     expect(workspace.transactions.length).toBe(2);
     expect(workspace.transactions[0].moneyIn).toBe(50000);
     expect(workspace.transactions[1].moneyIn).toBe(100000);
+  });
+
+  it('7. Possible Duplicate Resolution: keeps or ignores the row with an accurate audit trail', async () => {
+    const firstImport = await BankReconciliationService.confirmStatementImport(
+      ORG_ID,
+      {
+        fileContent: `Date,Narration,Ref No,Withdrawal,Deposit,Balance
+2026-09-01,Card charge one,REF-ONE,250.00,,750.00`,
+        filename: 'duplicate_baseline.csv',
+        mode: 'CREATE_NEW',
+        newBankData: {
+          bankName: 'Example Bank',
+          accountName: 'Duplicate Review Account',
+          accountNumber: '44556677',
+        },
+      },
+      USER_ID
+    );
+
+    const secondImport = await BankReconciliationService.confirmStatementImport(
+      ORG_ID,
+      {
+        fileContent: `Date,Narration,Ref No,Withdrawal,Deposit,Balance
+2026-09-02,Card charge two,REF-TWO,250.00,,500.00`,
+        filename: 'possible_duplicate.csv',
+        mode: 'USE_EXISTING',
+        bankAccountId: firstImport.bankAccountId,
+      },
+      USER_ID
+    );
+    expect(secondImport.possibleDuplicatesCount).toBe(1);
+
+    const possibleRows = await BankReconciliationService.getTransactions(ORG_ID, {
+      bankAccountId: firstImport.bankAccountId,
+      status: 'POSSIBLE_DUPLICATE',
+    });
+    expect(possibleRows).toHaveLength(1);
+    const candidateId = possibleRows[0].id;
+
+    await BankReconciliationService.ignoreTransaction(ORG_ID, candidateId, false, USER_ID);
+    let candidate = await db.query(
+      `SELECT reconciliation_status, is_ignored FROM bank_statement_transactions WHERE organization_id = $1 AND id = $2`,
+      [ORG_ID, candidateId]
+    );
+    expect(candidate.rows[0].reconciliation_status).toBe('TO_REVIEW');
+    expect(candidate.rows[0].is_ignored).toBe(false);
+
+    await BankReconciliationService.ignoreTransaction(ORG_ID, candidateId, true, USER_ID);
+    candidate = await db.query(
+      `SELECT reconciliation_status, is_ignored FROM bank_statement_transactions WHERE organization_id = $1 AND id = $2`,
+      [ORG_ID, candidateId]
+    );
+    expect(candidate.rows[0].reconciliation_status).toBe('IGNORED');
+    expect(candidate.rows[0].is_ignored).toBe(true);
+
+    const auditRows = await db.query(
+      `SELECT action FROM audit_logs WHERE organization_id = $1 AND entity_id = $2`,
+      [ORG_ID, candidateId]
+    );
+    expect(auditRows.rows).toHaveLength(2);
+    expect(auditRows.rows.map((row) => row.action)).toEqual(expect.arrayContaining([
+      'BANK_TRANSACTION_RESTORED',
+      'BANK_TRANSACTION_IGNORED',
+    ]));
+
+    await expect(
+      BankReconciliationService.ignoreTransaction(ORG_ID, 'missing-transaction', true, USER_ID)
+    ).rejects.toThrow(/BANK_TRANSACTION_NOT_FOUND/);
   });
 });

@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { quotationApi } from '../../services/quotationApi';
 import { formatCurrency, formatDate, getStatusBadgeStyle } from '../../utils/formatters';
+import { TransactionHistoryTab } from '../common/TransactionHistoryTab';
 
 export interface EstimateDetailsModalProps {
   isOpen: boolean;
@@ -55,6 +56,7 @@ export const EstimateDetailsModal: React.FC<EstimateDetailsModalProps> = ({
   const [convertError, setConvertError] = useState<string | null>(null);
   const [downloadingPdf, setDownloadingPdf] = useState<boolean>(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'document' | 'history'>('document');
 
   const handleDownloadPdf = async () => {
     const targetId = quotation?.id || quotationId || estimate?.id;
@@ -270,8 +272,54 @@ export const EstimateDetailsModal: React.FC<EstimateDetailsModalProps> = ({
           </div>
         </div>
 
+        {/* SUBHEADER TABS */}
+        <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900 px-4 sm:px-6 py-2.5 shrink-0">
+          <div role="tablist" aria-label="Quotation view modes" className="inline-flex rounded-xl border border-slate-200 bg-white p-1 dark:border-slate-700 dark:bg-slate-800">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'document'}
+              onClick={() => setActiveTab('document')}
+              className={`rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-colors cursor-pointer ${
+                activeTab === 'document'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700'
+              }`}
+            >
+              Document Summary
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'history'}
+              onClick={() => setActiveTab('history')}
+              className={`rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-colors cursor-pointer ${
+                activeTab === 'history'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700'
+              }`}
+            >
+              History & Revisions
+            </button>
+          </div>
+          <span className="text-2xs text-slate-400 font-mono hidden sm:inline">
+            Ref: {quotation?.quotationNumber || quotation?.estimate_number || 'QT'}
+          </span>
+        </div>
+
+        {activeTab === 'history' && (
+          <div className="flex-1 overflow-y-auto">
+            <TransactionHistoryTab
+              entityType="Quotation"
+              entityId={quotation?.id || quotationId || estimate?.id}
+              entity={quotation}
+              title={`Quotation #${quotation?.quotationNumber || quotation?.estimate_number || 'QT'} History & Revisions`}
+            />
+          </div>
+        )}
+
         {/* CONTENT CONTAINER */}
-        <div className="p-4 sm:p-6 space-y-6 overflow-y-auto flex-1">
+        <div className={`p-4 sm:p-6 space-y-6 overflow-y-auto flex-1 ${activeTab !== 'document' ? 'hidden' : ''}`}>
           {/* PDF ERROR BANNER */}
           {pdfError && (
             <div className="p-3 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 rounded-xl text-xs text-rose-600 dark:text-rose-400 flex items-center justify-between">

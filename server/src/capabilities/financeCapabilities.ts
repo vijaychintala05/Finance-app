@@ -1,4 +1,11 @@
-import { CERTIFIED_OPTIONAL_FEATURES } from '../middleware/trustedFeature.middleware';
+import {
+  CERTIFIED_OPTIONAL_FINANCE_CAPABILITY_KEYS,
+  CORE_FINANCE_CAPABILITY_KEYS,
+  FINANCE_CAPABILITY_BY_KEY,
+  PUBLISHED_FINANCE_CAPABILITY_KEYS,
+  REQUIRED_PRODUCTION_FINANCE_CAPABILITY_KEYS,
+  type FinanceCapabilityKey,
+} from '../../../src/capabilities/financeCapabilityRegistry';
 import { isRecoveryConfigured } from '../recovery/ProductionRecoveryAdapters';
 
 export type CapabilityState = 'enabled' | 'disabled' | 'unavailable';
@@ -12,43 +19,11 @@ export interface FinanceCapability {
   prerequisite?: string;
 }
 
-const CORE_ENABLED = new Set([
-  'customer-payments',
-  'invoice-posting',
-  'bill-posting',
-  'expense-posting',
-  'manual-journals',
-  'period-locks',
-  // A zero-balance bank ledger is required before users can record expenses
-  // or customer receipts. It has no statement-import or reconciliation side
-  // effects, both of which remain separately deployment-gated.
-  'bank-account-management',
-]);
-
-const LABELS: Record<string, string> = {
-  'customer-payments': 'Customer payments',
-  'invoice-posting': 'Invoice posting',
-  'bill-posting': 'Bill posting',
-  'expense-posting': 'Expense posting',
-  'manual-journals': 'Manual journals',
-  'period-locks': 'Period locks',
-  'bank-account-management': 'Bank account management',
-  'bank-statement-import': 'Bank statement import',
-  'bank-reconciliation': 'Bank reconciliation',
-  'receivables-corrections': 'Credits, advances and refunds',
-  'payables-settlement': 'Vendor payments, credits and advances',
-  'recurring-transactions': 'Recurring transactions',
-  'fixed-assets': 'Fixed assets',
-  'period-close': 'Period close and reopen',
-  'team-access': 'Team and accountant access',
-  'recovery-center': 'Recovery and organization export',
-};
-
-export const POINT1_CAPABILITY_KEYS = Object.freeze(Object.keys(LABELS));
+export const POINT1_CAPABILITY_KEYS = PUBLISHED_FINANCE_CAPABILITY_KEYS;
 
 function deploymentEnabled(): Set<string> {
   const configured = process.env.TRUSTED_FINANCE_FEATURES
-    ?? (process.env.NODE_ENV === 'production' ? '' : Array.from(CERTIFIED_OPTIONAL_FEATURES).join(','));
+    ?? (process.env.NODE_ENV === 'production' ? '' : Array.from(CERTIFIED_OPTIONAL_FINANCE_CAPABILITY_KEYS).join(','));
   const enabled = new Set(
     configured
       .split(',')
@@ -62,18 +37,20 @@ function deploymentEnabled(): Set<string> {
 export function getFinanceCapabilities(): FinanceCapability[] {
   const deployed = deploymentEnabled();
   return POINT1_CAPABILITY_KEYS.map((key) => {
-    if (CORE_ENABLED.has(key)) {
-      return { key, label: LABELS[key], state: 'enabled', certified: true };
+    const definition = FINANCE_CAPABILITY_BY_KEY.get(key);
+    if (!definition) throw new Error(`Capability registry is missing published key: ${key}`);
+    if (CORE_FINANCE_CAPABILITY_KEYS.has(key)) {
+      return { key, label: definition.label, state: 'enabled', certified: true };
     }
 
-    const certified = CERTIFIED_OPTIONAL_FEATURES.has(key);
+    const certified = CERTIFIED_OPTIONAL_FINANCE_CAPABILITY_KEYS.has(key);
     const enabled = certified && deployed.has(key);
-    if (enabled) return { key, label: LABELS[key], state: 'enabled', certified: true };
+    if (enabled) return { key, label: definition.label, state: 'enabled', certified: true };
     if (certified) {
       const recoveryNeedsKeys = key === 'recovery-center' && !isRecoveryConfigured();
       return {
         key,
-        label: LABELS[key],
+        label: definition.label,
         state: 'disabled',
         certified: true,
         reason: recoveryNeedsKeys ? 'Certified but recovery encryption keys are not configured.' : 'Certified but disabled for this deployment.',
@@ -84,7 +61,7 @@ export function getFinanceCapabilities(): FinanceCapability[] {
     }
     return {
       key,
-      label: LABELS[key],
+      label: definition.label,
       state: 'unavailable',
       certified: false,
       reason: 'This workflow has not completed Point-1 certification.',
@@ -94,20 +71,11 @@ export function getFinanceCapabilities(): FinanceCapability[] {
 }
 
 export function isSourceCertifiedCapability(key: string): boolean {
-  return CORE_ENABLED.has(key) || CERTIFIED_OPTIONAL_FEATURES.has(key);
+  return CORE_FINANCE_CAPABILITY_KEYS.has(key as FinanceCapabilityKey)
+    || CERTIFIED_OPTIONAL_FINANCE_CAPABILITY_KEYS.has(key as FinanceCapabilityKey);
 }
 
-export const REQUIRED_PRODUCTION_CAPABILITY_KEYS: readonly string[] = Object.freeze([
-  'recovery-center',
-  'bank-account-management',
-  'period-locks',
-  'invoice-posting',
-  'bill-posting',
-  'expense-posting',
-  'customer-payments',
-  'manual-journals',
-  'period-close',
-]);
+export const REQUIRED_PRODUCTION_CAPABILITY_KEYS: readonly string[] = REQUIRED_PRODUCTION_FINANCE_CAPABILITY_KEYS;
 
 export function assertProductionFinanceCapabilities(): void {
   const capabilities = getFinanceCapabilities();

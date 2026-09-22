@@ -58,5 +58,29 @@ test.describe('Procure-to-Pay (P2P) Full Accounting Lifecycle', () => {
 
     // Verify bill appears in bills list
     await expect(page.getByText('1,500').filter({ visible: true }).first()).toBeVisible({ timeout: 15_000 });
+
+    // 4. Settle the posted bill through the authoritative payables workspace.
+    await page.goto(`${baseUrl}#/payments_made`);
+    await expect(page.getByRole('heading', { name: 'Payables settlement' })).toBeVisible({ timeout: 15_000 });
+    await page.getByRole('button', { name: 'New transaction' }).click();
+    const settlementDialog = page.getByRole('dialog', { name: /new payables settlement transaction/i });
+    await expect(settlementDialog).toBeVisible();
+    await settlementDialog.getByLabel('Vendor', { exact: true }).selectOption({ label: vendorName });
+    const billSelect = settlementDialog.getByLabel('Bill (optional)');
+    await expect(billSelect.locator('option')).not.toHaveCount(1, { timeout: 10_000 });
+    await billSelect.selectOption({ index: 1 });
+    await settlementDialog.getByLabel('Bank account').selectOption({ index: 1 });
+
+    const [paymentResponse] = await Promise.all([
+      page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname.endsWith('/api/v1/finance/vendor-payments')),
+      settlementDialog.getByRole('button', { name: 'Post transaction' }).click(),
+    ]);
+    expect(paymentResponse.status()).toBe(201);
+    await expect(page.getByText('Vendor payment posted')).toBeVisible({ timeout: 15_000 });
+
+    // 5. Reload to prove the PostgreSQL-backed settlement survives process reads.
+    await page.reload();
+    await expect(page.getByText('Payments', { exact: true }).first()).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText('1,500').filter({ visible: true }).first()).toBeVisible({ timeout: 15_000 });
   });
 });

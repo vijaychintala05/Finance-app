@@ -1,4 +1,4 @@
-import { apiClient } from '../api/client';
+import { ApiRequestError, apiClient } from '../api/client';
 
 export const invoiceApi = {
   /**
@@ -9,7 +9,7 @@ export const invoiceApi = {
     // authoritative invoice, organization profile, and ledger details server-side.
     const res = await apiClient.getBlob(`/finance/documents/invoices/${id}/pdf`);
     if (res.error || !res.data) {
-      throw new Error(res.error || 'Failed to download invoice PDF');
+      throw new ApiRequestError(res, 'Failed to download invoice PDF');
     }
     return res.data;
   },
@@ -20,12 +20,12 @@ export const invoiceApi = {
   async sendInvoiceEmail(
     id: string,
     payload: { recipientEmail: string; subject?: string; message?: string }
-  ): Promise<{ success: boolean; message: string }> {
+  ): Promise<{ success: boolean; message: string; requestId?: string }> {
     const res = await apiClient.post<any>(`/finance/invoices/${id}/send-email`, payload);
     if (res.error || !res.data) {
-      throw new Error(res.error || 'Failed to send invoice email');
+      throw new ApiRequestError(res, 'Failed to send invoice email');
     }
-    return res.data;
+    return { ...res.data, requestId: res.requestId };
   },
 
   /**
@@ -34,12 +34,12 @@ export const invoiceApi = {
   async sendInvoiceReminder(
     id: string,
     payload?: { recipientEmail?: string }
-  ): Promise<{ success: boolean; message: string }> {
+  ): Promise<{ success: boolean; message: string; requestId?: string }> {
     const res = await apiClient.post<any>(`/finance/invoices/${id}/reminder`, payload || {});
     if (res.error || !res.data) {
-      throw new Error(res.error || 'Failed to send payment reminder');
+      throw new ApiRequestError(res, 'Failed to send payment reminder');
     }
-    return res.data;
+    return { ...res.data, requestId: res.requestId };
   },
 
   /**
@@ -48,7 +48,7 @@ export const invoiceApi = {
   async getInvoiceJournal(id: string): Promise<any> {
     const res = await apiClient.get<any>(`/finance/invoices/${id}/journal`);
     if (res.error || !res.data) {
-      throw new Error(res.error || 'Failed to fetch invoice accounting journal');
+      throw new ApiRequestError(res, 'Failed to fetch invoice accounting journal');
     }
     return res.data;
   },
@@ -67,8 +67,8 @@ export const invoiceApi = {
   }): Promise<any> {
     const res = await apiClient.post<any>('/finance/write-offs', payload);
     if (res.error || !res.data) {
-      throw new Error(res.error || 'Failed to record write-off');
+      throw new ApiRequestError(res, 'Failed to record write-off');
     }
-    return res.data;
+    return { ...res.data, requestId: res.requestId };
   },
 };

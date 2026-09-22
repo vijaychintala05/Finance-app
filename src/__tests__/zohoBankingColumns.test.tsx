@@ -77,6 +77,13 @@ describe('Zoho Books Banking Columns and UI', () => {
     expect(screen.getByText('Balanced')).toBeDefined();
     // Verify To Review count
     expect(screen.getByText('2 to review')).toBeDefined();
+
+    // The compact action row must not inherit the generic 42% mobile label width,
+    // and its labels must remain whole at phone widths.
+    const actionCell = screen.getByRole('button', { name: 'Import' }).closest('td');
+    expect(actionCell?.classList.contains('mobile-record-actions')).toBe(true);
+    expect(screen.getByRole('button', { name: 'Import' }).classList.contains('whitespace-nowrap')).toBe(true);
+    expect(screen.getByRole('button', { name: 'Reconcile' }).classList.contains('whitespace-nowrap')).toBe(true);
   });
 
   it('renders BankAccountWorkspace with exact Zoho Books columns (Date, Particulars, Withdrawals DR, Deposits CR, Status, Actions)', () => {

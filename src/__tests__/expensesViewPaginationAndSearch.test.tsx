@@ -214,4 +214,26 @@ describe('ExpensesView Pagination & Smart Search', () => {
     expect(screen.getByText(/Showing/).textContent).toContain('Showing 1 to 1 of 1 expenses');
     expect(screen.getAllByText(/AWS-2026-450/).length).toBeGreaterThan(0);
   });
+
+  it('opens a generated expense deep link and clears the selected record when closed', () => {
+    const onSelectedEntityClosed = vi.fn();
+    render(<ExpensesView selectedEntityId="exp-5" onSelectedEntityClosed={onSelectedEntityClosed} />);
+
+    expect(screen.getByRole('heading', { name: 'Expense details' })).toBeTruthy();
+    expect(screen.getAllByText('EXP-005').length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back to expenses' }));
+    expect(onSelectedEntityClosed).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('heading', { name: 'Expense details' })).toBeNull();
+  });
+
+  it('displays Itemized in category column for itemized expenses rather than top account name like Zoho', () => {
+    render(<ExpensesView />);
+
+    // exp-5 is itemized
+    const exp5Row = screen.getByText('EXP-005').closest('tr');
+    expect(exp5Row).toBeTruthy();
+    expect(exp5Row?.textContent).toContain('Itemized');
+    expect(exp5Row?.textContent).not.toContain('Travel & Lodging');
+  });
 });

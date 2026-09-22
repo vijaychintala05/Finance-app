@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, Pause, Play, Plus, RefreshCw, X } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Clock3, FileText, Pause, Play, Plus, RefreshCw, X } from 'lucide-react';
 import { apiClient } from '../../api/client';
+import { OperationNoticeBanner } from '../common/OperationNoticeBanner';
 import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate } from '../../utils/formatters';
+import { committedButStaleNotice, mutationFailureNotice, type OperationNotice } from '../../utils/operationNotice';
 
 type Kind = 'INVOICE' | 'BILL' | 'EXPENSE';
 type Frequency = 'WEEKLY' | 'MONTHLY' | 'QUARTERLY' | 'YEARLY';
@@ -17,6 +19,21 @@ interface RecurringRow {
   template: Record<string, any> | string;
 }
 
+interface RecurringOccurrence {
+  id: string;
+  profile_id: string;
+  kind: Kind;
+  scheduled_for: string;
+  status: 'PENDING' | 'PROCESSING' | 'RETRY' | 'QUARANTINED' | 'SUCCEEDED';
+  attempt_count: number;
+  document_id: string | null;
+  document_type: string | null;
+  last_error_code: string | null;
+  last_error_message: string | null;
+  next_attempt_at: string | null;
+  completed_at: string | null;
+}
+
 const labels: Record<Kind, { title: string; party: string; singular: string }> = {
   INVOICE: { title: 'Recurring Invoices', party: 'Customer', singular: 'invoice' },
   BILL: { title: 'Recurring Bills', party: 'Vendor', singular: 'bill' },
@@ -26,6 +43,7 @@ const labels: Record<Kind, { title: string; party: string; singular: string }> =
 export const RecurringTransactionsView: React.FC<{ kind: Kind }> = ({ kind }) => {
   const { clients, vendors, accounts, refreshAccounts, settings } = useBooks();
   const [rows, setRows] = useState<RecurringRow[]>([]);
+  const [occurrences, setOccurrences] = useState<RecurringOccurrence[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [open, setOpen] = useState(false);
@@ -38,6 +56,9 @@ export const RecurringTransactionsView: React.FC<{ kind: Kind }> = ({ kind }) =>
   const [expenseAccountId, setExpenseAccountId] = useState('');
   const [paidFromAccountId, setPaidFromAccountId] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [changingProfileId, setChangingProfileId] = useState('');
+  const [retryingOccurrenceId, setRetryingOccurrenceId] = useState('');
+  const [notice, setNotice] = useState<OperationNotice | null>(null);
 
   const parties = kind === 'INVOICE' ? clients : vendors;
   const expenseAccounts = useMemo(
@@ -65,15 +86,21 @@ export const RecurringTransactionsView: React.FC<{ kind: Kind }> = ({ kind }) =>
     [accounts]
   );
 
-  const load = async () => {
+  const load = async (): Promise<boolean> => {
     setLoading(true);
-    const response = await apiClient.get<RecurringRow[]>('/recurring/profiles');
-    if (response.error) setError(response.error);
-    else {
-      setRows((response.data || []).filter((row) => row.kind === kind));
-      setError('');
-    }
+    const [profileResponse, occurrenceResponse] = await Promise.all([
+      apiClient.get<RecurringRow[]>('/recurring/profiles'),
+      apiClient.get<RecurringOccurrence[]>('/recurring/occurrences'),
+    ]);
     setLoading(false);
+    if (profileResponse.error || occurrenceResponse.error) {
+      setError(profileResponse.error || occurrenceResponse.error || 'Recurring workspace could not be loaded.');
+      return false;
+    }
+    setRows((profileResponse.data || []).filter((row) => row.kind === kind));
+    setOccurrences((occurrenceResponse.data || []).filter((row) => row.kind === kind));
+    setError('');
+    return true;
   };
 
   useEffect(() => {
@@ -89,7 +116,12 @@ export const RecurringTransactionsView: React.FC<{ kind: Kind }> = ({ kind }) =>
   }, [kind, parties, expenseAccounts, paymentAccounts]);
 
   const templateAmount = (row: RecurringRow) => {
-    const template = typeof row.template === 'string' ? JSON.parse(row.template) : row.template;
+    let template: Record<string, any>;
+    try {
+      template = typeof row.template === 'string' ? JSON.parse(row.template) : row.template;
+    } catch {
+      return 0;
+    }
     if (row.kind === 'EXPENSE') return Number(template.amount || 0);
     return Number(template.lineItems?.[0]?.amount || template.lineItems?.[0]?.unitPrice || 0);
   };
@@ -99,9 +131,11 @@ export const RecurringTransactionsView: React.FC<{ kind: Kind }> = ({ kind }) =>
     const numericAmount = Number(amount);
     const party = parties.find((item) => item.id === partyId);
     if (!name.trim() || !party || !Number.isFinite(numericAmount) || numericAmount <= 0) return;
+    const scheduleName = name.trim();
     setSubmitting(true);
     setError('');
-    const lineItem = { description: description.trim() || name.trim(), quantity: 1, unitPrice: numericAmount, taxRate: 0, amount: numericAmount };
+    setNotice(null);
+    const lineItem = { description: description.trim() || scheduleName, quantity: 1, unitPrice: numericAmount, taxRate: 0, amount: numericAmount };
     const template = kind === 'INVOICE'
       ? { customerId: party.id, customerName: party.name, lineItems: [lineItem] }
       : kind === 'BILL'
@@ -111,26 +145,76 @@ export const RecurringTransactionsView: React.FC<{ kind: Kind }> = ({ kind }) =>
             expenseAccountId,
             paidFromAccountId,
             amount: numericAmount,
-            description: description.trim() || name.trim(),
+            description: description.trim() || scheduleName,
           };
     const response = await apiClient.post<RecurringRow>('/recurring/profiles', {
-      name: name.trim(), kind, frequency, intervalCount: 1, startDate,
+      name: scheduleName, kind, frequency, intervalCount: 1, startDate,
       timezone: 'UTC', catchUpPolicy: 'ALL', maxCatchUp: 12, autoPost: true, template,
     });
     setSubmitting(false);
-    if (response.error) { setError(response.error); return; }
+    if (response.error || !response.data) {
+      setNotice(mutationFailureNotice(response, {
+        action: 'Schedule creation',
+        failureTitle: 'Schedule was not created',
+        uncertainRecovery: 'Refresh the schedule list before retrying to avoid creating a duplicate schedule.',
+        failureRecovery: 'Review the schedule details and try again.',
+      }));
+      return;
+    }
     setOpen(false);
     setName('');
     setAmount('');
     setDescription('');
-    await load();
+    const refreshed = await load();
+    setNotice(refreshed
+      ? { tone: 'success', title: 'Schedule created', message: `${scheduleName} will next run from ${formatDate(startDate)} on the ${frequency.toLowerCase()} cadence.`, requestId: response.requestId }
+      : committedButStaleNotice('Schedule created, but the list is stale', 'The server committed the schedule.', response.requestId));
   };
 
   const changeStatus = async (row: RecurringRow) => {
     const action = row.status === 'ACTIVE' ? 'pause' : 'resume';
+    setChangingProfileId(row.id);
+    setNotice(null);
     const response = await apiClient.post<RecurringRow>(`/recurring/profiles/${row.id}/${action}`);
-    if (response.error) setError(response.error);
-    else await load();
+    setChangingProfileId('');
+    if (response.error) {
+      setNotice(mutationFailureNotice(response, {
+        action: `Schedule ${action}`,
+        uncertainTitle: `Schedule ${action} could not be confirmed`,
+        uncertainRecovery: `Refresh before retrying; the schedule may already be ${action === 'pause' ? 'paused' : 'active'}.`,
+      }));
+      return;
+    }
+    const refreshed = await load();
+    const successTitle = `Schedule ${action === 'pause' ? 'paused' : 'resumed'}`;
+    setNotice(refreshed
+      ? { tone: 'success', title: successTitle, message: `${row.name} is now ${action === 'pause' ? 'paused and will not generate new occurrences' : 'active'}.`, requestId: response.requestId }
+      : committedButStaleNotice(`${successTitle}, but the list is stale`, 'The server committed the change.', response.requestId));
+  };
+
+  const retryOccurrence = async (occurrence: RecurringOccurrence) => {
+    setRetryingOccurrenceId(occurrence.id);
+    setNotice(null);
+    const response = await apiClient.post<{ id: string; status: 'RETRY' }>(`/recurring/occurrences/${occurrence.id}/retry`);
+    setRetryingOccurrenceId('');
+    if (response.error) {
+      setNotice(mutationFailureNotice(response, {
+        action: 'Retry request',
+        failureTitle: 'Occurrence was not queued for retry',
+        uncertainRecovery: 'Refresh before retrying; this occurrence may already be queued.',
+      }));
+      return;
+    }
+    const refreshed = await load();
+    setNotice(refreshed
+      ? { tone: 'success', title: 'Occurrence queued for retry', message: 'The worker can claim it again. No duplicate document is created unless canonical posting succeeds.', requestId: response.requestId }
+      : committedButStaleNotice('Occurrence queued, but history is stale', 'The server committed the retry.', response.requestId));
+  };
+
+  const openGeneratedDocument = (occurrence: RecurringOccurrence) => {
+    if (!occurrence.document_id || typeof window === 'undefined') return;
+    const tab = occurrence.document_type === 'BILL' ? 'bills' : occurrence.document_type === 'EXPENSE' ? 'expenses' : 'invoices';
+    window.location.hash = `#/${tab}?id=${encodeURIComponent(occurrence.document_id)}`;
   };
 
   const meta = labels[kind];
@@ -155,6 +239,8 @@ export const RecurringTransactionsView: React.FC<{ kind: Kind }> = ({ kind }) =>
 
       {error && <div className="flex items-center gap-2 border border-red-200 bg-red-50 p-3 text-sm text-red-700"><AlertCircle className="h-4 w-4" />{error}</div>}
 
+      {notice && <OperationNoticeBanner notice={notice} />}
+
       <div className="overflow-x-auto border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
         <table className="mobile-record-table w-full min-w-[700px] text-left text-xs">
           <thead className="border-b border-slate-200 bg-slate-50 text-slate-500 dark:border-slate-800 dark:bg-slate-950">
@@ -167,7 +253,7 @@ export const RecurringTransactionsView: React.FC<{ kind: Kind }> = ({ kind }) =>
               <td className="p-3 font-financial text-slate-600 dark:text-slate-300">{formatDate(row.next_run_date)}</td>
               <td className="p-3 text-right font-financial font-semibold">{formatCurrency(templateAmount(row), settings.currencySymbol)}</td>
               <td className="p-3"><span className={row.status === 'ACTIVE' ? 'text-emerald-700' : 'text-amber-700'}>{row.status}</span></td>
-              <td className="p-3 text-right"><button type="button" title={row.status === 'ACTIVE' ? 'Pause' : 'Resume'} onClick={() => void changeStatus(row)} className="inline-grid h-8 w-8 place-items-center rounded-md text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800">{row.status === 'ACTIVE' ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}</button></td>
+              <td className="p-3 text-right"><button type="button" aria-label={`${row.status === 'ACTIVE' ? 'Pause' : 'Resume'} ${row.name}`} title={row.status === 'ACTIVE' ? 'Pause' : 'Resume'} disabled={changingProfileId === row.id} onClick={() => void changeStatus(row)} className="inline-grid h-8 w-8 place-items-center rounded-md text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-slate-800">{changingProfileId === row.id ? <RefreshCw className="h-4 w-4 animate-spin" /> : row.status === 'ACTIVE' ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}</button></td>
             </tr>)}
             {!loading && rows.length === 0 && <tr><td colSpan={6} className="p-10 text-center text-sm text-slate-500">No schedules found</td></tr>}
             {loading && <tr><td colSpan={6} className="p-10 text-center text-sm text-slate-500">Loading schedules</td></tr>}
@@ -175,9 +261,33 @@ export const RecurringTransactionsView: React.FC<{ kind: Kind }> = ({ kind }) =>
         </table>
       </div>
 
-      {open && <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/55 p-4">
-        <form onSubmit={create} className="w-full max-w-lg space-y-4 rounded-lg border border-slate-200 bg-white p-5 shadow-xl dark:border-slate-700 dark:bg-slate-900">
-          <div className="flex items-center justify-between"><h3 className="text-base font-semibold">New recurring {meta.singular}</h3><button type="button" title="Close" onClick={() => setOpen(false)} className="grid h-8 w-8 place-items-center rounded-md hover:bg-slate-100 dark:hover:bg-slate-800"><X className="h-4 w-4" /></button></div>
+      <section className="space-y-3">
+        <div className="flex flex-wrap items-end justify-between gap-2"><div><h3 className="font-semibold text-slate-900 dark:text-white">Generated document history</h3><p className="mt-1 text-xs text-slate-500">Every scheduled attempt, resulting document, and retry or quarantine reason.</p></div><span className="text-xs text-slate-500">{occurrences.length} occurrence{occurrences.length === 1 ? '' : 's'}</span></div>
+        <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+          <table className="mobile-record-table w-full min-w-[760px] text-left text-xs">
+            <thead className="border-b border-slate-200 bg-slate-50 text-slate-500 dark:border-slate-800 dark:bg-slate-950"><tr><th className="p-3">Scheduled</th><th className="p-3">Schedule</th><th className="p-3">Status</th><th className="p-3">Attempts</th><th className="p-3">Generated document</th><th className="p-3">Evidence</th></tr></thead>
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+              {occurrences.map((occurrence) => {
+                const profile = rows.find((row) => row.id === occurrence.profile_id);
+                const failed = occurrence.status === 'RETRY' || occurrence.status === 'QUARANTINED';
+                return <tr key={occurrence.id}>
+                  <td data-label="Scheduled" className="p-3 font-financial">{formatDate(occurrence.scheduled_for)}</td>
+                  <td data-label="Schedule" className="p-3 font-semibold">{profile?.name || occurrence.profile_id}</td>
+                  <td data-label="Status" className="p-3"><span className={`inline-flex items-center gap-1 rounded-full px-2 py-1 font-semibold ${occurrence.status === 'SUCCEEDED' ? 'bg-emerald-100 text-emerald-800' : failed ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800'}`}>{occurrence.status === 'SUCCEEDED' ? <CheckCircle2 className="h-3 w-3" /> : <Clock3 className="h-3 w-3" />}{occurrence.status}</span></td>
+                  <td data-label="Attempts" className="p-3 font-financial">{occurrence.attempt_count}</td>
+                  <td data-label="Generated document" className="p-3">{occurrence.document_id ? <button type="button" onClick={() => openGeneratedDocument(occurrence)} className="inline-flex items-center gap-1 font-mono text-blue-700 hover:underline"><FileText className="h-3 w-3" />{occurrence.document_type} · {occurrence.document_id}</button> : <span className="text-slate-400">Not generated</span>}</td>
+                  <td data-label="Evidence" className="max-w-sm p-3 text-slate-600 dark:text-slate-300"><div>{occurrence.last_error_message || (occurrence.completed_at ? `Completed ${formatDate(occurrence.completed_at)}` : occurrence.next_attempt_at ? `Next attempt ${formatDate(occurrence.next_attempt_at)}` : 'Awaiting worker')}</div>{occurrence.status === 'QUARANTINED' && <button type="button" onClick={() => void retryOccurrence(occurrence)} disabled={retryingOccurrenceId === occurrence.id} className="mt-2 rounded-lg border border-rose-300 px-2.5 py-1.5 text-xs font-semibold text-rose-700 disabled:opacity-50">{retryingOccurrenceId === occurrence.id ? 'Queuing…' : 'Retry occurrence'}</button>}</td>
+                </tr>;
+              })}
+              {!loading && occurrences.length === 0 && <tr><td colSpan={6} className="p-8 text-center text-sm text-slate-500">No generated occurrences yet. The first run will appear here with its document or failure evidence.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {open && <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/55 p-4" role="presentation">
+        <form onSubmit={create} role="dialog" aria-modal="true" aria-labelledby="recurring-dialog-title" className="w-full max-w-lg space-y-4 rounded-lg border border-slate-200 bg-white p-5 shadow-xl dark:border-slate-700 dark:bg-slate-900">
+          <div className="flex items-center justify-between"><h3 id="recurring-dialog-title" className="text-base font-semibold">New recurring {meta.singular}</h3><button type="button" aria-label="Close recurring schedule dialog" title="Close" onClick={() => setOpen(false)} className="grid h-8 w-8 place-items-center rounded-md hover:bg-slate-100 dark:hover:bg-slate-800"><X className="h-4 w-4" /></button></div>
           <label className="block text-xs font-semibold">Schedule name<input value={name} onChange={(event) => setName(event.target.value)} required maxLength={160} className="mt-1 w-full rounded-md border border-slate-300 p-2 text-sm dark:border-slate-700 dark:bg-slate-950" /></label>
           <label className="block text-xs font-semibold">{meta.party}<select value={partyId} onChange={(event) => setPartyId(event.target.value)} required className="mt-1 w-full rounded-md border border-slate-300 p-2 text-sm dark:border-slate-700 dark:bg-slate-950">{parties.map((party) => <option key={party.id} value={party.id}>{party.name}</option>)}</select></label>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2"><label className="block text-xs font-semibold">Frequency<select value={frequency} onChange={(event) => setFrequency(event.target.value as Frequency)} className="mt-1 w-full rounded-md border border-slate-300 p-2 text-sm dark:border-slate-700 dark:bg-slate-950"><option>WEEKLY</option><option>MONTHLY</option><option>QUARTERLY</option><option>YEARLY</option></select></label><label className="block text-xs font-semibold">Start date<input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} required className="mt-1 w-full rounded-md border border-slate-300 p-2 text-sm dark:border-slate-700 dark:bg-slate-950" /></label></div>

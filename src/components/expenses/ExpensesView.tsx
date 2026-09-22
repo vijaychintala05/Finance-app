@@ -28,6 +28,8 @@ interface ExpensesViewProps {
   autoOpenCreateModal?: boolean;
   onModalClosed?: () => void;
   onExit?: () => void;
+  selectedEntityId?: string;
+  onSelectedEntityClosed?: () => void;
 }
 
 function getPageNumbers(currentPage: number, totalPages: number): (number | 'ellipsis')[] {
@@ -60,6 +62,8 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
   autoOpenCreateModal = false,
   onModalClosed,
   onExit,
+  selectedEntityId,
+  onSelectedEntityClosed,
 }) => {
   const { expenses, accounts, settings } = useBooks();
 
@@ -88,6 +92,14 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
     }
   }, [autoOpenCreateModal]);
 
+  useEffect(() => {
+    if (!selectedEntityId) return;
+    const found = expenses.find((expense) =>
+      expense.id === selectedEntityId || expense.referenceNumber === selectedEntityId
+    );
+    if (found) setViewingExpense(found);
+  }, [selectedEntityId, expenses]);
+
   // Account lookup map for resolving category and payment names
   const accountMap = useMemo(() => {
     const map = new Map<string, string>();
@@ -98,6 +110,9 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
   }, [accounts]);
 
   const getExpenseAccountName = (e: Expense): string => {
+    if (e.isItemized || (Array.isArray(e.items) && e.items.length > 0)) {
+      return 'Itemized';
+    }
     if (e.accountName && e.accountName.trim()) return e.accountName;
     if (e.accountId && accountMap.has(e.accountId)) return accountMap.get(e.accountId)!;
     return 'General Expense';
@@ -885,10 +900,14 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
 
       <ExpenseDetailsModal
         isOpen={!!viewingExpense}
-        onClose={() => setViewingExpense(null)}
+        onClose={() => {
+          setViewingExpense(null);
+          onSelectedEntityClosed?.();
+        }}
         expense={viewingExpense}
         onEdit={(expense) => {
           setViewingExpense(null);
+          onSelectedEntityClosed?.();
           setEditingExpense(expense);
           setIsModalOpen(true);
         }}

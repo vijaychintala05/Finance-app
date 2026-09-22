@@ -24,9 +24,28 @@ interface ItemizedLine {
 
 const today = () => new Date().toISOString().slice(0, 10);
 
-function toDateInputValue(value?: string): string {
-  const match = value?.match(/^\d{4}-\d{2}-\d{2}/);
-  return match ? match[0] : today();
+function toDateInputValue(value?: string | Date | null): string {
+  if (!value) return today();
+  if (value instanceof Date) {
+    return !isNaN(value.getTime()) ? value.toISOString().slice(0, 10) : today();
+  }
+  const str = String(value).trim();
+  const isoMatch = str.match(/^\d{4}-\d{2}-\d{2}/);
+  if (isoMatch) return isoMatch[0];
+
+  const ddmmyyyyMatch = str.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})/);
+  if (ddmmyyyyMatch) {
+    const day = ddmmyyyyMatch[1].padStart(2, '0');
+    const month = ddmmyyyyMatch[2].padStart(2, '0');
+    const year = ddmmyyyyMatch[3];
+    return `${year}-${month}-${day}`;
+  }
+
+  const parsed = new Date(str);
+  if (!isNaN(parsed.getTime())) {
+    return parsed.toISOString().slice(0, 10);
+  }
+  return today();
 }
 
 function formatDisplayDate(dStr: string): string {
@@ -189,7 +208,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
   defaultProjectId,
   defaultClientId,
 }) => {
-  const { accounts = [], refreshAccounts, vendors = [], projects = [], clients = [], addVendor, addExpense, correctExpense, settings } = useBooks();
+  const { accounts = [], refreshAccounts, vendors = [], projects = [], clients = [], addVendor, addExpense, updateExpense, correctExpense, settings } = useBooks();
 
   // Support Expense, Cost of Goods Sold, and Other Expense accounts from Chart of Accounts
   const expenseAccounts = useMemo(
@@ -471,6 +490,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
   };
 
   const prevIsOpenRef = useRef(false);
+  const prevExpenseIdRef = useRef<string | undefined>(undefined);
 
   // Initialize before the form becomes interactive. With useEffect, a fast
   // customer selection could race the initial reset and make the required
@@ -478,11 +498,15 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
   useLayoutEffect(() => {
     if (!isOpen) {
       prevIsOpenRef.current = false;
+      prevExpenseIdRef.current = undefined;
       return;
     }
 
-    if (!prevIsOpenRef.current) {
-      // Modal just opened: initialize fields and fetch latest accounts in real-time
+    const isNewlyOpened = !prevIsOpenRef.current;
+    const isDifferentExpense = expenseToEdit?.id !== prevExpenseIdRef.current;
+
+    if (isNewlyOpened || isDifferentExpense) {
+      // Modal just opened or edited expense switched: initialize fields and fetch latest accounts in real-time
       setDate(toDateInputValue(expenseToEdit?.date));
       setExpenseAccountId(expenseToEdit?.accountId || expenseAccounts[0]?.id || '');
       setPaidFromAccountId(expenseToEdit?.paidFromAccountId || paymentAccounts[0]?.id || '');
@@ -520,6 +544,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
       );
     }
     prevIsOpenRef.current = true;
+    prevExpenseIdRef.current = expenseToEdit?.id;
   }, [isOpen, expenseAccounts, paymentAccounts, expenseToEdit, defaultProjectId, defaultClientId, refreshAccounts]);
 
   if (!isOpen) return null;
@@ -654,11 +679,12 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
         description: description.trim() || `Expense paid${vendor ? ` to ${vendor.companyName || vendor.name}` : ''}`,
       };
       if (expenseToEdit) {
-        if (correctionReason.trim().length < 3) {
-          setError('Provide a correction reason of at least 3 characters.');
-          return;
+        const editReason = correctionReason.trim() || 'Expense updated';
+        if (updateExpense) {
+          await updateExpense(expenseToEdit.id, expenseInput, editReason);
+        } else {
+          await correctExpense(expenseToEdit.id, expenseInput, editReason);
         }
-        await correctExpense(expenseToEdit.id, expenseInput, correctionReason.trim());
       } else {
         await addExpense(expenseInput);
       }
@@ -718,12 +744,12 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
             {expenseToEdit && (
               <div className="bg-white dark:bg-[#1c1c1e] rounded-2xl border border-slate-200/80 dark:border-white/5 shadow-2xs p-3.5 space-y-1.5">
                 <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
-                  Correction Reason <span className="text-rose-500">*</span>
+                  Reason for edit <span className="text-xs font-normal text-slate-500">(optional)</span>
                 </span>
                 <textarea
                   value={correctionReason}
                   onChange={(e) => setCorrectionReason(e.target.value)}
-                  placeholder="Explain why this expense needs correction..."
+                  placeholder="e.g., Updated amount, vendor invoice correction..."
                   rows={2}
                   className="w-full rounded-xl bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 p-2.5 text-xs text-slate-900 dark:text-white outline-none focus:border-blue-500 resize-none"
                 />
@@ -733,15 +759,8 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
             {/* CARD 1: Date, Itemize Expense, Expense Account, Paid Through */}
             <div className="bg-white dark:bg-[#1c1c1e] rounded-2xl border border-slate-200/80 dark:border-white/5 shadow-2xs divide-y divide-slate-100 dark:divide-white/5 overflow-hidden">
               {/* Row 1: Date */}
-              <div
-                onClick={() => {
-                  try {
-                    dateInputRef.current?.showPicker();
-                  } catch {
-                    dateInputRef.current?.focus();
-                  }
-                }}
-                className="flex items-center justify-between p-3.5 cursor-pointer hover:bg-slate-50/80 active:bg-slate-100 dark:hover:bg-zinc-800/50 transition-colors select-none"
+              <label
+                className="relative flex items-center justify-between p-3.5 cursor-pointer hover:bg-slate-50/80 active:bg-slate-100 dark:hover:bg-zinc-800/50 transition-colors select-none overflow-hidden"
               >
                 <span className="text-sm font-medium text-rose-500 dark:text-rose-400">Date</span>
                 <div className="flex items-center gap-1 text-sm font-medium text-blue-600 dark:text-blue-400">
@@ -753,10 +772,10 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                   type="date"
                   value={date}
                   onChange={(e) => setDate(e.target.value)}
-                  className="sr-only"
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
                   aria-label="Posting date"
                 />
-              </div>
+              </label>
 
               {/* Row 2: Itemize Expense Switch */}
               <div className="flex items-center justify-between p-3.5">
@@ -1349,8 +1368,8 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                   <Receipt className="h-5 w-5" />
                 </span>
                 <div>
-                  <h2 className="text-lg font-bold text-slate-900 dark:text-white">{expenseToEdit ? 'Edit & correct expense' : 'Record Expense'}</h2>
-                  <p className="mt-0.5 text-xs text-slate-500">{expenseToEdit ? 'The original journal will be reversed and a corrected expense will be posted.' : 'Record a paid business expense and attach its receipt.'}</p>
+                  <h2 className="text-lg font-bold text-slate-900 dark:text-white">{expenseToEdit ? 'Edit Expense' : 'Record Expense'}</h2>
+                  <p className="mt-0.5 text-xs text-slate-500">{expenseToEdit ? 'Update expense details. Changes are tracked in transaction history.' : 'Record a paid business expense and attach its receipt.'}</p>
                 </div>
               </div>
               <button type="button" onClick={onClose} className="rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 cursor-pointer" aria-label="Close record expense">
@@ -1361,24 +1380,14 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
           <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
             <div className="min-h-0 flex-1 overflow-y-auto p-5 sm:p-7">
               {expenseToEdit && (
-                <div className="mb-5 flex gap-2 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
-                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                  <p>
-                    Saving this correction will preserve the original expense, post its audited reversal, and create a new corrected expense.
-                  </p>
-                </div>
-              )}
-
-              {expenseToEdit && (
                 <label className="mb-5 block space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200">
-                  <span>Correction reason <span className="text-rose-600">*</span></span>
+                  <span>Reason for edit <span className="text-xs font-normal text-slate-500">(optional)</span></span>
                   <textarea
                     value={correctionReason}
                     onChange={(event) => setCorrectionReason(event.target.value)}
                     maxLength={1000}
                     rows={2}
-                    required
-                    placeholder="Explain why the recorded expense needs correction"
+                    placeholder="e.g., Updated amount, vendor invoice correction"
                     className="w-full resize-none rounded-md border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                   />
                 </label>
@@ -1436,6 +1445,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                           required
                           value={date}
                           onChange={(event) => setDate(event.target.value)}
+                          aria-label="Posting date"
                           className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal text-slate-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                         />
                       </label>
@@ -1503,6 +1513,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                             required
                             value={date}
                             onChange={(event) => setDate(event.target.value)}
+                            aria-label="Posting date"
                             className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 font-normal text-slate-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                           />
                         </label>
@@ -1852,7 +1863,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                   disabled={postingUnavailable || isSubmitting}
                   className="rounded-md bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
                 >
-                  {isSubmitting ? (expenseToEdit ? 'Correcting…' : 'Recording…') : (expenseToEdit ? 'Save correction' : 'Record expense')}
+                  {isSubmitting ? (expenseToEdit ? 'Saving…' : 'Recording…') : (expenseToEdit ? 'Save Changes' : 'Record expense')}
                 </button>
               </div>
             </div>

@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
   Briefcase,
-  Building2,
   Calculator,
   ChevronDown,
   ChevronRight,
@@ -15,9 +14,10 @@ import {
   TrendingUp,
   X,
 } from 'lucide-react';
-import { NavigationTab } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 import { useOptionalAuth } from '../../context/AuthContext';
+import type { FinanceCapability } from '../../capabilities/useFinanceCapabilities';
+import { resolveFinanceNavigation, type FinanceNavigationIcon } from '../../navigation/financeNavigation';
 
 interface MobileNavProps {
   isOpen: boolean;
@@ -25,22 +25,19 @@ interface MobileNavProps {
   activeTab: string;
   setActiveTab: (tab: string) => void;
   onOpenQuickCreate?: () => void;
-  enabledCapabilities?: ReadonlySet<string>;
+  capabilities?: readonly FinanceCapability[];
 }
 
-interface SubNavItem {
-  id: NavigationTab;
-  label: string;
-  badge?: string;
-}
-
-interface NavSection {
-  id: string;
-  label: string;
-  icon: React.ReactNode;
-  defaultTab: NavigationTab;
-  subItems: SubNavItem[];
-}
+const NAV_ICONS: Record<FinanceNavigationIcon, React.ReactNode> = {
+  dashboard: <LayoutDashboard className="w-5 h-5" />,
+  projects: <FolderKanban className="w-5 h-5" />,
+  banking: <Landmark className="w-5 h-5" />,
+  sales: <TrendingUp className="w-5 h-5" />,
+  purchases: <ShoppingBag className="w-5 h-5" />,
+  accounting: <Calculator className="w-5 h-5" />,
+  reports: <PieChart className="w-5 h-5" />,
+  settings: <Settings className="w-5 h-5" />,
+};
 
 export const MobileNav: React.FC<MobileNavProps> = ({
   isOpen,
@@ -48,7 +45,7 @@ export const MobileNav: React.FC<MobileNavProps> = ({
   activeTab,
   setActiveTab,
   onOpenQuickCreate,
-  enabledCapabilities = new Set(),
+  capabilities = [],
 }) => {
   const auth = useOptionalAuth();
   const { settings, currentUser } = useBooks();
@@ -68,117 +65,7 @@ export const MobileNav: React.FC<MobileNavProps> = ({
     }
   };
 
-  const navSections: NavSection[] = [
-    {
-      id: 'dashboard_section',
-      label: 'Dashboard',
-      icon: <LayoutDashboard className="w-5 h-5" />,
-      defaultTab: 'dashboard',
-      subItems: [{ id: 'dashboard', label: 'Dashboard' }],
-    },
-    {
-      id: 'projects_section',
-      label: 'Projects',
-      icon: <FolderKanban className="w-5 h-5" />,
-      defaultTab: 'projects',
-      subItems: [{ id: 'projects', label: 'All Projects' }],
-    },
-    {
-      id: 'banking_section',
-      label: 'Banking & Cash',
-      icon: <Landmark className="w-5 h-5" />,
-      defaultTab: 'banking',
-      subItems: [
-        { id: 'banking', label: 'Bank & Cash Accounts' },
-        { id: 'bank_reconciliation', label: 'Bank Reconciliation' },
-      ],
-    },
-    {
-      id: 'sales_section',
-      label: 'Sales',
-      icon: <TrendingUp className="w-5 h-5" />,
-      defaultTab: 'invoices',
-      subItems: [
-        { id: 'clients', label: 'Customers' },
-        { id: 'estimates', label: 'Estimates' },
-        { id: 'sales_orders', label: 'Sales Orders' },
-        { id: 'invoices', label: 'Invoices' },
-        { id: 'delivery_challans', label: 'Delivery Challans' },
-        { id: 'payments_received', label: 'Payments Received' },
-        { id: 'salespersons', label: 'Salespersons' },
-        { id: 'customer_portal' as NavigationTab, label: 'Customer Portal', badge: 'Portal' },
-        ...(enabledCapabilities.has('receivables-corrections')
-          ? [{ id: 'credit_notes' as NavigationTab, label: 'Credit Notes' }]
-          : []),
-        ...(enabledCapabilities.has('recurring-transactions')
-          ? [{ id: 'recurring_invoices' as NavigationTab, label: 'Recurring Invoices' }]
-          : []),
-      ],
-    },
-    {
-      id: 'purchases_section',
-      label: 'Purchases',
-      icon: <ShoppingBag className="w-5 h-5" />,
-      defaultTab: 'expenses',
-      subItems: [
-        { id: 'vendors', label: 'Vendors' },
-        { id: 'expenses', label: 'Expenses' },
-        { id: 'purchase_orders', label: 'Purchase Orders' },
-        { id: 'bills', label: 'Bills' },
-        { id: 'document_inbox' as NavigationTab, label: 'Document Inbox & OCR', badge: 'OCR' },
-        ...(enabledCapabilities.has('payables-settlement')
-          ? [
-              { id: 'payments_made' as NavigationTab, label: 'Payments Made' },
-              { id: 'vendor_credits' as NavigationTab, label: 'Vendor Credits' },
-            ]
-          : []),
-        ...(enabledCapabilities.has('recurring-transactions')
-          ? [
-              { id: 'recurring_bills' as NavigationTab, label: 'Recurring Bills' },
-              { id: 'recurring_expenses' as NavigationTab, label: 'Recurring Expenses' },
-            ]
-          : []),
-      ],
-    },
-    {
-      id: 'accounting_section',
-      label: 'Accounting',
-      icon: <Calculator className="w-5 h-5" />,
-      defaultTab: 'journals',
-      subItems: [
-        { id: 'journals', label: 'Manual Journals' },
-        { id: 'bulk_updates', label: 'Bulk Journal Entry' },
-        { id: 'coa', label: 'Chart of Accounts' },
-        { id: 'data_migration' as NavigationTab, label: 'Data Migration & Balances' },
-        { id: 'transaction_locking', label: 'Period Locks' },
-        { id: 'gst_compliance', label: 'GST Compliance' },
-        ...(enabledCapabilities.has('fixed-assets') ? [{ id: 'fixed_assets' as NavigationTab, label: 'Fixed Assets' }] : []),
-        ...(enabledCapabilities.has('period-close') ? [{ id: 'period_close' as NavigationTab, label: 'Period Close' }] : []),
-      ],
-    },
-    {
-      id: 'reports_section',
-      label: 'Reports',
-      icon: <PieChart className="w-5 h-5" />,
-      defaultTab: 'reports',
-      subItems: [
-        { id: 'reports', label: 'Financial Reports' },
-      ],
-    },
-    {
-      id: 'settings_section',
-      label: 'Settings',
-      icon: <Settings className="w-5 h-5" />,
-      defaultTab: 'settings',
-      subItems: [
-        { id: 'settings', label: 'Settings' },
-        { id: 'security_center' as NavigationTab, label: 'Security Center' },
-        { id: 'identity_center' as NavigationTab, label: 'Identity Center' },
-        ...(enabledCapabilities.has('team-access') ? [{ id: 'team_access' as NavigationTab, label: 'Team Access' }] : []),
-        ...(enabledCapabilities.has('recovery-center') ? [{ id: 'recovery_center' as NavigationTab, label: 'Recovery Center' }] : []),
-      ],
-    },
-  ];
+  const navSections = resolveFinanceNavigation(capabilities);
 
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     sales_section: true,
@@ -291,7 +178,7 @@ export const MobileNav: React.FC<MobileNavProps> = ({
                 >
                   <div className="flex items-center space-x-3">
                     <span className={isSectionActive ? 'text-blue-600 dark:text-blue-400' : 'text-slate-500 dark:text-slate-400'}>
-                      {section.icon}
+                      {NAV_ICONS[section.icon]}
                     </span>
                     <span>{section.label}</span>
                   </div>
@@ -315,17 +202,25 @@ export const MobileNav: React.FC<MobileNavProps> = ({
                         <button
                           key={sub.id}
                           onClick={() => {
+                            if (sub.disabled) return;
                             setActiveTab(sub.id);
                             onClose();
                           }}
+                          disabled={sub.disabled}
+                          title={sub.disabled ? sub.disabledReason : sub.label}
+                          aria-label={sub.label}
+                          aria-describedby={sub.disabled ? `${sub.id}-mobile-availability` : undefined}
                           aria-current={isSubActive ? 'page' : undefined}
                           className={`w-full min-h-10 flex items-center justify-between px-2.5 py-2 rounded-lg text-xs font-medium text-left transition-colors cursor-pointer ${
-                            isSubActive
+                            sub.disabled
+                              ? 'text-slate-400 dark:text-slate-600 cursor-not-allowed'
+                              : isSubActive
                               ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300 font-bold border border-blue-100 dark:border-blue-900/60'
                               : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50 dark:text-slate-400 dark:hover:text-slate-200 dark:hover:bg-slate-900'
                           }`}
                         >
                           <span>{sub.label}</span>
+                          {sub.disabled && <span id={`${sub.id}-mobile-availability`} className="sr-only">{sub.disabledReason}</span>}
                           {sub.badge && (
                             <span className="text-[9px] bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300 px-1.5 py-0.5 rounded border border-emerald-200 dark:border-emerald-800">
                               {sub.badge}

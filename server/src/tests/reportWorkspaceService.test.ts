@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest';
+import ExcelJS from 'exceljs';
 process.env.USE_PG_MEM = 'true';
 
 import { db } from '../database/db';
@@ -82,6 +83,10 @@ describe('Report workspace catalog', () => {
     const pdf = await ReportExportService.exportWorkspaceReport(report, metadata, 'pdf');
     expect(csv.subarray(0, 3).toString('hex')).toBe('efbbbf');
     expect(xlsx.subarray(0, 2).toString()).toBe('PK');
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(xlsx);
+    expect(workbook.getWorksheet('Report')?.getCell('A1').text).toBe('Report Workspace Ltd');
+    expect(workbook.getWorksheet('Report')?.getCell('A6').text).toBe(report.columns[0].label);
     expect(pdf.subarray(0, 4).toString()).toBe('%PDF');
   });
 });

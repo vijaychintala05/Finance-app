@@ -493,7 +493,11 @@ export class BankingController {
       await BankReconciliationService.ignoreTransaction(orgId, transactionId, isIgnored, (req as any).auth?.userId);
       res.json({ success: true, data: { isIgnored } });
     } catch (e: any) {
-      res.status(500).json({ success: false, error: sanitizeError(e) });
+      const message = e instanceof Error ? e.message : 'Statement transaction could not be updated';
+      res.status(message.includes('BANK_TRANSACTION_NOT_FOUND') ? 404 : 500).json({
+        success: false,
+        error: sanitizeError(e),
+      });
     }
   }
 

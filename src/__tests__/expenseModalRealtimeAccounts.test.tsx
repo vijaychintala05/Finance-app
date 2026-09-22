@@ -174,4 +174,34 @@ describe('ExpenseModal Realtime Chart of Accounts Integration', () => {
 
     await waitFor(() => expect(screen.getByRole('button', { name: /expense account: 6900 - interest & finance charges/i })).toBeDefined());
   });
+
+  it('updates posting date in desktop form and submits with the updated date', async () => {
+    const handleClose = vi.fn();
+    render(<ExpenseModal isOpen={true} onClose={handleClose} />);
+
+    // In desktop mode, the Posting date input is visible and has aria-label="Posting date"
+    const dateInput = screen.getByLabelText('Posting date');
+    expect(dateInput).toBeDefined();
+
+    // Change date
+    fireEvent.change(dateInput, { target: { value: '2026-06-18' } });
+    expect((dateInput as HTMLInputElement).value).toBe('2026-06-18');
+
+    // Enter amount
+    const amountInput = screen.getByPlaceholderText('0.00');
+    fireEvent.change(amountInput, { target: { value: '450.00' } });
+
+    // Submit
+    const submitBtn = screen.getByRole('button', { name: /^record expense$/i });
+    fireEvent.click(submitBtn);
+
+    await waitFor(() => {
+      expect(mockAddExpense).toHaveBeenCalledWith(
+        expect.objectContaining({
+          date: '2026-06-18',
+          amount: 450,
+        })
+      );
+    });
+  });
 });

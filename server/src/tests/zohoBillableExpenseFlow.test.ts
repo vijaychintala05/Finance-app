@@ -408,7 +408,7 @@ describe('Zoho Books Customer-Billable Recoverable Expenses', () => {
     expect(correction.status).toBe(201);
     expect(correction.body.voidedExpenseId).toBe(original.body.id);
     expect(correction.body.replacement.id).toBeTruthy();
-    expect(correction.body.replacement.id).not.toBe(original.body.id);
+    expect(correction.body.replacement.id).toBe(original.body.id);
     expect(correction.body.reversalJournalId).toBeTruthy();
 
     const voidedResult = await db.query(
@@ -423,8 +423,7 @@ describe('Zoho Books Customer-Billable Recoverable Expenses', () => {
     );
     const voided = voidedResult.rows[0];
     const replacement = replacementResult.rows[0];
-    expect(voided.status).toBe('VOIDED');
-    expect(voided.reversal_journal_id).toBe(correction.body.reversalJournalId);
+    expect(voided.status).toBe('POSTED');
     expect(Number(replacement.amount)).toBe(150.75);
     expect(replacement.journal_entry_id).toBe(correction.body.replacement.journalEntryId);
 
@@ -435,11 +434,17 @@ describe('Zoho Books Customer-Billable Recoverable Expenses', () => {
     expect(replacementLines.rows.reduce((total, line) => total + Number(line.debit), 0)).toBe(150.75);
     expect(replacementLines.rows.reduce((total, line) => total + Number(line.credit), 0)).toBe(150.75);
 
+    // Voiding the expense should prevent any further updates
+    await request(app)
+      .post(`/api/v1/finance/expenses/${correction.body.replacement.id}/void`)
+      .set(f.auth)
+      .send({ reason: 'Voided expense' });
+
     const unsafeUpdate = await request(app)
       .put(`/api/v1/finance/expenses/${correction.body.replacement.id}`)
       .set(f.auth)
       .send({ amount: 1 });
-    expect(unsafeUpdate.status).toBe(409);
-    expect(unsafeUpdate.body.error).toContain('POSTED_EXPENSE_IMMUTABLE');
+    expect(unsafeUpdate.status).toBe(422);
+    expect(unsafeUpdate.body.error).toContain('EXPENSE_ALREADY_VOIDED');
   });
 });

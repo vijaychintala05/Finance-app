@@ -38,6 +38,9 @@ import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate, getStatusBadgeStyle, amountToWords } from '../../utils/formatters';
 import { invoiceApi } from '../../services/invoiceApi';
 import { RecordCustomerPaymentModal } from '../sales/RecordCustomerPaymentModal';
+import { TransactionHistoryTab } from '../common/TransactionHistoryTab';
+import { OperationNoticeBanner } from '../common/OperationNoticeBanner';
+import { mutationExceptionNotice, type OperationNotice } from '../../utils/operationNotice';
 
 interface InvoicePreviewModalProps {
   invoice: Invoice | null;
@@ -64,6 +67,7 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
 
   const [downloadingPdf, setDownloadingPdf] = useState(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'invoice' | 'history'>('invoice');
 
   // Dropdown states
   const [openDropdown, setOpenDropdown] = useState<'send' | 'reminders' | 'pdf' | 'payment' | 'more' | null>(null);
@@ -79,6 +83,9 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
   const [isWriteOffOpen, setIsWriteOffOpen] = useState(false);
   const [writeOffReason, setWriteOffReason] = useState('Bad debt / Uncollectible account');
   const [isSubmittingWriteOff, setIsSubmittingWriteOff] = useState(false);
+  const [isVoidOpen, setIsVoidOpen] = useState(false);
+  const [voidReason, setVoidReason] = useState('');
+  const [isVoiding, setIsVoiding] = useState(false);
 
   // Email form state
   const [emailForm, setEmailForm] = useState({
@@ -98,12 +105,15 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
   const [loadingJournal, setLoadingJournal] = useState(false);
   const [journalError, setJournalError] = useState<string | null>(null);
 
-  // Toast feedback
-  const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
+  const [notice, setNotice] = useState<OperationNotice | null>(null);
 
-  const showToast = (message: string, type: 'success' | 'info' | 'error' = 'success') => {
-    setToast({ message, type });
-    setTimeout(() => setToast(null), 4000);
+  const showToast = (message: string, type: 'success' | 'info' | 'error' = 'success', requestId?: string) => {
+    setNotice({
+      tone: type === 'success' ? 'success' : type === 'info' ? 'warning' : 'error',
+      title: type === 'success' ? 'Invoice action completed' : type === 'info' ? 'Invoice action unavailable' : 'Invoice action failed',
+      message,
+      requestId,
+    });
   };
 
   // Close dropdown on outside click
@@ -207,7 +217,12 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
       window.print();
     } catch (err) {
       console.error('Window print execution error:', err);
-      window.alert('The browser could not open its print dialog.');
+      setNotice({
+        tone: 'error',
+        title: 'Print dialog did not open',
+        message: 'The browser could not open its print dialog.',
+        recovery: 'Allow print dialogs for this site, then try again. The invoice was not changed.',
+      });
     }
   };
 
@@ -247,10 +262,15 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
         message: emailForm.message,
       });
       setIsSendEmailOpen(false);
-      showToast(res.message || `Invoice emailed successfully to ${emailForm.recipientEmail}.`);
+      showToast(res.message || `Invoice emailed successfully to ${emailForm.recipientEmail}.`, 'success', res.requestId);
     } catch (err: any) {
       console.error('Send invoice email error:', err);
-      window.alert(err.message || 'Failed to send invoice email');
+      setNotice(mutationExceptionNotice(err, {
+        action: 'Invoice email',
+        failureTitle: 'Invoice email was not sent',
+        uncertainTitle: 'Invoice email delivery could not be confirmed',
+        uncertainRecovery: 'Check the invoice email history before sending again; the message may already have been queued.',
+      }));
     } finally {
       setIsSendingEmail(false);
     }
@@ -276,22 +296,27 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
   // Payment reminder handler
   const handleSendReminder = async () => {
     if (currentInvoice.balanceDue <= 0) {
-      window.alert('This invoice has already been settled in full. No payment reminder is needed.');
+      setNotice({ tone: 'warning', title: 'Reminder not needed', message: 'This invoice has already been settled in full.', recovery: 'Review the payment history if the balance is unexpected.' });
       return;
     }
     const targetEmail = currentInvoice.clientEmail;
     if (!targetEmail) {
-      window.alert('Customer email address is not configured for this invoice.');
+      setNotice({ tone: 'error', title: 'Reminder was not sent', message: 'Customer email address is not configured for this invoice.', recovery: 'Add a verified customer email address, then return to send the reminder.' });
       return;
     }
     try {
       const res = await invoiceApi.sendInvoiceReminder(currentInvoice.id, {
         recipientEmail: targetEmail,
       });
-      showToast(res.message || `Payment reminder dispatched to ${targetEmail}!`);
+      showToast(res.message || `Payment reminder dispatched to ${targetEmail}!`, 'success', res.requestId);
     } catch (err: any) {
       console.error('Send reminder error:', err);
-      window.alert(err.message || 'Failed to send payment reminder');
+      setNotice(mutationExceptionNotice(err, {
+        action: 'Payment reminder',
+        failureTitle: 'Payment reminder was not sent',
+        uncertainTitle: 'Reminder delivery could not be confirmed',
+        uncertainRecovery: 'Check the reminder history before sending again; the message may already have been queued.',
+      }));
     }
   };
 
@@ -334,14 +359,24 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
   };
 
   // Void invoice handler
-  const handleVoidInvoice = async () => {
-    if (window.confirm(`Are you sure you want to void invoice ${currentInvoice.invoiceNumber}? This will post an audited general ledger reversal.`)) {
-      try {
-        await deleteInvoice(currentInvoice.id);
-        showToast(`Invoice ${currentInvoice.invoiceNumber} has been voided.`);
-      } catch (err: any) {
-        window.alert(err.message || 'Failed to void invoice');
-      }
+  const handleVoidInvoice = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (isVoiding || voidReason.trim().length < 3) return;
+    try {
+      setIsVoiding(true);
+      await deleteInvoice(currentInvoice.id, voidReason.trim());
+      setIsVoidOpen(false);
+      setVoidReason('');
+      showToast(`Invoice ${currentInvoice.invoiceNumber} was voided. The original remains in history with its audited general ledger reversal.`);
+    } catch (err: any) {
+      setNotice(mutationExceptionNotice(err, {
+        action: 'Invoice void',
+        failureTitle: 'Invoice was not voided',
+        uncertainTitle: 'Invoice void outcome could not be confirmed',
+        uncertainRecovery: 'Refresh the invoice and journal history before retrying; the reversal may already have posted.',
+      }));
+    } finally {
+      setIsVoiding(false);
     }
   };
 
@@ -387,12 +422,12 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
   const handleRecordWriteOff = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (currentInvoice.balanceDue <= 0) {
-      window.alert('This invoice has no outstanding balance to write off.');
+      setNotice({ tone: 'warning', title: 'Write-off not available', message: 'This invoice has no outstanding balance to write off.', recovery: 'Review payment and credit allocations if the balance is unexpected.' });
       return;
     }
     try {
       setIsSubmittingWriteOff(true);
-      await invoiceApi.recordWriteOff({
+      const result = await invoiceApi.recordWriteOff({
         invoiceId: currentInvoice.id,
         customerId: currentInvoice.clientId,
         writeOffDate: new Date().toISOString().slice(0, 10),
@@ -400,10 +435,15 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
         reason: writeOffReason || 'Bad debt write-off',
       });
       setIsWriteOffOpen(false);
-      showToast(`Successfully wrote off remaining balance of ${formatCurrency(currentInvoice.balanceDue, currencySymbol)}.`);
+      showToast(`Successfully wrote off remaining balance of ${formatCurrency(currentInvoice.balanceDue, currencySymbol)}.`, 'success', result.requestId);
     } catch (err: any) {
       console.error('Write off error:', err);
-      window.alert(err.message || 'Failed to record write-off');
+      setNotice(mutationExceptionNotice(err, {
+        action: 'Write-off',
+        failureTitle: 'Write-off was not posted',
+        uncertainTitle: 'Write-off outcome could not be confirmed',
+        uncertainRecovery: 'Refresh the invoice and journal history before retrying; the write-off may already have posted.',
+      }));
     } finally {
       setIsSubmittingWriteOff(false);
     }
@@ -419,15 +459,9 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
     <div className="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-2 sm:p-6 overflow-y-auto print:p-0 print:bg-white print:static print:inset-auto">
       <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 w-full max-w-4xl max-h-[94vh] overflow-hidden flex flex-col shadow-2xl print:max-h-none print:shadow-none print:border-none print:rounded-none relative">
         
-        {/* Toast Feedback Alert */}
-        {toast && (
-          <div className="absolute top-16 right-6 z-50 animate-in fade-in slide-in-from-top-2">
-            <div className={`px-4 py-2.5 rounded-xl shadow-xl text-xs font-semibold flex items-center space-x-2 ${
-              toast.type === 'error' ? 'bg-rose-600 text-white' : 'bg-slate-900 text-white border border-slate-700'
-            }`}>
-              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-              <span>{toast.message}</span>
-            </div>
+        {notice && (
+          <div className="mx-4 mt-4 print:hidden">
+            <OperationNoticeBanner notice={notice} />
           </div>
         )}
 
@@ -835,7 +869,8 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
                     type="button"
                     onClick={() => {
                       setOpenDropdown(null);
-                      handleVoidInvoice();
+                      setVoidReason('');
+                      setIsVoidOpen(true);
                     }}
                     className="w-full text-left px-3.5 py-2 text-xs text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-slate-700/80 flex items-center space-x-2.5 cursor-pointer border-t border-slate-100 dark:border-slate-700/60 mt-1 pt-1.5"
                   >
@@ -874,6 +909,49 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
           </div>
         </div>
 
+        {/* Tab Selector: Invoice Document vs History & Audit Trail */}
+        <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-900 px-4 sm:px-6 py-2 shrink-0 print:hidden select-none">
+          <div role="tablist" aria-label="Invoice view modes" className="inline-flex rounded-xl border border-slate-200 bg-white p-1 dark:border-slate-700 dark:bg-slate-800">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'invoice'}
+              onClick={() => setActiveTab('invoice')}
+              className={`rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-colors cursor-pointer ${
+                activeTab === 'invoice'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700'
+              }`}
+            >
+              Invoice Document
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'history'}
+              onClick={() => setActiveTab('history')}
+              className={`rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-colors cursor-pointer ${
+                activeTab === 'history'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700'
+              }`}
+            >
+              History & Audit Trail
+            </button>
+          </div>
+        </div>
+
+        {activeTab === 'history' && (
+          <div className="flex-1 overflow-y-auto print:hidden">
+            <TransactionHistoryTab
+              entityType="Invoice"
+              entityId={currentInvoice.id}
+              entity={currentInvoice}
+              title={`Invoice #${currentInvoice.invoiceNumber} Audit & History Trail`}
+            />
+          </div>
+        )}
+
         {/* Error banner if PDF download fails */}
         {pdfError && (
           <div className="bg-rose-50 dark:bg-rose-950/40 border-b border-rose-200 dark:border-rose-900/50 px-4 py-2.5 text-xs text-rose-700 dark:text-rose-300 flex items-center justify-between print:hidden">
@@ -892,7 +970,7 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
         )}
 
         {/* Professional Document Body */}
-        <div id="printable-bill-area" className="p-6 sm:p-10 overflow-y-auto flex-1 space-y-6 text-xs text-slate-800 dark:text-slate-200 bg-white dark:bg-slate-900 print:p-0 print:overflow-visible print:bg-white print:text-slate-900 font-sans">
+        <div id="printable-bill-area" className={`p-6 sm:p-10 overflow-y-auto flex-1 space-y-6 text-xs text-slate-800 dark:text-slate-200 bg-white dark:bg-slate-900 print:p-0 print:overflow-visible print:bg-white print:text-slate-900 font-sans ${activeTab !== 'invoice' ? 'hidden print:block' : ''}`}>
           
           {/* Delivery Challan Mode Banner */}
           {isDeliveryChallanMode && (
@@ -1668,6 +1746,47 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
               </div>
             </form>
           </div>
+        </div>
+      )}
+
+      {isVoidOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs">
+          <form
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="void-invoice-title"
+            onSubmit={handleVoidInvoice}
+            className="w-full max-w-md space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-800 dark:bg-slate-900"
+          >
+            <div className="flex items-start justify-between gap-4 border-b border-slate-100 pb-3 dark:border-slate-800">
+              <div>
+                <h3 id="void-invoice-title" className="text-sm font-bold text-slate-900 dark:text-white">Void invoice {currentInvoice.invoiceNumber}?</h3>
+                <p className="mt-1 text-[11px] text-slate-500">This posts an audited general-ledger reversal; it does not delete history.</p>
+              </div>
+              <button type="button" aria-label="Close void invoice confirmation" disabled={isVoiding} onClick={() => setIsVoidOpen(false)} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 disabled:opacity-50 dark:hover:bg-slate-800"><X className="h-4 w-4" /></button>
+            </div>
+            <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-900 dark:border-rose-900/50 dark:bg-rose-950/40 dark:text-rose-200">
+              The invoice remains visible as Void. Its receivable, tax, and revenue postings are reversed through linked journal evidence.
+            </div>
+            <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+              Reason for voiding
+              <textarea
+                required
+                minLength={3}
+                rows={3}
+                value={voidReason}
+                onChange={(event) => setVoidReason(event.target.value)}
+                placeholder="Explain the correction for the audit trail"
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900 focus:border-blue-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+              />
+            </label>
+            <div className="flex justify-end gap-2">
+              <button type="button" disabled={isVoiding} onClick={() => setIsVoidOpen(false)} className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold disabled:opacity-50 dark:border-slate-700">Keep invoice</button>
+              <button type="submit" disabled={isVoiding || voidReason.trim().length < 3} className="rounded-xl bg-rose-600 px-4 py-2 text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-50">
+                {isVoiding ? 'Posting reversal...' : 'Void with reversal'}
+              </button>
+            </div>
+          </form>
         </div>
       )}
 

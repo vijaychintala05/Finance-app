@@ -29,6 +29,8 @@ export interface QuotationInput {
   notes?: string;
   terms?: string;
   status?: string;
+  changeSummary?: string;
+  reason?: string;
 }
 
 export const quotationApi = {
@@ -58,6 +60,12 @@ export const quotationApi = {
     const res = await apiClient.put<{ quotation: any }>(`/quotations/${id}`, data);
     if (res.error) throw new Error(res.error);
     return res.data?.quotation;
+  },
+
+  async getQuotationRevisions(id: string) {
+    const res = await apiClient.get<{ revisions: any[] }>(`/quotations/${id}/revisions`);
+    if (res.error) throw new Error(res.error);
+    return res.data?.revisions || [];
   },
 
   async convertQuotationToInvoice(id: string) {

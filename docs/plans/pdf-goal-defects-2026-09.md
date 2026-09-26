@@ -8,7 +8,7 @@ This log records non-PDF issues observed while validating the PDF-template goal.
 
 ## Medium
 
-- **D-002 - Recovery Center artifact list was empty after export.** Module: general Recovery Center UI. `e2e/point1-workspaces.spec.ts` observed the newly created encrypted export absent from the mobile list; an isolated rerun passed. Severity: Medium. Reproducibility: intermittent. Classification: unrelated to PDF-template artifacts; suspected cause is unconfirmed. PDF blocker: no. Next: investigate export completion versus list refresh sequencing.
+- **D-002 - Recovery Center export returns HTTP 500 on PostgreSQL.** Module: general Recovery Center export API. In the latest real PostgreSQL 16 E2E run, both desktop and mobile `e2e/point1-workspaces.spec.ts` recovery-export cases failed (28 passed, 2 failed overall); the export POST returned HTTP 500, so no artifact appeared in the list. The generic idempotency middleware opens an outer `READ COMMITTED` transaction, while `RecoveryArtifactService.createArtifact` requests a nested `REPEATABLE READ` transaction; the database transaction helper rejects the isolation-level mismatch. Severity: High. Reproducibility: reproduced in both desktop and mobile cases in that run. Classification: unrelated to PDF-template artifacts; not caused by PDF work. PDF blocker: no, provided direct PDF recovery export/stage/promote verification passes. Next: investigate and fix transaction ownership and the associated recovery security/lock behavior in a separate stabilization goal, then rerun both E2E cases.
 - **D-003 - P2P payment was not visible after reload within the original mobile wait.** Module: Procure-to-Pay. `e2e/procure-to-pay-lifecycle.spec.ts` did not find the 1,500 payment after reload within the original 15-second assertion during a full run; isolated runs passed. A later full E2E run passed with temporary longer waits, which have since been removed. Severity: Medium pending confirmation of persisted financial state. Reproducibility: intermittent/full-suite only. Classification: uncertain and unrelated to PDF work. PDF blocker: no. Next: verify the authoritative payment row and reload completion on a real PostgreSQL-backed test.
 
 ## Low
@@ -17,9 +17,9 @@ This log records non-PDF issues observed while validating the PDF-template goal.
 
 ## Test / Environment
 
-- **E-001 - PostgreSQL 16 qualification credentials unavailable.** `npm run test:postgres` passes 5/5 against a fresh, disposable PostgreSQL 17.10 Docker database. A local PostgreSQL 16 test service is running on port 54329, but it requires SCRAM authentication and no isolated test credentials/`DATABASE_URL` are configured. The existing PostgreSQL 16 service was not modified or used. PostgreSQL 16-specific qualification remains pending. PDF blocker: yes for claiming the PG16 release gate; not a blocker for the passing PG17 and in-memory PDF tests. Next: configure a disposable PG16 database URL and rerun the qualification suite.
+- **E-001 - PostgreSQL 16 qualification resolved.** Earlier credentials were unavailable. A disposable PostgreSQL 16 Docker database was subsequently used, and `npm run test:postgres` passed 7/7. The existing PostgreSQL service and NAS data were not modified. This is no longer a PDF blocker.
 - The in-memory migration runner also emits non-fatal `pg-mem` warnings because it does not implement `BTRIM`; do not treat those warnings as PostgreSQL qualification evidence.
 
 ## Browser Gate Note
 
-A 26/26 Playwright run completed in 8.1 minutes while temporary unrelated timing/request-sequencing diagnostics were present. Those exact non-PDF changes were subsequently removed. That run is useful evidence, but it is not a clean final browser result for the restored non-PDF baseline; a full rerun is intentionally deferred to avoid turning this PDF goal into general stabilization.
+A later full Playwright run against disposable PostgreSQL 16 completed with 28 passed and 2 failed, both in the unrelated Recovery Center export flow documented as D-002. This is not a clean all-green release gate. PDF-specific browser evidence should be reported separately from the unrelated failures.

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { CURRENT_SCHEMA_VERSION } from '../database/migrationRunner';
 import { RecoveryArtifactService } from '../recovery/RecoveryArtifactService';
@@ -6,7 +6,10 @@ import { decodeRecoveryPdfRow, encodeRecoveryPdfRow, POINT1_RECOVERY_SCHEMA, POI
 import { RecoveryMigrationPolicy } from '../recovery/RecoveryMigrationPolicy';
 import { RECOVERY_FORMAT, RECOVERY_FORMAT_VERSION, type RecoveryEnvelope, type RecoveryManifest, type RecoveryPayload, type RecoveryKeyring, type StoredRecoveryArtifact } from '../recovery/types';
 import { sealRecoveryPayload, sha256 } from '../recovery/crypto';
-import { SqlRecoveryPromoter } from '../recovery/ProductionRecoveryAdapters';
+import { RecoveryRowCountReconciler, SqlOwnerAuthorizer, SqlRecoveryPromoter, SqlRecoveryStager } from '../recovery/ProductionRecoveryAdapters';
+import { db } from '../database/db';
+import { MigrationRunner } from '../database/migrationRunner';
+import { SqlRecoveryRepository } from '../recovery/RecoveryRepository';
 
 const organizationId = 'org-recovery-v16';
 const keyring: RecoveryKeyring = {
@@ -15,7 +18,116 @@ const keyring: RecoveryKeyring = {
   hmacKeys: { 'recovery-test-v1': Buffer.alloc(32, 9) },
 };
 
+const integrationOrgId = `org-recovery-pdf-${randomUUID()}`;
+const integrationOwnerId = `owner-recovery-pdf-${randomUUID()}`;
+const integrationTemplateId = `template-${randomUUID()}`;
+const integrationVersionId = `version-${randomUUID()}`;
+const integrationAssignmentId = `assignment-${randomUUID()}`;
+const integrationSnapshotId = `snapshot-${randomUUID()}`;
+
 describe('PDF template and issued-artifact recovery', () => {
+  it.skipIf(!process.env.DATABASE_URL)('restores populated template registry and exact issued PDF bytes through production recovery', async () => {
+    if (process.env.DATABASE_URL) db.resetPool();
+    else db.initPgMem();
+    await MigrationRunner.runMigrations();
+    await db.query(
+      `INSERT INTO users (id, email, password_hash, full_name, status)
+       VALUES ($1, $2, 'hash', 'PDF Recovery Owner', 'Active')`,
+      [integrationOwnerId, `${integrationOwnerId}@firmbooks.test`],
+    );
+    await db.query(
+      `INSERT INTO organizations (id, uuid, public_org_id, org_code, name, country, base_currency, currency_symbol, owner_user_id)
+       VALUES ($1, $3, $4, $5, 'PDF Recovery Org', 'India', 'INR', 'INR', $2)`,
+      [integrationOrgId, integrationOwnerId, randomUUID().replaceAll('-', ''), randomUUID().replaceAll('-', ''), `PDF-${randomUUID().slice(0, 10)}`],
+    );
+    await db.query(
+      `INSERT INTO organization_members (id, organization_id, user_id, role, status)
+       VALUES ($3, $1, $2, 'Owner', 'Active')`,
+      [integrationOrgId, integrationOwnerId, `membership-${randomUUID()}`],
+    );
+    const sourceBytes = Buffer.from([0, 255, 37, 80, 68, 70, 13, 10, 0, 128, 1, 42]);
+    const sourceHash = createHash('sha256').update(sourceBytes).digest('hex');
+    await db.query(
+      `INSERT INTO document_templates (id, organization_id, category, model_id, name, current_version_id)
+       VALUES ($2, $1, 'invoices', 'custom', 'Custom Invoice', $3)`,
+      [integrationOrgId, integrationTemplateId, integrationVersionId],
+    );
+    await db.query(
+      `INSERT INTO document_template_versions (id, template_id, version_number, configuration, created_by)
+       VALUES ($3, $4, 1, $1::jsonb, $2)`,
+      [JSON.stringify({ layout: 'custom-layout', accent: '#135' }), integrationOwnerId, integrationVersionId, integrationTemplateId],
+    );
+    await db.query(
+      `INSERT INTO document_template_assignments (id, organization_id, category, template_id, entity_type, entity_id)
+       VALUES ($2, $1, 'invoices', $3, 'ORGANIZATION', NULL)`,
+      [integrationOrgId, integrationAssignmentId, integrationTemplateId],
+    );
+    await db.query(
+      `INSERT INTO document_render_snapshots
+        (id, organization_id, category, document_id, template_version_id, source_data_hash, render_model,
+         pdf_byte_size, artifact_state, issuance_number, issued_by, filename, pdf_bytes, pdf_sha256)
+       VALUES ($8, $1, 'invoices', 'invoice-pdf-1', $9, $2, $3::jsonb,
+         $4, 'ISSUED', 1, $5, 'invoice-pdf-1.pdf', $6, $7)`,
+      [integrationOrgId, 'b'.repeat(64), JSON.stringify({ invoiceNumber: 'INV-PDF-1', total: '125.50' }), sourceBytes.length,
+        integrationOwnerId, sourceBytes, sourceHash, integrationSnapshotId, integrationVersionId],
+    );
+    await db.query(
+      `INSERT INTO organization_profiles (organization_id, document_templates)
+       VALUES ($1, $2::jsonb)`,
+      [integrationOrgId, JSON.stringify({ invoices: { templateId: integrationTemplateId } })],
+    );
+
+    const service = new RecoveryArtifactService({
+      repository: new SqlRecoveryRepository(),
+      keyring,
+      stager: new SqlRecoveryStager(),
+      reconcilers: [new RecoveryRowCountReconciler()],
+      promoter: new SqlRecoveryPromoter(),
+      ownerAuthorizer: new SqlOwnerAuthorizer(),
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      now: () => new Date('2026-09-25T12:00:00.000Z'),
+    });
+    const artifact = await service.createArtifact(integrationOrgId, integrationOwnerId);
+    const job = await service.stageRestore({ artifactId: artifact.id, targetOrganizationId: integrationOrgId, requestedBy: integrationOwnerId });
+    expect(job.status).toBe('VALIDATED');
+
+    await db.query(`DELETE FROM document_templates WHERE organization_id = $1`, [integrationOrgId]);
+    await service.promoteRestore({
+      jobId: job.id,
+      targetOrganizationId: integrationOrgId,
+      actorUserId: integrationOwnerId,
+      authenticatedAt: '2026-09-25T12:00:00.000Z',
+      confirmation: `PROMOTE RECOVERY ${job.id} TO ${integrationOrgId}`,
+    });
+
+    const registry = await db.query(
+      `SELECT t.id, t.current_version_id, v.configuration, a.template_id, p.document_templates
+         FROM document_templates t
+         JOIN document_template_versions v ON v.id = t.current_version_id
+         JOIN document_template_assignments a ON a.template_id = t.id
+         JOIN organization_profiles p ON p.organization_id = t.organization_id
+        WHERE t.organization_id = $1 AND t.id = $2`,
+      [integrationOrgId, integrationTemplateId],
+    );
+    expect(registry.rows).toHaveLength(1);
+    expect(registry.rows[0]).toMatchObject({
+      id: integrationTemplateId,
+      current_version_id: integrationVersionId,
+      template_id: integrationTemplateId,
+      configuration: { layout: 'custom-layout', accent: '#135' },
+      document_templates: { invoices: { templateId: integrationTemplateId } },
+    });
+    const snapshot = await db.query(
+      `SELECT pdf_bytes, pdf_byte_size, pdf_sha256, artifact_state, template_version_id
+         FROM document_render_snapshots WHERE id = $2 AND organization_id = $1`,
+      [integrationOrgId, integrationSnapshotId],
+    );
+    expect(snapshot.rows).toHaveLength(1);
+    expect(Buffer.from(snapshot.rows[0].pdf_bytes)).toEqual(sourceBytes);
+    expect(Number(snapshot.rows[0].pdf_byte_size)).toBe(sourceBytes.length);
+    expect(snapshot.rows[0]).toMatchObject({ pdf_sha256: sourceHash, artifact_state: 'ISSUED', template_version_id: integrationVersionId });
+  });
+
   it('keeps v15 and v16 snapshots frozen and orders new tables parent-first', () => {
     expect(Object.isFrozen(POINT1_RECOVERY_SCHEMA_V15)).toBe(true);
     expect(Object.isFrozen(POINT1_RECOVERY_SCHEMA_V16)).toBe(true);
@@ -130,6 +242,7 @@ describe('PDF template and issued-artifact recovery', () => {
       })),
     }, { organizationId, schemaVersion: v16, tables }).payload;
     const insertedTemplates: string[] = [];
+    const insertedAssignments: string[] = [];
     const client = { query: async (sql: string) => {
       const normalized = sql.toLowerCase();
       if (normalized.includes('from recovery_artifacts')) return { rows: [{ id: 'artifact-legacy-templates' }] };
@@ -137,6 +250,7 @@ describe('PDF template and issued-artifact recovery', () => {
       if (normalized.includes('select id, current_version_id from document_templates')) return { rows: [] };
       if (normalized.includes('select id from document_template_assignments')) return { rows: [] };
       if (normalized.startsWith('insert into document_templates')) insertedTemplates.push(normalized);
+      if (normalized.startsWith('insert into document_template_assignments')) insertedAssignments.push(normalized);
       return { rows: [] };
     } };
 
@@ -145,6 +259,7 @@ describe('PDF template and issued-artifact recovery', () => {
       payload: upgraded, actorUserId: 'owner', client: client as any,
     });
     expect(insertedTemplates.length).toBeGreaterThanOrEqual(42);
+    expect(insertedAssignments.length).toBeGreaterThan(0);
   });
 
   it('round-trips exact issued PDF bytes through base64 JSON and rejects hash or length mismatch', () => {
@@ -168,7 +283,7 @@ describe('PDF template and issued-artifact recovery', () => {
 
     const normalizedMemoryRow = (new RecoveryArtifactService({} as any) as any).normalizeRow(
       POINT1_RECOVERY_SCHEMA.find((table) => table.name === 'document_render_snapshots')!,
-      { ...row, pdf_bytes: bytes.toString('base64') },
+      { ...row, pdf_bytes: db.isMemoryMode() ? bytes.toString('base64') : bytes },
       organizationId,
     );
     expect(decodeRecoveryPdfRow(normalizedMemoryRow).pdf_bytes).toEqual(bytes);

@@ -61,6 +61,12 @@ export class RecoveryArtifactService {
 
   public async createArtifact(organizationId: string, createdBy: string): Promise<StoredRecoveryArtifact> {
     if (!organizationId || !createdBy) throw new RecoveryError('RECOVERY_MANIFEST_INVALID', 'Organization and actor are required', 400);
+    const hasActiveTx = typeof this.transactions.hasActiveTransaction === 'function'
+      ? this.transactions.hasActiveTransaction()
+      : Boolean((db as any).hasActiveTransaction?.());
+    const options = hasActiveTx
+      ? { organizationId }
+      : { organizationId, isolationLevel: 'REPEATABLE READ' as const };
     return this.transactions.transaction(async (client) => {
       const tables: Record<string, RecoveryRow[]> = {};
       for (const table of POINT1_RECOVERY_SCHEMA) {
@@ -97,7 +103,7 @@ export class RecoveryArtifactService {
       };
       await this.dependencies.repository.saveArtifact(artifact, client);
       return artifact;
-    }, { organizationId, isolationLevel: 'REPEATABLE READ' });
+    }, options);
   }
 
   public async stageRestore(input: { artifactId: string; targetOrganizationId: string; requestedBy: string }): Promise<RecoveryJob> {

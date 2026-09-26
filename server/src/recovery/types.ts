@@ -89,6 +89,7 @@ export interface RecoveryTransactionManager {
     callback: (client: DbQueryClient) => Promise<T>,
     options?: { organizationId?: string; isolationLevel?: TransactionIsolationLevel },
   ): Promise<T>;
+  hasActiveTransaction?(): boolean;
 }
 
 export interface RecoveryStager {

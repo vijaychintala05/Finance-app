@@ -212,6 +212,10 @@ class DatabaseService {
     }
   }
 
+  public hasActiveTransaction(): boolean {
+    return Boolean(this.transactionContext.getStore());
+  }
+
   public async query<T = any>(
     text: string,
     params: any[] = [],

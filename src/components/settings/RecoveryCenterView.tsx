@@ -21,6 +21,18 @@ interface RecoveryJob {
 
 interface ListResponse<T> { success: boolean; data: T; }
 
+function toErrorMessage(err: unknown): string {
+  if (!err) return '';
+  if (typeof err === 'string') return err;
+  if (typeof err === 'object') {
+    const obj = err as Record<string, any>;
+    if (typeof obj.message === 'string') return obj.message;
+    if (typeof obj.error === 'string') return obj.error;
+    return JSON.stringify(err);
+  }
+  return String(err);
+}
+
 export const RecoveryCenterView: React.FC = () => {
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [jobs, setJobs] = useState<RecoveryJob[]>([]);
@@ -37,7 +49,7 @@ export const RecoveryCenterView: React.FC = () => {
       apiClient.get<ListResponse<RecoveryJob[]>>('/recovery/jobs'),
     ]);
     if (artifactResponse.error || jobResponse.error) {
-      setError(artifactResponse.error || jobResponse.error || 'Recovery records could not be loaded.');
+      setError(toErrorMessage(artifactResponse.error || jobResponse.error || 'Recovery records could not be loaded.'));
       return;
     }
     setArtifacts(artifactResponse.data?.data || []);
@@ -50,7 +62,7 @@ export const RecoveryCenterView: React.FC = () => {
     setBusy('create'); setError('');
     const response = await apiClient.post('/recovery/artifacts');
     setBusy('');
-    if (response.error) return setError(response.error);
+    if (response.error) return setError(toErrorMessage(response.error));
     await load();
   };
 
@@ -58,7 +70,7 @@ export const RecoveryCenterView: React.FC = () => {
     setBusy(`stage:${artifactId}`); setError('');
     const response = await apiClient.post(`/recovery/artifacts/${artifactId}/stage`);
     setBusy('');
-    if (response.error) return setError(response.error);
+    if (response.error) return setError(toErrorMessage(response.error));
     await load();
   };
 
@@ -66,7 +78,7 @@ export const RecoveryCenterView: React.FC = () => {
     setBusy(`download:${artifact.id}`); setError('');
     const response = await apiClient.get<Artifact>(`/recovery/artifacts/${artifact.id}/download`);
     setBusy('');
-    if (response.error || !response.data) return setError(response.error || 'Artifact could not be downloaded.');
+    if (response.error || !response.data) return setError(toErrorMessage(response.error || 'Artifact could not be downloaded.'));
     const url = URL.createObjectURL(new Blob([JSON.stringify(response.data, null, 2)], { type: 'application/json' }));
     const link = document.createElement('a');
     link.href = url;
@@ -81,7 +93,7 @@ export const RecoveryCenterView: React.FC = () => {
     setBusy(`promote:${promoting.id}`); setError('');
     const response = await apiClient.post(`/recovery/jobs/${promoting.id}/promote`, { confirmation, password });
     setBusy('');
-    if (response.error) return setError(response.error);
+    if (response.error) return setError(toErrorMessage(response.error));
     setPromoting(null); setConfirmation(''); setPassword('');
     await load();
   };

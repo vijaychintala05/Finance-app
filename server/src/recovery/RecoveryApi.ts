@@ -16,11 +16,12 @@ function auth(req: Request): RecoveryAuth {
 }
 
 function sendError(res: Response, error: unknown): void {
+  console.error('[RecoveryApi sendError]:', error);
   if (error instanceof RecoveryError) {
     res.status(error.status).json({ success: false, error: { code: error.code, message: error.message, details: error.details } });
     return;
   }
-  res.status(500).json({ success: false, error: { code: 'RECOVERY_INTERNAL_ERROR', message: 'Recovery operation failed safely' } });
+  res.status(500).json({ success: false, error: { code: 'RECOVERY_INTERNAL_ERROR', message: (error as any)?.message || 'Recovery operation failed safely' } });
 }
 
 // Route mounting and authentication middleware remain owned by the main API.

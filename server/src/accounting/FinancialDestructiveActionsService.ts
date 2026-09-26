@@ -5,6 +5,15 @@ import { db, DbQueryClient } from '../database/db';
 import { newId } from '../utils/ids';
 import { databaseMoneyToCents } from '../utils/money';
 import { DocumentNumberingEngine } from '../services/DocumentNumberingEngine';
+import { AuditTrailService } from '../security/AuditTrailService';
+import type { AuditBatchEntry } from '../security/AuditTrailService';
+
+export class FinancialActionDomainError extends Error {
+  constructor(message: string, public readonly statusCode: number, public readonly code: string) {
+    super(message);
+    this.name = 'FinancialActionDomainError';
+  }
+}
 
 interface ReversalResult {
   success: boolean;
@@ -14,7 +23,7 @@ interface ReversalResult {
 function validReason(reason: string): string {
   const normalized = String(reason || '').trim();
   if (normalized.length < 3 || normalized.length > 1000) {
-    throw new Error('REVERSAL_REASON_INVALID: A reversal reason containing 3-1000 characters is required');
+    throw new FinancialActionDomainError('A reversal reason containing 3-1000 characters is required', 400, 'REVERSAL_REASON_INVALID');
   }
   return normalized;
 }
@@ -38,11 +47,11 @@ export class FinancialDestructiveActionsService {
         FOR UPDATE`,
       [organizationId, journalEntryId]
     );
-    if (originalResult.rows.length !== 1) throw new Error(`${sourceLabel} posting journal was not found`);
+    if (originalResult.rows.length !== 1) throw new FinancialActionDomainError(`${sourceLabel} posting journal was not found`, 404, 'POSTING_JOURNAL_NOT_FOUND');
     const original = originalResult.rows[0];
-    if (String(original.status).toUpperCase() !== 'POSTED') throw new Error(`${sourceLabel} posting journal is not posted`);
-    if (original.reversed_by_journal_id) throw new Error(`${sourceLabel} posting has already been reversed`);
-    if (original.reversal_of_journal_id) throw new Error('A reversal journal cannot itself be reversed through a source-document workflow');
+    if (String(original.status).toUpperCase() !== 'POSTED') throw new FinancialActionDomainError(`${sourceLabel} posting journal is not posted`, 409, 'POSTING_JOURNAL_NOT_POSTED');
+    if (original.reversed_by_journal_id) throw new FinancialActionDomainError(`${sourceLabel} posting has already been reversed`, 409, 'POSTING_ALREADY_REVERSED');
+    if (original.reversal_of_journal_id) throw new FinancialActionDomainError('A reversal journal cannot itself be reversed through a source-document workflow', 409, 'REVERSAL_JOURNAL_NOT_REVERSIBLE');
 
     const lines = await client.query(
       `SELECT jl.account_id, jl.debit, jl.credit, jl.description,
@@ -53,7 +62,7 @@ export class FinancialDestructiveActionsService {
         ORDER BY jl.id`,
       [organizationId, journalEntryId]
     );
-    if (lines.rows.length < 2) throw new Error(`${sourceLabel} posting journal has insufficient lines`);
+    if (lines.rows.length < 2) throw new FinancialActionDomainError(`${sourceLabel} posting journal has insufficient lines`, 409, 'POSTING_JOURNAL_LINES_INVALID');
 
     const reversalDate = todayUtc();
     const reversalNumber = await DocumentNumberingEngine.getNextNumber(
@@ -120,13 +129,23 @@ export class FinancialDestructiveActionsService {
   ): Promise<ReversalResult & { invoiceId: string }> {
     const normalizedReason = validReason(reason);
     return db.transaction(async (client) => {
+      const link = await client.query(`SELECT sales_order_id FROM invoices WHERE organization_id = $1 AND id = $2`, [organizationId, invoiceId]);
+      if (link.rows.length !== 1) throw new FinancialActionDomainError('Invoice was not found in this organization', 404, 'INVOICE_NOT_FOUND');
+      const linkedSalesOrderId = link.rows[0].sales_order_id || null;
+      let lockedSalesOrder: any = null;
+      if (linkedSalesOrderId) {
+        const orderResult = await client.query(`SELECT * FROM sales_orders WHERE organization_id = $1 AND id = $2 FOR UPDATE`, [organizationId, linkedSalesOrderId]);
+        if (orderResult.rows.length !== 1) throw new Error('Invoice source sales order was not found');
+        lockedSalesOrder = orderResult.rows[0];
+      }
       const result = await client.query(
         `SELECT * FROM invoices WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
         [organizationId, invoiceId]
       );
-      if (result.rows.length !== 1) throw new Error('Invoice was not found in this organization');
+      if (result.rows.length !== 1) throw new FinancialActionDomainError('Invoice was not found in this organization', 404, 'INVOICE_NOT_FOUND');
       const invoice = result.rows[0];
-      if (['VOID', 'VOIDED'].includes(String(invoice.status).toUpperCase())) throw new Error('Invoice is already voided');
+      if ((invoice.sales_order_id || null) !== linkedSalesOrderId) throw new FinancialActionDomainError('Invoice source changed during voiding', 409, 'INVOICE_SOURCE_CHANGED');
+      if (['VOID', 'VOIDED'].includes(String(invoice.status).toUpperCase())) throw new FinancialActionDomainError('Invoice is already voided', 409, 'INVOICE_ALREADY_VOIDED');
       const financialState = [invoice.paid_amount, invoice.amount_credited, invoice.amount_written_off]
         .map((value, index) => databaseMoneyToCents(value, `Invoice settlement amount ${index + 1}`));
       const allocations = await client.query(
@@ -138,9 +157,10 @@ export class FinancialDestructiveActionsService {
         [organizationId, invoiceId]
       );
       if (financialState.some((value) => value !== 0n) || Number(allocations.rows[0]?.count || 0) > 0) {
-        throw new Error('INVOICE_HAS_ALLOCATED_PAYMENTS: Reverse all payments and credits before voiding this invoice');
+        throw new FinancialActionDomainError('INVOICE_HAS_ALLOCATED_PAYMENTS: Reverse all payments and credits before voiding this invoice', 409, 'INVOICE_HAS_ALLOCATED_PAYMENTS');
       }
-      if (!invoice.journal_entry_id) throw new Error('Invoice has no certified posting journal to reverse');
+      if (!invoice.journal_entry_id) throw new FinancialActionDomainError('Invoice has no certified posting journal to reverse', 409, 'INVOICE_POSTING_JOURNAL_MISSING');
+      const auditEntries: AuditBatchEntry[] = [];
 
       const reversalJournalId = await this.reversePostedJournal(
         client, organizationId, invoice.journal_entry_id, userId, normalizedReason,
@@ -148,28 +168,28 @@ export class FinancialDestructiveActionsService {
       );
       const updated = await client.query(
         `UPDATE invoices
-            SET status = 'VOIDED', balance_due = 0,
+            SET status = 'VOIDED', balance_due = 0, edit_version = edit_version + 1,
                 reversal_journal_id = $1, reversed_at = CURRENT_TIMESTAMP,
                 reversed_by = $2, reversal_reason = $3
           WHERE organization_id = $4 AND id = $5
             AND UPPER(status) NOT IN ('VOID', 'VOIDED')`,
         [reversalJournalId, userId, normalizedReason, organizationId, invoiceId]
       );
-      if (updated.rowCount !== 1) throw new Error('Invoice state changed concurrently');
+      if (updated.rowCount !== 1) throw new FinancialActionDomainError('Invoice state changed concurrently', 409, 'INVOICE_STATE_CHANGED');
       if (invoice.sales_order_id) {
-        const salesOrder = await client.query(
-          `SELECT total_amount, invoiced_amount FROM sales_orders
-            WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
-          [organizationId, invoice.sales_order_id]
-        );
-        if (salesOrder.rows.length !== 1) throw new Error('Invoice source sales order was not found');
-        const newInvoicedCents = databaseMoneyToCents(salesOrder.rows[0].invoiced_amount, 'Sales order invoiced amount')
+        const newInvoicedCents = databaseMoneyToCents(lockedSalesOrder.invoiced_amount, 'Sales order invoiced amount')
           - databaseMoneyToCents(invoice.total_amount, 'Voided invoice total');
         if (newInvoicedCents < 0n) throw new Error('Invoice total exceeds the sales order invoiced amount');
-        const orderTotalCents = databaseMoneyToCents(salesOrder.rows[0].total_amount, 'Sales order total');
-        const orderStatus = newInvoicedCents === 0n
-          ? 'CONFIRMED'
-          : newInvoicedCents >= orderTotalCents ? 'INVOICED' : 'PARTIALLY_INVOICED';
+        const orderTotalCents = databaseMoneyToCents(lockedSalesOrder.total_amount, 'Sales order total');
+        const fulfilledCents = databaseMoneyToCents(lockedSalesOrder.fulfilled_amount, 'Sales order fulfilled amount');
+        if (newInvoicedCents > orderTotalCents || fulfilledCents < 0n || fulfilledCents > orderTotalCents) throw new Error('Sales order counters are inconsistent; invoice void is blocked');
+        const currentStatus = String(lockedSalesOrder.status || '').trim().toUpperCase().replace(/\s+/g, '_');
+        const orderStatus = ['CANCELLED', 'CLOSED'].includes(currentStatus) ? currentStatus
+          : newInvoicedCents === orderTotalCents && orderTotalCents > 0n ? 'INVOICED'
+          : newInvoicedCents > 0n ? 'PARTIALLY_INVOICED'
+          : fulfilledCents === orderTotalCents && orderTotalCents > 0n ? 'FULFILLED'
+          : fulfilledCents > 0n ? 'PARTIALLY_FULFILLED'
+          : ['DRAFT', 'CONFIRMED', 'IN_PRODUCTION', 'SHIPPED'].includes(currentStatus) ? currentStatus : 'CONFIRMED';
         await client.query(
           `UPDATE sales_orders SET invoiced_amount = $1, status = $2
             WHERE organization_id = $3 AND id = $4`,
@@ -192,10 +212,11 @@ export class FinancialDestructiveActionsService {
             WHERE organization_id = $1 AND invoice_id = $2`,
           [organizationId, invoiceId]
         );
-        await this.audit(client, organizationId, userId, 'EXPENSES_RELEASED_FROM_VOIDED_INVOICE', 'Invoice', invoiceId,
-          { linkedExpenseCount: linkedExpenses.rows.length, releasedIds: linkedExpenses.rows.map((e: any) => e.id) },
-          { isBilled: false, invoiceId: null, reason: normalizedReason }
-        );
+        auditEntries.push({
+          userId, action: 'EXPENSES_RELEASED_FROM_VOIDED_INVOICE', entityType: 'Invoice', entityId: invoiceId,
+          beforeState: { linkedExpenseCount: linkedExpenses.rows.length, releasedIds: linkedExpenses.rows.map((e: any) => e.id) },
+          afterState: { isBilled: false, invoiceId: null, reason: normalizedReason },
+        });
       }
 
       const customerId = invoice.customer_id || invoice.client_id;
@@ -208,11 +229,16 @@ export class FinancialDestructiveActionsService {
         );
       }
 
-      await this.audit(client, organizationId, userId, 'INVOICE_VOIDED', 'Invoice', invoiceId,
-        { status: invoice.status, balanceDue: invoice.balance_due },
-        { status: 'VOIDED', balanceDue: 0, reversalJournalId, reason: normalizedReason });
+      auditEntries.push({
+        userId, action: 'INVOICE_VOIDED', entityType: 'Invoice', entityId: invoiceId,
+        beforeState: { status: invoice.status, balanceDue: invoice.balance_due },
+        afterState: { status: 'VOIDED', balanceDue: 0, reversalJournalId, reason: normalizedReason },
+      });
       await DocumentLifecycleHelper.onDocumentVoided(organizationId, 'INVOICE', invoiceId, client, normalizedReason);
-      return { success: true, invoiceId, journalEntryId: reversalJournalId };
+      const auditEntriesWritten = await AuditTrailService.appendBatchInTransaction(client, organizationId, auditEntries, { strict: true });
+      const voidAudit = auditEntriesWritten.find((entry) => entry.action === 'INVOICE_VOIDED');
+      if (!voidAudit) throw new Error('Invoice void audit evidence was not written');
+      return { success: true, invoiceId, journalEntryId: reversalJournalId, auditLogId: voidAudit.id };
     });
   }
 
@@ -281,7 +307,7 @@ export class FinancialDestructiveActionsService {
           - databaseMoneyToCents(invoice.amount_written_off, 'Invoice written-off amount');
         const status = newBalanceCents === 0n ? 'PAID' : newPaidCents > 0n ? 'PARTIALLY_PAID' : 'POSTED';
         await client.query(
-          `UPDATE invoices SET paid_amount = $1, balance_due = $2, status = $3
+          `UPDATE invoices SET paid_amount = $1, balance_due = $2, status = $3, edit_version = edit_version + 1
             WHERE organization_id = $4 AND id = $5`,
           [Number(newPaidCents) / 100, Number(newBalanceCents) / 100, status, organizationId, invoice.id]
         );
@@ -318,7 +344,7 @@ export class FinancialDestructiveActionsService {
       );
       const updated = await client.query(
         `UPDATE payments_received
-            SET status = 'REVERSED', unallocated_amount = 0,
+            SET status = 'REVERSED', unallocated_amount_before_reversal = unallocated_amount, unallocated_amount = 0,
                 reversal_journal_id = $1, reversed_at = CURRENT_TIMESTAMP,
                 reversed_by = $2, reversal_reason = $3
           WHERE organization_id = $4 AND id = $5 AND UPPER(status) <> 'REVERSED'`,
@@ -326,8 +352,8 @@ export class FinancialDestructiveActionsService {
       );
       if (updated.rowCount !== 1) throw new Error('Payment state changed concurrently');
       await this.audit(client, organizationId, userId, 'PAYMENT_RECEIVED_REVERSED', 'PaymentReceived', paymentId,
-        { status: payment.status, amount: payment.amount },
-        { status: 'REVERSED', reversalJournalId, reason: normalizedReason });
+        { status: payment.status, amount: payment.amount, unallocatedAmount: payment.unallocated_amount },
+        { status: 'REVERSED', reversalJournalId, reason: normalizedReason, unallocatedAmountBeforeReversal: payment.unallocated_amount });
       await DocumentLifecycleHelper.onDocumentReversed(organizationId, 'CUSTOMER_PAYMENT', paymentId, client, normalizedReason);
       return { success: true, paymentId, journalEntryId: reversalJournalId };
     });
@@ -498,7 +524,7 @@ export class FinancialDestructiveActionsService {
           - databaseMoneyToCents(invoice.amount_written_off, 'Invoice written-off amount');
         const status = newBalance === 0n ? 'PAID' : databaseMoneyToCents(invoice.paid_amount, 'Invoice paid amount') > 0n ? 'PARTIALLY_PAID' : 'POSTED';
         await client.query(
-          `UPDATE invoices SET amount_credited = $1, balance_due = $2, status = $3
+          `UPDATE invoices SET amount_credited = $1, balance_due = $2, status = $3, edit_version = edit_version + 1
             WHERE organization_id = $4 AND id = $5`,
           [Number(newCredited) / 100, Number(newBalance) / 100, status, organizationId, invoice.id]
         );

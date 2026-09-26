@@ -156,6 +156,26 @@ describe('Mobile Dashboard UI (Light Mode) Test Suite', () => {
     expect(mockOnNavigate).toHaveBeenCalledWith('bills');
   });
 
+  it('puts authoritative attention actions before mobile summary metrics', async () => {
+    vi.mocked(apiClient.get).mockResolvedValue({
+      data: { dashboard: mockDashboardData as any },
+      error: null,
+      status: 200,
+    });
+
+    render(<DashboardView onNavigate={mockOnNavigate} />);
+
+    const mobile = await screen.findByTestId('mobile-dashboard-overview');
+    const attention = within(mobile).getByTestId('mobile-dashboard-attention');
+    const metrics = within(mobile).getByTestId('mobile-dashboard-primary-metrics');
+    expect(Boolean(attention.compareDocumentPosition(metrics) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    expect(within(attention).getByText('Overdue customer invoices')).toBeTruthy();
+    expect(within(attention).getByText('Overdue vendor bills')).toBeTruthy();
+    expect(within(attention).getByText(/2 actions/i)).toBeTruthy();
+
+    fireEvent.click(within(attention).getByRole('button', { name: 'Review Overdue customer invoices' }));
+    expect(mockOnNavigate).toHaveBeenCalledWith('invoices');
+  });
   it('2. Quick Create section provides Customer, Expense, Quote, and Invoices actions', async () => {
     vi.mocked(apiClient.get).mockResolvedValue({
       data: { dashboard: mockDashboardData as any },
@@ -271,8 +291,8 @@ describe('Mobile Dashboard UI (Light Mode) Test Suite', () => {
     expect(within(mobile).getByText('Banking Summary')).toBeTruthy();
     expect(within(mobile).getByText('Uncategorised Transactions')).toBeTruthy();
     expect(within(mobile).getByText('177')).toBeTruthy();
-    expect(within(mobile).getByText('Bank Balance')).toBeTruthy();
-    expect(within(mobile).getByText('Cash In Hand')).toBeTruthy();
+    expect(within(mobile).getByText('Liquid Cash & Bank')).toBeTruthy();
+    expect(within(mobile).queryByText('Cash In Hand')).toBeNull();
   });
 
   it('6. Floating MobileBottomNav renders Home, Customers, Invoices, Expenses, More', () => {

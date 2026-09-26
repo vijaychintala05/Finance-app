@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   FileText,
   Star,
@@ -28,10 +28,13 @@ import {
   CheckSquare,
   Tag,
   Hash,
+  RotateCcw,
 } from 'lucide-react';
 import { useBooks } from '../../context/BooksContext';
 import { apiClient } from '../../api/client';
 import { formatCurrency } from '../../utils/formatters';
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import type { PDFDocumentProxy } from 'pdfjs-dist';
 import type { DocumentTemplateCategory, DocumentTemplateConfig } from '../../types';
 
 export interface DocumentCategoryDef {
@@ -66,7 +69,7 @@ export const DOCUMENT_CATEGORIES: DocumentCategoryDef[] = [
     title: 'Delivery Challan Templates',
     singular: 'Delivery Challan',
     defaultTitle: 'DELIVERY CHALLAN',
-    description: 'Goods transit documents, dispatch notes & delivery receipts',
+    description: 'Delivery challan layouts with optional dispatch details',
   },
   {
     id: 'invoices',
@@ -74,7 +77,7 @@ export const DOCUMENT_CATEGORIES: DocumentCategoryDef[] = [
     title: 'Invoice Templates',
     singular: 'Tax Invoice',
     defaultTitle: 'TAX INVOICE',
-    description: 'Official tax invoices, commercial bills & export invoices',
+    description: 'Invoice layouts for customer billing documents',
   },
   {
     id: 'credit-notes',
@@ -82,7 +85,7 @@ export const DOCUMENT_CATEGORIES: DocumentCategoryDef[] = [
     title: 'Credit Note Templates',
     singular: 'Credit Note',
     defaultTitle: 'CREDIT NOTE',
-    description: 'Sales return memoranda, credit allowances & rate adjustments',
+    description: 'Credit notes for customer account adjustments',
   },
   {
     id: 'purchase-orders',
@@ -90,7 +93,7 @@ export const DOCUMENT_CATEGORIES: DocumentCategoryDef[] = [
     title: 'Purchase Order Templates',
     singular: 'Purchase Order',
     defaultTitle: 'PURCHASE ORDER',
-    description: 'Procurement orders issued to verified vendors and suppliers',
+    description: 'Purchase orders and related procurement layouts',
   },
   {
     id: 'payment-receipts',
@@ -98,7 +101,7 @@ export const DOCUMENT_CATEGORIES: DocumentCategoryDef[] = [
     title: 'Payment Receipt Templates',
     singular: 'Payment Receipt',
     defaultTitle: 'PAYMENT RECEIPT',
-    description: 'Formal cash & electronic receipt acknowledgments issued to customers',
+    description: 'Customer payment receipts and allocation summaries',
   },
   {
     id: 'customer-statements',
@@ -106,7 +109,7 @@ export const DOCUMENT_CATEGORIES: DocumentCategoryDef[] = [
     title: 'Customer Statement Templates',
     singular: 'Customer Statement',
     defaultTitle: 'STATEMENT OF ACCOUNT',
-    description: 'Periodic ledger statements, aging summaries & outstanding invoices',
+    description: 'Customer account activity and balance statements',
   },
   {
     id: 'bills',
@@ -114,7 +117,7 @@ export const DOCUMENT_CATEGORIES: DocumentCategoryDef[] = [
     title: 'Bill Templates',
     singular: 'Vendor Bill',
     defaultTitle: 'VENDOR BILL',
-    description: 'Inward vendor bills, accounts payable records & debit vouchers',
+    description: 'Vendor bills and payable summaries',
   },
   {
     id: 'expenses',
@@ -122,7 +125,7 @@ export const DOCUMENT_CATEGORIES: DocumentCategoryDef[] = [
     title: 'Expense Templates',
     singular: 'Expense Voucher',
     defaultTitle: 'EXPENSE VOUCHER',
-    description: 'Internal payment vouchers, employee reimbursements & petty cash',
+    description: 'Expense records with available category and tax details',
   },
   {
     id: 'vendor-credits',
@@ -130,7 +133,7 @@ export const DOCUMENT_CATEGORIES: DocumentCategoryDef[] = [
     title: 'Vendor Credit Templates',
     singular: 'Vendor Credit',
     defaultTitle: 'VENDOR CREDIT',
-    description: 'Debit notes and return credits against vendor balances',
+    description: 'Vendor credits and balance adjustments',
   },
   {
     id: 'vendor-payments',
@@ -138,7 +141,7 @@ export const DOCUMENT_CATEGORIES: DocumentCategoryDef[] = [
     title: 'Vendor Payment Templates',
     singular: 'Payment Advice',
     defaultTitle: 'PAYMENT ADVICE',
-    description: 'Remittance advice and electronic settlement vouchers',
+    description: 'Vendor payment records and available bill allocations',
   },
   {
     id: 'vendor-statements',
@@ -154,7 +157,7 @@ export const DOCUMENT_CATEGORIES: DocumentCategoryDef[] = [
     title: 'Journal Templates',
     singular: 'Journal Voucher',
     defaultTitle: 'JOURNAL VOUCHER',
-    description: 'Double-entry accounting journal vouchers and adjusting entries',
+    description: 'Journal entries with account postings and debit-credit totals',
   },
 ];
 
@@ -177,76 +180,74 @@ export const isTemplateMatching = (id1?: string, id2?: string): boolean => {
 
 export const CATEGORY_TEMPLATES: Record<DocumentTemplateCategory, CategoryTemplateItem[]> = {
   quotes: [
-    { id: 'spreadsheet', name: 'Spreadsheet Template', tagline: 'Classic Ledger Grid', description: 'Itemized formal estimate with spreadsheet grid, rate calculations & validity terms.', badgeText: 'Spreadsheet', presetTitle: 'COMMERCIAL QUOTATION' },
-    { id: 'standard', name: 'Standard Template', tagline: 'Corporate Modern Proposal', description: 'Modern branded header, clean proposal scope & client approval signature.', badgeText: 'Standard', presetTitle: 'FORMAL ESTIMATE' },
-    { id: 'modern', name: 'Modern Minimalist', tagline: 'Executive Minimalist', description: 'Minimalist layout with project milestones, payment schedule & acceptance block.', badgeText: 'Modern', presetTitle: 'PROPOSAL / BID' },
-    { id: 'compact', name: 'Compact Slip Template', tagline: 'Dense Rate Slip', description: 'Compact single-page rate card & service quote with fast turn-around terms.', badgeText: 'Compact', presetTitle: 'QUOTATION' },
+    { id: 'proposal', name: 'Standard Quote', tagline: 'Standard Header', description: 'Quote details, line items, totals and terms in the standard header layout.', badgeText: 'Standard', presetTitle: 'FORMAL ESTIMATE' },
+    { id: 'commercial', name: 'Ledger Quote', tagline: 'Ledger Header', description: 'Quote details, line items, totals and terms in the ledger header layout.', badgeText: 'Ledger', presetTitle: 'COMMERCIAL QUOTATION' },
+    { id: 'milestone-proposal', name: 'Proposal / Bid', tagline: 'Standard Header', description: 'Quote details, line items, totals and terms in the standard header layout.', badgeText: 'Standard', presetTitle: 'PROPOSAL / BID' },
+    { id: 'compact', name: 'Compact Quote', tagline: 'Compact Header', description: 'Quote details, line items, totals and terms in the compact header layout.', badgeText: 'Compact', presetTitle: 'QUOTATION' },
   ],
   'sales-orders': [
-    { id: 'standard', name: 'Standard Sales Order', tagline: 'Order Confirmation', description: 'Comprehensive booking details, customer PO reference, delivery method & terms.', badgeText: 'Standard', presetTitle: 'SALES ORDER' },
-    { id: 'spreadsheet', name: 'Commercial Order Ledger', tagline: 'Inventory Grid', description: 'Detailed itemized order breakdown with warehouse/bin location and quantity pending.', badgeText: 'Spreadsheet', presetTitle: 'ORDER CONFIRMATION' },
-    { id: 'modern', name: 'Dispatch Booking Slip', tagline: 'Modern Booking', description: 'Clean shipping destination comparison, transporter details & delivery milestones.', badgeText: 'Modern', presetTitle: 'BOOKING SLIP' },
+    { id: 'confirmation', name: 'Standard Sales Order', tagline: 'Standard Header', description: 'Order lines, totals and available customer PO and delivery details in the standard header layout.', badgeText: 'Standard', presetTitle: 'SALES ORDER' },
+    { id: 'commercial', name: 'Ledger Sales Order', tagline: 'Ledger Header', description: 'Order lines, totals and available customer PO and delivery details in the ledger header layout.', badgeText: 'Ledger', presetTitle: 'ORDER CONFIRMATION' },
+    { id: 'fulfillment', name: 'Compact Sales Order', tagline: 'Compact Header', description: 'Order lines, totals and available customer PO and delivery details in the compact header layout.', badgeText: 'Compact', presetTitle: 'SALES ORDER' },
   ],
   'delivery-challans': [
-    { id: 'standard', name: 'Standard Delivery Challan', tagline: 'Goods Transit Voucher', description: 'GST compliant delivery challan with E-Way Bill #, Vehicle #, Transporter details & goods received sign.', badgeText: 'Statutory', presetTitle: 'DELIVERY CHALLAN' },
-    { id: 'dispatch', name: 'Packaging & Transit Slip', tagline: 'Logistics Manifest', description: 'Package count, gross weight, dispatch checklist and consignee acknowledgment.', badgeText: 'Logistics', presetTitle: 'DISPATCH NOTE' },
-    { id: 'jobwork', name: 'Job Work Returnable Challan', tagline: 'Process Transit Note', description: 'Returnable material movement note with nature of processing & expected return date.', badgeText: 'Job Work', presetTitle: 'RETURNABLE CHALLAN' },
+    { id: 'dispatch', name: 'Standard Delivery Challan', tagline: 'Standard Header', description: 'Challan items, quantities and available dispatch details in the standard header layout.', badgeText: 'Standard', presetTitle: 'DELIVERY CHALLAN' },
+    { id: 'packing-list', name: 'Dispatch Note', tagline: 'Standard Header', description: 'The same challan details in the standard header layout; packages can be shown or hidden.', badgeText: 'Standard', presetTitle: 'DISPATCH NOTE' },
+    { id: 'jobwork', name: 'Compact Challan Layout', tagline: 'Compact Header', description: 'Challan details arranged in the compact header layout.', badgeText: 'Compact', presetTitle: 'DELIVERY CHALLAN' },
   ],
   invoices: [
-    { id: 'standard', name: 'Standard Tax Invoice', tagline: 'Corporate GST Compliant', description: 'Official tax invoice with GSTIN, HSN/SAC, CGST/SGST/IGST breakdown, bank details & UPI QR.', badgeText: 'Tax Invoice', presetTitle: 'TAX INVOICE' },
-    { id: 'spreadsheet', name: 'Spreadsheet Invoice', tagline: 'Accountant Ledger Grid', description: 'Crisp bordered grid cells, ledger lines, item discount column, tax schedule & accountant totals.', badgeText: 'Spreadsheet', presetTitle: 'TAX INVOICE' },
-    { id: 'export', name: 'Export / SEZ Invoice', tagline: 'Cross-Border Commercial', description: 'Foreign currency invoice, LUT/Bond reference, Port of loading, IEC code & shipping bill details.', badgeText: 'Export', presetTitle: 'COMMERCIAL EXPORT INVOICE' },
-    { id: 'pos', name: 'Retail / POS Slip', tagline: 'Compact Receipt Print', description: 'Compact thermal & counter receipt layout with barcode/QR code & instant payment stamp.', badgeText: 'POS Slip', presetTitle: 'RETAIL INVOICE' },
+    { id: 'tax-invoice', name: 'Standard Tax Invoice', tagline: 'Standard Header', description: 'Invoice lines, available tax and discount totals, amount in words, notes and organization bank details in the standard header layout.', badgeText: 'Tax Invoice', presetTitle: 'TAX INVOICE' },
+    { id: 'ledger-invoice', name: 'Ledger Invoice', tagline: 'Ledger Header', description: 'Invoice details arranged in the ledger header layout.', badgeText: 'Ledger', presetTitle: 'TAX INVOICE' },
+    { id: 'export', name: 'Alternate Ledger Invoice', tagline: 'Ledger Header', description: 'Invoice details in an alternate ledger composition; export-specific fields are not included.', badgeText: 'Ledger', presetTitle: 'INVOICE' },
+    { id: 'pos', name: 'Compact Invoice', tagline: 'Compact Header', description: 'Invoice details arranged in the compact header layout.', badgeText: 'Compact', presetTitle: 'RETAIL INVOICE' },
   ],
   'credit-notes': [
-    { id: 'standard', name: 'Standard Credit Note', tagline: 'Statutory Credit Memo', description: 'Original invoice cross-reference, return reason, tax adjustment & customer balance credit.', badgeText: 'Credit Memo', presetTitle: 'CREDIT NOTE' },
-    { id: 'spreadsheet', name: 'Sales Return Memo', tagline: 'Detailed Item Adjustment', description: 'Item-by-item rate difference, goods returned ledger & reverse tax calculation.', badgeText: 'Spreadsheet', presetTitle: 'SALES RETURN VOUCHER' },
-    { id: 'adjustment', name: 'Adjustment Memorandum', tagline: 'Controlled Adjustment', description: 'Compact adjustment document with reason, approval reference and customer balance impact.', badgeText: 'Adjustment', presetTitle: 'CREDIT ADJUSTMENT MEMO' },
+    { id: 'statutory', name: 'Standard Credit Note', tagline: 'Formal Credit Memo', description: 'Formal credit memo with a dedicated reason panel and prominent credit value; no unsupported item or tax split is shown.', badgeText: 'Credit Memo', presetTitle: 'CREDIT NOTE' },
+    { id: 'goods-return', name: 'Credit Application Ledger', tagline: 'Return Credit Ledger', description: 'Application ledger with reason, total, remaining credit and posted invoice applications; no returned-item or tax details are invented.', badgeText: 'Credit Ledger', presetTitle: 'CREDIT NOTE' },
+    { id: 'adjustment', name: 'Compact Credit Note', tagline: 'Adjustment Slip', description: 'Compact value-first adjustment slip with its own reason panel and available-credit balance; no unsupported item or tax split is shown.', badgeText: 'Adjustment', presetTitle: 'CREDIT ADJUSTMENT MEMO' },
   ],
   'purchase-orders': [
-    { id: 'standard', name: 'Standard Purchase Order', tagline: 'Procurement Order', description: 'Vendor address, shipping terms, delivery destination, item specs & purchasing manager signature.', badgeText: 'Procurement', presetTitle: 'PURCHASE ORDER' },
-    { id: 'contract', name: 'Formal Procurement Contract', tagline: 'Contractual PO', description: 'Detailed purchase terms, quality inspection clauses, delivery SLA & payment schedule.', badgeText: 'Contract', presetTitle: 'PROCUREMENT CONTRACT' },
-    { id: 'requisition', name: 'Material Requisition Slip', tagline: 'Stores Order', description: 'Department code, requisition voucher reference & stores receipt acknowledgment.', badgeText: 'Internal', presetTitle: 'MATERIAL REQUISITION' },
+    { id: 'standard-po', name: 'Standard Purchase Order', tagline: 'Standard Header', description: 'Purchase order lines and available delivery destination and date details in the standard header layout.', badgeText: 'Procurement', presetTitle: 'PURCHASE ORDER' },
+    { id: 'contract-po', name: 'Ledger Purchase Order', tagline: 'Ledger Header', description: 'Purchase order details arranged in the ledger header layout.', badgeText: 'Ledger', presetTitle: 'PURCHASE ORDER' },
+    { id: 'requisition', name: 'Compact Purchase Order', tagline: 'Compact Header', description: 'Purchase order details arranged in the compact header layout.', badgeText: 'Compact', presetTitle: 'PURCHASE ORDER' },
   ],
   'payment-receipts': [
-    { id: 'standard', name: 'Standard Receipt Voucher', tagline: 'Official Payment Receipt', description: 'Received with thanks from customer, payment mode (NEFT/UPI/Cheque), invoices settled table & stamp.', badgeText: 'Receipt', presetTitle: 'PAYMENT RECEIPT' },
-    { id: 'compact', name: 'Formal Cash Receipt', tagline: 'Counter Slip Voucher', description: 'Compact voucher with amount in words, payment reference number & cashier signature block.', badgeText: 'Cash Voucher', presetTitle: 'CASH RECEIPT SLIP' },
-    { id: 'acknowledgment', name: 'Payment Acknowledgment', tagline: 'Settlement Certificate', description: 'Detailed remittance certificate with electronic clearing reference and balance remaining.', badgeText: 'Certificate', presetTitle: 'ACKNOWLEDGMENT VOUCHER' },
+    { id: 'receipt-voucher', name: 'Standard Receipt Voucher', tagline: 'Standard Header', description: 'Receipt amount, payment details and allocations in the standard header layout.', badgeText: 'Receipt', presetTitle: 'PAYMENT RECEIPT' },
+    { id: 'cash-receipt', name: 'Compact Receipt Layout', tagline: 'Compact Header', description: 'Receipt details arranged in the compact header layout.', badgeText: 'Compact', presetTitle: 'PAYMENT RECEIPT' },
+    { id: 'allocation-advice', name: 'Ledger Receipt Layout', tagline: 'Ledger Header', description: 'Receipt details arranged in the ledger header layout.', badgeText: 'Ledger', presetTitle: 'PAYMENT RECEIPT' },
   ],
   'customer-statements': [
-    { id: 'ledger', name: 'Detailed Transaction Ledger', tagline: 'Running Balance Statement', description: 'Opening balance, chronologically sorted debit invoices, credit receipts & running account balance.', badgeText: 'Ledger', presetTitle: 'STATEMENT OF ACCOUNT' },
-    { id: 'aging', name: 'Outstanding Aging Statement', tagline: 'Aging Buckets Analysis', description: 'Summary of unpaid balances categorized into 0-30, 31-60, 61-90, and 90+ day aging intervals.', badgeText: 'Aging Summary', presetTitle: 'OUTSTANDING SUMMARY' },
-    { id: 'summary', name: 'Account Summary', tagline: 'Executive Balance Note', description: 'Concise account period summary with opening, movements, closing balance and payment guidance.', badgeText: 'Summary', presetTitle: 'CUSTOMER ACCOUNT SUMMARY' },
-  ],
-  bills: [
-    { id: 'standard', name: 'Vendor Bill Voucher', tagline: 'Payables Entry Slip', description: 'Vendor invoice record, expense account allocation, input tax credit (ITC) status & approval.', badgeText: 'Payables', presetTitle: 'VENDOR BILL VOUCHER' },
-    { id: 'accrual', name: 'AP Accrual Voucher', tagline: 'Accrual Entry Slip', description: 'Accounts payable accrual note with purchase order reference and matching invoice log.', badgeText: 'Accrual', presetTitle: 'AP ACCRUAL VOUCHER' },
-    { id: 'matching', name: 'Three-Way Match Voucher', tagline: 'Receiving Control', description: 'Payables voucher designed for purchase-order, receipt and vendor-invoice matching.', badgeText: 'Matching', presetTitle: 'THREE-WAY MATCH VOUCHER' },
+    { id: 'running-ledger', name: 'Detailed Transaction Ledger', tagline: 'Ledger Header', description: 'Dated transactions with references, debit, credit, optional running balance, opening balance and closing total.', badgeText: 'Ledger', presetTitle: 'STATEMENT OF ACCOUNT' },
+    { id: 'aging-statement', name: 'Receivables Activity Summary', tagline: 'Standard Header', description: 'Receivables activity totals and closing balance without a transaction table or aging buckets.', badgeText: 'Activity Summary', presetTitle: 'RECEIVABLES ACTIVITY SUMMARY' },
+    { id: 'open-summary', name: 'Account Summary', tagline: 'Compact Header', description: 'Opening balance, transaction count and closing balance in an overview without a transaction table.', badgeText: 'Summary', presetTitle: 'CUSTOMER ACCOUNT SUMMARY' },
+  ],  bills: [
+    { id: 'bill-itc', name: 'Standard Vendor Bill', tagline: 'Standard Header', description: 'Bill lines, available tax and discount totals, total and notes in the standard header layout.', badgeText: 'Payables', presetTitle: 'VENDOR BILL VOUCHER' },
+    { id: 'accrual-voucher', name: 'Ledger Vendor Bill', tagline: 'Ledger Header', description: 'Vendor bill details arranged in the ledger header layout.', badgeText: 'Ledger', presetTitle: 'VENDOR BILL' },
+    { id: 'matching', name: 'Compact Vendor Bill', tagline: 'Compact Header', description: 'Vendor bill details arranged in the compact header layout.', badgeText: 'Compact', presetTitle: 'VENDOR BILL' },
   ],
   expenses: [
-    { id: 'reimburse', name: 'Expense Reimbursement Voucher', tagline: 'Employee Claim Slip', description: 'Claimant details, expense category breakdown, receipts audit verification & manager sign-off.', badgeText: 'Claim', presetTitle: 'EXPENSE CLAIM VOUCHER' },
-    { id: 'petty', name: 'Petty Cash Slip', tagline: 'Imprest Cash Voucher', description: 'Petty cash disbursement note, payee signature, cashier verification & balance on hand.', badgeText: 'Petty Cash', presetTitle: 'PETTY CASH VOUCHER' },
-    { id: 'standard', name: 'Expense Payment Voucher', tagline: 'Ledger Payment Proof', description: 'General expense voucher with payment account, vendor reference and posted ledger lines.', badgeText: 'Voucher', presetTitle: 'EXPENSE PAYMENT VOUCHER' },
+    { id: 'reimbursement', name: 'Standard Expense Voucher', tagline: 'Standard Header', description: 'Expense details and amount with available description, category and TDS information in the standard header layout.', badgeText: 'Standard', presetTitle: 'EXPENSE VOUCHER' },
+    { id: 'petty-cash', name: 'Compact Expense Voucher', tagline: 'Compact Header', description: 'Expense details arranged in the compact header layout.', badgeText: 'Compact', presetTitle: 'EXPENSE VOUCHER' },
+    { id: 'project-billable', name: 'Project Recovery Voucher', tagline: 'Client Recovery', description: 'Project and client billing status with stored expense total, client charge and markup; invoice reference appears only when linked.', badgeText: 'Recovery', presetTitle: 'PROJECT EXPENSE RECOVERY VOUCHER' },
   ],
   'vendor-credits': [
-    { id: 'standard', name: 'Vendor Credit / Debit Note', tagline: 'Payables Debit Memo', description: 'Debit memo issued to vendor, original bill reference, return item specs & credit deduction.', badgeText: 'Debit Note', presetTitle: 'DEBIT NOTE' },
-    { id: 'return', name: 'Purchase Return Voucher', tagline: 'Return to Vendor Note', description: 'Defective/rejected material return memo with transporter reference & credit balance.', badgeText: 'Return', presetTitle: 'PURCHASE RETURN NOTE' },
-    { id: 'adjustment', name: 'Vendor Adjustment Memo', tagline: 'Credit Control', description: 'Controlled vendor credit adjustment with reason, approval and payable balance impact.', badgeText: 'Adjustment', presetTitle: 'VENDOR CREDIT ADJUSTMENT' },
+    { id: 'debit-note', name: 'Standard Vendor Credit', tagline: 'Standard Header', description: 'Vendor credit details, totals and notes with any supplied original-bill or reason details in the standard header layout.', badgeText: 'Vendor Credit', presetTitle: 'VENDOR CREDIT' },
+    { id: 'purchase-return', name: 'Ledger Vendor Credit', tagline: 'Ledger Header', description: 'Vendor credit details arranged in the ledger header layout.', badgeText: 'Ledger', presetTitle: 'VENDOR CREDIT' },
+    { id: 'adjustment-memo', name: 'Compact Vendor Credit', tagline: 'Compact Header', description: 'Vendor credit details arranged in the compact header layout.', badgeText: 'Compact', presetTitle: 'VENDOR CREDIT' },
   ],
   'vendor-payments': [
-    { id: 'advice', name: 'Payment Advice / Remittance Slip', tagline: 'Remittance Slip', description: 'Formal payment advice to vendor with UTR/NEFT transfer reference, list of settled bills & net amount.', badgeText: 'Remittance', presetTitle: 'PAYMENT ADVICE' },
-    { id: 'cheque', name: 'Cheque Disbursement Voucher', tagline: 'Banking Voucher', description: 'Bank clearing voucher with cheque number, drawee bank, vendor acknowledgment & signature.', badgeText: 'Disbursement', presetTitle: 'DISBURSEMENT VOUCHER' },
-    { id: 'settlement', name: 'Settlement Confirmation', tagline: 'Electronic Settlement', description: 'Formal settlement confirmation with paid bills, payment reference and remaining allocation.', badgeText: 'Settlement', presetTitle: 'VENDOR SETTLEMENT CONFIRMATION' },
+    { id: 'remittance-advice', name: 'Standard Vendor Payment Advice', tagline: 'Standard Header', description: 'Payment details, allocations and available settled-bill rows in the standard header layout.', badgeText: 'Remittance', presetTitle: 'PAYMENT ADVICE' },
+    { id: 'cheque-disbursement', name: 'Compact Vendor Payment', tagline: 'Compact Header', description: 'Vendor payment details arranged in the compact header layout.', badgeText: 'Compact', presetTitle: 'VENDOR PAYMENT' },
+    { id: 'allocation-advice', name: 'Ledger Vendor Payment Advice', tagline: 'Ledger Header', description: 'Vendor payment details arranged in the ledger header layout.', badgeText: 'Ledger', presetTitle: 'VENDOR SETTLEMENT CONFIRMATION' },
   ],
   'vendor-statements': [
-    { id: 'payables', name: 'Vendor Payables Statement', tagline: 'Vendor Account Ledger', description: 'Historical ledger of vendor bills received, payments remitted, debit notes & net payables balance.', badgeText: 'Statement', presetTitle: 'VENDOR STATEMENT OF ACCOUNT' },
-    { id: 'aging', name: 'Vendor Aging Analysis', tagline: 'Payables Aging Schedule', description: 'Categorized aging of payables to assist cash management and vendor settlement schedules.', badgeText: 'Aging', presetTitle: 'PAYABLES AGING REPORT' },
-    { id: 'ledger', name: 'Vendor Transaction Ledger', tagline: 'Running Payables Ledger', description: 'Chronological vendor ledger with bills, payments, credits and running payable balance.', badgeText: 'Ledger', presetTitle: 'VENDOR TRANSACTION LEDGER' },
-  ],
-  journals: [
-    { id: 'standard', name: 'General Journal Voucher', tagline: 'Double-Entry Voucher', description: 'Standard accounting journal voucher with accounts debited & credited, line narration & balanced totals.', badgeText: 'Journal', presetTitle: 'JOURNAL VOUCHER' },
-    { id: 'three-tier', name: 'Audit Certified Journal', tagline: '3-Tier Signatory Slip', description: 'Formal audit journal voucher with dedicated "Prepared By", "Checked By", and "Approved By" blocks.', badgeText: 'Audit Certified', presetTitle: 'ADJUSTING JOURNAL VOUCHER' },
-    { id: 'ledger', name: 'Ledger Posting Voucher', tagline: 'Posting Register', description: 'Dense ledger format for account postings, debit-credit totals and audit reference.', badgeText: 'Ledger', presetTitle: 'LEDGER POSTING VOUCHER' },
+    { id: 'vendor-ledger', name: 'Vendor Transaction Ledger', tagline: 'Ledger Header', description: 'Dated vendor transactions with references, debit, credit, optional running balance and opening and closing values.', badgeText: 'Ledger', presetTitle: 'VENDOR TRANSACTION LEDGER' },
+    { id: 'payables-aging', name: 'Payables Activity Summary', tagline: 'Standard Header', description: 'Payables activity totals and closing balance without a transaction table or aging buckets.', badgeText: 'Activity Summary', presetTitle: 'PAYABLES ACTIVITY SUMMARY' },
+    { id: 'reconciliation', name: 'Vendor Balance Overview', tagline: 'Compact Header', description: 'Opening balance, transaction count and closing balance in an overview without a transaction table.', badgeText: 'Overview', presetTitle: 'VENDOR BALANCE OVERVIEW' },
+  ],  journals: [
+    { id: 'general-voucher', name: 'Standard Journal Voucher', tagline: 'Standard Header', description: 'Journal account and narration lines, debit-credit totals and signature blocks in the standard header layout.', badgeText: 'Journal', presetTitle: 'JOURNAL VOUCHER' },
+     { id: 'audit-voucher', name: 'Ledger Journal Voucher', tagline: 'Ledger Header', description: 'Journal details arranged in the ledger header layout.', badgeText: 'Ledger', presetTitle: 'ADJUSTING JOURNAL VOUCHER' },
+    { id: 'adjustment-journal', name: 'Compact Journal Voucher', tagline: 'Compact Header', description: 'Journal details arranged in the compact header layout.', badgeText: 'Compact', presetTitle: 'LEDGER POSTING VOUCHER' },
   ],
 };
 
@@ -254,12 +255,257 @@ export interface PdfTemplatesSettingsProps {
   onNavigateToBranding?: () => void;
 }
 
+// Keep gallery PDF work small: only cards near the viewport request a sample,
+// and no more than two samples are generated at once.
+let galleryPdfActiveRequests = 0;
+const galleryPdfQueue: Array<() => void> = [];
+const withGalleryPdfSlot = async <T,>(work: () => Promise<T>): Promise<T> => {
+  if (galleryPdfActiveRequests >= 2) await new Promise<void>((resolve) => galleryPdfQueue.push(resolve));
+  galleryPdfActiveRequests += 1;
+  try { return await work(); }
+  finally {
+    galleryPdfActiveRequests -= 1;
+    galleryPdfQueue.shift()?.();
+  }
+};
+
+const LEGACY_UNSUPPORTED_PRESET_TITLES: Partial<Record<DocumentTemplateCategory, Record<string, string[]>>> = {
+  'delivery-challans': {
+    'packing-list': ['PACKING LIST & TRANSIT MANIFEST'],
+    jobwork: ['JOB WORK RETURNABLE CHALLAN', 'RETURNABLE CHALLAN'],
+  },
+  invoices: { export: ['COMMERCIAL EXPORT INVOICE', 'COMMERCIAL INVOICE'] },
+  'credit-notes': { 'goods-return': ['SALES RETURN MEMO'] },
+  'purchase-orders': {
+    'contract-po': ['PROCUREMENT CONTRACT ORDER'],
+    requisition: ['MATERIAL REQUISITION SLIP', 'MATERIAL REQUISITION'],
+  },
+  'customer-statements': {
+    'aging-statement': ['RECEIVABLES AGING ANALYSIS', 'RECEIVABLES ACTIVITY SUMMARY'],
+    'open-summary': ['OUTSTANDING INVOICE SUMMARY'],
+  },
+  bills: {
+    'accrual-voucher': ['ACCOUNTS PAYABLE ACCRUAL VOUCHER', 'AP ACCRUAL VOUCHER'],
+    matching: ['PURCHASE MATCHING VOUCHER', 'THREE-WAY MATCH VOUCHER'],
+  },
+  expenses: {
+    reimbursement: ['EXPENSE REIMBURSEMENT VOUCHER', 'EXPENSE CLAIM VOUCHER'],
+    'petty-cash': ['PETTY CASH DISBURSEMENT SLIP', 'PETTY CASH VOUCHER'],
+  },
+  'payment-receipts': { 'cash-receipt': ['CASH RECEIPT SLIP'] },
+  'vendor-credits': { 'debit-note': ['DEBIT NOTE'], 'purchase-return': ['PURCHASE RETURN MEMO', 'PURCHASE RETURN NOTE'] },
+  'vendor-payments': { 'cheque-disbursement': ['CHEQUE DISBURSEMENT VOUCHER'] },
+  'vendor-statements': {
+    'payables-aging': ['PAYABLES AGING REPORT'],
+    reconciliation: ['SUPPLIER RECONCILIATION STATEMENT'],
+  },
+  journals: {
+    'audit-voucher': ['AUDIT CERTIFIED JOURNAL VOUCHER'],
+    'adjustment-journal': ['ADJUSTING JOURNAL VOUCHER'],
+  },
+};
+
+export const isLegacyUnsupportedPresetTitle = (
+  category: DocumentTemplateCategory,
+  modelId: string,
+  title?: string,
+): boolean => Boolean(title && LEGACY_UNSUPPORTED_PRESET_TITLES[category]?.[modelId]?.includes(title.trim().toUpperCase()));
+
+const PdfGalleryThumbnail: React.FC<{ organizationId: string; category: DocumentTemplateCategory; template: CategoryTemplateItem; modelKey: string; fallback: React.ReactNode }> = ({ organizationId, category, template, modelKey, fallback }) => {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [state, setState] = useState<'waiting' | 'loading' | 'ready' | 'error'>('waiting');
+  const cacheKey = `${organizationId}:${category}:${template.id}:${modelKey}`;
+
+  useEffect(() => {
+    let alive = true;
+    let renderTask: { cancel: () => void; promise: Promise<void> } | null = null;
+    let pdfDocument: { destroy: () => Promise<void> } | null = null;
+    const load = async () => {
+      setState('loading');
+      try {
+        const result = await withGalleryPdfSlot(() => apiClient.getBlob(
+          `/finance/documents/${category}/preview/pdf?templateId=${encodeURIComponent(template.id)}`,
+          organizationId,
+        ));
+        if (result.error || !result.data) throw new Error(result.error || 'PDF unavailable');
+        if (!alive) return;
+        const pdfjs = await import('pdfjs-dist/build/pdf.mjs');
+        pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+        const loadingTask = pdfjs.getDocument({ data: new Uint8Array(await result.data.arrayBuffer()) });
+        const document = await loadingTask.promise;
+        pdfDocument = document;
+        if (!alive) return;
+        const page = await document.getPage(1);
+        const host = hostRef.current;
+        const canvas = canvasRef.current;
+        const context = canvas?.getContext('2d');
+        if (!host || !canvas || !context) throw new Error('PDF canvas unavailable');
+        const natural = page.getViewport({ scale: 1 });
+        const scale = Math.min(host.clientWidth / natural.width, host.clientHeight / natural.height);
+        if (!Number.isFinite(scale) || scale <= 0) throw new Error('PDF thumbnail has no display area');
+        const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+        const viewport = page.getViewport({ scale: scale * pixelRatio });
+        canvas.width = Math.ceil(viewport.width);
+        canvas.height = Math.ceil(viewport.height);
+        canvas.style.width = `${viewport.width / pixelRatio}px`;
+        canvas.style.height = `${viewport.height / pixelRatio}px`;
+        renderTask = page.render({ canvas, canvasContext: context, viewport });
+        await renderTask.promise;
+        if (alive) setState('ready');
+      } catch {
+        if (alive) setState('error');
+      } finally {
+        const finishedDocument = pdfDocument;
+        pdfDocument = null;
+        if (finishedDocument) void finishedDocument.destroy();
+      }
+    };
+    const node = hostRef.current;
+    if (!node) return () => { alive = false; };
+    if (typeof IntersectionObserver === 'undefined') void load();
+    else {
+      const observer = new IntersectionObserver((entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) { observer.disconnect(); void load(); }
+      }, { rootMargin: '160px' });
+      observer.observe(node);
+      return () => {
+        alive = false;
+        observer.disconnect();
+        renderTask?.cancel();
+        const pendingDocument = pdfDocument;
+        pdfDocument = null;
+        if (pendingDocument) void pendingDocument.destroy();
+      };
+    }
+    return () => {
+      alive = false;
+      renderTask?.cancel();
+      const pendingDocument = pdfDocument;
+      pdfDocument = null;
+      if (pendingDocument) void pendingDocument.destroy();
+    };
+  }, [cacheKey, category, organizationId, template.id]);
+
+  return <div ref={hostRef} className="absolute inset-0 flex items-center justify-center overflow-hidden" aria-label={`${template.name} PDF thumbnail`}>
+    <canvas ref={canvasRef} role="img" aria-label={`${template.name} rendered PDF page`} className={state === 'ready' ? 'block max-h-full max-w-full' : 'hidden'} />
+    {state !== 'ready' && <>{fallback}{state === 'error' && <span className="absolute right-1 top-1 z-10 rounded bg-white/90 px-1 text-[9px] text-slate-500">PDF unavailable</span>}</>}
+  </div>;
+};
+
+const PdfPreviewPage: React.FC<{ document: PDFDocumentProxy; pageNumber: number; title: string }> = ({ document, pageNumber, title }) => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [rendered, setRendered] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    let renderTask: { cancel: () => void; promise: Promise<void> } | null = null;
+    const renderPage = async () => {
+      const page = await document.getPage(pageNumber);
+      if (!alive) return;
+      const canvas = canvasRef.current;
+      const context = canvas?.getContext('2d');
+      if (!canvas || !context) return;
+      const natural = page.getViewport({ scale: 1 });
+      const availableWidth = canvas.parentElement?.clientWidth || natural.width;
+      const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+      const viewport = page.getViewport({ scale: Math.min(1, availableWidth / natural.width) * pixelRatio });
+      canvas.width = Math.ceil(viewport.width);
+      canvas.height = Math.ceil(viewport.height);
+      canvas.style.width = `${viewport.width / pixelRatio}px`;
+      canvas.style.height = `${viewport.height / pixelRatio}px`;
+      renderTask = page.render({ canvas, canvasContext: context, viewport });
+      await renderTask.promise;
+      if (alive) setRendered(true);
+    };
+    void renderPage().catch(() => { if (alive) setRendered(false); });
+    return () => { alive = false; renderTask?.cancel(); };
+  }, [document, pageNumber]);
+
+  return <div className="w-full bg-white p-2 text-center shadow-sm" aria-label={`${title} page ${pageNumber}`}>
+    {!rendered && <span className="text-xs text-slate-500">Rendering page {pageNumber}…</span>}
+    <canvas ref={canvasRef} role="img" aria-label={`${title} rendered page ${pageNumber}`} className={rendered ? 'mx-auto block max-w-full' : 'hidden'} />
+  </div>;
+};
+
+const FullPdfPreview: React.FC<{ blob: Blob; title: string }> = ({ blob, title }) => {
+  const [document, setDocument] = useState<PDFDocumentProxy | null>(null);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    let loadedDocument: PDFDocumentProxy | null = null;
+    setDocument(null);
+    setError(false);
+    const load = async () => {
+      try {
+        const pdfjs = await import('pdfjs-dist/build/pdf.mjs');
+        pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+        const loadingTask = pdfjs.getDocument({ data: new Uint8Array(await blob.arrayBuffer()) });
+        loadedDocument = await loadingTask.promise;
+        if (alive) setDocument(loadedDocument);
+        else void loadedDocument.destroy();
+      } catch {
+        if (alive) setError(true);
+      }
+    };
+    void load();
+    return () => { alive = false; if (loadedDocument) void loadedDocument.destroy(); };
+  }, [blob]);
+
+  if (error) return <div role="alert" className="p-6 text-center text-sm text-rose-700">The PDF could not be displayed. Refresh the sample to try again.</div>;
+  if (!document) return <div className="p-6 text-center text-sm text-slate-500">Loading PDF pages…</div>;
+  return <div className="space-y-4 p-3" aria-label={`${title} server-rendered PDF sample`}>
+    {Array.from({ length: document.numPages }, (_, index) => <PdfPreviewPage key={index + 1} document={document} pageNumber={index + 1} title={title} />)}
+  </div>;
+};
+
+const PDF_COLOR_THEMES = [
+  { name: 'Classic', primary: '#1e40af', accent: '#0f172a' },
+  { name: 'Teal', primary: '#0f766e', accent: '#134e4a' },
+  { name: 'Copper', primary: '#9a3412', accent: '#431407' },
+  { name: 'Violet', primary: '#6d28d9', accent: '#312e81' },
+  { name: 'Graphite', primary: '#334155', accent: '#0f172a' },
+] as const;
+
+const CategoryIcon: React.FC<{ category: DocumentTemplateCategory; active: boolean }> = ({ category, active }) => {
+  const iconClass = `shrink-0 ${active ? 'text-blue-100' : 'text-slate-400 group-hover:text-blue-600 dark:group-hover:text-blue-400'}`;
+  const iconProps = { size: 15, 'aria-hidden': true as const, className: iconClass };
+  switch (category) {
+    case 'quotes': return <FileText {...iconProps} />;
+    case 'sales-orders': return <ClipboardList {...iconProps} />;
+    case 'delivery-challans': return <Truck {...iconProps} />;
+    case 'invoices': return <Receipt {...iconProps} />;
+    case 'credit-notes':
+    case 'vendor-credits': return <RotateCcw {...iconProps} />;
+    case 'purchase-orders': return <Package {...iconProps} />;
+    case 'payment-receipts':
+    case 'vendor-payments': return <DollarSign {...iconProps} />;
+    case 'customer-statements':
+    case 'vendor-statements': return <FileSpreadsheet {...iconProps} />;
+    case 'bills': return <FileCheck {...iconProps} />;
+    case 'expenses': return <CreditCard {...iconProps} />;
+    case 'journals': return <BookOpen {...iconProps} />;
+  }
+};
+
 export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
   onNavigateToBranding,
 }) => {
   const { currentOrg, settings, updateSettings, refreshOrganizations } = useBooks();
+  const activeOrganizationIdRef = useRef(currentOrg.id);
+  activeOrganizationIdRef.current = currentOrg.id;
+  const organizationGenerationRef = useRef(0);
+  const previewSelectionRef = useRef(0);
+  const generationOrganizationIdRef = useRef(currentOrg.id);
+  if (generationOrganizationIdRef.current !== currentOrg.id) {
+    generationOrganizationIdRef.current = currentOrg.id;
+    organizationGenerationRef.current += 1;
+  }
+  const isActiveOrganizationRequest = (organizationId: string, generation: number) => activeOrganizationIdRef.current === organizationId && organizationGenerationRef.current === generation;
 
   const [activeCategory, setActiveCategory] = useState<DocumentTemplateCategory>('quotes');
+  const [categorySearch, setCategorySearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'default' | 'custom'>('all');
   const [loading, setLoading] = useState(true);
   const [savingDefault, setSavingDefault] = useState<string | null>(null);
@@ -271,14 +517,21 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
   const [optionsActiveTab, setOptionsActiveTab] = useState<'properties' | 'fields' | 'footer'>('properties');
   const [selectedTemplateForCustomizing, setSelectedTemplateForCustomizing] = useState<string | null>(null);
   const [optionsDraft, setOptionsDraft] = useState<DocumentTemplateConfig>({});
+  const [optionsOrganizationId, setOptionsOrganizationId] = useState<string | null>(null);
   const [savingOptions, setSavingOptions] = useState(false);
+  const [templateModelsByCategory, setTemplateModelsByCategory] = useState<Record<string, Array<{ id: string; modelId?: string; configuration?: DocumentTemplateConfig }>>>({});
 
   // Full-Screen Preview Modal
   const [fullPreviewTemplate, setFullPreviewTemplate] = useState<CategoryTemplateItem | null>(null);
+  const [fullPreviewOrganizationId, setFullPreviewOrganizationId] = useState<string | null>(null);
   const [liveDocuments, setLiveDocuments] = useState<Array<{ id: string; label: string; date: string; status: string }>>([]);
   const [selectedLiveDocumentId, setSelectedLiveDocumentId] = useState('');
   const [loadingLiveDocuments, setLoadingLiveDocuments] = useState(false);
   const [openingLivePdf, setOpeningLivePdf] = useState(false);
+  const [openingSamplePdf, setOpeningSamplePdf] = useState(false);
+  const [samplePdfBlob, setSamplePdfBlob] = useState<Blob | null>(null);
+  const samplePreviewRequestRef = useRef(0);
+  const [restoringDefault, setRestoringDefault] = useState(false);
 
   // Brand tokens from context
   const primaryColor = settings.branding?.primaryColor || '#1e40af';
@@ -301,14 +554,12 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
       showDiscount: true,
       showTaxBreakdown: true,
       showBankDetails: true,
-      showUpiQr: true,
       showShippingAddress: true,
       showVehicleDetails: true,
       showEWayBill: true,
       showReceiverAck: true,
       showInvoicesSettled: true,
       showThreeTierSignatures: true,
-      showAgingBuckets: true,
       showRunningBalance: true,
       signatoryTitle: settings.branding?.authorizedSignatoryTitle || 'Authorized Signatory',
       termsAndConditions:
@@ -322,34 +573,82 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
   const activeDefaultTemplateId =
     currentCategoryConfig.defaultTemplate || categoryTemplates[0]?.id || 'standard';
 
-  // Load authoritative document templates from server
+  const loadTemplateModels = useCallback(async (category: DocumentTemplateCategory) => {
+    const organizationId = currentOrg.id;
+    const generation = organizationGenerationRef.current;
+    const result = await apiClient.get<{ templates?: Array<{ id: string; modelId?: string; configuration?: DocumentTemplateConfig }> }>(
+      `/finance/documents/${category}/templates`,
+      organizationId,
+    );
+    if (result.error) throw new Error(result.error);
+    const templates = result.data?.templates || [];
+    if (activeOrganizationIdRef.current === organizationId && organizationGenerationRef.current === generation) {
+      setTemplateModelsByCategory((current) => ({ ...current, [category]: templates }));
+    }
+    return templates;
+  }, [currentOrg.id]);
+
   useEffect(() => {
     let mounted = true;
+    loadTemplateModels(activeCategory).catch((err: any) => {
+      if (mounted) setErrorMsg(err?.message || 'Failed to load template configurations.');
+    });
+    return () => { mounted = false; };
+  }, [activeCategory, loadTemplateModels]);
+
+  useEffect(() => {
+    setTemplateModelsByCategory({});
+    setOptionsDraft({});
+    setOptionsOrganizationId(null);
+    setSelectedTemplateForCustomizing(null);
+    setIsOptionsOpen(false);
+    setFullPreviewTemplate(null);
+    setFullPreviewOrganizationId(null);
+    setSamplePdfBlob(null);
+    setLiveDocuments([]);
+    setSelectedLiveDocumentId('');
+    setErrorMsg(null);
+    setToastMsg(null);
+    setSavingDefault(null);
+    setSavingOptions(false);
+    setRestoringDefault(false);
+    setLoadingLiveDocuments(false);
+    previewSelectionRef.current += 1;
+    samplePreviewRequestRef.current += 1;
+    setOpeningLivePdf(false);
+    setOpeningSamplePdf(false);
+    setLoading(true);
+  }, [currentOrg.id]);
+  // Load authoritative document templates from the active organization.
+  useEffect(() => {
+    let mounted = true;
+    const organizationId = currentOrg.id;
+    const generation = organizationGenerationRef.current;
+    const isCurrent = () => mounted
+      && activeOrganizationIdRef.current === organizationId
+      && organizationGenerationRef.current === generation;
     const fetchOrgProfile = async () => {
       setLoading(true);
       try {
-        const res = await apiClient.get<any>('/organizations/current');
-        if (!mounted) return;
+        const res = await apiClient.get<any>('/organizations/current', organizationId);
+        if (!isCurrent()) return;
         const prof = res.data?.profile;
         if (prof) {
           let dt = prof.documentTemplates;
           if (typeof dt === 'string') {
             try { dt = JSON.parse(dt); } catch { dt = {}; }
           }
-          if (dt && typeof dt === 'object') {
-            updateSettings({ documentTemplates: dt });
-          }
+          if (dt && typeof dt === 'object') updateSettings({ documentTemplates: dt });
         }
       } catch (err: any) {
-        if (!mounted) return;
-        console.error('Failed to load document templates:', err);
+        if (isCurrent()) console.error('Failed to load document templates:', err);
       } finally {
-        if (mounted) setLoading(false);
+        if (isCurrent()) setLoading(false);
       }
     };
-    fetchOrgProfile();
+    void fetchOrgProfile();
     return () => { mounted = false; };
-  }, []);
+  }, [currentOrg.id]);
 
   const showToast = (msg: string) => {
     setToastMsg(msg);
@@ -357,170 +656,286 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
   };
 
   const handleOpenFullPreview = async (template: CategoryTemplateItem) => {
+    const organizationId = currentOrg.id;
+    const generation = organizationGenerationRef.current;
+    const previewSelection = ++previewSelectionRef.current;
+    const sampleRequest = ++samplePreviewRequestRef.current;
     setFullPreviewTemplate(template);
+    setFullPreviewOrganizationId(organizationId);
     setLiveDocuments([]);
     setSelectedLiveDocumentId('');
     setLoadingLiveDocuments(true);
+    setSamplePdfBlob(null);
+    setOpeningSamplePdf(true);
+    void Promise.resolve().then(() => apiClient.getBlob(
+      `/finance/documents/${activeCategory}/preview/pdf?templateId=${encodeURIComponent(template.id)}`,
+      organizationId,
+    )).then((result) => {
+      if (!isActiveOrganizationRequest(organizationId, generation) || previewSelection !== previewSelectionRef.current || sampleRequest !== samplePreviewRequestRef.current) return;
+      if (result.error || !result.data) throw new Error(result.error || 'Could not generate sample preview PDF.');
+      setSamplePdfBlob(result.data);
+    }).catch((err: any) => {
+      if (isActiveOrganizationRequest(organizationId, generation) && previewSelection === previewSelectionRef.current && sampleRequest === samplePreviewRequestRef.current) setErrorMsg(err?.message || 'Could not generate sample preview PDF.');
+    }).finally(() => {
+      if (isActiveOrganizationRequest(organizationId, generation) && previewSelection === previewSelectionRef.current && sampleRequest === samplePreviewRequestRef.current) setOpeningSamplePdf(false);
+    });
     try {
-      const result = await apiClient.get<{ documents?: Array<{ id: string; label: string; date: string; status: string }> }>(`/finance/documents/${activeCategory}/recent`);
+      const result = await apiClient.get<{ documents?: Array<{ id: string; label: string; date: string; status: string }> }>(
+        `/finance/documents/${activeCategory}/recent`, organizationId,
+      );
+      if (!isActiveOrganizationRequest(organizationId, generation) || previewSelection !== previewSelectionRef.current) return;
       if (result.error) throw new Error(result.error);
       const documents = result.data?.documents || [];
       setLiveDocuments(documents);
       setSelectedLiveDocumentId(documents[0]?.id || '');
     } catch (err: any) {
-      setErrorMsg(err?.message || 'Could not load recent documents for a live PDF preview.');
+      if (isActiveOrganizationRequest(organizationId, generation) && previewSelection === previewSelectionRef.current) setErrorMsg(err?.message || 'Could not load recent documents for a live PDF preview.');
     } finally {
-      setLoadingLiveDocuments(false);
+      if (isActiveOrganizationRequest(organizationId, generation) && previewSelection === previewSelectionRef.current) setLoadingLiveDocuments(false);
     }
   };
 
   const handleOpenLivePdf = async () => {
     if (!fullPreviewTemplate || !selectedLiveDocumentId) return;
+    const organizationId = currentOrg.id;
+    const generation = organizationGenerationRef.current;
+    const previewSelection = previewSelectionRef.current;
     setOpeningLivePdf(true);
     try {
-      const result = await apiClient.getBlob(`/finance/documents/${activeCategory}/${selectedLiveDocumentId}/pdf?templateId=${encodeURIComponent(fullPreviewTemplate.id)}`);
+      const result = await apiClient.getBlob(
+        `/finance/documents/${activeCategory}/${selectedLiveDocumentId}/pdf?preview=true&templateId=${encodeURIComponent(fullPreviewTemplate.id)}`,
+        organizationId,
+      );
+      if (!isActiveOrganizationRequest(organizationId, generation) || previewSelection !== previewSelectionRef.current) return;
       if (result.error || !result.data) throw new Error(result.error || 'Could not generate the live PDF.');
       const url = URL.createObjectURL(result.data);
       window.open(url, '_blank', 'noopener,noreferrer');
       window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
     } catch (err: any) {
-      setErrorMsg(err?.message || 'Could not generate the live PDF.');
+      if (isActiveOrganizationRequest(organizationId, generation) && previewSelection === previewSelectionRef.current) setErrorMsg(err?.message || 'Could not generate the live PDF.');
     } finally {
-      setOpeningLivePdf(false);
+      if (isActiveOrganizationRequest(organizationId, generation) && previewSelection === previewSelectionRef.current) setOpeningLivePdf(false);
+    }
+  };
+
+  const handleOpenSamplePdf = async () => {
+    if (!fullPreviewTemplate) return;
+    const organizationId = currentOrg.id;
+    const generation = organizationGenerationRef.current;
+    const sampleRequest = ++samplePreviewRequestRef.current;
+    setOpeningSamplePdf(true);
+    try {
+      const result = await apiClient.getBlob(
+        `/finance/documents/${activeCategory}/preview/pdf?templateId=${encodeURIComponent(fullPreviewTemplate.id)}`,
+        organizationId,
+      );
+      if (!isActiveOrganizationRequest(organizationId, generation) || sampleRequest !== samplePreviewRequestRef.current) return;
+      if (result.error || !result.data) throw new Error(result.error || 'Could not generate sample preview PDF.');
+      setSamplePdfBlob(result.data);
+    } catch (err: any) {
+      if (isActiveOrganizationRequest(organizationId, generation) && sampleRequest === samplePreviewRequestRef.current) setErrorMsg(err?.message || 'Could not generate sample preview PDF.');
+    } finally {
+      if (isActiveOrganizationRequest(organizationId, generation) && sampleRequest === samplePreviewRequestRef.current) setOpeningSamplePdf(false);
+    }
+  };
+
+  // Restore built-in default template and options
+  const handleRestoreDefault = async () => {
+    if (!window.confirm(`Restore built-in default template and configuration for ${activeCategoryDef.label}? Any custom overrides will be reset.`)) return;
+    const organizationId = currentOrg.id;
+    const generation = organizationGenerationRef.current;
+    const category = activeCategory;
+    setRestoringDefault(true);
+    setErrorMsg(null);
+    try {
+      const res = await apiClient.post<any>(`/finance/documents/${category}/templates/restore-default`, undefined, organizationId);
+      if (!isActiveOrganizationRequest(organizationId, generation)) return;
+      if (res.error) throw new Error(res.error);
+      const profRes = await apiClient.get<any>('/organizations/current', organizationId);
+      if (!isActiveOrganizationRequest(organizationId, generation)) return;
+      if (profRes.data?.profile?.documentTemplates) {
+        let dt = profRes.data.profile.documentTemplates;
+        if (typeof dt === 'string') {
+          try { dt = JSON.parse(dt); } catch { dt = {}; }
+        }
+        updateSettings({ documentTemplates: dt });
+      }
+      setOptionsDraft({});
+      setIsOptionsOpen(false);
+      setFullPreviewTemplate(null);
+      setFullPreviewOrganizationId(null);
+      await loadTemplateModels(category);
+      if (!isActiveOrganizationRequest(organizationId, generation)) return;
+      await refreshOrganizations();
+      if (isActiveOrganizationRequest(organizationId, generation)) showToast(`Restored built-in default template for ${activeCategoryDef.label}.`);
+    } catch (err: any) {
+      if (isActiveOrganizationRequest(organizationId, generation)) {
+        console.error('Failed to restore default:', err);
+        setErrorMsg(err.message || 'Failed to restore built-in default.');
+      }
+    } finally {
+      if (isActiveOrganizationRequest(organizationId, generation)) setRestoringDefault(false);
     }
   };
 
   // Set a template as default in real-time
   const handleSetDefault = async (templateId: string) => {
+    const organizationId = currentOrg.id;
+    const generation = organizationGenerationRef.current;
+    const category = activeCategory;
     setSavingDefault(templateId);
     setErrorMsg(null);
     try {
-      const updatedCategoryConfig: DocumentTemplateConfig = {
-        ...currentCategoryConfig,
-        defaultTemplate: templateId,
-      };
-
-      const updatedAllTemplates: Record<string, DocumentTemplateConfig> = {
-        ...docTemplatesMap,
-        [activeCategory]: updatedCategoryConfig,
-      };
-
-      updateSettings({
-        documentTemplates: updatedAllTemplates,
-      });
-
-      const res = await apiClient.patch<any>('/organizations/current', {
-        documentTemplates: updatedAllTemplates,
-      });
-      if (res.error) throw new Error(res.error);
-
+      const serverRes = await apiClient.patch<any>(`/finance/documents/${category}/templates/${encodeURIComponent(templateId)}/default`, undefined, organizationId);
+      if (!isActiveOrganizationRequest(organizationId, generation)) return;
+      if (serverRes.error) throw new Error(serverRes.error);
+      const updatedCategoryConfig: DocumentTemplateConfig = { ...currentCategoryConfig, defaultTemplate: templateId };
+      const updatedAllTemplates: Record<string, DocumentTemplateConfig> = { ...docTemplatesMap, [category]: updatedCategoryConfig };
+      updateSettings({ documentTemplates: updatedAllTemplates });
       await refreshOrganizations();
-
+      if (!isActiveOrganizationRequest(organizationId, generation)) return;
       const styleDef = categoryTemplates.find((t) => isTemplateMatching(templateId, t.id));
-      showToast(`⭐ ${styleDef?.name || templateId} is now the default PDF template for ${activeCategoryDef.label}!`);
+      showToast(`${styleDef?.name || templateId} is now the default PDF template for ${activeCategoryDef.label}.`);
     } catch (err: any) {
-      console.error('Failed to set default template:', err);
-      setErrorMsg(err.message || 'Failed to update default template.');
+      if (isActiveOrganizationRequest(organizationId, generation)) {
+        console.error('Failed to set default template:', err);
+        setErrorMsg(err.message || 'Failed to update default template.');
+      }
     } finally {
-      setSavingDefault(null);
+      if (isActiveOrganizationRequest(organizationId, generation)) setSavingDefault(null);
     }
   };
-
   // Open Options Modal for current category
-  const handleOpenOptions = (templateId?: string, tab: 'properties' | 'fields' | 'footer' = 'properties') => {
-    setSelectedTemplateForCustomizing(templateId || activeDefaultTemplateId);
+  const handleOpenOptions = async (templateId?: string, tab: 'properties' | 'fields' | 'footer' = 'properties') => {
+    const organizationId = currentOrg.id;
+    const generation = organizationGenerationRef.current;
+    const selectedTemplateId = templateId || activeDefaultTemplateId;
+    let models = templateModelsByCategory[activeCategory];
+    if (!models) {
+      try {
+        models = await loadTemplateModels(activeCategory);
+      } catch (err: any) {
+        if (isActiveOrganizationRequest(organizationId, generation)) setErrorMsg(err?.message || 'Failed to load template configuration.');
+        return;
+      }
+    }
+    if (!isActiveOrganizationRequest(organizationId, generation)) return;
+    const selectedModel = models.find((model) => model.modelId === selectedTemplateId || model.id === selectedTemplateId);
+    const selectedTemplateConfig = selectedModel?.configuration || currentCategoryConfig;
+    setOptionsOrganizationId(organizationId);
+    setSelectedTemplateForCustomizing(selectedTemplateId);
     setOptionsActiveTab(tab);
     setOptionsDraft({
-      ...currentCategoryConfig,
-      templateTitle: currentCategoryConfig.templateTitle || activeCategoryDef.defaultTitle,
-      exportFileNamePattern: currentCategoryConfig.exportFileNamePattern || `%{${activeCategoryDef.singular.replace(/\s+/g, '')}Number}_%{PartyName}`,
-      showHsnSac: currentCategoryConfig.showHsnSac ?? true,
-      showDiscount: currentCategoryConfig.showDiscount ?? true,
-      showTaxBreakdown: currentCategoryConfig.showTaxBreakdown ?? true,
-      showBankDetails: currentCategoryConfig.showBankDetails ?? true,
-      showUpiQr: currentCategoryConfig.showUpiQr ?? true,
-      showShippingAddress: currentCategoryConfig.showShippingAddress ?? true,
-      showVehicleDetails: currentCategoryConfig.showVehicleDetails ?? true,
-      showEWayBill: currentCategoryConfig.showEWayBill ?? true,
-      showReceiverAck: currentCategoryConfig.showReceiverAck ?? true,
-      showInvoicesSettled: currentCategoryConfig.showInvoicesSettled ?? true,
-      showThreeTierSignatures: currentCategoryConfig.showThreeTierSignatures ?? true,
-      showAgingBuckets: currentCategoryConfig.showAgingBuckets ?? true,
-      showRunningBalance: currentCategoryConfig.showRunningBalance ?? true,
-      showExpiryDate: currentCategoryConfig.showExpiryDate ?? true,
-      showClientAcceptance: currentCategoryConfig.showClientAcceptance ?? true,
-      showScopeOfWork: currentCategoryConfig.showScopeOfWork ?? true,
-      showPoNumber: currentCategoryConfig.showPoNumber ?? true,
-      showDeliveryDate: currentCategoryConfig.showDeliveryDate ?? true,
-      showTransportDetails: currentCategoryConfig.showTransportDetails ?? true,
-      hideRatesInChallan: currentCategoryConfig.hideRatesInChallan ?? false,
-      showPackageDetails: currentCategoryConfig.showPackageDetails ?? true,
-      showOriginalInvoiceRef: currentCategoryConfig.showOriginalInvoiceRef ?? true,
-      showReturnReason: currentCategoryConfig.showReturnReason ?? true,
-      showVendorGstin: currentCategoryConfig.showVendorGstin ?? true,
-      showPaymentModeBadge: currentCategoryConfig.showPaymentModeBadge ?? true,
-      showUtrReference: currentCategoryConfig.showUtrReference ?? true,
-      showAmountInWords: currentCategoryConfig.showAmountInWords ?? true,
-      showPaidStamp: currentCategoryConfig.showPaidStamp ?? true,
-      showStatementPeriod: currentCategoryConfig.showStatementPeriod ?? true,
-      showOpeningBalance: currentCategoryConfig.showOpeningBalance ?? true,
-      showVendorInvoiceRef: currentCategoryConfig.showVendorInvoiceRef ?? true,
-      showItcTag: currentCategoryConfig.showItcTag ?? true,
-      showAccountAllocation: currentCategoryConfig.showAccountAllocation ?? true,
-      showExpenseCategory: currentCategoryConfig.showExpenseCategory ?? true,
-      showClaimantName: currentCategoryConfig.showClaimantName ?? true,
-      showReimbursementStatus: currentCategoryConfig.showReimbursementStatus ?? true,
-      showReceiptsAttached: currentCategoryConfig.showReceiptsAttached ?? true,
-      showOriginalBillRef: currentCategoryConfig.showOriginalBillRef ?? true,
-      showDebitReason: currentCategoryConfig.showDebitReason ?? true,
-      showBillsSettled: currentCategoryConfig.showBillsSettled ?? true,
-      showTdsDeduction: currentCategoryConfig.showTdsDeduction ?? true,
-      showPayablesLedger: currentCategoryConfig.showPayablesLedger ?? true,
-      showDoubleEntry: currentCategoryConfig.showDoubleEntry ?? true,
-      showNarration: currentCategoryConfig.showNarration ?? true,
-      showDebitCreditTotals: currentCategoryConfig.showDebitCreditTotals ?? true,
-      signatoryTitle: currentCategoryConfig.signatoryTitle || settings.branding?.authorizedSignatoryTitle || 'Authorized Signatory',
-      termsAndConditions: currentCategoryConfig.termsAndConditions || settings.branding?.termsAndConditions || 'Payment is due within payment terms.',
-      footerNote: currentCategoryConfig.footerNote || settings.branding?.footerNote || 'Thank you for your business.',
-      watermarkText: currentCategoryConfig.watermarkText || 'ORIGINAL FOR RECIPIENT',
-      showWatermark: Boolean(currentCategoryConfig.showWatermark),
+      ...selectedTemplateConfig,
+      templateTitle: selectedTemplateConfig.templateTitle || activeCategoryDef.defaultTitle,
+      exportFileNamePattern: selectedTemplateConfig.exportFileNamePattern || `%{${activeCategoryDef.singular.replace(/\s+/g, '')}Number}_%{PartyName}`,
+      showHsnSac: selectedTemplateConfig.showHsnSac ?? true,
+      showDiscount: selectedTemplateConfig.showDiscount ?? true,
+      showTaxBreakdown: selectedTemplateConfig.showTaxBreakdown ?? true,
+      showBankDetails: selectedTemplateConfig.showBankDetails ?? true,
+      showShippingAddress: selectedTemplateConfig.showShippingAddress ?? true,
+      showVehicleDetails: selectedTemplateConfig.showVehicleDetails ?? true,
+      showEWayBill: selectedTemplateConfig.showEWayBill ?? true,
+      showReceiverAck: selectedTemplateConfig.showReceiverAck ?? true,
+      showInvoicesSettled: selectedTemplateConfig.showInvoicesSettled ?? true,
+      showThreeTierSignatures: selectedTemplateConfig.showThreeTierSignatures ?? true,
+      showRunningBalance: selectedTemplateConfig.showRunningBalance ?? true,
+      showExpiryDate: selectedTemplateConfig.showExpiryDate ?? true,
+      showClientAcceptance: selectedTemplateConfig.showClientAcceptance ?? true,
+      showScopeOfWork: selectedTemplateConfig.showScopeOfWork ?? true,
+      showPoNumber: selectedTemplateConfig.showPoNumber ?? true,
+      showDeliveryDate: selectedTemplateConfig.showDeliveryDate ?? true,
+      showTransportDetails: selectedTemplateConfig.showTransportDetails ?? true,
+      hideRatesInChallan: selectedTemplateConfig.hideRatesInChallan ?? false,
+      showPackageDetails: selectedTemplateConfig.showPackageDetails ?? true,
+      showOriginalInvoiceRef: selectedTemplateConfig.showOriginalInvoiceRef ?? true,
+      showReturnReason: selectedTemplateConfig.showReturnReason ?? true,
+      showVendorGstin: selectedTemplateConfig.showVendorGstin ?? true,
+      showPaymentModeBadge: selectedTemplateConfig.showPaymentModeBadge ?? true,
+      showUtrReference: selectedTemplateConfig.showUtrReference ?? true,
+      showAmountInWords: selectedTemplateConfig.showAmountInWords ?? true,
+      showPaidStamp: selectedTemplateConfig.showPaidStamp ?? true,
+      showStatementPeriod: selectedTemplateConfig.showStatementPeriod ?? true,
+      showOpeningBalance: selectedTemplateConfig.showOpeningBalance ?? true,
+      showVendorInvoiceRef: selectedTemplateConfig.showVendorInvoiceRef ?? true,
+      showItcTag: selectedTemplateConfig.showItcTag ?? true,
+      showAccountAllocation: selectedTemplateConfig.showAccountAllocation ?? true,
+      showExpenseCategory: selectedTemplateConfig.showExpenseCategory ?? true,
+      showClaimantName: selectedTemplateConfig.showClaimantName ?? true,
+      showReceiptsAttached: selectedTemplateConfig.showReceiptsAttached ?? true,
+      showOriginalBillRef: selectedTemplateConfig.showOriginalBillRef ?? true,
+      showDebitReason: selectedTemplateConfig.showDebitReason ?? true,
+      showBillsSettled: selectedTemplateConfig.showBillsSettled ?? true,
+      showTdsDeduction: selectedTemplateConfig.showTdsDeduction ?? true,
+      showPayablesLedger: selectedTemplateConfig.showPayablesLedger ?? true,
+      showDoubleEntry: selectedTemplateConfig.showDoubleEntry ?? true,
+      showNarration: selectedTemplateConfig.showNarration ?? true,
+      showDebitCreditTotals: selectedTemplateConfig.showDebitCreditTotals ?? true,
+      signatoryTitle: selectedTemplateConfig.signatoryTitle || settings.branding?.authorizedSignatoryTitle || 'Authorized Signatory',
+      termsAndConditions: selectedTemplateConfig.termsAndConditions || settings.branding?.termsAndConditions || 'Payment is due within payment terms.',
+      footerNote: selectedTemplateConfig.footerNote || settings.branding?.footerNote || 'Thank you for your business.',
+      watermarkText: selectedTemplateConfig.watermarkText || 'ORIGINAL FOR RECIPIENT',
+      showWatermark: Boolean(selectedTemplateConfig.showWatermark),
     });
     setIsOptionsOpen(true);
   };
 
   // Save customized options for this document category
   const handleSaveOptions = async () => {
+    const organizationId = currentOrg.id;
+    const generation = organizationGenerationRef.current;
+    const category = activeCategory;
+    if (optionsOrganizationId !== organizationId) {
+      setErrorMsg('The organization changed. Reopen this template before saving.');
+      return;
+    }
     setSavingOptions(true);
     setErrorMsg(null);
     try {
-      const updatedCategoryConfig: DocumentTemplateConfig = {
-        ...currentCategoryConfig,
-        ...optionsDraft,
-        defaultTemplate: selectedTemplateForCustomizing || activeDefaultTemplateId,
-      };
-
-      const updatedAllTemplates: Record<string, DocumentTemplateConfig> = {
-        ...docTemplatesMap,
-        [activeCategory]: updatedCategoryConfig,
-      };
-
-      updateSettings({
-        documentTemplates: updatedAllTemplates,
-      });
-
-      const res = await apiClient.patch<any>('/organizations/current', {
-        documentTemplates: updatedAllTemplates,
-      });
+      const templateId = selectedTemplateForCustomizing || activeDefaultTemplateId;
+      const configuration = { ...optionsDraft };
+      delete configuration.showAgingBuckets;
+      delete configuration.defaultTemplate;
+      const res = await apiClient.patch<any>(
+        `/finance/documents/${category}/templates/${encodeURIComponent(templateId)}/configuration`,
+        { configuration },
+        organizationId,
+      );
+      if (!isActiveOrganizationRequest(organizationId, generation)) return;
       if (res.error) throw new Error(res.error);
-
-      await refreshOrganizations();
+      const savedConfiguration = res.data?.template?.configuration;
+      if (!savedConfiguration || typeof savedConfiguration !== 'object') {
+        throw new Error('The server did not return the saved template configuration.');
+      }
+      if (isTemplateMatching(activeDefaultTemplateId, templateId)) {
+        const updatedAllTemplates: Record<string, DocumentTemplateConfig> = {
+          ...docTemplatesMap,
+          [category]: {
+            ...currentCategoryConfig,
+            ...savedConfiguration,
+            defaultTemplate: activeDefaultTemplateId,
+          },
+        };
+        updateSettings({ documentTemplates: updatedAllTemplates });
+      }
+      setOptionsDraft(savedConfiguration);
+      setTemplateModelsByCategory((current) => ({
+        ...current,
+        [category]: (current[category] || []).map((model) =>
+          model.modelId === templateId || model.id === templateId
+            ? { ...model, configuration: savedConfiguration }
+            : model,
+        ),
+      }));
       setIsOptionsOpen(false);
       showToast(`Custom PDF options saved for ${activeCategoryDef.label} in real time!`);
     } catch (err: any) {
-      console.error('Failed to save options:', err);
-      setErrorMsg(err.message || 'Failed to save document template options.');
+      if (isActiveOrganizationRequest(organizationId, generation)) {
+        console.error('Failed to save options:', err);
+        setErrorMsg(err.message || 'Failed to save document template options.');
+      }
     } finally {
-      setSavingOptions(false);
+      if (isActiveOrganizationRequest(organizationId, generation)) setSavingOptions(false);
     }
   };
 
@@ -535,6 +950,15 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
     }
     return true;
   });
+  const visibleCategories = DOCUMENT_CATEGORIES.filter((category) =>
+    `${category.label} ${category.singular} ${category.description}`.toLowerCase().includes(categorySearch.trim().toLowerCase()),
+  );
+  const fullPreviewSavedConfig = fullPreviewTemplate
+    ? templateModelsByCategory[activeCategory]?.find((model) => model.modelId === fullPreviewTemplate.id || model.id === fullPreviewTemplate.id)?.configuration
+    : undefined;
+  const fullPreviewIsDefault = Boolean(fullPreviewTemplate && isTemplateMatching(activeDefaultTemplateId, fullPreviewTemplate.id));
+  const fullPreviewConfig: DocumentTemplateConfig = fullPreviewSavedConfig || currentCategoryConfig;
+  const fullPreviewTitle = fullPreviewSavedConfig?.templateTitle || (fullPreviewIsDefault ? currentCategoryConfig.templateTitle : undefined) || fullPreviewTemplate?.presetTitle;
 
   return (
     <div className="bg-slate-50/60 dark:bg-slate-950/40 min-h-screen">
@@ -574,8 +998,23 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
             </span>
           </div>
 
+          <div className="px-3 pt-3 pb-2">
+            <label htmlFor="pdf-category-search" className="sr-only">Find a document category</label>
+            <input
+              id="pdf-category-search"
+              type="search"
+              value={categorySearch}
+              onChange={(event) => setCategorySearch(event.target.value)}
+              placeholder="Find a document type…"
+              className="w-full min-h-10 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-800 placeholder:text-slate-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+            />
+            <p className="mt-2 px-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400" aria-live="polite">
+              {visibleCategories.length} document {visibleCategories.length === 1 ? 'type' : 'types'}
+            </p>
+          </div>
+
           <nav className="p-2 flex gap-1.5 overflow-x-auto md:block md:space-y-0.5 md:overflow-x-hidden md:overflow-y-auto md:max-h-[calc(100vh-220px)] md:flex-1 text-xs">
-            {DOCUMENT_CATEGORIES.map((cat) => {
+            {visibleCategories.map((cat) => {
               const isActive = activeCategory === cat.id;
               const catTemplates = CATEGORY_TEMPLATES[cat.id] || [];
               const catDefaultId = docTemplatesMap[cat.id]?.defaultTemplate || catTemplates[0]?.id;
@@ -586,13 +1025,17 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
                   type="button"
                   key={cat.id}
                   onClick={() => setActiveCategory(cat.id)}
+                  aria-current={isActive ? 'page' : undefined}
                   className={`w-full min-w-[156px] md:min-w-0 shrink-0 text-left px-3.5 py-2.5 rounded-xl transition-all flex items-center justify-between cursor-pointer group ${
                     isActive
                       ? 'bg-blue-600 text-white font-bold shadow-xs'
                       : 'text-slate-700 dark:text-slate-300 hover:bg-slate-200/60 dark:hover:bg-slate-800/60 font-medium'
                   }`}
                 >
-                  <span className="truncate">{cat.label}</span>
+                  <span className="flex min-w-0 items-center gap-2.5">
+                    <CategoryIcon category={cat.id} active={isActive} />
+                    <span className="truncate">{cat.label}</span>
+                  </span>
                   {isActive ? (
                     <span className="text-[9px] uppercase tracking-wider bg-white/20 px-1.5 py-0.5 rounded font-mono">
                       {defaultStyle?.badgeText || 'Default'}
@@ -605,6 +1048,9 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
                 </button>
               );
             })}
+            {visibleCategories.length === 0 && (
+              <p className="px-3 py-4 text-xs text-slate-500" role="status">No document types match “{categorySearch}”.</p>
+            )}
           </nav>
 
           {/* Quick link to Company Branding */}
@@ -626,167 +1072,139 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
         {/* RIGHT COLUMN: Active Document Templates Gallery & Controls    */}
         {/* ============================================================== */}
         <main className="flex-1 flex flex-col p-6 lg:p-8 space-y-6 overflow-y-auto">
-          {/* Header Row: Document Title & Actions (Matching Zoho Screenshot) */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-5">
-            <div>
-              <div className="flex items-center space-x-2">
-                <h1 className="text-2xl font-black text-slate-900 dark:text-slate-100 tracking-tight">
-                  {activeCategoryDef.title}
-                </h1>
-                <span className="text-xs text-slate-400 font-medium hidden sm:inline">•</span>
-                <span className="text-xs text-slate-500 font-medium hidden sm:inline">
-                  {activeCategoryDef.description}
-                </span>
-              </div>
-              <p className="text-xs text-slate-400 mt-1 sm:hidden">
-                {activeCategoryDef.description}
-              </p>
-            </div>
+          <header className="border-b border-slate-100 pb-5 dark:border-slate-800">
+            <h1 className="text-xl font-extrabold text-slate-900 dark:text-slate-100">
+              {activeCategoryDef.title}
+            </h1>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              {activeCategoryDef.description}
+            </p>
+          </header>
 
-            <div className="flex items-center space-x-2.5">
-              <button
-                type="button"
-                onClick={() => handleOpenOptions(undefined, 'properties')}
-                className="inline-flex items-center space-x-1.5 px-3 py-1.5 text-xs font-medium text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 hover:bg-blue-50/50 dark:hover:bg-blue-950/30 rounded-lg transition-all cursor-pointer"
-              >
-                <Settings size={14} />
-                <span>Configure Export File Name</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleOpenOptions()}
-                className="inline-flex items-center space-x-1.5 px-3.5 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-700/70 transition-all cursor-pointer shadow-2xs"
-              >
-                <SlidersHorizontal size={14} className="text-slate-500" />
-                <span>Configure PDF Options</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Filter Bar: Status: All dropdown (Matching Zoho Screenshot) */}
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-2 text-xs">
-              <span className="text-slate-500 font-medium">Status :</span>
+          <section aria-label="Template gallery controls" className="flex flex-col gap-3 border-b border-slate-100 pb-4 sm:flex-row sm:items-center sm:justify-between dark:border-slate-800">
+            <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
+              <span className="font-semibold">Show</span>
               <select
-                aria-label="Filter templates by status"
+                aria-label={`Filter ${activeCategoryDef.label} templates`}
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value as any)}
-                className="px-2.5 py-1 text-xs font-bold bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
+                className="min-h-9 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
               >
-                <option value="all">All</option>
-                <option value="default">Default Only</option>
-                <option value="custom">Non-Default</option>
+                <option value="all">All templates</option>
+                <option value="default">Default only</option>
+                <option value="custom">Non-default</option>
               </select>
-            </div>
+            </label>
 
-            <div className="text-[11px] text-slate-400 font-medium">
-              Showing {visibleTemplates.length} specialized templates • Default:{' '}
-              <span className="font-bold text-slate-700 dark:text-slate-300">
-                {categoryTemplates.find((t) => isTemplateMatching(activeDefaultTemplateId, t.id))?.badgeText || 'Default'}
+            <p className="text-xs text-slate-500 dark:text-slate-400" aria-live="polite">
+              {visibleTemplates.length} {visibleTemplates.length === 1 ? 'template' : 'templates'}
+              <span className="mx-1.5 text-slate-300 dark:text-slate-600">|</span>
+              Default: <span className="font-semibold text-slate-800 dark:text-slate-200">
+                {categoryTemplates.find((t) => isTemplateMatching(activeDefaultTemplateId, t.id))?.name || 'Not set'}
               </span>
-            </div>
-          </div>
+            </p>
+          </section>
+          <p className="text-[11px] text-slate-500 dark:text-slate-400">Gallery cards load a sample PDF for each layout. Select Preview to inspect the full document.</p>
 
           {/* Template Cards Grid: Authentic Zoho Books A4 Sheet Layout */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 pt-2">
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,18rem),1fr))] gap-6 pt-2">
             {visibleTemplates.map((style) => {
               const isDefault = isTemplateMatching(activeDefaultTemplateId, style.id);
               const isProcessing = savingDefault === style.id;
+              const savedModelConfig = templateModelsByCategory[activeCategory]?.find((model) => model.modelId === style.id || model.id === style.id)?.configuration;
+              const previewTemplateConfig: DocumentTemplateConfig = savedModelConfig || currentCategoryConfig;
+              const previewTitle = savedModelConfig?.templateTitle || (isDefault ? currentCategoryConfig.templateTitle : undefined) || style.presetTitle;
 
               return (
-                <div key={style.id} className="flex flex-col items-center">
-                  {/* Miniature A4 Sheet (Pure Paper White Canvas with Shadow) */}
+                <article key={style.id} className="flex min-w-0 flex-col items-center">
                   <div
-                    className={`w-full aspect-[1/1.38] rounded-xs transition-all duration-300 relative group overflow-hidden bg-white dark:bg-slate-900 border ${
+                    className={`relative w-full aspect-[1/1.38] overflow-hidden rounded-sm border bg-white dark:bg-slate-900 ${
                       isDefault
                         ? 'border-blue-500 shadow-lg ring-2 ring-blue-500/20'
-                        : 'border-slate-200 dark:border-slate-800 shadow-md hover:shadow-xl hover:border-slate-300'
+                        : 'border-slate-200 shadow-md dark:border-slate-800'
                     }`}
                   >
-                    {/* Specialized Category Miniature Renderer */}
-                    <CategorySpecializedThumbnail
+                    <PdfGalleryThumbnail
+                      key={`${currentOrg.id}:${activeCategory}:${style.id}:${JSON.stringify(previewTemplateConfig)}`}
+                      organizationId={currentOrg.id}
                       category={activeCategory}
                       template={style}
-                      docTitle={currentCategoryConfig.templateTitle || style.presetTitle}
-                      orgName={currentOrg.name}
-                      primaryColor={primaryColor}
-                      accentColor={accentColor}
-                      logoUrl={logoUrl}
+                      modelKey={JSON.stringify(previewTemplateConfig)}
+                      fallback={<CategorySpecializedThumbnail
+                        category={activeCategory}
+                        template={style}
+                        templateConfig={previewTemplateConfig}
+                        docTitle={previewTitle}
+                        orgName={currentOrg.name}
+                        primaryColor={previewTemplateConfig.primaryColor || primaryColor}
+                        accentColor={previewTemplateConfig.accentColor || accentColor}
+                        logoUrl={logoUrl}
+                        currencySymbol={settings.currencySymbol || '₹'}
+                      />}
                     />
-
-                    {/* ⭐ DEFAULT BADGE (Bottom left inside sheet, exact match to Zoho screenshot) */}
                     {isDefault && (
                       <div className="absolute bottom-3 left-3 z-10">
-                        <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-sm bg-amber-500 text-white font-black text-[9.5px] tracking-wider uppercase shadow-xs">
+                        <span className="inline-flex items-center gap-1 rounded-sm bg-amber-500 px-2 py-0.5 text-[9px] font-black uppercase text-white shadow-sm">
                           <Star size={10} className="fill-white" />
-                          <span>DEFAULT</span>
+                          <span>Default</span>
                         </span>
                       </div>
                     )}
-
-                    {/* Hover Action Overlay */}
-                    <div className="absolute inset-0 bg-slate-900/60 dark:bg-slate-950/80 backdrop-blur-[2px] opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex flex-col items-center justify-center p-4 space-y-2.5 z-20">
-                      {!isDefault && (
-                        <button
-                          type="button"
-                          disabled={isProcessing}
-                          onClick={() => handleSetDefault(style.id)}
-                          className="w-full max-w-[170px] py-2 px-3 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl shadow-lg transition-transform active:scale-95 flex items-center justify-center space-x-1.5 cursor-pointer disabled:opacity-50"
-                        >
-                          <Star size={13} className="fill-white" />
-                          <span>{isProcessing ? 'Updating…' : 'Set as Default'}</span>
-                        </button>
-                      )}
-
-                      <button
-                        type="button"
-                        onClick={() => handleOpenOptions(style.id)}
-                        className="w-full max-w-[170px] py-2 px-3 bg-white text-slate-800 hover:bg-slate-100 text-xs font-bold rounded-xl shadow-md transition-transform active:scale-95 flex items-center justify-center space-x-1.5 cursor-pointer"
-                      >
-                        <SlidersHorizontal size={13} />
-                        <span>Customize Options</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => handleOpenFullPreview(style)}
-                        className="w-full max-w-[170px] py-2 px-3 bg-slate-800/80 hover:bg-slate-800 text-white text-xs font-medium rounded-xl border border-slate-700 transition-transform active:scale-95 flex items-center justify-center space-x-1.5 cursor-pointer"
-                      >
-                        <Eye size={13} />
-                        <span>Full Preview</span>
-                      </button>
-                    </div>
                   </div>
 
-                  {/* Template Title Beneath Sheet (Matching Zoho screenshot) */}
-                  <h3 className="font-bold text-sm text-slate-800 dark:text-slate-200 mt-2.5 text-center">
+                  <h3 className="mt-2.5 text-center text-sm font-bold text-slate-800 dark:text-slate-200">
                     {style.name}
                   </h3>
-                </div>
+                  <p className="mt-0.5 text-center text-[11px] text-slate-500 dark:text-slate-400">
+                    {style.tagline}
+                  </p>
+                  {previewTitle && previewTitle.trim().toUpperCase() !== style.presetTitle.trim().toUpperCase() && (
+                    <p className="mt-1 flex flex-wrap items-center justify-center gap-x-1 text-center text-[10px] text-amber-800 dark:text-amber-300">
+                      <span>Saved title: {previewTitle}</span>
+                      {isLegacyUnsupportedPresetTitle(activeCategory, style.id, previewTitle) && (
+                        <span aria-label="Review legacy title" className="font-semibold">· Review title</span>
+                      )}
+                    </p>
+                  )}
+
+                  <div className="mt-3 grid w-full grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      aria-label={`Preview ${style.name}`}
+                      onClick={() => handleOpenFullPreview(style)}
+                      className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-white px-2 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+                    >
+                      <Eye size={14} />
+                      <span>Preview</span>
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Customize ${style.name}`}
+                      onClick={() => handleOpenOptions(style.id)}
+                      className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-white px-2 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+                    >
+                      <SlidersHorizontal size={14} />
+                      <span>Customize</span>
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={isDefault ? `Default template: ${style.name}` : `Set ${style.name} as default`}
+                      aria-pressed={isDefault}
+                      disabled={isDefault || isProcessing}
+                      onClick={() => handleSetDefault(style.id)}
+                      className={`col-span-2 inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-bold focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-default disabled:opacity-100 ${
+                        isDefault
+                          ? 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300'
+                          : 'border-blue-200 bg-blue-50 text-blue-800 hover:bg-blue-100 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-200 dark:hover:bg-blue-950/70'
+                      }`}
+                    >
+                      {isDefault ? <CheckCircle2 size={14} /> : <Star size={14} />}
+                      <span>{isProcessing ? 'Updating…' : isDefault ? 'Default template' : 'Set as default'}</span>
+                    </button>
+                  </div>
+                </article>
               );
             })}
-
-            {/* DEDICATED "NEW TEMPLATE" DASHED CARD (Exact Match to Zoho Screenshot) */}
-            <div className="flex flex-col items-center">
-              <div className="w-full aspect-[1/1.38] rounded-lg border-2 border-dashed border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/30 p-6 flex flex-col justify-center items-start shadow-xs">
-                <h3 className="font-bold text-base text-slate-900 dark:text-slate-100">
-                  New Template
-                </h3>
-                <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed my-3">
-                  Click to add a template from our gallery. You can customize the template title, columns, and headers in line item table.
-                </p>
-                <button
-                  type="button"
-                  onClick={() => handleOpenOptions()}
-                  className="inline-flex items-center space-x-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-lg shadow-sm transition-all cursor-pointer"
-                >
-                  <Plus size={14} />
-                  <span>+ New</span>
-                </button>
-              </div>
-              <span className="text-xs text-slate-400 mt-2.5 font-medium">Add Template</span>
-            </div>
           </div>
         </main>
       </div>
@@ -794,7 +1212,7 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
       {/* ============================================================== */}
       {/* OPTIONS DRAWER / MODAL (Tailored Per Category)                 */}
       {/* ============================================================== */}
-      {isOptionsOpen && (
+      {isOptionsOpen && optionsOrganizationId === currentOrg.id && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white dark:bg-slate-900 w-full max-w-2xl rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col max-h-[90vh]">
             <div className="p-5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
@@ -873,6 +1291,91 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
                     </p>
                   </div>
 
+                  <fieldset className="space-y-3 border-t border-slate-100 pt-4 dark:border-slate-800">
+                    <legend className="font-bold text-slate-900 dark:text-slate-100">Page setup</legend>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="space-y-1.5 font-semibold text-slate-700 dark:text-slate-300">
+                        <span className="block">Paper size</span>
+                        <select
+                          aria-label="PDF paper size"
+                          value={optionsDraft.paperSize || 'A4'}
+                          onChange={(event) => setOptionsDraft({ ...optionsDraft, paperSize: event.target.value })}
+                          className="min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                        >
+                          <option value="A3">A3</option>
+                          <option value="A4">A4</option>
+                          <option value="A5">A5</option>
+                          <option value="Letter">Letter</option>
+                          <option value="Legal">Legal</option>
+                        </select>
+                      </label>
+                      <label className="space-y-1.5 font-semibold text-slate-700 dark:text-slate-300">
+                        <span className="block">Orientation</span>
+                        <select
+                          aria-label="PDF orientation"
+                          value={optionsDraft.orientation || 'portrait'}
+                          onChange={(event) => setOptionsDraft({ ...optionsDraft, orientation: event.target.value })}
+                          className="min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                        >
+                          <option value="portrait">Portrait</option>
+                          <option value="landscape">Landscape</option>
+                        </select>
+                      </label>
+                    </div>
+                  </fieldset>
+
+                  <fieldset className="space-y-3 border-t border-slate-100 pt-4 dark:border-slate-800">
+                    <legend className="font-bold text-slate-900 dark:text-slate-100">Typography and color</legend>
+                    <label className="block space-y-1.5 font-semibold text-slate-700 dark:text-slate-300">
+                      <span className="block">PDF font</span>
+                      <select
+                        aria-label="PDF font"
+                        value={optionsDraft.fontFamily || 'Helvetica'}
+                        onChange={(event) => setOptionsDraft({ ...optionsDraft, fontFamily: event.target.value })}
+                        className="min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                      >
+                        <option value="Helvetica">Helvetica</option>
+                        <option value="Times-Roman">Times</option>
+                        <option value="Courier">Courier</option>
+                      </select>
+                    </label>
+                    <div>
+                      <p className="mb-2 font-semibold text-slate-700 dark:text-slate-300">Color themes</p>
+                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+                        {PDF_COLOR_THEMES.map((theme) => {
+                          const selected = optionsDraft.primaryColor === theme.primary && optionsDraft.accentColor === theme.accent;
+                          return (
+                            <button
+                              key={theme.name}
+                              type="button"
+                              aria-label={`${theme.name} PDF color theme`}
+                              aria-pressed={selected}
+                              onClick={() => setOptionsDraft({ ...optionsDraft, primaryColor: theme.primary, accentColor: theme.accent })}
+                              className={`rounded-lg border p-2 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${selected ? 'border-blue-600 ring-1 ring-blue-600' : 'border-slate-200 dark:border-slate-700'}`}
+                            >
+                              <span className="mb-1.5 flex h-5 overflow-hidden rounded" aria-hidden="true">
+                                <span className="w-2/3" style={{ backgroundColor: theme.primary }} />
+                                <span className="w-1/3" style={{ backgroundColor: theme.accent }} />
+                              </span>
+                              <span className="font-semibold text-slate-700 dark:text-slate-200">{theme.name}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="flex items-center gap-2 font-semibold text-slate-700 dark:text-slate-300">
+                        <input type="color" aria-label="Primary PDF color" value={optionsDraft.primaryColor || primaryColor} onChange={(event) => setOptionsDraft({ ...optionsDraft, primaryColor: event.target.value })} className="h-10 w-12 cursor-pointer rounded border border-slate-200 bg-white p-1 dark:border-slate-700" />
+                        <span>Primary color</span>
+                      </label>
+                      <label className="flex items-center gap-2 font-semibold text-slate-700 dark:text-slate-300">
+                        <input type="color" aria-label="Accent PDF color" value={optionsDraft.accentColor || accentColor} onChange={(event) => setOptionsDraft({ ...optionsDraft, accentColor: event.target.value })} className="h-10 w-12 cursor-pointer rounded border border-slate-200 bg-white p-1 dark:border-slate-700" />
+                        <span>Accent color</span>
+                      </label>
+                    </div>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">These colors apply to this template after you save. Existing issued PDFs keep their original appearance.</p>
+                  </fieldset>
+
                   <div className="space-y-2 pt-3 border-t border-slate-100 dark:border-slate-800">
                     <label className="block font-bold text-slate-800 dark:text-slate-200">
                       Export PDF File Name Pattern
@@ -933,7 +1436,7 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
                           onChange={(e) => setOptionsDraft({ ...optionsDraft, showScopeOfWork: e.target.checked })}
                           className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
                         />
-                        <span className="text-slate-700 dark:text-slate-300 font-medium">Project Milestones / Scope of Work</span>
+                        <span className="text-slate-700 dark:text-slate-300 font-medium">Show Notes and Terms</span>
                       </label>
                       <label className="flex items-center space-x-2 cursor-pointer">
                         <input
@@ -986,6 +1489,15 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
                         />
                         <span className="text-slate-700 dark:text-slate-300 font-medium">Shipping Destination Comparison</span>
                       </label>
+                      <label className="flex items-center space-x-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(optionsDraft.showScopeOfWork)}
+                          onChange={(e) => setOptionsDraft({ ...optionsDraft, showScopeOfWork: e.target.checked })}
+                          className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className="text-slate-700 dark:text-slate-300 font-medium">Show Notes and Terms</span>
+                      </label>
                     </div>
                   )}
 
@@ -1008,7 +1520,7 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
                           onChange={(e) => setOptionsDraft({ ...optionsDraft, showEWayBill: e.target.checked })}
                           className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
                         />
-                        <span className="text-slate-700 dark:text-slate-300 font-medium">E-Way Bill Number & Barcode</span>
+                        <span className="text-slate-700 dark:text-slate-300 font-medium">E-Way Bill Number</span>
                       </label>
                       <label className="flex items-center space-x-2 cursor-pointer">
                         <input
@@ -1020,6 +1532,14 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
                         <span className="text-slate-700 dark:text-slate-300 font-medium">Hide Item Rates (Quantity Only Transit)</span>
                       </label>
                       <label className="flex items-center space-x-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(optionsDraft.showPackageDetails)}
+                          onChange={(e) => setOptionsDraft({ ...optionsDraft, showPackageDetails: e.target.checked })}
+                          className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className="text-slate-700 dark:text-slate-300 font-medium">Package Details Column</span>
+                      </label>                      <label className="flex items-center space-x-2 cursor-pointer">
                         <input
                           type="checkbox"
                           checked={Boolean(optionsDraft.showReceiverAck)}
@@ -1064,11 +1584,11 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
                       <label className="flex items-center space-x-2 cursor-pointer">
                         <input
                           type="checkbox"
-                          checked={Boolean(optionsDraft.showUpiQr)}
-                          onChange={(e) => setOptionsDraft({ ...optionsDraft, showUpiQr: e.target.checked })}
+                          checked={Boolean(optionsDraft.showPaidStamp)}
+                          onChange={(e) => setOptionsDraft({ ...optionsDraft, showPaidStamp: e.target.checked })}
                           className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
                         />
-                        <span className="text-slate-700 dark:text-slate-300 font-medium">Dynamic UPI Payment QR Code</span>
+                        <span className="text-slate-700 dark:text-slate-300 font-medium">Paid Stamp</span>
                       </label>
                     </div>
                   )}
@@ -1079,38 +1599,11 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
                       <label className="flex items-center space-x-2 cursor-pointer">
                         <input
                           type="checkbox"
-                          checked={Boolean(optionsDraft.showOriginalInvoiceRef)}
-                          onChange={(e) => setOptionsDraft({ ...optionsDraft, showOriginalInvoiceRef: e.target.checked })}
-                          className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                        />
-                        <span className="text-slate-700 dark:text-slate-300 font-medium">Original Invoice Reference # & Date</span>
-                      </label>
-                      <label className="flex items-center space-x-2 cursor-pointer">
-                        <input
-                          type="checkbox"
                           checked={Boolean(optionsDraft.showReturnReason)}
                           onChange={(e) => setOptionsDraft({ ...optionsDraft, showReturnReason: e.target.checked })}
                           className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
                         />
                         <span className="text-slate-700 dark:text-slate-300 font-medium">Return / Credit Allowance Reason</span>
-                      </label>
-                      <label className="flex items-center space-x-2 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(optionsDraft.showTaxBreakdown)}
-                          onChange={(e) => setOptionsDraft({ ...optionsDraft, showTaxBreakdown: e.target.checked })}
-                          className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                        />
-                        <span className="text-slate-700 dark:text-slate-300 font-medium">Reverse CGST / SGST Tax Schedule</span>
-                      </label>
-                      <label className="flex items-center space-x-2 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(optionsDraft.showAmountInWords)}
-                          onChange={(e) => setOptionsDraft({ ...optionsDraft, showAmountInWords: e.target.checked })}
-                          className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                        />
-                        <span className="text-slate-700 dark:text-slate-300 font-medium">Net Credit Amount in Words</span>
                       </label>
                     </div>
                   )}
@@ -1152,7 +1645,7 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
                           onChange={(e) => setOptionsDraft({ ...optionsDraft, showScopeOfWork: e.target.checked })}
                           className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
                         />
-                        <span className="text-slate-700 dark:text-slate-300 font-medium">Quality Inspection & SLA Terms</span>
+                        <span className="text-slate-700 dark:text-slate-300 font-medium">Show Notes and Terms</span>
                       </label>
                     </div>
                   )}
@@ -1202,15 +1695,6 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
                   {/* Customer Statements Specific Controls */}
                   {activeCategory === 'customer-statements' && (
                     <div className="grid grid-cols-2 gap-3 p-3.5 bg-blue-50/50 dark:bg-blue-950/30 rounded-xl border border-blue-100 dark:border-blue-900/50">
-                      <label className="flex items-center space-x-2 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(optionsDraft.showAgingBuckets)}
-                          onChange={(e) => setOptionsDraft({ ...optionsDraft, showAgingBuckets: e.target.checked })}
-                          className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                        />
-                        <span className="text-slate-700 dark:text-slate-300 font-medium">Aging Buckets (0-30, 31-60, 90+ days)</span>
-                      </label>
                       <label className="flex items-center space-x-2 cursor-pointer">
                         <input
                           type="checkbox"
@@ -1265,15 +1749,6 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
                       <label className="flex items-center space-x-2 cursor-pointer">
                         <input
                           type="checkbox"
-                          checked={Boolean(optionsDraft.showItcTag)}
-                          onChange={(e) => setOptionsDraft({ ...optionsDraft, showItcTag: e.target.checked })}
-                          className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                        />
-                        <span className="text-slate-700 dark:text-slate-300 font-medium">Input Tax Credit (ITC / GSTR-2B) Status</span>
-                      </label>
-                      <label className="flex items-center space-x-2 cursor-pointer">
-                        <input
-                          type="checkbox"
                           checked={Boolean(optionsDraft.showPoNumber)}
                           onChange={(e) => setOptionsDraft({ ...optionsDraft, showPoNumber: e.target.checked })}
                           className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
@@ -1289,15 +1764,6 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
                       <label className="flex items-center space-x-2 cursor-pointer">
                         <input
                           type="checkbox"
-                          checked={Boolean(optionsDraft.showClaimantName)}
-                          onChange={(e) => setOptionsDraft({ ...optionsDraft, showClaimantName: e.target.checked })}
-                          className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                        />
-                        <span className="text-slate-700 dark:text-slate-300 font-medium">Claimant / Employee Name</span>
-                      </label>
-                      <label className="flex items-center space-x-2 cursor-pointer">
-                        <input
-                          type="checkbox"
                           checked={Boolean(optionsDraft.showExpenseCategory)}
                           onChange={(e) => setOptionsDraft({ ...optionsDraft, showExpenseCategory: e.target.checked })}
                           className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
@@ -1307,20 +1773,11 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
                       <label className="flex items-center space-x-2 cursor-pointer">
                         <input
                           type="checkbox"
-                          checked={Boolean(optionsDraft.showReceiptsAttached)}
-                          onChange={(e) => setOptionsDraft({ ...optionsDraft, showReceiptsAttached: e.target.checked })}
+                          checked={Boolean(optionsDraft.showTdsDeduction)}
+                          onChange={(e) => setOptionsDraft({ ...optionsDraft, showTdsDeduction: e.target.checked })}
                           className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
                         />
-                        <span className="text-slate-700 dark:text-slate-300 font-medium">Scanned Receipts Audit Tag</span>
-                      </label>
-                      <label className="flex items-center space-x-2 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(optionsDraft.showReimbursementStatus)}
-                          onChange={(e) => setOptionsDraft({ ...optionsDraft, showReimbursementStatus: e.target.checked })}
-                          className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                        />
-                        <span className="text-slate-700 dark:text-slate-300 font-medium">Reimbursement Bank / Status</span>
+                        <span className="text-slate-700 dark:text-slate-300 font-medium">TDS Deduction (Tax Withholding)</span>
                       </label>
                     </div>
                   )}
@@ -1328,15 +1785,6 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
                   {/* Vendor Credits Specific Controls */}
                   {activeCategory === 'vendor-credits' && (
                     <div className="grid grid-cols-2 gap-3 p-3.5 bg-blue-50/50 dark:bg-blue-950/30 rounded-xl border border-blue-100 dark:border-blue-900/50">
-                      <label className="flex items-center space-x-2 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(optionsDraft.showOriginalBillRef)}
-                          onChange={(e) => setOptionsDraft({ ...optionsDraft, showOriginalBillRef: e.target.checked })}
-                          className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                        />
-                        <span className="text-slate-700 dark:text-slate-300 font-medium">Original Vendor Bill Ref #</span>
-                      </label>
                       <label className="flex items-center space-x-2 cursor-pointer">
                         <input
                           type="checkbox"
@@ -1391,15 +1839,6 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
                       <label className="flex items-center space-x-2 cursor-pointer">
                         <input
                           type="checkbox"
-                          checked={Boolean(optionsDraft.showTdsDeduction)}
-                          onChange={(e) => setOptionsDraft({ ...optionsDraft, showTdsDeduction: e.target.checked })}
-                          className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                        />
-                        <span className="text-slate-700 dark:text-slate-300 font-medium">TDS Deduction (Tax Withholding)</span>
-                      </label>
-                      <label className="flex items-center space-x-2 cursor-pointer">
-                        <input
-                          type="checkbox"
                           checked={Boolean(optionsDraft.showBankDetails)}
                           onChange={(e) => setOptionsDraft({ ...optionsDraft, showBankDetails: e.target.checked })}
                           className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
@@ -1412,15 +1851,6 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
                   {/* Vendor Statements Specific Controls */}
                   {activeCategory === 'vendor-statements' && (
                     <div className="grid grid-cols-2 gap-3 p-3.5 bg-blue-50/50 dark:bg-blue-950/30 rounded-xl border border-blue-100 dark:border-blue-900/50">
-                      <label className="flex items-center space-x-2 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(optionsDraft.showAgingBuckets)}
-                          onChange={(e) => setOptionsDraft({ ...optionsDraft, showAgingBuckets: e.target.checked })}
-                          className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                        />
-                        <span className="text-slate-700 dark:text-slate-300 font-medium">Payables Aging Buckets (0-30, 31-60, 90+)</span>
-                      </label>
                       <label className="flex items-center space-x-2 cursor-pointer">
                         <input
                           type="checkbox"
@@ -1526,7 +1956,7 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
             {/* Modal Actions */}
             <div className="p-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/60 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <span className="text-[11px] text-slate-400 max-w-xs">
-                Changes apply instantly across all new document exports.
+                Saved changes apply to future PDF renders. Issued PDFs keep their original appearance.
               </span>
               <div className="flex items-center justify-end space-x-2 w-full sm:w-auto">
                 <button
@@ -1553,9 +1983,9 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
       {/* ============================================================== */}
       {/* FULL PREVIEW MODAL                                             */}
       {/* ============================================================== */}
-      {fullPreviewTemplate && (
+      {fullPreviewTemplate && fullPreviewOrganizationId === currentOrg.id && (
         <div className="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-slate-900 w-full max-w-4xl rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col max-h-[92vh]">
+          <div role="dialog" aria-label={`Full Preview: ${fullPreviewTemplate.name}`} className="bg-white dark:bg-slate-900 w-full max-w-4xl rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col max-h-[92vh]">
             <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
               <div className="flex items-center space-x-3">
                 <span className="font-bold text-sm text-slate-900 dark:text-slate-100">
@@ -1570,7 +2000,11 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
                     type="button"
                     onClick={() => {
                       handleSetDefault(fullPreviewTemplate.id);
+                      previewSelectionRef.current += 1;
+                      samplePreviewRequestRef.current += 1;
                       setFullPreviewTemplate(null);
+                      setSamplePdfBlob(null);
+    setFullPreviewOrganizationId(null);
                     }}
                     className="inline-flex items-center space-x-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-xl text-xs font-bold shadow-xs cursor-pointer"
                   >
@@ -1580,7 +2014,8 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
                 )}
                 <button
                   type="button"
-                  onClick={() => setFullPreviewTemplate(null)}
+                  aria-label="Close full preview"
+                  onClick={() => { previewSelectionRef.current += 1; samplePreviewRequestRef.current += 1; setFullPreviewTemplate(null); setSamplePdfBlob(null); }}
                   className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg cursor-pointer"
                 >
                   <X size={18} />
@@ -1592,7 +2027,7 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
               <div className="w-full max-w-2xl min-w-0 space-y-3">
                 <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-xs text-blue-950 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-100">
                   <div className="font-bold">Layout sample only</div>
-                  <p className="mt-0.5 text-blue-800 dark:text-blue-200">Use a current record below to open the server-rendered PDF with your organization’s real data.</p>
+                  <p className="mt-0.5 text-blue-800 dark:text-blue-200">The server-rendered PDF appears below with a sample watermark. Choose a current record to inspect the same template with live data.</p>
                   <div className="mt-2 flex flex-col gap-2 sm:flex-row">
                     <select
                       aria-label="Choose a live document for PDF preview"
@@ -1608,23 +2043,40 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
                     <button type="button" disabled={!selectedLiveDocumentId || openingLivePdf} onClick={handleOpenLivePdf} className="rounded-lg bg-blue-600 px-3 py-2 text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-50">
                       {openingLivePdf ? 'Generating…' : 'Open live PDF'}
                     </button>
+                    <button type="button" disabled={openingSamplePdf} onClick={handleOpenSamplePdf} className="rounded-lg border border-blue-300 bg-white px-3 py-2 text-xs font-bold text-blue-800 disabled:cursor-not-allowed disabled:opacity-50 dark:border-blue-700 dark:bg-slate-900 dark:text-blue-200">
+                      {openingSamplePdf ? 'Generating…' : samplePdfBlob ? 'Refresh sample PDF' : 'Open sample PDF'}
+                    </button>
                   </div>
                 </div>
-                <div className="bg-white dark:bg-slate-900 p-8 rounded-xl shadow-lg border border-slate-200 dark:border-slate-800">
-                <FullCategorySpecializedRenderer
-                  category={activeCategory}
-                  template={fullPreviewTemplate}
-                  docTitle={currentCategoryConfig.templateTitle || fullPreviewTemplate.presetTitle}
-                  orgName={currentOrg.name}
-                  primaryColor={primaryColor}
-                  accentColor={accentColor}
-                  logoUrl={logoUrl}
-                  currencySymbol={settings.currencySymbol || '₹'}
-                  signatoryTitle={currentCategoryConfig.signatoryTitle || 'Authorized Signatory'}
-                  terms={currentCategoryConfig.termsAndConditions || 'Terms & conditions apply.'}
-                  footerNote={currentCategoryConfig.footerNote || 'Thank you for your business.'}
-                />
+                <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg dark:border-slate-800 dark:bg-slate-900">
+                  {samplePdfBlob ? (
+                    <FullPdfPreview blob={samplePdfBlob} title={fullPreviewTemplate.name} />
+                  ) : (
+                    <div className="flex min-h-[360px] flex-col items-center justify-center gap-3 p-8 text-center text-sm text-slate-500" role="status">
+                      <FileText size={30} className="text-slate-300" />
+                      <span>{openingSamplePdf ? 'Preparing the server-rendered sample…' : 'The sample PDF could not be loaded. Use Refresh sample to try again.'}</span>
+                    </div>
+                  )}
                 </div>
+                <details className="rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-600 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300">
+                  <summary className="cursor-pointer font-semibold">Illustrative layout breakdown</summary>
+                  <div className="mt-3">
+                    <FullCategorySpecializedRenderer
+                      category={activeCategory}
+                      template={fullPreviewTemplate}
+                      templateConfig={fullPreviewConfig}
+                      docTitle={fullPreviewTitle || fullPreviewTemplate.presetTitle}
+                      orgName={currentOrg.name}
+                      primaryColor={fullPreviewConfig.primaryColor || primaryColor}
+                      accentColor={fullPreviewConfig.accentColor || accentColor}
+                      logoUrl={logoUrl}
+                      currencySymbol={settings.currencySymbol || '₹'}
+                      signatoryTitle={fullPreviewConfig.signatoryTitle || 'Authorized Signatory'}
+                      terms={fullPreviewConfig.termsAndConditions || 'Terms & conditions apply.'}
+                      footerNote={fullPreviewConfig.footerNote || 'Thank you for your business.'}
+                    />
+                  </div>
+                </details>
               </div>
             </div>
           </div>
@@ -1637,35 +2089,92 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
 // =========================================================================
 // SPECIALIZED MINIATURE THUMBNAIL (Photorealistic Zoho Books A4 Sheet)
 // =========================================================================
+const StatementTemplatePreview: React.FC<{
+  category: 'customer-statements' | 'vendor-statements';
+  templateId: string;
+  density: 'thumbnail' | 'page';
+  currencySymbol: string;
+}> = ({ category, templateId, density, currencySymbol }) => {
+  const compact = density === 'thumbnail';
+  const isCustomer = category === 'customer-statements';
+  const isOverview = (isCustomer && templateId === 'open-summary') || (!isCustomer && templateId === 'reconciliation');
+  const isActivity = (isCustomer && templateId === 'aging-statement') || (!isCustomer && templateId === 'payables-aging');
+  const opening = isCustomer ? 25000 : 15000;
+  const closing = isCustomer ? 53000 : 90000;
+  const transactions = isCustomer ? 4 : 3;
+  const activity = isCustomer
+    ? [['Invoices', 'Debit', 203000], ['Customer refunds', 'Debit', 0], ['Payments received', 'Credit', 175000], ['Credit notes', 'Credit', 0], ['Write-offs', 'Credit', 0], ['Advances applied', 'Credit', 0]]
+    : [['Vendor bills', 'Credit', 155000], ['Vendor refunds', 'Credit', 0], ['Payments made', 'Debit', 80000], ['Vendor credits / debit notes', 'Debit', 0], ['Write-offs', 'Debit', 0]];
+  const ledger = isCustomer
+    ? [['10 May 2026', 'Invoice INV-2026-0810', 118000, 0, 143000], ['25 May 2026', 'Payment REC-2026-0391', 0, 100000, 43000], ['12 Jul 2026', 'Invoice INV-2026-0940', 85000, 0, 128000], ['01 Aug 2026', 'Payment REC-2026-0480', 0, 75000, 53000]]
+    : [['18 May 2026', 'Bill BILL-2026-0150', 0, 95000, 110000], ['02 Jun 2026', 'Payment VP-2026-0240', 80000, 0, 30000], ['14 Aug 2026', 'Bill BILL-2026-0220', 0, 60000, 90000]];
+  const format = (value: number) => `${currencySymbol}${value.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const surface = compact ? 'space-y-1 text-[5px]' : 'space-y-4 text-xs';
+  const cell = compact ? 'p-1' : 'p-2';
+
+  return (
+    <section className={surface}>
+      <header className={`flex flex-wrap items-center justify-between gap-2 ${compact ? 'rounded bg-slate-100 p-1 font-bold' : 'rounded-md bg-slate-100 p-3 font-semibold dark:bg-slate-800'}`}>
+        <span>{isCustomer ? 'Customer statement' : 'Vendor statement'} · 01 Apr–24 Sep 2026</span>
+        {!isOverview && <span className="font-mono">Closing balance {format(closing)}</span>}
+      </header>
+      {isOverview ? (
+        <div className="grid grid-cols-3 gap-2 text-center">
+          {[["Opening balance", format(opening)], ['Transactions', String(transactions)], ['Closing balance', format(closing)]].map(([label, value]) => (
+            <div key={label} className={`${compact ? 'rounded border p-1' : 'rounded-md border p-3'}`}>
+              <div className="text-slate-500">{label}</div><div className="mt-1 font-mono font-bold">{value}</div>
+            </div>
+          ))}
+        </div>
+      ) : isActivity ? (
+        <table className="w-full border-collapse text-left">
+          <thead><tr className="border-b bg-slate-50 font-bold"><th className={cell}>Activity</th><th className={cell}>Side</th><th className={`${cell} text-right`}>Amount</th></tr></thead>
+          <tbody>{activity.map(([label, side, value]) => <tr key={label} className="border-b"><td className={cell}>{label}</td><td className={cell}>{side}</td><td className={`${cell} text-right font-mono`}>{format(Number(value))}</td></tr>)}</tbody>
+        </table>
+      ) : (
+        <table className="w-full border-collapse text-left">
+          <thead><tr className="border-b bg-slate-50 font-bold"><th className={cell}>Date</th><th className={cell}>Transaction / reference</th><th className={`${cell} text-right`}>Debit</th><th className={`${cell} text-right`}>Credit</th><th className={`${cell} text-right`}>Balance</th></tr></thead>
+          <tbody>{ledger.map(([date, reference, debit, credit, balance]) => <tr key={reference} className="border-b"><td className={cell}>{date}</td><td className={cell}>{reference}</td><td className={`${cell} text-right font-mono`}>{Number(debit) ? format(Number(debit)) : '-'}</td><td className={`${cell} text-right font-mono`}>{Number(credit) ? format(Number(credit)) : '-'}</td><td className={`${cell} text-right font-mono font-semibold`}>{format(Number(balance))}</td></tr>)}</tbody>
+        </table>
+      )}
+    </section>
+  );
+};
 interface CategorySpecializedThumbnailProps {
   category: DocumentTemplateCategory;
   template: CategoryTemplateItem;
+  templateConfig: DocumentTemplateConfig;
   docTitle: string;
   orgName: string;
   primaryColor: string;
   accentColor: string;
   logoUrl?: string;
+  currencySymbol: string;
 }
 
 const CategorySpecializedThumbnail: React.FC<CategorySpecializedThumbnailProps> = ({
   category,
   template,
+  templateConfig,
   docTitle,
   orgName,
   primaryColor,
   accentColor,
   logoUrl,
+  currencySymbol,
 }) => {
-  const isSpreadsheet = template.id.includes('spreadsheet') || template.name.toLowerCase().includes('spreadsheet') || template.name.toLowerCase().includes('ledger');
-  const isModern = template.id.includes('modern') || template.name.toLowerCase().includes('modern') || template.name.toLowerCase().includes('minimalist');
-  const isCompact = template.id.includes('compact') || template.id.includes('pos') || template.name.toLowerCase().includes('compact');
-  const isStandard = !isSpreadsheet && !isModern && !isCompact;
+  const isSpreadsheet = /ledger/i.test(template.tagline);
+  const isCompact = /compact/i.test(template.tagline) || ['pos', 'cash-receipt', 'adjustment', 'open-summary', 'reconciliation', 'petty-cash', 'cheque-disbursement', 'adjustment-memo', 'adjustment-journal'].includes(template.id);
+  const isStandard = !isSpreadsheet && !isCompact;
 
   return (
-    <div className="w-full h-full bg-white text-slate-800 p-3 flex flex-col justify-between text-[6px] leading-[1.25] font-sans select-none overflow-hidden">
+    <div aria-label="Illustrative layout with sample content, not live record data" className="relative w-full h-full bg-white text-slate-800 p-3 pt-6 flex flex-col justify-between text-[6px] leading-[1.25] font-sans select-none overflow-hidden">
+      <span className="absolute left-2 right-2 top-1 z-20 rounded-sm bg-amber-100 px-1 py-0.5 text-center text-[5px] font-black uppercase tracking-wide text-amber-900">
+        Illustrative layout · sample content
+      </span>
       {/* 1. TOP HEADER: Logo & Company on Left, Document Title on Right (Exact Zoho Books Style) */}
       <div>
-        <div className="flex items-start justify-between pb-1.5 border-b border-slate-200">
+        <div className="flex items-start justify-between pb-1.5 border-b-2" style={{ borderColor: primaryColor }}>
           {/* Company Brand Block */}
           <div className="flex items-start space-x-1.5">
             {logoUrl ? (
@@ -1684,8 +2193,9 @@ const CategorySpecializedThumbnail: React.FC<CategorySpecializedThumbnailProps> 
           {/* Document Type & Number */}
           <div className="text-right">
             <span className="font-black text-[8.5px] uppercase tracking-wider block text-slate-900">{docTitle}</span>
-            <span className="font-mono text-[5.5px] text-slate-500 block"># 2026-0042</span>
-            <span className="text-[5px] text-slate-400 block">21 Sep 2026</span>
+            <span className="ml-auto mt-0.5 block h-0.5 w-8" style={{ backgroundColor: accentColor }} aria-hidden="true" />
+            <span className="font-mono text-[5.5px] text-slate-500 block"># {category === 'payment-receipts' ? 'REC-SAMPLE-0544' : '2026-0042'}</span>
+            <span className="text-[5px] text-slate-400 block">{category === 'payment-receipts' ? '25 Sep 2026' : '21 Sep 2026'}</span>
           </div>
         </div>
 
@@ -1708,21 +2218,31 @@ const CategorySpecializedThumbnail: React.FC<CategorySpecializedThumbnailProps> 
             <>
               <div>
                 <span className="text-slate-400 block uppercase font-bold text-[5px]">Received From:</span>
-                <span className="font-bold text-slate-800 block">Acme Global Enterprises</span>
+                <span className="font-bold text-slate-800 block">Nexus Global Software Solutions Ltd</span>
                 <span className="text-slate-500 block">Customer ID: CUST-8819</span>
               </div>
               <div className="text-right">
-                <span className="text-slate-400 block uppercase font-bold text-[5px]">Payment Method:</span>
-                <span className="font-bold text-blue-600 block">NEFT / Online Wire</span>
-                <span className="font-mono text-slate-500 block">UTR: AXISN0029419</span>
+                {template.id === 'cash-receipt' ? (
+                  <>
+                    <span className="text-slate-400 block uppercase font-bold text-[5px]">Receipt Reference:</span>
+                    <span className="font-mono font-bold text-slate-800 block">REC-SAMPLE-0544</span>
+                    <span className="text-slate-500 block">Received: 25 Sep 2026</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-slate-400 block uppercase font-bold text-[5px]">Payment Method:</span>
+                    <span className="font-bold text-blue-600 block">NEFT / RTGS Wire Transfer</span>
+                    <span className="font-mono text-slate-500 block">UTR: CMS904481023812</span>
+                  </>
+                )}
               </div>
             </>
           ) : category === 'customer-statements' || category === 'vendor-statements' ? (
             <>
               <div>
-                <span className="text-slate-400 block uppercase font-bold text-[5px]">Statement Recipient:</span>
-                <span className="font-bold text-slate-800 block">Acme Global Enterprises Ltd</span>
-                <span className="text-slate-500 block">A/c Ref: ACME-042</span>
+                <span className="text-slate-400 block uppercase font-bold text-[5px]">{category === 'customer-statements' ? 'Statement Recipient:' : 'Vendor / Supplier:'}</span>
+                <span className="font-bold text-slate-800 block">{category === 'customer-statements' ? 'Nexus Global Software Solutions Ltd Ltd' : 'Steel Foundry & Castings Ltd'}</span>
+                <span className="text-slate-500 block">{category === 'customer-statements' ? 'A/c Ref: ACME-042' : 'Vendor Ref: VEND-042'}</span>
               </div>
               <div className="text-right">
                 <span className="text-slate-400 block uppercase font-bold text-[5px]">Ledger Period:</span>
@@ -1760,7 +2280,7 @@ const CategorySpecializedThumbnail: React.FC<CategorySpecializedThumbnailProps> 
             <>
               <div>
                 <span className="text-slate-400 block uppercase font-bold text-[5px]">Bill To / Client:</span>
-                <span className="font-bold text-slate-800 block">Acme Global Enterprises</span>
+                <span className="font-bold text-slate-800 block">Nexus Global Software Solutions Ltd</span>
                 <span className="text-slate-500 block">24 Park Green, Mumbai</span>
               </div>
               <div className="text-right">
@@ -1932,32 +2452,32 @@ const CategorySpecializedThumbnail: React.FC<CategorySpecializedThumbnailProps> 
         {/* CREDIT NOTES                                              */}
         {/* ========================================================= */}
         {category === 'credit-notes' && (
-          <div className="space-y-1">
-            <div className="p-0.5 bg-rose-50 text-rose-800 rounded border border-rose-200 text-[5px] font-bold">
-              REF INVOICE: # INV-2026-0038 • REASON: Quality Rejection / Return
+          template.id === 'goods-return' ? (
+            <div className="space-y-1.5 border-t-2 border-rose-700 pt-1.5 text-[5px]">
+              <div className="flex justify-between font-bold text-rose-800"><span>SALES RETURN CREDIT</span><span>LEDGER</span></div>
+              <div className="grid grid-cols-2 gap-1 bg-slate-50 p-1">
+                <div><span className="block text-slate-400">NOTE TOTAL</span><b>₹11,800.00</b></div>
+                <div className="text-right"><span className="block text-slate-400">REMAINING</span><b>₹6,800.00</b></div>
+              </div>
+              <table className="w-full text-[4.5px]"><thead><tr className="border-b text-slate-500"><th className="text-left">DATE</th><th className="text-left">INVOICE</th><th className="text-right">APPLIED</th></tr></thead><tbody><tr><td>12 Aug</td><td>INV-1042</td><td className="text-right">₹5,000.00</td></tr></tbody></table>
+              {templateConfig.showReturnReason !== false && <div className="text-slate-500">Quality rejection / return</div>}
             </div>
-            <table className="w-full text-[5.2px]">
-              <thead>
-                <tr className="bg-slate-100 font-bold border-b">
-                  <th className="p-0.5 text-left">Returned Item</th>
-                  <th className="p-0.5 text-center">Qty</th>
-                  <th className="p-0.5 text-right">Rate</th>
-                  <th className="p-0.5 text-right">Credit (₹)</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                <tr>
-                  <td className="p-0.5 font-medium">Hydraulic Pressure Gaskets #G4</td>
-                  <td className="p-0.5 text-center font-mono">10</td>
-                  <td className="p-0.5 text-right font-mono">1,000</td>
-                  <td className="p-0.5 text-right font-mono font-bold text-rose-600">-11,800</td>
-                </tr>
-              </tbody>
-            </table>
-            <div className="text-right font-bold font-mono text-rose-600 text-[6.5px] pt-1 border-t">
-              Net Credit: -₹11,800.00
+          ) : template.id === 'adjustment' ? (
+            <div className="border border-slate-300 text-[5px]">
+              <div className="bg-slate-800 px-1.5 py-1 font-bold text-white">CREDIT ADJUSTMENT SLIP</div>
+              <div className="flex min-h-12 items-stretch">
+                <div className="flex-1 p-1.5">{templateConfig.showReturnReason !== false && <><span className="block text-slate-400">ADJUSTMENT REASON</span><span>Quality rejection / return</span></>}</div>
+                <div className="flex w-20 flex-col justify-center bg-slate-100 px-1.5"><span className="text-slate-500">VALUE</span><b className="font-mono text-[7px] text-rose-700">₹11,800.00</b></div>
+              </div>
+              <div className="border-t px-1.5 py-1 text-right text-slate-500">Available credit <b className="text-slate-800">₹6,800.00</b></div>
             </div>
-          </div>
+          ) : (
+            <div className="border-l-2 border-rose-700 bg-rose-50 p-2 text-[5px]">
+              <div className="font-bold text-rose-800">CREDIT NOTE DETAILS</div>
+              {templateConfig.showReturnReason !== false && <div className="py-1.5 text-slate-600"><span className="block text-[4.5px] font-bold text-slate-400">CREDIT REASON</span>Quality rejection / return</div>}
+              <div className="border-t border-rose-200 pt-1"><span className="block text-[4.5px] font-bold text-rose-700">CREDIT NOTE VALUE</span><b className="font-mono text-[8px] text-rose-800">₹11,800.00</b></div>
+            </div>
+          )
         )}
 
         {/* ========================================================= */}
@@ -2000,66 +2520,47 @@ const CategorySpecializedThumbnail: React.FC<CategorySpecializedThumbnailProps> 
         {/* PAYMENT RECEIPTS                                          */}
         {/* ========================================================= */}
         {category === 'payment-receipts' && (
-          <div className="space-y-1 p-1 bg-slate-50 rounded border border-slate-200">
-            <div className="text-[5px] text-slate-500">
-              Received with thanks from <strong className="text-slate-900">Acme Global Enterprises</strong> the sum of:
+          template.id === 'cash-receipt' ? (
+            <div className="space-y-1">
+              <div className="p-1.5 bg-emerald-50 rounded border border-emerald-200 text-center">
+                <div className="text-[5px] font-bold uppercase tracking-wide text-emerald-800">AMOUNT RECEIVED</div>
+                <div className="font-mono font-black text-emerald-700 text-[9px] py-0.5">{currencySymbol}1,25,000.00</div>
+                <div className="text-[4.8px] text-slate-500">Nexus Global Software Solutions Ltd</div>
+                <div className="text-[4.5px] text-slate-500">Payment Mode: NEFT / RTGS Wire Transfer</div>
+                <div className="text-[4.5px] text-slate-500">UTR Reference: CMS904481023812</div>
+              </div>
+              <table className="w-full text-[4.8px] text-left">
+                <thead><tr className="border-b border-slate-200 text-slate-500"><th className="py-0.5">Allocated Invoice</th><th className="py-0.5 text-right">Amount Settled</th></tr></thead>
+                <tbody>
+                  <tr className="border-b border-slate-100"><td className="py-0.5">INV-2026-1042</td><td className="py-0.5 text-right font-mono">{currencySymbol}80,000.00</td></tr>
+                  <tr><td className="py-0.5">INV-2026-1049</td><td className="py-0.5 text-right font-mono">{currencySymbol}45,000.00</td></tr>
+                </tbody>
+              </table>
             </div>
-            <div className="font-mono font-black text-emerald-700 text-[8px] py-0.5">
-              ₹82,400.00
+          ) : (
+            <div className="space-y-1 p-1 bg-slate-50 rounded border border-slate-200">
+              <div className="text-[5px] text-slate-500">
+                Received with thanks from <strong className="text-slate-900">Nexus Global Software Solutions Ltd</strong> the sum of:
+              </div>
+              <div className="font-mono font-black text-emerald-700 text-[8px] py-0.5">
+                {currencySymbol}1,25,000.00
+              </div>
+              <div className="text-[5px] text-slate-400 italic">
+                "Rupees One Lakh Twenty Five Thousand Only"
+              </div>
+              <div className="pt-1 border-t border-slate-200 flex justify-between text-[4.8px] text-slate-500">
+                <span>Settling: INV-2026-1042 & INV-2026-1049</span>
+                <span className="font-bold text-emerald-700">PAID & ENTERED</span>
+              </div>
             </div>
-            <div className="text-[5px] text-slate-400 italic">
-              "Eighty-Two Thousand Four Hundred Indian Rupees Only"
-            </div>
-            <div className="pt-1 border-t border-slate-200 flex justify-between text-[4.8px] text-slate-500">
-              <span>Settling: INV-0042 & INV-0044</span>
-              <span className="font-bold text-emerald-700">PAID & ENTERED</span>
-            </div>
-          </div>
+          )
         )}
 
         {/* ========================================================= */}
-        {/* CUSTOMER / VENDOR STATEMENTS                              */}
-        {/* ========================================================= */}
+        {/* CUSTOMER / VENDOR STATEMENTS */}
         {(category === 'customer-statements' || category === 'vendor-statements') && (
-          <div className="space-y-1">
-            <div className="flex justify-between p-0.5 bg-slate-100 rounded text-[5px] font-bold">
-              <span>Opening Balance: ₹0.00</span>
-              <span className="font-mono text-blue-600">Net Due: ₹82,400.00</span>
-            </div>
-            <table className="w-full text-[5px]">
-              <thead>
-                <tr className="border-b font-bold">
-                  <th className="p-0.5 text-left">Date</th>
-                  <th className="p-0.5 text-left">Ref Doc #</th>
-                  <th className="p-0.5 text-right">Debit</th>
-                  <th className="p-0.5 text-right">Credit</th>
-                  <th className="p-0.5 text-right">Balance</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                <tr>
-                  <td className="p-0.5">02 May</td>
-                  <td className="p-0.5">INV-0042</td>
-                  <td className="p-0.5 text-right font-mono">1,00,000</td>
-                  <td className="p-0.5 text-right text-slate-400">-</td>
-                  <td className="p-0.5 text-right font-mono font-bold">1,00,000</td>
-                </tr>
-                <tr>
-                  <td className="p-0.5">15 Jun</td>
-                  <td className="p-0.5">REC-0012</td>
-                  <td className="p-0.5 text-right text-slate-400">-</td>
-                  <td className="p-0.5 text-right font-mono text-emerald-600">17,600</td>
-                  <td className="p-0.5 text-right font-mono font-bold">82,400</td>
-                </tr>
-              </tbody>
-            </table>
-            <div className="flex justify-between p-0.5 bg-amber-50 text-amber-800 rounded font-bold text-[4.8px]">
-              <span>0-30: ₹32.4k</span><span>31-60: ₹50.0k</span><span>61-90: ₹0</span><span>90+: ₹0</span>
-            </div>
-          </div>
+          <StatementTemplatePreview category={category} templateId={template.id} density="thumbnail" currencySymbol="₹" />
         )}
-
-        {/* ========================================================= */}
         {/* BILLS (VENDOR BILLS)                                      */}
         {/* ========================================================= */}
         {category === 'bills' && (
@@ -2090,7 +2591,21 @@ const CategorySpecializedThumbnail: React.FC<CategorySpecializedThumbnailProps> 
         {/* ========================================================= */}
         {/* EXPENSES                                                  */}
         {/* ========================================================= */}
-        {category === 'expenses' && (
+        {category === 'expenses' && (template.id === 'project-billable' ? (
+          <div className="space-y-1 text-[5px]">
+            <div className="p-1 bg-emerald-50 rounded border border-emerald-200">
+              <div className="font-bold uppercase text-emerald-800">Project Recovery</div>
+              <div className="font-bold text-slate-800 truncate">Year-End Controls Modernization</div>
+              <div className="text-slate-600 truncate">Nexus Global Software Solutions Ltd</div>
+              <div className="mt-0.5 flex justify-between text-slate-500"><span>Not yet invoiced</span><span>No invoice linked</span></div>
+            </div>
+            <div className="grid grid-cols-3 gap-1 border-t pt-1">
+              <div><span className="block text-slate-400">EXPENSE</span><strong className="font-mono">{currencySymbol}24,500.00</strong></div>
+              <div><span className="block text-slate-400">CLIENT CHARGE</span><strong className="font-mono">{currencySymbol}29,400.00</strong></div>
+              <div><span className="block text-slate-400">STORED MARKUP</span><strong>20%</strong></div>
+            </div>
+          </div>
+        ) : (
           <div className="space-y-1">
             <div className="flex justify-between text-[5px] p-0.5 bg-slate-50 rounded border border-slate-200">
               <span>Claimant: Rahul Sharma</span>
@@ -2114,7 +2629,7 @@ const CategorySpecializedThumbnail: React.FC<CategorySpecializedThumbnailProps> 
               Reimbursement: ₹8,450.00
             </div>
           </div>
-        )}
+        ))}
 
         {/* ========================================================= */}
         {/* VENDOR CREDITS                                            */}
@@ -2221,6 +2736,7 @@ const CategorySpecializedThumbnail: React.FC<CategorySpecializedThumbnailProps> 
 interface FullCategorySpecializedRendererProps {
   category: DocumentTemplateCategory;
   template: CategoryTemplateItem;
+  templateConfig: DocumentTemplateConfig;
   docTitle: string;
   orgName: string;
   primaryColor: string;
@@ -2235,6 +2751,7 @@ interface FullCategorySpecializedRendererProps {
 const FullCategorySpecializedRenderer: React.FC<FullCategorySpecializedRendererProps> = ({
   category,
   template,
+  templateConfig,
   docTitle,
   orgName,
   primaryColor,
@@ -2270,8 +2787,8 @@ const FullCategorySpecializedRenderer: React.FC<FullCategorySpecializedRendererP
           <h1 className="text-xl sm:text-2xl font-black tracking-tight break-words" style={{ color: primaryColor }}>
             {docTitle}
           </h1>
-          <p className="font-mono font-bold text-xs text-slate-500 mt-0.5"># DOC-2026-0042</p>
-          <p className="text-xs text-slate-400">Date: 21 Sep 2026</p>
+          <p className="font-mono font-bold text-xs text-slate-500 mt-0.5">{category === 'payment-receipts' ? '# REC-SAMPLE-0544' : '# DOC-2026-0042'}</p>
+          <p className="text-xs text-slate-400">{category === 'payment-receipts' ? 'Date: 25 Sep 2026' : 'Date: 21 Sep 2026'}</p>
         </div>
       </div>
 
@@ -2291,52 +2808,14 @@ const FullCategorySpecializedRenderer: React.FC<FullCategorySpecializedRendererP
             </div>
           </div>
 
-          <table className="w-full text-left text-xs border rounded-xl overflow-hidden">
-            <thead className="bg-slate-800 text-white font-bold">
-              <tr>
-                <th className="p-2.5"># Scope & Deliverables</th>
-                <th className="p-2.5 text-center">Qty</th>
-                <th className="p-2.5 text-right">Unit Rate</th>
-                <th className="p-2.5 text-right">Discount</th>
-                <th className="p-2.5 text-right">Estimate Total</th>
-              </tr>
+                    <table className="w-full text-left text-xs border rounded-xl overflow-hidden">
+            <thead className="bg-slate-100 dark:bg-slate-800 font-bold">
+              <tr><th className="p-2.5">Allocated Invoice</th><th className="p-2.5 text-right">Amount Settled</th></tr>
             </thead>
             <tbody className="divide-y">
-              <tr>
-                <td className="p-2.5">
-                  <span className="font-bold block">Cloud Architecture Migration</span>
-                  <span className="text-[11px] text-slate-400">Kubernetes cluster setup, zero-downtime database cutover</span>
-                </td>
-                <td className="p-2.5 text-center font-mono">1 Lot</td>
-                <td className="p-2.5 text-right font-mono">₹60,000.00</td>
-                <td className="p-2.5 text-right text-emerald-600">10% (-₹6,000)</td>
-                <td className="p-2.5 text-right font-mono font-bold">₹54,000.00</td>
-              </tr>
-              <tr>
-                <td className="p-2.5">
-                  <span className="font-bold block">Security & Compliance Audit</span>
-                  <span className="text-[11px] text-slate-400">SOC-2 Type II readiness audit and automated policy guardrails</span>
-                </td>
-                <td className="p-2.5 text-center font-mono">1 Lot</td>
-                <td className="p-2.5 text-right font-mono">₹25,000.00</td>
-                <td className="p-2.5 text-right text-slate-400">-</td>
-                <td className="p-2.5 text-right font-mono font-bold">₹25,000.00</td>
-              </tr>
+              <tr><td className="p-2.5 font-bold">INV-2026-1042</td><td className="p-2.5 text-right font-mono font-bold text-emerald-600">{currencySymbol}80,000.00</td></tr>
+              <tr><td className="p-2.5 font-bold">INV-2026-1049</td><td className="p-2.5 text-right font-mono font-bold text-emerald-600">{currencySymbol}45,000.00</td></tr>
             </tbody>
-            <tfoot className="bg-slate-50 font-bold border-t">
-              <tr>
-                <td colSpan={4} className="p-2.5 text-right text-slate-600">Sub Total:</td>
-                <td className="p-2.5 text-right font-mono">₹79,000.00</td>
-              </tr>
-              <tr>
-                <td colSpan={4} className="p-2.5 text-right text-slate-600">Estimated GST (18%):</td>
-                <td className="p-2.5 text-right font-mono">₹14,220.00</td>
-              </tr>
-              <tr className="border-t-2 font-black text-sm bg-slate-100">
-                <td colSpan={4} className="p-2.5 text-right">Estimated Proposal Total:</td>
-                <td className="p-2.5 text-right font-mono text-blue-600">₹93,220.00</td>
-              </tr>
-            </tfoot>
           </table>
         </div>
       )}
@@ -2402,7 +2881,7 @@ const FullCategorySpecializedRenderer: React.FC<FullCategorySpecializedRendererP
           <div className="grid grid-cols-2 gap-4 p-4 bg-slate-50 dark:bg-slate-800/40 rounded-xl border text-xs">
             <div>
               <span className="text-slate-400 font-bold uppercase text-[10px]">Billed To (Client)</span>
-              <p className="font-bold text-slate-800 dark:text-slate-200 mt-1">Acme Global Enterprises Ltd</p>
+              <p className="font-bold text-slate-800 dark:text-slate-200 mt-1">Nexus Global Software Solutions Ltd</p>
               <p className="text-slate-500">24 Park Green, Mumbai, MH • GSTIN: 27AAAAA1234A1Z5</p>
               <p className="text-slate-400 text-[10px] mt-0.5">Place of Supply: 27-Maharashtra</p>
             </div>
@@ -2484,44 +2963,25 @@ const FullCategorySpecializedRenderer: React.FC<FullCategorySpecializedRendererP
       )}
 
       {category === 'credit-notes' && (
-        <div className="space-y-4">
-          <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl flex justify-between items-center text-xs">
-            <div>
-              <span className="font-bold text-rose-800">Statutory Credit Memo</span>
-              <p className="text-rose-600 mt-0.5">Original Invoice Ref: # INV-2026-0038 dated 10 Aug 2026</p>
-            </div>
-            <div className="text-right">
-              <span className="text-rose-700 font-bold">Reason: Quality Rejection / Return</span>
-            </div>
+        template.id === 'goods-return' ? (
+          <div className="max-w-4xl space-y-5 border-t-4 border-rose-700 pt-4">
+            <div className="flex items-start justify-between"><div><div className="text-[10px] font-bold uppercase text-rose-700">Sales Return Memo</div><h2 className="mt-1 text-2xl font-black text-slate-900">CREDIT APPLICATION LEDGER</h2></div><div className="text-right text-xs"><div className="text-slate-500">Credit note total</div><b className="font-mono text-lg">₹11,800.00</b></div></div>
+            <div className="grid grid-cols-2 border-y py-3 text-sm"><div><span className="block text-[10px] font-bold uppercase text-slate-500">Remaining credit</span><b className="font-mono">₹6,800.00</b></div>{templateConfig.showReturnReason !== false && <div className="text-right"><span className="block text-[10px] font-bold uppercase text-slate-500">Return reason</span><span>Quality rejection / return</span></div>}</div>
+            <table className="w-full text-sm"><thead className="border-b bg-slate-100 text-left text-[10px] uppercase text-slate-600"><tr><th className="p-2">Application date</th><th className="p-2">Invoice</th><th className="p-2 text-right">Applied amount</th></tr></thead><tbody><tr className="border-b"><td className="p-2">12 Aug 2026</td><td className="p-2 font-mono">INV-1042</td><td className="p-2 text-right font-mono">₹5,000.00</td></tr></tbody></table>
           </div>
-
-          <table className="w-full text-left text-xs border rounded-xl overflow-hidden">
-            <thead className="bg-slate-100 font-bold">
-              <tr>
-                <th className="p-2.5">Item Description</th>
-                <th className="p-2.5 text-center">Returned Qty</th>
-                <th className="p-2.5 text-right">Unit Rate</th>
-                <th className="p-2.5 text-right">Reverse GST (18%)</th>
-                <th className="p-2.5 text-right">Net Credit</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y">
-              <tr>
-                <td className="p-2.5 font-bold">Hydraulic Pressure Gaskets #G4</td>
-                <td className="p-2.5 text-center font-mono">10 Units</td>
-                <td className="p-2.5 text-right font-mono">₹1,000.00</td>
-                <td className="p-2.5 text-right font-mono text-rose-600">-₹1,800.00</td>
-                <td className="p-2.5 text-right font-mono font-bold text-rose-600">-₹11,800.00</td>
-              </tr>
-            </tbody>
-            <tfoot className="bg-rose-50 font-black border-t-2 text-rose-700">
-              <tr>
-                <td colSpan={4} className="p-2.5 text-right">Total Net Credit to Customer Balance:</td>
-                <td className="p-2.5 text-right font-mono text-sm">-₹11,800.00</td>
-              </tr>
-            </tfoot>
-          </table>
-        </div>
+        ) : template.id === 'adjustment' ? (
+          <div className="max-w-2xl border border-slate-300">
+            <div className="flex items-center justify-between bg-slate-800 px-5 py-4 text-white"><div><div className="text-[10px] font-bold uppercase text-slate-300">Account adjustment</div><h2 className="mt-1 text-lg font-black">CREDIT ADJUSTMENT SLIP</h2></div><div className="text-right"><div className="text-[10px] font-bold uppercase text-slate-300">Adjustment value</div><div className="font-mono text-xl font-bold">₹11,800.00</div></div></div>
+            <div className="grid grid-cols-[1fr_auto] items-center gap-4 px-5 py-4">{templateConfig.showReturnReason !== false && <div><div className="text-[10px] font-bold uppercase text-slate-500">Adjustment reason</div><p className="mt-1 text-sm">Quality rejection / return</p></div>}<div className="border-l pl-4 text-right"><div className="text-[10px] font-bold uppercase text-slate-500">Available credit</div><div className="font-mono text-sm font-bold">₹6,800.00</div></div></div>
+          </div>
+        ) : (
+          <div className="max-w-3xl border-l-4 border-rose-700 bg-rose-50 px-7 py-6">
+            <div className="text-[10px] font-bold uppercase text-rose-700">Credit Memo · Sample Preview</div>
+            <h2 className="mt-1 text-xl font-black text-slate-900">CREDIT NOTE DETAILS</h2>
+            {templateConfig.showReturnReason !== false && <div className="mt-5 border-t border-rose-200 pt-3"><div className="text-[10px] font-bold uppercase text-slate-500">Credit reason</div><p className="mt-1 text-sm text-slate-800">Quality rejection / return</p></div>}
+            <div className="mt-5 border-t border-rose-200 pt-3"><div className="text-[10px] font-bold uppercase text-rose-700">Credit note value</div><div className="mt-1 font-mono text-2xl font-bold text-rose-800">₹11,800.00</div></div>
+          </div>
+        )
       )}
 
       {category === 'purchase-orders' && (
@@ -2623,7 +3083,30 @@ const FullCategorySpecializedRenderer: React.FC<FullCategorySpecializedRendererP
         </div>
       )}
 
-      {category === 'expenses' && (
+      {category === 'expenses' && (template.id === 'project-billable' ? (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-4 p-4 bg-emerald-50 dark:bg-emerald-950/30 rounded border border-emerald-200 dark:border-emerald-800 text-xs">
+            <div>
+              <span className="text-emerald-700 dark:text-emerald-300 font-bold uppercase text-[10px]">Project</span>
+              <p className="font-bold text-slate-800 dark:text-slate-100 mt-1">Year-End Controls Modernization</p>
+              <p className="text-slate-600 dark:text-slate-300">Client: Nexus Global Software Solutions Ltd</p>
+            </div>
+            <div className="text-right">
+              <span className="text-slate-500 dark:text-slate-400 font-bold uppercase text-[10px]">Billing Status</span>
+              <p className="font-bold text-amber-700 dark:text-amber-300 mt-1">Not yet invoiced</p>
+              <p className="text-slate-600 dark:text-slate-300">Invoice reference: Not invoiced</p>
+            </div>
+          </div>
+          <table className="w-full text-left text-xs border rounded overflow-hidden">
+            <thead className="bg-slate-100 dark:bg-slate-800 font-bold"><tr><th className="p-2.5">Expense</th><th className="p-2.5 text-right">Recorded Amount</th></tr></thead>
+            <tbody><tr><td className="p-2.5">Project delivery expenses</td><td className="p-2.5 text-right font-mono font-bold">{currencySymbol}24,500.00</td></tr></tbody>
+          </table>
+          <div className="grid grid-cols-2 gap-4 border-t pt-4">
+            <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded border"><span className="block text-slate-500 text-[10px] font-bold uppercase">Stored Client Charge</span><strong className="font-mono text-emerald-700 dark:text-emerald-300">{currencySymbol}29,400.00</strong></div>
+            <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded border"><span className="block text-slate-500 text-[10px] font-bold uppercase">Stored Markup</span><strong>20%</strong></div>
+          </div>
+        </div>
+      ) : (
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-4 p-4 bg-slate-50 dark:bg-slate-800/40 rounded-xl border text-xs">
             <div>
@@ -2666,7 +3149,7 @@ const FullCategorySpecializedRenderer: React.FC<FullCategorySpecializedRendererP
             </tfoot>
           </table>
         </div>
-      )}
+      ))}
 
       {category === 'vendor-credits' && (
         <div className="space-y-4">
@@ -2750,49 +3233,8 @@ const FullCategorySpecializedRenderer: React.FC<FullCategorySpecializedRendererP
       )}
 
       {category === 'vendor-statements' && (
-        <div className="space-y-4">
-          <div className="p-3 bg-slate-100 dark:bg-slate-800 rounded-xl flex justify-between items-center text-xs font-bold">
-            <span>Vendor Payables Period: 01 Apr 2026 – 21 Sep 2026</span>
-            <span className="font-mono text-blue-600">Net Payables Due: ₹50,000.00</span>
-          </div>
-
-          <table className="w-full text-left text-xs border rounded-xl overflow-hidden">
-            <thead className="bg-slate-100 dark:bg-slate-800 font-bold">
-              <tr>
-                <th className="p-2">Date</th>
-                <th className="p-2">Transaction Detail</th>
-                <th className="p-2 text-right">Bills (Cr)</th>
-                <th className="p-2 text-right">Payments (Dr)</th>
-                <th className="p-2 text-right">Balance Due</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y">
-              <tr>
-                <td className="p-2">10 May 2026</td>
-                <td className="p-2">Vendor Bill # BILL-2026-0042</td>
-                <td className="p-2 text-right font-mono">₹1,25,000.00</td>
-                <td className="p-2 text-right font-mono">-</td>
-                <td className="p-2 text-right font-mono font-bold">₹1,25,000.00</td>
-              </tr>
-              <tr>
-                <td className="p-2">28 Jun 2026</td>
-                <td className="p-2">Payment Remittance # VP-2026-0019</td>
-                <td className="p-2 text-right font-mono">-</td>
-                <td className="p-2 text-right font-mono text-emerald-600">₹75,000.00</td>
-                <td className="p-2.5 text-right font-mono font-bold">₹50,000.00</td>
-              </tr>
-            </tbody>
-          </table>
-
-          <div className="grid grid-cols-4 gap-2 text-center text-xs font-bold pt-2">
-            <div className="p-2 bg-emerald-50 rounded border border-emerald-200">Current<br/>₹0.00</div>
-            <div className="p-2 bg-amber-50 rounded border border-amber-200">1-30 Days<br/>₹50,000.00</div>
-            <div className="p-2 bg-orange-50 rounded border border-orange-200">31-60 Days<br/>₹0.00</div>
-            <div className="p-2 bg-rose-50 rounded border border-rose-200">90+ Days<br/>₹0.00</div>
-          </div>
-        </div>
+        <StatementTemplatePreview category={category} templateId={template.id} density="page" currencySymbol={currencySymbol} />
       )}
-
       {category === 'delivery-challans' && (
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-4 p-4 bg-slate-50 dark:bg-slate-800/40 rounded-xl border text-xs">
@@ -2848,88 +3290,45 @@ const FullCategorySpecializedRenderer: React.FC<FullCategorySpecializedRendererP
 
       {category === 'payment-receipts' && (
         <div className="space-y-4">
-          <div className="p-4 bg-emerald-50/60 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800/60 rounded-xl space-y-2 text-xs">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-800 dark:text-emerald-300">
-              Receipt Acknowledgment
-            </span>
-            <p className="text-slate-600 dark:text-slate-300">
-              Received with thanks from <strong className="text-slate-900 dark:text-slate-100">Acme Global Enterprises Ltd</strong> a sum of
-              <strong className="text-emerald-700 dark:text-emerald-400 font-bold font-mono"> ₹82,400.00</strong> via
-              <strong> NEFT / Online Banking Transfer (UTR: AXISN0029419)</strong>.
-            </p>
-          </div>
+          {template.id === 'cash-receipt' ? (
+            <div className="p-5 bg-emerald-50/70 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800/60 rounded-xl text-center">
+              <div className="text-xs font-bold uppercase tracking-wide text-emerald-800 dark:text-emerald-300">AMOUNT RECEIVED</div>
+              <div className="mt-1 font-mono text-3xl font-black text-emerald-700 dark:text-emerald-400">{currencySymbol}1,25,000.00</div>
+              <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">
+                Received from <strong className="text-slate-900 dark:text-slate-100">Nexus Global Software Solutions Ltd</strong>
+              </p>
+              <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">Payment Mode: NEFT / RTGS Wire Transfer</p>
+              <p className="text-xs text-slate-600 dark:text-slate-300">UTR Reference: CMS904481023812</p>
+              <p className="text-xs text-slate-600 dark:text-slate-300">Deposited To: Current Bank Account</p>
+            </div>
+          ) : (
+            <div className="p-4 bg-emerald-50/60 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800/60 rounded-xl space-y-2 text-xs">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-800 dark:text-emerald-300">
+                Receipt Acknowledgment
+              </span>
+              <p className="text-slate-600 dark:text-slate-300">
+                Received with thanks from <strong className="text-slate-900 dark:text-slate-100">Nexus Global Software Solutions Ltd</strong> a sum of
+                <strong className="text-emerald-700 dark:text-emerald-400 font-bold font-mono"> {currencySymbol}1,25,000.00</strong> via
+                <strong> NEFT / RTGS Wire Transfer (UTR: CMS904481023812)</strong>.
+              </p>
+            </div>
+          )}
 
           <table className="w-full text-left text-xs border rounded-xl overflow-hidden">
             <thead className="bg-slate-100 dark:bg-slate-800 font-bold">
-              <tr>
-                <th className="p-2.5">Settled Invoice #</th>
-                <th className="p-2.5">Invoice Date</th>
-                <th className="p-2.5 text-right">Invoice Amount</th>
-                <th className="p-2.5 text-right">Settled Amount</th>
-              </tr>
+              <tr><th className="p-2.5">Allocated Invoice</th><th className="p-2.5 text-right">Amount Settled</th></tr>
             </thead>
             <tbody className="divide-y">
-              <tr>
-                <td className="p-2.5 font-bold">INV-2026-0042</td>
-                <td className="p-2.5">02 May 2026</td>
-                <td className="p-2.5 text-right font-mono">₹50,000.00</td>
-                <td className="p-2.5 text-right font-mono font-bold text-emerald-600">₹50,000.00</td>
-              </tr>
-              <tr>
-                <td className="p-2.5 font-bold">INV-2026-0044</td>
-                <td className="p-2.5">15 Jun 2026</td>
-                <td className="p-2.5 text-right font-mono">₹32,400.00</td>
-                <td className="p-2.5 text-right font-mono font-bold text-emerald-600">₹32,400.00</td>
-              </tr>
+              <tr><td className="p-2.5 font-bold">INV-2026-1042</td><td className="p-2.5 text-right font-mono font-bold text-emerald-600">{currencySymbol}80,000.00</td></tr>
+              <tr><td className="p-2.5 font-bold">INV-2026-1049</td><td className="p-2.5 text-right font-mono font-bold text-emerald-600">{currencySymbol}45,000.00</td></tr>
             </tbody>
           </table>
         </div>
       )}
 
       {category === 'customer-statements' && (
-        <div className="space-y-4">
-          <div className="p-3 bg-slate-100 dark:bg-slate-800 rounded-xl flex justify-between items-center text-xs font-bold">
-            <span>Statement Period: 01 Apr 2026 – 21 Sep 2026</span>
-            <span className="font-mono text-blue-600">Net Due: ₹82,400.00</span>
-          </div>
-
-          <table className="w-full text-left text-xs border rounded-xl overflow-hidden">
-            <thead className="bg-slate-100 dark:bg-slate-800 font-bold">
-              <tr>
-                <th className="p-2">Date</th>
-                <th className="p-2">Transaction Detail</th>
-                <th className="p-2 text-right">Debits (₹)</th>
-                <th className="p-2 text-right">Credits (₹)</th>
-                <th className="p-2 text-right">Balance (₹)</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y">
-              <tr>
-                <td className="p-2">02 May 2026</td>
-                <td className="p-2">Tax Invoice # INV-2026-0042</td>
-                <td className="p-2 text-right font-mono">₹1,00,000.00</td>
-                <td className="p-2 text-right font-mono">-</td>
-                <td className="p-2 text-right font-mono font-bold">₹1,00,000.00</td>
-              </tr>
-              <tr>
-                <td className="p-2">15 Jun 2026</td>
-                <td className="p-2">Payment Receipt # REC-2026-0012</td>
-                <td className="p-2 text-right font-mono">-</td>
-                <td className="p-2 text-right font-mono text-emerald-600">₹17,600.00</td>
-                <td className="p-2 text-right font-mono font-bold">₹82,400.00</td>
-              </tr>
-            </tbody>
-          </table>
-
-          <div className="grid grid-cols-4 gap-2 text-center text-xs font-bold pt-2">
-            <div className="p-2 bg-emerald-50 rounded border border-emerald-200">Current<br/>₹0.00</div>
-            <div className="p-2 bg-amber-50 rounded border border-amber-200">1-30 Days<br/>₹32,400.00</div>
-            <div className="p-2 bg-orange-50 rounded border border-orange-200">31-60 Days<br/>₹50,000.00</div>
-            <div className="p-2 bg-rose-50 rounded border border-rose-200">90+ Days<br/>₹0.00</div>
-          </div>
-        </div>
+        <StatementTemplatePreview category={category} templateId={template.id} density="page" currencySymbol={currencySymbol} />
       )}
-
       {category === 'journals' && (
         <div className="space-y-4">
           <table className="w-full text-left text-xs border rounded-xl overflow-hidden">

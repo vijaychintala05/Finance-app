@@ -34,7 +34,6 @@ import {
   Upload,
   User,
   Wallet,
-  Zap,
   BookOpen,
 } from 'lucide-react';
 import { Vendor, Bill, PurchaseOrder, PaymentMade, Expense, JournalEntry } from '../../types';
@@ -48,6 +47,7 @@ interface VendorWorkspaceProps {
   onBack: () => void;
   onEdit: (vendor: Vendor) => void;
   onNavigateToBill?: (billId: string) => void;
+  onNavigateToPurchaseOrder?: (purchaseOrderId: string) => void;
   onVendorStatusChanged?: () => void;
 }
 
@@ -104,6 +104,7 @@ export const VendorWorkspace: React.FC<VendorWorkspaceProps> = ({
   onBack,
   onEdit,
   onNavigateToBill,
+  onNavigateToPurchaseOrder,
   onVendorStatusChanged,
 }) => {
   const {
@@ -142,6 +143,10 @@ export const VendorWorkspace: React.FC<VendorWorkspaceProps> = ({
   const [selectedBillForPayment, setSelectedBillForPayment] = useState<Bill | null>(null);
   const [vendorAuditEvents, setVendorAuditEvents] = useState<VendorAuditEvent[]>([]);
   const [vendorAttachments, setVendorAttachments] = useState<VendorAttachment[]>([]);
+  const [vendorAttachmentsLoading, setVendorAttachmentsLoading] = useState(false);
+  const [pendingAttachmentArchive, setPendingAttachmentArchive] = useState<VendorAttachment | null>(null);
+  const [isArchivingAttachment, setIsArchivingAttachment] = useState(false);
+  const [recordActionSuccess, setRecordActionSuccess] = useState('');
   const [vendorComments, setVendorComments] = useState<VendorCommentRecord[]>([]);
   const [vendorMails, setVendorMails] = useState<VendorMailRecord[]>([]);
   const [commentDraft, setCommentDraft] = useState('');
@@ -178,6 +183,21 @@ export const VendorWorkspace: React.FC<VendorWorkspaceProps> = ({
 
   const money = (value: number) => formatCurrency(value, settings.currencySymbol);
 
+  useEffect(() => {
+    let current = true;
+    setVendorAttachmentsLoading(true);
+    apiClient.get<VendorAttachment[]>(`/finance/vendors/${vendor.id}/attachments`)
+      .then((response) => {
+        if (!current) return;
+        if (Array.isArray(response.data)) setVendorAttachments(response.data);
+        else setRecordActionError(response.error || 'Vendor documents could not be loaded.');
+      })
+      .catch((error) => {
+        if (current) setRecordActionError(error instanceof Error ? error.message : 'Vendor documents could not be loaded.');
+      })
+      .finally(() => { if (current) setVendorAttachmentsLoading(false); });
+    return () => { current = false; };
+  }, [vendor.id]);
   // Load comments only when comments tab is active
   useEffect(() => {
     if (resolvedMainTab !== 'comments') return;
@@ -601,14 +621,23 @@ export const VendorWorkspace: React.FC<VendorWorkspaceProps> = ({
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
-  const handleArchiveAttachment = async (attachment: VendorAttachment) => {
-    if (!window.confirm(`Remove ${attachment.fileName} from this vendor?`)) return;
-    const response = await apiClient.delete<{ id: string; archived: boolean }>(`/finance/vendors/${vendor.id}/attachments/${attachment.id}`);
-    if (response.error || !response.data?.archived) {
-      setRecordActionError(response.error || 'Document could not be removed');
-      return;
+  const handleArchiveAttachment = async () => {
+    if (!pendingAttachmentArchive || isArchivingAttachment) return;
+    setIsArchivingAttachment(true);
+    setRecordActionError('');
+    setRecordActionSuccess('');
+    try {
+      const attachment = pendingAttachmentArchive;
+      const response = await apiClient.delete<{ id: string; archived: boolean }>(`/finance/vendors/${vendor.id}/attachments/${attachment.id}`);
+      if (response.error || !response.data?.archived) throw new Error(response.error || 'Document could not be removed');
+      setVendorAttachments((current) => current.filter((item) => item.id !== attachment.id));
+      setRecordActionSuccess(`${attachment.fileName} was removed from this vendor. Request ID: ${response.requestId || 'not provided'}`);
+      setPendingAttachmentArchive(null);
+    } catch (error) {
+      setRecordActionError(error instanceof Error ? error.message : 'Document could not be removed.');
+    } finally {
+      setIsArchivingAttachment(false);
     }
-    setVendorAttachments((current) => current.filter((item) => item.id !== attachment.id));
   };
 
   return (
@@ -701,7 +730,7 @@ export const VendorWorkspace: React.FC<VendorWorkspaceProps> = ({
                 else await archiveVendor(vendor.id);
                 onVendorStatusChanged?.();
               } catch (error) {
-                window.alert(error instanceof Error ? error.message : 'Vendor status could not be changed');
+                setRecordActionError(error instanceof Error ? error.message : 'Vendor status could not be changed');
               }
             }}
             className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
@@ -782,6 +811,9 @@ export const VendorWorkspace: React.FC<VendorWorkspaceProps> = ({
       </div>
 
       {/* Global alert error if any */}
+      {recordActionSuccess && (
+        <div role="status" className="rounded-xl border border-emerald-200 bg-emerald-50 p-3.5 text-xs font-medium text-emerald-800 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-300">{recordActionSuccess}</div>
+      )}
       {recordActionError && (
         <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3.5 text-xs font-medium text-rose-700 dark:border-rose-900/50 dark:bg-rose-950/40 dark:text-rose-300 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
@@ -904,7 +936,9 @@ export const VendorWorkspace: React.FC<VendorWorkspaceProps> = ({
                 <input className="sr-only" type="file" accept="application/pdf,image/jpeg,image/png,image/webp" multiple disabled={isUploadingAttachments} onChange={handleUploadAttachments} />
               </label>
             </div>
-            {vendorAttachments.length === 0 ? (
+            {vendorAttachmentsLoading ? (
+              <div className="py-8 text-center text-xs text-slate-400">Loading vendor documents…</div>
+            ) : vendorAttachments.length === 0 ? (
               <div className="py-8 text-center text-xs text-slate-400">
                 <Paperclip className="mx-auto h-6 w-6 text-slate-300 dark:text-slate-600 mb-1" />
                 No documents uploaded for this vendor yet.
@@ -926,7 +960,7 @@ export const VendorWorkspace: React.FC<VendorWorkspaceProps> = ({
                       <button type="button" onClick={() => void handleDownloadAttachment(attachment)} aria-label={`Download ${attachment.fileName}`} className="rounded-lg p-1.5 text-purple-700 hover:bg-purple-50 dark:text-purple-300 dark:hover:bg-purple-950">
                         <Download className="h-3.5 w-3.5" />
                       </button>
-                      <button type="button" onClick={() => void handleArchiveAttachment(attachment)} aria-label={`Remove ${attachment.fileName}`} className="rounded-lg p-1.5 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950">
+                      <button type="button" onClick={() => { setRecordActionError(''); setPendingAttachmentArchive(attachment); }} aria-label={`Remove ${attachment.fileName}`} className="rounded-lg p-1.5 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950">
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
                     </div>
@@ -1383,15 +1417,17 @@ export const VendorWorkspace: React.FC<VendorWorkspaceProps> = ({
                               </span>
                             </td>
                             <td className="p-3 text-right pr-4">
-                              <button
-                                onClick={() => {
-                                  window.alert(`PO #${po.poNumber} ready to convert to Bill.`);
-                                }}
-                                className="inline-flex items-center gap-1 rounded-lg bg-blue-50 px-2 py-1 text-[11px] font-bold text-blue-700 hover:bg-blue-100 dark:bg-blue-950 dark:text-blue-300 cursor-pointer"
-                              >
-                                <Zap className="h-3 w-3" />
-                                <span>Convert to Bill</span>
-                              </button>
+                              {onNavigateToPurchaseOrder && (
+                                <button
+                                  type="button"
+                                  aria-label={`Open purchase order ${po.poNumber}`}
+                                  onClick={() => onNavigateToPurchaseOrder(po.id)}
+                                  className="inline-flex items-center gap-1 rounded-lg bg-blue-50 px-2 py-1 text-[11px] font-bold text-blue-700 hover:bg-blue-100 dark:bg-blue-950 dark:text-blue-300 cursor-pointer"
+                                >
+                                  <FileCheck className="h-3 w-3" />
+                                  <span>Open order</span>
+                                </button>
+                              )}
                             </td>
                           </tr>
                         ))
@@ -1843,6 +1879,20 @@ export const VendorWorkspace: React.FC<VendorWorkspaceProps> = ({
       )}
 
       {/* Record Payment Modal */}
+      {pendingAttachmentArchive && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs">
+          <section role="alertdialog" aria-modal="true" aria-labelledby="archive-vendor-attachment-title" aria-describedby="archive-vendor-attachment-description" className="w-full max-w-md space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-800 dark:bg-slate-900">
+            <div>
+              <h2 id="archive-vendor-attachment-title" className="text-sm font-bold text-slate-900 dark:text-white">Remove vendor document?</h2>
+              <p id="archive-vendor-attachment-description" className="mt-2 text-xs text-slate-600 dark:text-slate-300">{pendingAttachmentArchive.fileName} will be archived from this vendor record. Its audit history is retained.</p>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button type="button" autoFocus disabled={isArchivingAttachment} onClick={() => setPendingAttachmentArchive(null)} className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold disabled:opacity-50 dark:border-slate-700">Keep document</button>
+              <button type="button" disabled={isArchivingAttachment} onClick={() => void handleArchiveAttachment()} className="rounded-xl bg-rose-600 px-4 py-2 text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-50">{isArchivingAttachment ? 'Removing…' : 'Remove document'}</button>
+            </div>
+          </section>
+        </div>
+      )}
       {isPaymentModalOpen && (
         <RecordVendorPaymentModal
           isOpen={isPaymentModalOpen}

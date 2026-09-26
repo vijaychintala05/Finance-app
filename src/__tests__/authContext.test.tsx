@@ -142,6 +142,11 @@ describe('AuthContext & Session Lifecycle Test Suite', () => {
       error: null,
       status: 200,
     });
+    vi.spyOn(apiClient, 'get').mockResolvedValueOnce({
+      data: { user: newUser, organizations: [{ id: 'org-reg-1' }] },
+      error: null,
+      status: 200,
+    });
 
     let success = false;
     await act(async () => {

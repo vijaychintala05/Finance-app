@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   AlertCircle,
   ArrowDownToLine,
@@ -40,7 +40,7 @@ import { invoiceApi } from '../../services/invoiceApi';
 import { RecordCustomerPaymentModal } from '../sales/RecordCustomerPaymentModal';
 import { TransactionHistoryTab } from '../common/TransactionHistoryTab';
 import { OperationNoticeBanner } from '../common/OperationNoticeBanner';
-import { mutationExceptionNotice, type OperationNotice } from '../../utils/operationNotice';
+import { committedButStaleNotice, mutationExceptionNotice, type OperationNotice } from '../../utils/operationNotice';
 
 interface InvoicePreviewModalProps {
   invoice: Invoice | null;
@@ -48,6 +48,7 @@ interface InvoicePreviewModalProps {
   onEditRequested?: (invoice: Invoice) => void;
   onEdit?: (invoice: Invoice) => void;
   onClone?: (invoice: Invoice) => void;
+  openOriginalJournalEntryId?: string;
 }
 
 export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
@@ -56,8 +57,10 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
   onEditRequested,
   onEdit,
   onClone,
+  openOriginalJournalEntryId,
 }) => {
-  const { settings, invoices, paymentsReceived, deleteInvoice, updateInvoice } = useBooks();
+  const { settings, invoices, paymentsReceived, deleteInvoice, updateInvoice, currentOrg, invoiceVoidGuards = [], verifyInvoiceVoidStatus } = useBooks();
+  const invoiceVoidGuard = invoice ? invoiceVoidGuards.find((guard) => guard.invoiceId === invoice.id && guard.organizationId === currentOrg?.id) : undefined;
 
   // Keep invoice synchronized with real-time books state
   const currentInvoice = useMemo(() => {
@@ -68,6 +71,22 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
   const [downloadingPdf, setDownloadingPdf] = useState(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'invoice' | 'history'>('invoice');
+  const [emailDeliveries, setEmailDeliveries] = useState<Array<{ id: string; kind: 'SEND' | 'REMINDER'; recipientEmail: string; status: string; retryCount: number; acceptedAt?: string | null; createdAt: string }>>([]);
+  const [loadingEmailDeliveries, setLoadingEmailDeliveries] = useState(false);
+  const [emailDeliveryRefreshKey, setEmailDeliveryRefreshKey] = useState(0);
+  const [emailDeliveryError, setEmailDeliveryError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (activeTab !== 'history' || !currentInvoice?.id) return;
+    let active = true;
+    setLoadingEmailDeliveries(true);
+    setEmailDeliveryError(null);
+    invoiceApi.getInvoiceEmailDeliveries(currentInvoice.id)
+      .then((result) => { if (active) setEmailDeliveries(result.deliveries); })
+      .catch((error: any) => { if (active) setEmailDeliveryError(error?.message || 'Delivery history could not be loaded.'); })
+      .finally(() => { if (active) setLoadingEmailDeliveries(false); });
+    return () => { active = false; };
+  }, [activeTab, currentInvoice?.id, emailDeliveryRefreshKey]);
 
   // Dropdown states
   const [openDropdown, setOpenDropdown] = useState<'send' | 'reminders' | 'pdf' | 'payment' | 'more' | null>(null);
@@ -104,8 +123,17 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
   const [journalData, setJournalData] = useState<any | null>(null);
   const [loadingJournal, setLoadingJournal] = useState(false);
   const [journalError, setJournalError] = useState<string | null>(null);
+  const journalRequestId = useRef(0);
 
-  const [notice, setNotice] = useState<OperationNotice | null>(null);
+  const [notice, setNotice] = useState<OperationNotice | null>(invoiceVoidGuard?.notice || null);
+  const [isVerifyingInvoiceVoid, setIsVerifyingInvoiceVoid] = useState(false);
+
+  useEffect(() => {
+    if (!invoiceVoidGuard) return;
+    setNotice(invoiceVoidGuard.notice);
+    setIsRecordPaymentOpen(false);
+    setIsWriteOffOpen(false);
+  }, [invoiceVoidGuard?.invoiceId, invoiceVoidGuard?.status, invoiceVoidGuard?.notice]);
 
   const showToast = (message: string, type: 'success' | 'info' | 'error' = 'success', requestId?: string) => {
     setNotice({
@@ -114,6 +142,30 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
       message,
       requestId,
     });
+  };
+
+  const handleVerifyInvoiceVoid = async () => {
+    if (!currentInvoice || isVerifyingInvoiceVoid) return;
+    setIsVerifyingInvoiceVoid(true);
+    try {
+      const result = await verifyInvoiceVoidStatus(currentInvoice.id);
+      const requestId = result.requestId || invoiceVoidGuard?.requestId;
+      if (result.status === 'void') {
+        setNotice({ tone: 'success', title: 'Invoice void verified', message: 'The server confirms the invoice is Void. Its reversal journal is ' + (invoiceVoidGuard?.reversalJournalId || currentInvoice.reversalJournalId || 'recorded in the audit trail') + '.', requestId });
+      } else if (result.status === 'conflict') {
+        setNotice({ tone: 'error', title: 'Invoice void needs review', message: 'The invoice status and reversal journal could not be reconciled with the confirmed void receipt. Financial actions remain paused; review the invoice, journal, and audit history before proceeding.', requestId: invoiceVoidGuard?.requestId || requestId });
+      } else if (result.status === 'pending') {
+        setNotice({ tone: 'warning', title: 'Invoice void is still unresolved', message: 'The earlier void request may still be processing. Financial actions remain paused; verify again before continuing.', requestId: invoiceVoidGuard?.requestId || requestId });
+      } else if (result.status === 'rejected') {
+        setNotice({ tone: 'error', title: 'Invoice void request rejected', message: result.error || 'The server rejected this exact request and refreshed the current invoice state.', requestId });
+      } else {
+        setNotice({ tone: 'warning', title: 'Invoice state needs review', message: result.error || 'The authoritative invoice state differs from the saved void operation.', requestId: invoiceVoidGuard?.requestId || requestId });
+      }
+    } catch (error) {
+      setNotice(mutationExceptionNotice(error, { action: 'Invoice status verification', failureTitle: 'Invoice status could not be verified', uncertainTitle: 'Invoice status could not be verified', uncertainRecovery: 'Keep financial actions paused and retry verification when the server is available.' }));
+    } finally {
+      setIsVerifyingInvoiceVoid(false);
+    }
   };
 
   // Close dropdown on outside click
@@ -262,7 +314,9 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
         message: emailForm.message,
       });
       setIsSendEmailOpen(false);
-      showToast(res.message || `Invoice emailed successfully to ${emailForm.recipientEmail}.`, 'success', res.requestId);
+      showToast(`Invoice email queued for ${emailForm.recipientEmail}. Mail-server acceptance will appear in delivery history.`, 'success', res.requestId);
+      setEmailDeliveryRefreshKey((key) => key + 1);
+      setActiveTab('history');
     } catch (err: any) {
       console.error('Send invoice email error:', err);
       setNotice(mutationExceptionNotice(err, {
@@ -308,7 +362,9 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
       const res = await invoiceApi.sendInvoiceReminder(currentInvoice.id, {
         recipientEmail: targetEmail,
       });
-      showToast(res.message || `Payment reminder dispatched to ${targetEmail}!`, 'success', res.requestId);
+      showToast(`Payment reminder queued for ${targetEmail}. Mail-server acceptance will appear in delivery history.`, 'success', res.requestId);
+      setEmailDeliveryRefreshKey((key) => key + 1);
+      setActiveTab('history');
     } catch (err: any) {
       console.error('Send reminder error:', err);
       setNotice(mutationExceptionNotice(err, {
@@ -321,21 +377,27 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
   };
 
   // View Journal Entry drill-down
-  const handleOpenJournal = async () => {
+  const handleOpenJournal = async (journalEntryId?: string) => {
+    const requestId = ++journalRequestId.current;
     setIsJournalOpen(true);
     setLoadingJournal(true);
     setJournalError(null);
     setJournalData(null);
     try {
-      const data = await invoiceApi.getInvoiceJournal(currentInvoice.id);
-      setJournalData(data);
+      const data = await invoiceApi.getInvoiceJournal(currentInvoice.id, journalEntryId);
+      if (journalRequestId.current === requestId) setJournalData(data);
     } catch (err: any) {
-      console.error('Fetch journal error:', err);
-      setJournalError(err.message || 'Journal entry could not be retrieved');
+      if (journalRequestId.current === requestId) {
+        console.error('Fetch journal error:', err);
+        setJournalError(err.message || 'Journal entry could not be retrieved');
+      }
     } finally {
-      setLoadingJournal(false);
+      if (journalRequestId.current === requestId) setLoadingJournal(false);
     }
   };
+  useEffect(() => {
+    if (openOriginalJournalEntryId) void handleOpenJournal(openOriginalJournalEntryId);
+  }, [openOriginalJournalEntryId]);
 
   // Clone invoice handler
   const handleCloneInvoice = () => {
@@ -358,28 +420,58 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
     }
   };
 
-  // Void invoice handler
-  const handleVoidInvoice = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (isVoiding || voidReason.trim().length < 3) return;
+  const showInvoiceVoidResult = (result: Awaited<ReturnType<typeof deleteInvoice>>) => {
+    if (result?.verificationStatus === 'void') {
+      setNotice(result.refreshFailed
+        ? { tone: 'warning', title: 'Invoice void verified; related data refresh incomplete', message: `Invoice ${currentInvoice.invoiceNumber} is verified Void with reversal journal ${result.reversalJournalId || 'confirmed by the server'}. Other financial lists did not all refresh; their display may be stale.`, requestId: result.requestId }
+        : { tone: 'success', title: 'Invoice void verified', message: `Invoice ${currentInvoice.invoiceNumber} is Void with posted reversal journal ${result.reversalJournalId || 'confirmed by the server'} and matching audit evidence.`, requestId: result.requestId });
+    } else if (result?.verificationStatus === 'conflict') {
+      setNotice({ tone: 'error', title: 'Invoice void needs review', message: 'The invoice, reversal journal, and audit evidence could not be reconciled with the saved receipt. Financial actions remain paused.', requestId: result.requestId });
+    } else if (result?.verificationStatus === 'unverified') {
+      setNotice(committedButStaleNotice(
+        'Invoice voided; operation evidence unavailable',
+        `Invoice ${currentInvoice.invoiceNumber} and reversal journal ${result.reversalJournalId || ''} were returned, but their committed status and audit evidence could not be verified.`,
+        result.requestId
+      ));
+    } else if (result?.refreshFailed) {
+      setNotice(committedButStaleNotice(
+        'Invoice voided; refreshed state unavailable',
+        `Invoice ${currentInvoice.invoiceNumber} and its reversal were committed, but the refreshed document could not be loaded.`,
+        result.requestId
+      ));
+    }
+  };
+
+  const runInvoiceVoid = async (reason: string, retryKey?: string) => {
+    if (!currentInvoice) return;
     try {
       setIsVoiding(true);
-      await deleteInvoice(currentInvoice.id, voidReason.trim());
+      const result = await deleteInvoice(currentInvoice.id, reason, retryKey);
       setIsVoidOpen(false);
       setVoidReason('');
-      showToast(`Invoice ${currentInvoice.invoiceNumber} was voided. The original remains in history with its audited general ledger reversal.`);
+      showInvoiceVoidResult(result);
     } catch (err: any) {
       setNotice(mutationExceptionNotice(err, {
         action: 'Invoice void',
         failureTitle: 'Invoice was not voided',
         uncertainTitle: 'Invoice void outcome could not be confirmed',
-        uncertainRecovery: 'Refresh the invoice and journal history before retrying; the reversal may already have posted.',
+        uncertainRecovery: 'Verify the saved operation status, then retry only the exact saved request key and reason if the server has not completed it.',
       }));
     } finally {
       setIsVoiding(false);
     }
   };
 
+  const handleVoidInvoice = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (isVoiding || currentInvoice.status === 'Void' || invoiceVoidGuard || voidReason.trim().length < 3) return;
+    void runInvoiceVoid(voidReason.trim());
+  };
+
+  const handleRetryInvoiceVoid = () => {
+    if (!invoiceVoidGuard || invoiceVoidGuard.committed || !invoiceVoidGuard.idempotencyKey || !invoiceVoidGuard.reason || isVoiding) return;
+    void runInvoiceVoid(invoiceVoidGuard.reason, invoiceVoidGuard.idempotencyKey);
+  };
   // Expected Payment Date handler (persistent)
   const handleSaveExpectedPaymentDate = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -393,7 +485,7 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
         notes: updatedNotes,
         expectedPaymentDate: expectedDateInput,
         editReason: `Updated expected settlement date to ${expectedDateInput}`,
-      });
+      }, String(currentInvoice.editVersion || ''));
       setIsExpectedDateOpen(false);
       showToast(`Expected payment date recorded: ${expectedDateInput}`);
     } catch (err: any) {
@@ -410,7 +502,7 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
         ...currentInvoice,
         remindersPaused: newPausedState,
         editReason: `Automatic payment reminders ${newPausedState ? 'paused' : 'resumed'}`,
-      });
+      }, String(currentInvoice.editVersion || ''));
       showToast(`Automatic reminders ${newPausedState ? 'paused' : 'activated'} for invoice ${currentInvoice.invoiceNumber}`);
     } catch (err: any) {
       console.error('Failed to toggle auto reminders:', err);
@@ -421,6 +513,11 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
   // Bad Debt Write-Off handler (audited GL posting)
   const handleRecordWriteOff = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
+    if (invoiceVoidGuard) {
+      setIsWriteOffOpen(false);
+      setNotice(invoiceVoidGuard.notice);
+      return;
+    }
     if (currentInvoice.balanceDue <= 0) {
       setNotice({ tone: 'warning', title: 'Write-off not available', message: 'This invoice has no outstanding balance to write off.', recovery: 'Review payment and credit allocations if the balance is unexpected.' });
       return;
@@ -460,8 +557,20 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
       <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 w-full max-w-4xl max-h-[94vh] overflow-hidden flex flex-col shadow-2xl print:max-h-none print:shadow-none print:border-none print:rounded-none relative">
         
         {notice && (
-          <div className="mx-4 mt-4 print:hidden">
-            <OperationNoticeBanner notice={notice} />
+          <div className="mx-4 mt-4 flex flex-wrap items-start justify-between gap-3 print:hidden">
+            <div className="min-w-0 flex-1"><OperationNoticeBanner notice={notice} /></div>
+            {invoiceVoidGuard && ['pending', 'needs-verification', 'conflict'].includes(invoiceVoidGuard.status) && (
+              <>
+                <button type="button" onClick={() => void handleVerifyInvoiceVoid()} disabled={isVerifyingInvoiceVoid || isVoiding} className="rounded-lg border border-amber-300 px-3 py-2 text-xs font-bold text-amber-900 disabled:opacity-50 dark:border-amber-700 dark:text-amber-100">
+                  {isVerifyingInvoiceVoid ? 'Verifying…' : 'Verify status'}
+                </button>
+                {invoiceVoidGuard.status === 'needs-verification' && !invoiceVoidGuard.committed && invoiceVoidGuard.idempotencyKey && invoiceVoidGuard.reason && (
+                  <button type="button" onClick={handleRetryInvoiceVoid} disabled={isVoiding || isVerifyingInvoiceVoid} className="rounded-lg border border-rose-300 px-3 py-2 text-xs font-bold text-rose-800 disabled:opacity-50 dark:border-rose-700 dark:text-rose-200">
+                    {isVoiding ? 'Retrying…' : 'Retry exact void request'}
+                  </button>
+                )}
+              </>
+            )}
           </div>
         )}
 
@@ -470,9 +579,11 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
           
           {/* Left: Zoho Books Action Toolbar */}
           <div className="flex items-center flex-wrap gap-1 text-slate-700 dark:text-slate-200" onClick={(e) => e.stopPropagation()}>
-            
+            {invoiceVoidGuard ? (
+              <span className="px-3 py-1.5 text-xs font-semibold text-amber-800 dark:text-amber-200">Financial actions are paused until invoice status is verified.</span>
+            ) : <>
             {/* 1. Edit */}
-            {currentInvoice.status !== 'Void' && (onEdit || onEditRequested) ? (
+            {currentInvoice.status !== 'Void' && !invoiceVoidGuard && (onEdit || onEditRequested) ? (
               <button
                 type="button"
                 onClick={() => {
@@ -865,7 +976,7 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
                       <div className="text-[10px] text-slate-400">Audited bad debt clearance of balance</div>
                     </div>
                   </button>
-                  <button
+                  {currentInvoice.status !== 'Void' && !invoiceVoidGuard && <button
                     type="button"
                     onClick={() => {
                       setOpenDropdown(null);
@@ -879,11 +990,12 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
                       <div className="font-bold">Void Invoice</div>
                       <div className="text-[10px] text-rose-400">Audited reversal of this document</div>
                     </div>
-                  </button>
+                  </button>}
                 </div>
               )}
             </div>
 
+            </>}
           </div>
 
           {/* Right: Invoice metadata badge & Close (X) */}
@@ -943,6 +1055,11 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
 
         {activeTab === 'history' && (
           <div className="flex-1 overflow-y-auto print:hidden">
+            <section className="mx-4 mt-4 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-900" aria-label="Invoice email delivery history">
+              <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Email delivery status</h3>
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Sent means the mail server accepted the message; inbox delivery is not confirmed.</p>
+              {loadingEmailDeliveries ? <p className="mt-3 text-xs">Loading delivery history…</p> : emailDeliveryError ? <p role="alert" className="mt-3 text-xs text-rose-600">{emailDeliveryError}</p> : emailDeliveries.length === 0 ? <p className="mt-3 text-xs text-slate-500">No linked email delivery records are available for this invoice.</p> : <ul className="mt-3 divide-y divide-slate-100 dark:divide-slate-800">{emailDeliveries.map((delivery) => <li key={delivery.id} className="flex flex-wrap items-center justify-between gap-2 py-2 text-xs"><span className="font-medium">{delivery.kind === 'SEND' ? 'Invoice PDF' : 'Payment reminder'} · {delivery.recipientEmail}</span><span className="rounded-full bg-slate-100 px-2 py-1 font-semibold dark:bg-slate-800">{delivery.status}{delivery.status === 'SENT' ? ' · mail server accepted' : ''}</span></li>)}</ul>}
+            </section>
             <TransactionHistoryTab
               entityType="Invoice"
               entityId={currentInvoice.id}
@@ -1606,12 +1723,13 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
               <div className="flex items-center space-x-2">
                 <FileSpreadsheet className="w-5 h-5 text-purple-600" />
                 <div>
-                  <h3 className="font-bold text-base text-slate-900 dark:text-white">Accounting Journal Entry</h3>
-                  <p className="text-[11px] text-slate-400">Audited double-entry general ledger posting for {currentInvoice.invoiceNumber}</p>
+                  <h3 className="font-bold text-base text-slate-900 dark:text-white">{openOriginalJournalEntryId && journalData?.journalEntry?.id === openOriginalJournalEntryId ? 'Original Posting Journal' : 'Accounting Journal Entry'}</h3>
+                  <p className="text-[11px] text-slate-400">{openOriginalJournalEntryId && journalData?.journalEntry?.id === openOriginalJournalEntryId ? `Verified journal ${openOriginalJournalEntryId} for invoice ${currentInvoice.invoiceNumber}` : `Audited double-entry general ledger posting for ${currentInvoice.invoiceNumber}`}</p>
                 </div>
               </div>
               <button
-                onClick={() => setIsJournalOpen(false)}
+                aria-label="Close journal drill-down"
+                onClick={() => { journalRequestId.current += 1; setIsJournalOpen(false); }}
                 className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg"
               >
                 <X className="w-5 h-5" />
@@ -1682,7 +1800,8 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
             <div className="flex justify-end pt-2">
               <button
                 type="button"
-                onClick={() => setIsJournalOpen(false)}
+                aria-label="Close journal entry"
+                onClick={() => { journalRequestId.current += 1; setIsJournalOpen(false); }}
                 className="px-4 py-2 rounded-xl bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 text-xs font-bold cursor-pointer"
               >
                 Close

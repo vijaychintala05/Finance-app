@@ -96,6 +96,14 @@ export class FixedAssetService {
     }
     return db.transaction(async (tx) => {
       const id = newId('fa');
+      if (input.projectId) {
+        const project = await tx.query(
+          'SELECT id, archived_at FROM projects WHERE organization_id = $1 AND id = $2 FOR UPDATE',
+          [orgId, input.projectId]
+        );
+        if (project.rows.length !== 1) throw new Error('FIXED_ASSET_PROJECT_NOT_FOUND: Project does not belong to this organization');
+        if (project.rows[0].archived_at) throw new Error('FIXED_ASSET_PROJECT_ARCHIVED: Archived projects cannot be assigned to new fixed assets');
+      }
       await tx.query(
         `INSERT INTO fixed_assets (id, organization_id, asset_code, name, description, asset_category,
           purchase_date, in_service_date, purchase_value, residual_value, useful_life_months, depreciation_method,

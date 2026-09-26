@@ -24,6 +24,7 @@ interface SidebarProps {
   onOpenOrgSwitcher?: () => void;
   onOpenOrgWizard?: () => void;
   capabilities?: readonly FinanceCapability[];
+  itemsVisible?: boolean;
 }
 
 const NAV_ICONS: Record<FinanceNavigationIcon, React.ReactNode> = {
@@ -44,6 +45,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenOrgSwitcher,
   onOpenOrgWizard,
   capabilities = [],
+  itemsVisible = false,
 }) => {
   const auth = useOptionalAuth();
   const { settings, currentOrg, organizations, currentUser } = useBooks();
@@ -63,7 +65,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
   };
 
-  const navSections = resolveFinanceNavigation(capabilities);
+  const navSections = resolveFinanceNavigation(capabilities, itemsVisible);
 
   // Track expanded sections
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({

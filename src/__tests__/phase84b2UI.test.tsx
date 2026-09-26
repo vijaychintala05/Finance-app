@@ -559,8 +559,8 @@ describe('Phase 8.4B.2 — Quotation Builder UX & Visual Refinement Suite', () =
     expect(handleSuccess).toHaveBeenCalledWith(expect.objectContaining({ id: 'q-success-1' }));
   });
 
-  // 21. Dirty close asks confirmation
-  it('21. Closing modified quotation prompts user before discarding unsaved changes', async () => {
+  // 21. Dirty close uses the in-app discard dialog
+  it('21. Closing modified quotation shows accessible discard choices', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
 
     render(
@@ -570,17 +570,17 @@ describe('Phase 8.4B.2 — Quotation Builder UX & Visual Refinement Suite', () =
     );
 
     await waitForCustomerSelect();
+    fireEvent.change(screen.getAllByPlaceholderText(/Item \/ Service Title \*/i)[0], { target: { value: 'Unsaved Edit' } });
+    fireEvent.click(screen.getByLabelText(/Close modal/i));
 
-    const titleInput = screen.getAllByPlaceholderText(/Item \/ Service Title \*/i)[0];
-    fireEvent.change(titleInput, { target: { value: 'Unsaved Edit' } });
-
-    const closeBtn = screen.getByLabelText(/Close modal/i);
-    fireEvent.click(closeBtn);
-
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringMatching(/unsaved changes/i));
+    const dialog = screen.getByRole('alertdialog', { name: 'Discard unsaved quotation changes?' });
+    expect(dialog).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(screen.getByText('Professional Quotation Builder')).toBeTruthy();
+    expect(confirmSpy).not.toHaveBeenCalled();
     confirmSpy.mockRestore();
   });
-
   // 22. Clean close does not ask
   it('22. Closing untouched quotation closes immediately without confirmation prompt', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm');

@@ -1,7 +1,22 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Archive, Check, CheckCircle2, ChevronDown, FolderTree, Info, RefreshCw, Search, Trash2, X } from 'lucide-react';
 import { Account, AccountSubType, AccountType } from '../../types';
+import { ApiRequestError, apiClient } from '../../api/client';
 import { useBooks } from '../../context/BooksContext';
+import { formatCurrency } from '../../utils/formatters';
+import { OperationNoticeBanner } from '../common/OperationNoticeBanner';
+import { committedButStaleNotice, mutationExceptionNotice, type OperationNotice } from '../../utils/operationNotice';
+
+interface AccountUsageImpact {
+  balance: number;
+  totalReferences: number;
+  references: Array<{ label: string; count: number }>;
+  accountingDefaults: string[];
+  archiveBlockers: string[];
+  deleteBlockers: string[];
+  inventoryComplete: boolean;
+  unclassifiedAccountReferenceColumns: string[];
+}
 
 interface AccountModalProps {
   isOpen: boolean;
@@ -178,7 +193,7 @@ export const AccountModal: React.FC<AccountModalProps> = ({
   initialSubCategory,
   accountToEdit,
 }) => {
-  const { accounts = [], addAccount, updateAccount, deleteAccount } = useBooks();
+  const { accounts = [], addAccount, updateAccount, deleteAccount, currentOrg, currentUser, accountActionUserId, accountActionGuards, verifyAccountActionStatus } = useBooks();
   const [catalogIndex, setCatalogIndex] = useState(0);
   const [isTypePickerOpen, setIsTypePickerOpen] = useState(false);
   const [hoveredEntry, setHoveredEntry] = useState<(typeof ACCOUNT_TYPE_CATALOG)[number] | null>(null);
@@ -195,6 +210,55 @@ export const AccountModal: React.FC<AccountModalProps> = ({
   const [normalBalance, setNormalBalance] = useState<'Debit' | 'Credit'>('Debit');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [actionConfirmation, setActionConfirmation] = useState<'archive' | 'restore' | 'delete' | null>(null);
+  const [actionNotice, setActionNotice] = useState<OperationNotice | null>(null);
+  const [creationBlocked, setCreationBlocked] = useState(false);
+  const [usageImpact, setUsageImpact] = useState<AccountUsageImpact | null>(null);
+  const [usageImpactLoading, setUsageImpactLoading] = useState(false);
+  const [usageImpactError, setUsageImpactError] = useState('');
+  const actionInFlight = useRef(false);
+  const modalOrganizationId = useRef<string | null>(null);
+  const formSessionKeyRef = useRef<string | null>(null);
+  const modalOpenSessionRef = useRef(false);
+  const modalSessionEpochRef = useRef(0);
+  const autoVerifiedGuardKeyRef = useRef<string | null>(null);
+  const latestOnCloseRef = useRef(onClose);
+  latestOnCloseRef.current = onClose;
+  const latestVerifyAccountActionStatusRef = useRef(verifyAccountActionStatus);
+  latestVerifyAccountActionStatusRef.current = verifyAccountActionStatus;
+  useEffect(() => {
+    let current = true;
+    if (!isOpen || !accountToEdit?.id) {
+      setUsageImpact(null);
+      setUsageImpactError('');
+      setUsageImpactLoading(false);
+      return () => { current = false; };
+    }
+    setUsageImpact(null);
+    setUsageImpactError('');
+    setUsageImpactLoading(true);
+    void apiClient.get<AccountUsageImpact>(`/finance/accounts/${encodeURIComponent(accountToEdit.id)}/usage-impact`).then((response) => {
+      if (!current) return;
+      setUsageImpactLoading(false);
+      if (response.error || !response.data) {
+        setUsageImpactError(response.error || 'Account usage coverage could not be verified.');
+        return;
+      }
+      setUsageImpact(response.data);
+    }).catch(() => {
+      if (!current) return;
+      setUsageImpactLoading(false);
+      setUsageImpactError('Account usage coverage could not be verified.');
+    });
+    return () => { current = false; };
+  }, [isOpen, accountToEdit?.id, currentOrg?.id]);
+
+  const actionGuard = accountToEdit ? (accountActionGuards || []).find((guard) =>
+    guard.organizationId === currentOrg?.id && guard.accountId === accountToEdit.id
+  ) : undefined;
+  const guardBelongsToCurrentUser = Boolean(actionGuard && actionGuard.userId && actionGuard.userId === accountActionUserId);
+  const organizationChanged = Boolean(modalOrganizationId.current && currentOrg?.id && modalOrganizationId.current !== currentOrg.id);
+  const actionBlocked = organizationChanged || Boolean(actionGuard);
 
   const selected = useMemo(() => ACCOUNT_TYPE_CATALOG[catalogIndex] || ACCOUNT_TYPE_CATALOG[0], [catalogIndex]);
 
@@ -208,7 +272,13 @@ export const AccountModal: React.FC<AccountModalProps> = ({
   }, [parentAccountId, parentAccount, initialParentId, accounts]);
 
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen) {
+      formSessionKeyRef.current = null;
+      return;
+    }
+    const formSessionKey = [accountToEdit?.id || 'new', parentAccount?.id || initialParentId || ''].join(':');
+    if (formSessionKeyRef.current === formSessionKey) return;
+    formSessionKeyRef.current = formSessionKey;
 
     if (accountToEdit) {
       const existingIndex = ACCOUNT_TYPE_CATALOG.findIndex(
@@ -276,7 +346,67 @@ export const AccountModal: React.FC<AccountModalProps> = ({
 
     setError('');
     setIsSubmitting(false);
+
   }, [isOpen, accountToEdit, initialParentId, parentAccount, accounts]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      modalOpenSessionRef.current = false;
+      autoVerifiedGuardKeyRef.current = null;
+      modalOrganizationId.current = null;
+      actionInFlight.current = false;
+      setActionConfirmation(null);
+      setActionNotice(null);
+      setCreationBlocked(false);
+      return;
+    }
+    if (!modalOpenSessionRef.current) {
+      modalOpenSessionRef.current = true;
+      modalSessionEpochRef.current += 1;
+      autoVerifiedGuardKeyRef.current = null;
+      if (currentOrg?.id) modalOrganizationId.current = currentOrg.id;
+      setActionConfirmation(null);
+      setActionNotice(null);
+      setCreationBlocked(false);
+      actionInFlight.current = false;
+    } else if (!modalOrganizationId.current && currentOrg?.id) {
+      modalOrganizationId.current = currentOrg.id;
+    }
+    if (accountToEdit && actionGuard && !guardBelongsToCurrentUser) {
+      setActionNotice({
+        tone: 'warning', title: 'Another user’s account action is unresolved',
+        message: 'This account stays locked until the user who started the action verifies it.',
+        recovery: actionGuard.userId
+          ? 'Sign in with the account that initiated this action to verify or replay it.'
+          : 'This older saved action has no recorded owner. It remains blocked pending manual server-audit reconciliation.', requestId: actionGuard.requestId,
+      });
+      return;
+    }
+    if (accountToEdit && actionGuard) {
+      const verifyKey = [modalSessionEpochRef.current, actionGuard.organizationId, actionGuard.accountId, actionGuard.userId, actionGuard.idempotencyKey].join(':');
+      if (autoVerifiedGuardKeyRef.current === verifyKey) return;
+      autoVerifiedGuardKeyRef.current = verifyKey;
+      let active = true;
+      void latestVerifyAccountActionStatusRef.current(accountToEdit.id, actionGuard.organizationId).then((status) => {
+        if (!active) return;
+        if (status === 'verified') { latestOnCloseRef.current(); return; }
+        if (status === 'pending' || status === 'unknown') {
+          setActionNotice(mutationExceptionNotice(new Error('Account status could not be confirmed.'), {
+            action: 'Account action',
+            uncertainTitle: status === 'pending' ? 'Account action is still unresolved' : 'Account action outcome could not be confirmed',
+            uncertainRecovery: 'Verify its status or replay the exact saved action with its original request key. Other changes stay blocked until the server confirms the result.',
+          }));
+        }
+      }).catch(() => {
+        if (active) setActionNotice(mutationExceptionNotice(new Error('Account status could not be checked.'), {
+          action: 'Account action',
+          uncertainTitle: 'Account action outcome could not be confirmed',
+          uncertainRecovery: 'Check status again or replay only the saved action with its original request key.',
+        }));
+      });
+      return () => { active = false; };
+    }
+  }, [isOpen, accountToEdit?.id, currentOrg?.id, actionGuard?.idempotencyKey, actionGuard?.userId, actionGuard?.requestId, guardBelongsToCurrentUser]);
 
   // Check code conflict dynamically
   const codeConflict = useMemo(() => {
@@ -359,7 +489,9 @@ export const AccountModal: React.FC<AccountModalProps> = ({
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (actionBlocked) return;
     setError('');
+    setActionNotice(null);
     const normalizedCode = code.trim();
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/.test(normalizedCode)) {
       setError('Account code must contain 1-32 letters, numbers, dots, underscores, or hyphens.');
@@ -396,15 +528,27 @@ export const AccountModal: React.FC<AccountModalProps> = ({
     setIsSubmitting(true);
     try {
       if (accountToEdit) {
-        await updateAccount(accountToEdit.id, {
+        const result = await updateAccount(accountToEdit.id, {
           name: name.trim(),
           description: description.trim(),
           parentAccountId: isSubAccount ? parentAccountId || null : null,
           reportingGroup: reportingGroup.trim() || undefined,
           allowDirectPosting,
         });
+        if (result.organizationChanged) {
+          setActionNotice(committedButStaleNotice('Account update was confirmed in the previous organization', 'The active organization changed while this update was running. The current organization was not refreshed with the previous organization account data.', result.requestId));
+          return;
+        }
+        if (result.refreshFailed) {
+          setActionNotice(committedButStaleNotice(
+            'Account update committed; refresh failed',
+            'The server response could not be confirmed against the refreshed account list. Verify status before proceeding.',
+            result.requestId
+          ));
+          return;
+        }
       } else {
-        await addAccount({
+        const result = await addAccount({
           code: normalizedCode,
           name: name.trim(),
           type: selected.category,
@@ -416,61 +560,164 @@ export const AccountModal: React.FC<AccountModalProps> = ({
           normalBalance,
           balance: 0,
         });
+        if (result.organizationChanged || result.refreshFailed) {
+          setCreationBlocked(true);
+          setActionNotice({
+            tone: 'warning',
+            title: result.organizationChanged ? 'Account creation committed in the previous organization' : 'Account created; refresh could not verify it',
+            message: result.organizationChanged
+              ? 'The active organization changed while this account was being created. The current organization was not updated with the previous organization account.'
+              : 'The server returned the created account, but the refreshed chart of accounts could not verify it. Do not submit another create request.',
+            recovery: result.organizationChanged
+              ? 'Switch back to the original organization and inspect Chart of Accounts before creating another account.'
+              : 'Reload Chart of Accounts and inspect this account code before taking another action.',
+            requestId: result.requestId,
+          });
+          return;
+        }
       }
       onClose();
     } catch (submissionError) {
-      setError(submissionError instanceof Error ? submissionError.message : 'Account could not be created.');
+      const notice = mutationExceptionNotice(submissionError, {
+        action: 'Account creation',
+        uncertainTitle: 'Account creation outcome could not be confirmed',
+        uncertainRecovery: 'Reload Chart of Accounts and inspect this account code before retrying; account creation has no safe replay receipt.',
+      });
+      if (submissionError instanceof ApiRequestError && submissionError.response.status >= 200 && submissionError.response.status < 300) {
+        setCreationBlocked(true);
+        setActionNotice({ tone: 'warning', title: 'Account save needs verification', message: notice.message, recovery: 'Reload Chart of Accounts and inspect this account code before taking another action.', requestId: submissionError.response.requestId });
+      } else if (notice.tone === 'warning') {
+        setCreationBlocked(true);
+        setActionNotice(notice);
+      } else {
+        setError(notice.message);
+      }
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const handleArchive = async () => {
-    if (!accountToEdit || !window.confirm(`Archive ${accountToEdit.name}? It can no longer receive new postings.`)) return;
-    setError('');
+  const handleArchive = () => {
+    setActionNotice(null);
+    setActionConfirmation('archive');
+  };
+
+  const handleRestore = () => {
+    setActionNotice(null);
+    setActionConfirmation('restore');
+  };
+
+  const handleDelete = () => {
+    setActionNotice(null);
+    setActionConfirmation('delete');
+  };
+
+  const handleConfirmAccountAction = async () => {
+    const action = actionConfirmation;
+    if (!action || !accountToEdit || organizationChanged || actionInFlight.current) return;
+    if (actionGuard && actionGuard.action !== action) return;
+
+    actionInFlight.current = true;
     setIsSubmitting(true);
+    setActionNotice(null);
     try {
-      await updateAccount(accountToEdit.id, { status: 'Archived' });
+      const result = action === 'delete'
+        ? await deleteAccount(accountToEdit.id, actionGuard?.action === 'delete' ? actionGuard.idempotencyKey : undefined)
+        : await updateAccount(accountToEdit.id, { status: action === 'archive' ? 'Archived' : 'Active' }, actionGuard?.action === action ? actionGuard.idempotencyKey : undefined);
+
+      if (result.organizationChanged) {
+        setActionConfirmation(null);
+        setActionNotice(committedButStaleNotice('Account action was confirmed in the previous organization', 'The active organization changed while this action was running. The current organization was not refreshed with the previous organization account data.', result.requestId));
+        return;
+      }
+      if (result.refreshFailed) {
+        setActionConfirmation(null);
+        setActionNotice(committedButStaleNotice(
+          'Account ' + action + ' committed; refresh failed',
+          'The server response could not be confirmed against the refreshed account list. Verify status before proceeding.',
+          result.requestId
+        ));
+        return;
+      }
+
       onClose();
     } catch (submissionError) {
-      setError(submissionError instanceof Error ? submissionError.message : 'Account could not be archived.');
+      const notice = mutationExceptionNotice(submissionError, {
+        action: 'Account ' + action,
+        uncertainTitle: 'Account ' + action + ' outcome could not be confirmed',
+        uncertainRecovery: 'Close this window, reload Chart of Accounts, and inspect the account before trying again.',
+      });
+      setActionNotice(notice);
+      if (notice.tone === 'warning') {
+        setActionConfirmation(null);
+      }
     } finally {
+      actionInFlight.current = false;
       setIsSubmitting(false);
     }
   };
 
-  const handleRestore = async () => {
-    if (!accountToEdit || !window.confirm(`Restore ${accountToEdit.name} to Active status?`)) return;
-    setError('');
+  const handleVerifySavedAction = async () => {
+    if (!accountToEdit || !actionGuard || isSubmitting) return;
     setIsSubmitting(true);
     try {
-      await updateAccount(accountToEdit.id, { status: 'Active' });
-      onClose();
-    } catch (submissionError) {
-      setError(submissionError instanceof Error ? submissionError.message : 'Account could not be restored.');
+      const status = await verifyAccountActionStatus(accountToEdit.id, actionGuard.organizationId);
+      if (status === 'verified') { setActionNotice(null); onClose(); }
+      else setActionNotice(mutationExceptionNotice(new Error('Account status could not be confirmed.'), {
+        action: 'Account action',
+        uncertainTitle: status === 'pending' ? 'Account action is still unresolved' : 'Account action outcome could not be confirmed',
+        uncertainRecovery: 'The saved operation remains protected. Verify again later or replay the exact saved action.',
+      }));
+    } catch (verificationError) {
+      setActionNotice(mutationExceptionNotice(verificationError, {
+        action: 'Account action',
+        uncertainTitle: 'Account action outcome could not be confirmed',
+        uncertainRecovery: 'The saved operation remains protected. Verify again later or replay the exact saved action.',
+      }));
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const handleDelete = async () => {
-    if (!accountToEdit) return;
-    const confirmed = window.confirm(
-      `Delete ${accountToEdit.name}? This is permanent and only succeeds when the account has no entries or references.`
-    );
-    if (!confirmed) return;
-    setError('');
+  const handleReplaySavedAction = () => {
+    if (!actionGuard || organizationChanged || isSubmitting) return;
+    if (actionGuard.action === 'update') {
+      void handleReplaySavedUpdate();
+      return;
+    }
+    setActionNotice(null);
+    setActionConfirmation(actionGuard.action);
+  };
+
+  const handleReplaySavedUpdate = async () => {
+    if (!accountToEdit || actionGuard?.action !== 'update' || organizationChanged || isSubmitting || actionInFlight.current) return;
+    actionInFlight.current = true;
     setIsSubmitting(true);
+    setActionNotice(null);
     try {
-      await deleteAccount(accountToEdit.id);
+      const result = await updateAccount(accountToEdit.id, actionGuard.payload as Partial<Account>, actionGuard.idempotencyKey);
+      if (result.organizationChanged || result.refreshFailed) {
+        setActionNotice(committedButStaleNotice(
+          result.organizationChanged ? 'Account update was confirmed in the previous organization' : 'Account update committed; refresh failed',
+          result.organizationChanged
+            ? 'The active organization changed while this update was running. The current organization was not refreshed with the previous organization\'s account data.'
+            : 'The server response could not be confirmed against the refreshed account list. Verify status before proceeding.',
+          result.requestId
+        ));
+        return;
+      }
       onClose();
-    } catch (submissionError) {
-      setError(submissionError instanceof Error ? submissionError.message : 'Account could not be deleted.');
+    } catch (replayError) {
+      setActionNotice(mutationExceptionNotice(replayError, {
+        action: 'Account update',
+        uncertainTitle: 'Account update outcome could not be confirmed',
+        uncertainRecovery: 'The original payload and request key remain saved. Verify status or retry this exact update.',
+      }));
     } finally {
+      actionInFlight.current = false;
       setIsSubmitting(false);
     }
   };
-
   const handleParentAccountChange = (newParentId: string) => {
     setParentAccountId(newParentId);
     if (!newParentId) return;
@@ -500,7 +747,7 @@ export const AccountModal: React.FC<AccountModalProps> = ({
 
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-950/50 p-0 sm:p-6" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-950/50 p-0 sm:p-6" onClick={() => { if (!isSubmitting && !actionConfirmation) onClose(); }}>
       <div className="max-h-[92vh] sm:max-h-[calc(100vh-3rem)] w-full max-w-4xl overflow-y-auto rounded-t-2xl sm:rounded-xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900" onClick={(event) => event.stopPropagation()}>
         <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3.5 dark:border-slate-800 sm:px-6 sm:py-4">
           <h3 className="text-base font-semibold text-slate-900 dark:text-white">
@@ -510,7 +757,7 @@ export const AccountModal: React.FC<AccountModalProps> = ({
               ? `Create Sub-Account of ${activeParent.name}`
               : 'Create account'}
           </h3>
-          <button type="button" onClick={onClose} disabled={isSubmitting} aria-label="Close account form" className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-100 hover:text-rose-500 disabled:opacity-50 dark:hover:bg-slate-800 cursor-pointer"><X className="h-4 w-4" /></button>
+          <button type="button" onClick={onClose} disabled={isSubmitting || Boolean(actionConfirmation)} aria-label="Close account form" className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-100 hover:text-rose-500 disabled:opacity-50 dark:hover:bg-slate-800 cursor-pointer"><X className="h-4 w-4" /></button>
         </div>
         <form onSubmit={handleSubmit}>
           <div className="px-5 py-5 sm:px-6 sm:py-6">
@@ -524,9 +771,52 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                 </p>
               </div>
             )}
+            {accountToEdit && (
+              <section aria-label="Account usage impact" aria-live="polite" className="mb-5 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs dark:border-slate-700 dark:bg-slate-800/60">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h4 className="font-semibold text-slate-900 dark:text-white">Authoritative usage impact</h4>
+                  {usageImpactLoading && <span className="text-slate-500">Checking server references…</span>}
+                </div>
+                {usageImpactError && <p role="alert" className="mt-2 font-semibold text-rose-700 dark:text-rose-300">{usageImpactError} Archive and delete safety are unknown.</p>}
+                {usageImpact && (
+                  <>
+                    <p className="mt-2 text-slate-700 dark:text-slate-300">Balance: <strong>{formatCurrency(usageImpact.balance)}</strong> · {usageImpact.totalReferences} linked record(s)</p>
+                    <p className={`mt-1 font-semibold ${usageImpact.inventoryComplete ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300'}`}>
+                      {usageImpact.inventoryComplete ? 'Reference inventory complete' : 'Reference inventory incomplete; safety is unknown'}
+                    </p>
+                    {usageImpact.accountingDefaults.length > 0 && <p className="mt-1 text-amber-800 dark:text-amber-200">Posting defaults: {usageImpact.accountingDefaults.join(', ')}</p>}
+                    {!usageImpact.inventoryComplete && usageImpact.unclassifiedAccountReferenceColumns.length > 0 && <p className="mt-1 text-amber-800 dark:text-amber-200">Unclassified references: {usageImpact.unclassifiedAccountReferenceColumns.join(', ')}</p>}
+                    {usageImpact.references.filter((reference) => reference.count > 0).length > 0 && (
+                      <ul className="mt-2 grid gap-x-4 gap-y-1 text-slate-600 dark:text-slate-300 sm:grid-cols-2">
+                        {usageImpact.references.filter((reference) => reference.count > 0).map((reference) => <li key={reference.label}>{reference.label}: {reference.count}</li>)}
+                      </ul>
+                    )}
+                    {usageImpact.archiveBlockers.length > 0 && <p className="mt-2 text-amber-800 dark:text-amber-200">Archive blockers: {usageImpact.archiveBlockers.join(' ')}</p>}
+                  </>
+                )}
+                {!usageImpactLoading && !usageImpact && !usageImpactError && <p className="mt-2 text-slate-500">Usage coverage is unavailable.</p>}
+              </section>
+            )}
             {error && <div role="alert" className="mb-5 border-l-2 border-rose-500 bg-rose-50 px-3 py-2.5 text-xs font-medium text-rose-800 dark:bg-rose-950/30 dark:text-rose-200">{error}</div>}
-
-            <div className="grid gap-7 lg:grid-cols-[minmax(0,1fr)_18rem]">
+            {(actionNotice || actionGuard || organizationChanged) && !actionConfirmation && (
+              <div className="mb-5">
+                {actionNotice && <OperationNoticeBanner notice={actionNotice} />}
+                {organizationChanged && <p role="status" className="mt-3 text-sm text-amber-800 dark:text-amber-200">The active organization changed while this account was open. This window cannot make changes. Close it and reopen the account in the active organization.</p>}
+                {actionGuard && (
+                  <div role="status" className="mt-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100">
+                    <p>{!actionGuard.userId
+                      ? 'This older saved action has no recorded owner and is blocked pending manual server-audit reconciliation.'
+                      : guardBelongsToCurrentUser
+                        ? 'An earlier account action is still protected for this organization. Verify its server status or replay the exact saved operation before making another change.'
+                        : 'An earlier account action belongs to another sign-in. It remains protected until its initiating user verifies or replays it.'}</p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button type="button" disabled={isSubmitting || organizationChanged || !guardBelongsToCurrentUser} onClick={() => void handleVerifySavedAction()} className="rounded-md border border-amber-700 px-3 py-1.5 text-sm font-semibold disabled:opacity-50">Verify status</button>
+                      <button type="button" disabled={isSubmitting || organizationChanged || !guardBelongsToCurrentUser} onClick={handleReplaySavedAction} className="rounded-md bg-amber-900 px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-50 dark:bg-amber-200 dark:text-amber-950">{actionGuard.action === 'update' ? 'Retry saved update' : 'Review and retry saved action'}</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}            <div className="grid gap-7 lg:grid-cols-[minmax(0,1fr)_18rem]">
               <div className="space-y-5">
                 <div className="relative">
                   <span className="block text-sm font-medium text-slate-800 dark:text-slate-200">Account type <span className="text-rose-600">*</span></span>
@@ -772,29 +1062,74 @@ export const AccountModal: React.FC<AccountModalProps> = ({
           <div className="sticky bottom-0 z-20 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-white/95 backdrop-blur-xs px-4 py-3 dark:border-slate-800 dark:bg-slate-900/95 sm:px-6">
             <div className="flex items-center gap-2">
               {accountToEdit && !accountToEdit.isSystemAccount && !accountToEdit.isLocked && (
-                <button type="button" onClick={handleDelete} disabled={isSubmitting} className="inline-flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-rose-700 transition hover:bg-rose-50 disabled:opacity-50 dark:text-rose-300 dark:hover:bg-rose-950/30 cursor-pointer">
+                <button type="button" onClick={handleDelete} disabled={isSubmitting || organizationChanged || usageImpactLoading || !usageImpact?.inventoryComplete || Boolean(usageImpact?.deleteBlockers.length) || Boolean(actionGuard && actionGuard.action !== 'delete')} className="inline-flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-rose-700 transition hover:bg-rose-50 disabled:opacity-50 dark:text-rose-300 dark:hover:bg-rose-950/30 cursor-pointer">
                   <Trash2 className="h-4 w-4" />Delete
                 </button>
               )}
               {accountToEdit && accountToEdit.status === 'Active' && (
-                <button type="button" onClick={handleArchive} disabled={isSubmitting} className="inline-flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-rose-700 transition hover:bg-rose-50 disabled:opacity-50 dark:text-rose-300 dark:hover:bg-rose-950/30 cursor-pointer">
+                <button type="button" onClick={handleArchive} disabled={isSubmitting || organizationChanged || usageImpactLoading || !usageImpact?.inventoryComplete || Boolean(usageImpact?.archiveBlockers.length) || Boolean(actionGuard && actionGuard.action !== 'archive')} className="inline-flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-rose-700 transition hover:bg-rose-50 disabled:opacity-50 dark:text-rose-300 dark:hover:bg-rose-950/30 cursor-pointer">
                   <Archive className="h-4 w-4" />Archive
                 </button>
               )}
               {accountToEdit && accountToEdit.status === 'Archived' && (
-                <button type="button" onClick={handleRestore} disabled={isSubmitting} className="inline-flex h-9 items-center gap-1.5 rounded-md bg-emerald-50 px-3 text-sm font-medium text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-50 dark:bg-emerald-950/40 dark:text-emerald-300 dark:hover:bg-emerald-900/40 cursor-pointer">
+                <button type="button" onClick={handleRestore} disabled={isSubmitting || organizationChanged || Boolean(actionGuard && actionGuard.action !== 'restore')} className="inline-flex h-9 items-center gap-1.5 rounded-md bg-emerald-50 px-3 text-sm font-medium text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-50 dark:bg-emerald-950/40 dark:text-emerald-300 dark:hover:bg-emerald-900/40 cursor-pointer">
                   <RefreshCw className="h-4 w-4" />Restore to Active
                 </button>
               )}
             </div>
             <div className="flex items-center gap-2">
-              <button type="button" onClick={onClose} disabled={isSubmitting} className="h-9 rounded-md border border-slate-300 px-4 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800 cursor-pointer">Cancel</button>
-              <button type="submit" disabled={isSubmitting || Boolean(codeConflict)} className="h-9 rounded-md bg-blue-600 px-4 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer">
+              <button type="button" onClick={onClose} disabled={isSubmitting || Boolean(actionConfirmation)} className="h-9 rounded-md border border-slate-300 px-4 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800 cursor-pointer">Cancel</button>
+              <button type="submit" disabled={isSubmitting || actionBlocked || creationBlocked || Boolean(actionConfirmation) || Boolean(codeConflict)} className="h-9 rounded-md bg-blue-600 px-4 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer">
                 {isSubmitting ? 'Saving...' : accountToEdit ? 'Save changes' : isSubAccount ? 'Create Sub-Account' : 'Save account'}
               </button>
             </div>
           </div>
         </form>
+        {actionConfirmation && accountToEdit && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/60 p-4">
+            <section
+              role="alertdialog"
+              aria-modal="true"
+              aria-labelledby="account-action-title"
+              aria-describedby="account-action-description"
+              onClick={(event) => event.stopPropagation()}
+              className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-700 dark:bg-slate-900"
+            >
+              <h4 id="account-action-title" className="text-base font-bold text-slate-900 dark:text-white">
+                {actionConfirmation === 'archive' ? 'Archive account?' : actionConfirmation === 'restore' ? 'Restore account?' : 'Delete account permanently?'}
+              </h4>
+              <p className="mt-2 text-sm font-semibold text-slate-800 dark:text-slate-200">
+                {accountToEdit.code} · {accountToEdit.name}
+              </p>
+              <p id="account-action-description" className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+                {actionConfirmation === 'archive'
+                  ? 'Archiving prevents new direct postings. Existing transactions and reports remain unchanged.'
+                  : actionConfirmation === 'restore'
+                    ? 'Restoring makes this account Active again. The server will continue to enforce all posting and period rules.'
+                    : 'This permanently removes the account and is allowed only when it has no entries or references.'}
+              </p>
+              {actionNotice && <div className="mt-4"><OperationNoticeBanner notice={actionNotice} /></div>}
+              <div className="mt-5 flex justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={isSubmitting}
+                  onClick={() => { setActionConfirmation(null); setActionNotice(null); }}
+                  className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 disabled:opacity-50 dark:border-slate-700 dark:text-slate-200"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={isSubmitting || organizationChanged || Boolean(actionGuard && actionGuard.action !== actionConfirmation)}
+                  onClick={() => void handleConfirmAccountAction()}
+                  className="rounded-md bg-rose-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                >
+                  {isSubmitting ? 'Working…' : actionConfirmation === 'archive' ? 'Archive account' : actionConfirmation === 'restore' ? 'Restore account' : 'Delete permanently'}
+                </button>
+              </div>
+            </section>
+          </div>
+        )}
       </div>
     </div>
   );

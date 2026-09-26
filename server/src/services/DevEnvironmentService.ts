@@ -355,7 +355,7 @@ export class DevEnvironmentService {
       userAgent: 'FirmBooks Local Dev Environment (Zero-Auth)',
     });
 
-    const token = JwtAuth.generateToken({ userId: persona.id, email: persona.email });
+    const token = JwtAuth.generateToken({ userId: persona.id, email: persona.email, sid: session.sessionId });
 
     return {
       user: {

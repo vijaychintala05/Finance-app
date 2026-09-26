@@ -477,7 +477,7 @@ describe('Phase 8.4B.1 — Real Frontend QuotationBuilder Component Integration 
     expect(screen.getAllByDisplayValue('12000').length).toBeGreaterThan(0);
   });
 
-  it('21. Closing dirty builder prompts before discard', () => {
+  it('21. Dirty builder uses an accessible in-app confirmation and only discards on explicit choice', () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
     const onCloseSpy = vi.fn();
 
@@ -494,14 +494,21 @@ describe('Phase 8.4B.1 — Real Frontend QuotationBuilder Component Integration 
     );
 
     fireEvent.change(screen.getAllByPlaceholderText(/Item \/ Service Title \*/i)[0], { target: { value: 'Dirty Input' } });
+    fireEvent.click(screen.getByRole('button', { name: /Close modal/i }));
 
-    const closeBtn = screen.getByRole('button', { name: /Close modal/i });
-    fireEvent.click(closeBtn);
-
-    expect(confirmSpy).toHaveBeenCalled();
+    const discardDialog = screen.getByRole('alertdialog', { name: 'Discard unsaved quotation changes?' });
+    expect(discardDialog).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Keep editing' }));
     expect(onCloseSpy).not.toHaveBeenCalled();
-  });
+    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(onCloseSpy).not.toHaveBeenCalled();
 
+    fireEvent.click(screen.getByRole('button', { name: /Close modal/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Discard quotation' }));
+    expect(onCloseSpy).toHaveBeenCalledOnce();
+    expect(confirmSpy).not.toHaveBeenCalled();
+  });
   it('22. Mobile line layout is renderable without desktop-only controls disappearing', () => {
     renderWithProvider(
       <QuotationBuilder

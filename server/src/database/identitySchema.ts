@@ -50,6 +50,17 @@ export async function applyIdentitySchema(client: DbQueryClient): Promise<void> 
       sent_at TIMESTAMP WITH TIME ZONE,
       created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
     )`,
+    `ALTER TABLE outbox_emails ADD COLUMN IF NOT EXISTS invoice_id VARCHAR(64)`,
+    `ALTER TABLE outbox_emails ADD COLUMN IF NOT EXISTS invoice_email_kind VARCHAR(30)`,
+    `CREATE INDEX IF NOT EXISTS idx_outbox_invoice_delivery ON outbox_emails (organization_id, invoice_id, created_at DESC)`,
+    `CREATE TABLE IF NOT EXISTS outbox_email_attachments (
+      outbox_email_id VARCHAR(64) PRIMARY KEY REFERENCES outbox_emails(id) ON DELETE CASCADE,
+      filename VARCHAR(255) NOT NULL,
+      content_type VARCHAR(120) NOT NULL,
+      content BYTEA NOT NULL,
+      sha256 VARCHAR(64) NOT NULL,
+      created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`,
     `CREATE TABLE IF NOT EXISTS external_identity_links (
       id VARCHAR(64) PRIMARY KEY,
       user_id VARCHAR(64) NOT NULL,

@@ -173,7 +173,7 @@ describe('QA Blocker Remediations (QA-01 to QA-10)', () => {
     await SalesEngine.updateInvoice(ORG, inv.id, {
       items: [{ description: 'Consulting Revised', quantity: 1, unitPrice: 200, taxRate: 0 }],
       editReason: 'Customer approved higher scope',
-    }, OWNER_ID);
+    }, OWNER_ID, '1');
 
     // 4. Drill down on the original journal AFTER revision
     const afterDrill = await DrillDownService.getDrillDown(ORG, originalJournalId);

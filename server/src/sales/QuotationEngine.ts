@@ -97,6 +97,7 @@ export class QuotationEngine {
       throw new Error(`Customer ${trimmedId} not found`);
     }
     const c = res.rows[0];
+    if (c.active === false) throw new Error('Archived customer is inactive and cannot be assigned to new quotations');
     return {
       customerId: c.id,
       displayName: c.display_name || c.name || '',
@@ -444,6 +445,15 @@ export class QuotationEngine {
     }
 
     await db.transaction(async (client) => {
+    if (targetCustomerId) {
+      const customer = await client.query('SELECT active FROM customers WHERE organization_id = $1 AND id = $2 FOR UPDATE', [orgId, targetCustomerId]);
+      if (customer.rows.length !== 1 || customer.rows[0].active === false) throw new Error('Archived customer is inactive or unavailable for a new quotation');
+    }
+    if (targetProjectId) {
+      const project = await client.query('SELECT id, archived_at FROM projects WHERE organization_id = $1 AND id = $2 FOR UPDATE', [orgId, targetProjectId]);
+      if (project.rows.length !== 1) throw new Error('Quotation project does not belong to this organization');
+      if (project.rows[0].archived_at) throw new Error('Archived projects cannot be assigned to new quotations');
+    }
     await client.query(
       `INSERT INTO estimates (
         id, organization_id, estimate_number, revision_number, client_id, customer_id, client_name,
@@ -670,6 +680,23 @@ export class QuotationEngine {
     }
 
     await db.transaction(async (client) => {
+    // Every new quotation revision retains active master references. Lock
+    // the canonical row here (not only during the earlier snapshot lookup) so
+    // edits and archival cannot race past one another.
+    if (targetCustomerId) {
+      const customer = await client.query(
+        'SELECT active FROM customers WHERE organization_id = $1 AND id = $2 FOR UPDATE',
+        [orgId, targetCustomerId]
+      );
+      if (customer.rows.length !== 1 || customer.rows[0].active === false) {
+        throw new Error('Archived or unavailable customers cannot receive a quotation revision');
+      }
+    }
+    if (targetProjectId) {
+      const project = await client.query('SELECT id, archived_at FROM projects WHERE organization_id = $1 AND id = $2 FOR UPDATE', [orgId, targetProjectId]);
+      if (project.rows.length !== 1) throw new Error('Quotation project does not belong to this organization');
+      if (project.rows[0].archived_at) throw new Error('Archived projects cannot receive quotation revisions');
+    }
     const updated = await client.query(
       `UPDATE estimates
        SET revision_number = $1, subtotal = $2, tax_total = $3, discount = $4, overall_discount = $5,

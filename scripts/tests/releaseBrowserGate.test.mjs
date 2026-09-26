@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 const ci = readFileSync('.github/workflows/ci.yaml', 'utf8');
 const publish = readFileSync('.github/workflows/publish-container.yaml', 'utf8');
 const playwright = readFileSync('playwright.config.ts', 'utf8');
+const postgresRunner = readFileSync('scripts/run-postgres-qualification.mjs', 'utf8');
 
 describe('release browser qualification contract', () => {
   it('runs the full Playwright suite against PostgreSQL in CI', () => {
@@ -43,6 +44,13 @@ describe('release browser qualification contract', () => {
     expect(p2p).toContain('await page.reload()');
     expect(close).toContain('/api/v1/finance/period-close/review');
     expect(close).toContain('await page.reload()');
+  });
+
+  it('launches PostgreSQL qualification with local Node and Vitest entry points', () => {
+    expect(postgresRunner).toContain('fileURLToPath');
+    expect(postgresRunner).toContain('process.execPath');
+    expect(postgresRunner).not.toContain('npx.cmd');
+    expect(postgresRunner).toContain('Failed to start PostgreSQL qualification');
   });
 
   it('fails closed when PostgreSQL qualification silently falls back to memory', () => {

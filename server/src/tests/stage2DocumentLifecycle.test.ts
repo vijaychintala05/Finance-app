@@ -5,6 +5,7 @@ import { QuotationEngine } from '../sales/QuotationEngine';
 import { SalesEngine } from '../sales/SalesEngine';
 import { PurchasesEngine } from '../purchases/PurchasesEngine';
 import { ServerPostingEngine } from '../accounting/postingEngine';
+import { FinancialDestructiveActionsService } from '../accounting/FinancialDestructiveActionsService';
 
 const ORG = F.ORG_A.id;
 const ACTOR = F.PERSONAS.ORG_A.owner.id;
@@ -74,6 +75,8 @@ describe('Stage 2 — Complete document lifecycles and everyday workflows', () =
       });
       expect(challan1.salesOrder.fulfilledAmount).toBe(4000);
       expect(challan1.salesOrder.status).toBe('PARTIALLY_FULFILLED');
+      await expect(SalesEngine.updateSalesOrder(ORG, so.id, { status: 'CONFIRMED' }, ACTOR))
+        .rejects.toThrow(/after invoicing, fulfillment, shipment/i);
 
       // Full delivery
       const challan2 = await SalesEngine.fulfillSalesOrder(ORG, so.id, ACTOR, {
@@ -97,6 +100,8 @@ describe('Stage 2 — Complete document lifecycles and everyday workflows', () =
       expect(inv1.invoice.salesOrderId).toBe(so.id);
       expect(inv1.invoice.totalAmount).toBe(5000);
       expect(inv1.salesOrder.invoicedAmount).toBe(5000);
+      await expect(SalesEngine.updateSalesOrder(ORG, so.id, { status: 'CONFIRMED' }, ACTOR))
+        .rejects.toThrow(/after invoicing, fulfillment, shipment/i);
       expect(inv1.salesOrder.status).toBe('PARTIALLY_INVOICED');
 
       // Second invoice completing billing (remaining 5000)
@@ -185,8 +190,66 @@ describe('Stage 2 — Complete document lifecycles and everyday workflows', () =
         lineItems: [{ description: 'Untouched order', quantity: 1, unitPrice: 2000, taxRate: 0, amount: 2000 }],
       }, undefined, ACTOR);
 
-      // Cancelling an untouched sales order succeeds
+      // Generic status updates cannot bypass guarded cancellation or its audit reason.
+      const auditBefore = await db.query(
+        `SELECT COUNT(*)::int AS count FROM audit_logs WHERE organization_id = $1 AND entity_type = 'SalesOrder' AND entity_id = $2 AND action = 'SALES_ORDER_UPDATED'`,
+        [ORG, freshSo.id]
+      );
+      for (const status of ['CANCELLED', 'Cancelled']) {
+        await expect(SalesEngine.updateSalesOrder(ORG, freshSo.id, { status: status as any }, ACTOR))
+          .rejects.toThrow(/audited cancellation endpoint/i);
+      }
+      expect((await SalesEngine.getSalesOrder(ORG, freshSo.id))?.status).toBe('CONFIRMED');
+      const auditAfter = await db.query(
+        `SELECT COUNT(*)::int AS count FROM audit_logs WHERE organization_id = $1 AND entity_type = 'SalesOrder' AND entity_id = $2 AND action = 'SALES_ORDER_UPDATED'`,
+        [ORG, freshSo.id]
+      );
+      expect(auditAfter.rows[0].count).toBe(auditBefore.rows[0].count);
+      await expect(SalesEngine.cancelSalesOrder(ORG, freshSo.id, ACTOR, '  '))
+        .rejects.toThrow(/between 3 and 1000 characters/i);
+      await expect(SalesEngine.cancelSalesOrder(ORG, freshSo.id, ACTOR, 'x'.repeat(1001)))
+        .rejects.toThrow(/between 3 and 1000 characters/i);
+      for (const status of ['SHIPPED', 'PARTIALLY_FULFILLED', 'FULFILLED', 'PARTIALLY_INVOICED', 'INVOICED', 'CLOSED']) {
+        await expect(SalesEngine.updateSalesOrder(ORG, freshSo.id, { status: status as any }, ACTOR))
+          .rejects.toThrow(/dedicated lifecycle workflow/i);
+      }
+
+      const legacyShipped = await SalesEngine.createSalesOrder(ORG, { customerId: CUST, orderDate: '2026-03-08', totalAmount: 700, status: 'CONFIRMED', lineItems: [{ description: 'Legacy shipped order', quantity: 1, unitPrice: 700, taxRate: 0, amount: 700 }] }, undefined, ACTOR);
+      await db.query("UPDATE sales_orders SET status = 'SHIPPED' WHERE organization_id = $1 AND id = $2", [ORG, legacyShipped.id]);
+      await expect(SalesEngine.updateSalesOrder(ORG, legacyShipped.id, { status: 'CONFIRMED' }, ACTOR))
+        .rejects.toThrow(/after invoicing, fulfillment, shipment/i);
+      await expect(SalesEngine.cancelSalesOrder(ORG, legacyShipped.id, ACTOR, 'Customer withdrew order'))
+        .rejects.toThrow(/legacy shipped.*reviewing delivery evidence/i);
+
+      const closedSo = await SalesEngine.createSalesOrder(ORG, { customerId: CUST, orderDate: '2026-03-09', totalAmount: 800, status: 'CONFIRMED', lineItems: [{ description: 'Closed order', quantity: 1, unitPrice: 800, taxRate: 0, amount: 800 }] }, undefined, ACTOR);
+      await db.query("UPDATE sales_orders SET status = 'CLOSED' WHERE organization_id = $1 AND id = $2", [ORG, closedSo.id]);
+      await expect(SalesEngine.updateSalesOrder(ORG, closedSo.id, { status: 'CONFIRMED' }, ACTOR))
+        .rejects.toThrow(/after invoicing, fulfillment, shipment/i);
+      await expect(SalesEngine.cancelSalesOrder(ORG, closedSo.id, ACTOR, 'Customer withdrew order'))
+        .rejects.toThrow(/Cannot cancel a closed sales order/i);
+
+      // Concurrent manual status edits and cancellation serialize on the same row; cancellation remains authoritative.
+      const raceSo = await SalesEngine.createSalesOrder(ORG, { customerId: CUST, orderDate: '2026-03-07', totalAmount: 500, status: 'CONFIRMED', lineItems: [{ description: 'Concurrent cancel', quantity: 1, unitPrice: 500, taxRate: 0, amount: 500 }] }, undefined, ACTOR);
+      const raceResults = await Promise.allSettled([
+        SalesEngine.updateSalesOrder(ORG, raceSo.id, { status: 'IN_PRODUCTION' }, ACTOR),
+        SalesEngine.cancelSalesOrder(ORG, raceSo.id, ACTOR, 'Customer cancelled order'),
+      ]);
+      expect(raceResults.some((result) => result.status === 'fulfilled' && (result.value as any).status === 'CANCELLED')).toBe(true);
+      expect((await SalesEngine.getSalesOrder(ORG, raceSo.id))?.status).toBe('CANCELLED');
+
+      // Cancelling an untouched sales order succeeds only through the dedicated endpoint.
       const cancelledSo = await SalesEngine.cancelSalesOrder(ORG, freshSo.id, ACTOR, 'Customer retracted');
+      const cancellationAuditBeforeRetry = await db.query(
+        `SELECT COUNT(*)::int AS count FROM audit_logs WHERE organization_id = $1 AND entity_type = 'SalesOrder' AND entity_id = $2 AND action = 'SALES_ORDER_CANCELLED'`,
+        [ORG, freshSo.id]
+      );
+      const retriedCancellation = await SalesEngine.cancelSalesOrder(ORG, freshSo.id, ACTOR, 'Customer retracted');
+      expect(retriedCancellation.status).toBe('CANCELLED');
+      const cancellationAuditAfterRetry = await db.query(
+        `SELECT COUNT(*)::int AS count FROM audit_logs WHERE organization_id = $1 AND entity_type = 'SalesOrder' AND entity_id = $2 AND action = 'SALES_ORDER_CANCELLED'`,
+        [ORG, freshSo.id]
+      );
+      expect(cancellationAuditAfterRetry.rows[0].count).toBe(cancellationAuditBeforeRetry.rows[0].count);
       expect(cancelledSo.status).toBe('CANCELLED');
 
       // Cannot convert or fulfill a cancelled sales order
@@ -200,6 +263,84 @@ describe('Stage 2 — Complete document lifecycles and everyday workflows', () =
     });
   });
 
+    it('closes direct, delayed, cancellation, fulfillment, and void bypasses for linked sales orders', async () => {
+      const directBlocked = await SalesEngine.createSalesOrder(ORG, { customerId: CUST, orderDate: '2026-04-01', totalAmount: 1200, status: 'CONFIRMED', lineItems: [{ description: 'Direct posting guard', quantity: 1, unitPrice: 1200, taxRate: 0 }] }, undefined, ACTOR);
+      await SalesEngine.cancelSalesOrder(ORG, directBlocked.id, ACTOR, 'Customer withdrew');
+      await expect(SalesEngine.createAndPostInvoice(ORG, { salesOrderId: directBlocked.id, customerId: CUST, issueDate: '2026-04-02', dueDate: '2026-05-02', status: 'POSTED', lineItems: [{ description: 'Forbidden invoice', quantity: 1, unitPrice: 1200, taxRate: 0 }] }, ACTOR))
+        .rejects.toThrow(/cannot accept invoices.*CANCELLED/i);
+
+      const pending = await SalesEngine.createSalesOrder(ORG, { customerId: CUST, orderDate: '2026-04-03', totalAmount: 900, status: 'CONFIRMED', lineItems: [{ description: 'Pending invoice guard', quantity: 1, unitPrice: 900, taxRate: 0 }] }, undefined, ACTOR);
+      const draft = await SalesEngine.createAndPostInvoice(ORG, { salesOrderId: pending.id, customerId: CUST, issueDate: '2026-04-03', dueDate: '2026-05-03', status: 'DRAFT', lineItems: [{ description: 'Pending invoice', quantity: 1, unitPrice: 900, taxRate: 0 }] }, ACTOR);
+      await expect(SalesEngine.cancelSalesOrder(ORG, pending.id, ACTOR, 'Cancel despite draft'))
+        .rejects.toThrow(/existing invoiced balance/i);
+      await db.query(`UPDATE sales_orders SET status = 'CANCELLED', invoiced_amount = 0 WHERE organization_id = $1 AND id = $2`, [ORG, pending.id]);
+      await expect(SalesEngine.postInvoice(ORG, ACTOR, draft.id)).rejects.toThrow(/cannot accept invoices.*CANCELLED/i);
+
+      const staleCounter = await SalesEngine.createSalesOrder(ORG, { customerId: CUST, orderDate: '2026-04-04', totalAmount: 600, status: 'CONFIRMED', lineItems: [{ description: 'Stale counter evidence', quantity: 1, unitPrice: 600, taxRate: 0 }] }, undefined, ACTOR);
+      await SalesEngine.createAndPostInvoice(ORG, { salesOrderId: staleCounter.id, customerId: CUST, issueDate: '2026-04-04', dueDate: '2026-05-04', status: 'POSTED', lineItems: [{ description: 'Linked posted invoice', quantity: 1, unitPrice: 200, taxRate: 0 }] }, ACTOR);
+      await db.query(`UPDATE sales_orders SET invoiced_amount = 0 WHERE organization_id = $1 AND id = $2`, [ORG, staleCounter.id]);
+      await expect(SalesEngine.cancelSalesOrder(ORG, staleCounter.id, ACTOR, 'Ignore stale counter'))
+        .rejects.toThrow(/existing invoiced balance/i);
+
+      const fulfilled = await SalesEngine.createSalesOrder(ORG, { customerId: CUST, orderDate: '2026-04-05', totalAmount: 1000, status: 'CONFIRMED', lineItems: [{ description: 'Fulfilled then billed', quantity: 1, unitPrice: 1000, taxRate: 0 }] }, undefined, ACTOR);
+      await SalesEngine.fulfillSalesOrder(ORG, fulfilled.id, ACTOR, { fulfilledAmount: 500 });
+      const linkedInvoice = await SalesEngine.createAndPostInvoice(ORG, { salesOrderId: fulfilled.id, customerId: CUST, issueDate: '2026-04-05', dueDate: '2026-05-05', status: 'POSTED', lineItems: [{ description: 'Partial invoice', quantity: 1, unitPrice: 100, taxRate: 0 }] }, ACTOR);
+      expect((await SalesEngine.getSalesOrder(ORG, fulfilled.id))?.status).toBe('PARTIALLY_INVOICED');
+      await expect(SalesEngine.updateInvoice(ORG, linkedInvoice.id, { notes: 'must stay linked and balanced' }, ACTOR, '1'))
+        .rejects.toThrow(/order-linked invoices cannot be edited/i);
+      await FinancialDestructiveActionsService.voidInvoice(ORG, linkedInvoice.id, ACTOR, 'Correct linked invoice');
+      expect((await SalesEngine.getSalesOrder(ORG, fulfilled.id))?.status).toBe('PARTIALLY_FULFILLED');
+      await expect(SalesEngine.cancelSalesOrder(ORG, fulfilled.id, ACTOR, 'Delivery remains active'))
+        .rejects.toThrow(/active deliveries/i);
+
+      await expect(SalesEngine.fulfillSalesOrder(ORG, fulfilled.id, ACTOR, { fulfilledAmount: 500.001 }))
+        .rejects.toThrow(/no fractional cents/i);
+      await expect(SalesEngine.fulfillSalesOrder(ORG, fulfilled.id, ACTOR, { fulfilledAmount: 501 }))
+        .rejects.toThrow(/exceeds the remaining unfulfilled sales order balance/i);
+      const conversionAmountGuard = await SalesEngine.createSalesOrder(ORG, { customerId: CUST, orderDate: '2026-04-05', totalAmount: 400, status: 'CONFIRMED', lineItems: [{ description: 'Invalid conversion amount', quantity: 1, unitPrice: 400, taxRate: 0 }] }, undefined, ACTOR);
+      const invoiceCountBeforeInvalidConversion = await db.query(`SELECT COUNT(*)::int AS count FROM invoices WHERE organization_id = $1 AND sales_order_id = $2`, [ORG, conversionAmountGuard.id]);
+      const journalCountBeforeInvalidConversion = await db.query(`SELECT COUNT(*)::int AS count FROM journal_entries WHERE organization_id = $1`, [ORG]);
+      for (const invalidAmount of [0, 0.005, Number.NaN]) {
+        await expect(SalesEngine.convertSalesOrderToInvoice(ORG, conversionAmountGuard.id, ACTOR, invalidAmount))
+          .rejects.toThrow(/greater than zero|no fractional cents/i);
+      }
+      const invoiceCountAfterInvalidConversion = await db.query(`SELECT COUNT(*)::int AS count FROM invoices WHERE organization_id = $1 AND sales_order_id = $2`, [ORG, conversionAmountGuard.id]);
+      const journalCountAfterInvalidConversion = await db.query(`SELECT COUNT(*)::int AS count FROM journal_entries WHERE organization_id = $1`, [ORG]);
+      const guardedOrderState = await SalesEngine.getSalesOrder(ORG, conversionAmountGuard.id);
+      expect(invoiceCountAfterInvalidConversion.rows[0].count).toBe(invoiceCountBeforeInvalidConversion.rows[0].count);
+      expect(journalCountAfterInvalidConversion.rows[0].count).toBe(journalCountBeforeInvalidConversion.rows[0].count);
+      expect(guardedOrderState?.invoicedAmount).toBe(0);
+      const taxedOrder = await SalesEngine.createSalesOrder(ORG, { customerId: CUST, orderDate: '2026-04-05', totalAmount: 1180, status: 'CONFIRMED', lineItems: [{ description: 'GST-bearing order', quantity: 1, unitPrice: 1000, taxRate: 18 }] }, undefined, ACTOR);
+      const taxedInvoiceCountBefore = await db.query(`SELECT COUNT(*)::int AS count FROM invoices WHERE organization_id = $1 AND sales_order_id = $2`, [ORG, taxedOrder.id]);
+      await expect(SalesEngine.convertSalesOrderToInvoice(ORG, taxedOrder.id, ACTOR, undefined, [{ description: 'Forged zero-tax line', quantity: 1, unitPrice: 1180, taxRate: 0 }]))
+        .rejects.toThrow(/caller-supplied line items cannot override/i);      await expect(SalesEngine.convertSalesOrderToInvoice(ORG, taxedOrder.id, ACTOR, 590))
+        .rejects.toThrow(/GST-bearing sales order/i);
+      expect((await SalesEngine.getSalesOrder(ORG, taxedOrder.id))?.invoicedAmount).toBe(0);
+      expect((await db.query(`SELECT COUNT(*)::int AS count FROM invoices WHERE organization_id = $1 AND sales_order_id = $2`, [ORG, taxedOrder.id])).rows[0].count).toBe(taxedInvoiceCountBefore.rows[0].count);
+      const taxedInvoice = await SalesEngine.convertSalesOrderToInvoice(ORG, taxedOrder.id, ACTOR);
+      expect(taxedInvoice.invoice.totalAmount).toBe(1180);
+      expect(taxedInvoice.invoice.taxTotal).toBe(180);
+      const outputTax = await db.query(`SELECT SUM(jl.credit) AS credit FROM journal_lines jl JOIN accounts a ON a.organization_id = jl.organization_id AND a.id = jl.account_id WHERE jl.organization_id = $1 AND jl.journal_entry_id = $2 AND a.code = '2200'`, [ORG, taxedInvoice.invoice.journalEntryId]);
+      expect(Number(outputTax.rows[0].credit)).toBe(180);
+      const discountedOrder = await SalesEngine.createSalesOrder(ORG, { customerId: CUST, orderDate: '2026-04-05', totalAmount: 1062, discount: 100, status: 'CONFIRMED', lineItems: [{ description: 'Discounted GST order', quantity: 1, unitPrice: 1000, taxRate: 18 }] }, undefined, ACTOR);
+      const discountedInvoice = await SalesEngine.convertSalesOrderToInvoice(ORG, discountedOrder.id, ACTOR);
+      expect(discountedInvoice.invoice.subtotal).toBe(1000);
+      expect(discountedInvoice.invoice.discount).toBe(100);
+      expect(discountedInvoice.invoice.taxTotal).toBe(162);
+      expect(discountedInvoice.invoice.roundOffAmount).toBe(0);
+      expect(discountedInvoice.invoice.totalAmount).toBe(1062);
+      const invoiceFirst = await SalesEngine.createSalesOrder(ORG, { customerId: CUST, orderDate: '2026-04-06', totalAmount: 1000, status: 'CONFIRMED', lineItems: [{ description: 'Invoice before shipment', quantity: 1, unitPrice: 1000, taxRate: 0 }] }, undefined, ACTOR);
+      await SalesEngine.createAndPostInvoice(ORG, { salesOrderId: invoiceFirst.id, customerId: CUST, issueDate: '2026-04-06', dueDate: '2026-05-06', status: 'POSTED', lineItems: [{ description: 'Partial invoice', quantity: 1, unitPrice: 200, taxRate: 0 }] }, ACTOR);
+      await SalesEngine.fulfillSalesOrder(ORG, invoiceFirst.id, ACTOR, { fulfilledAmount: 300 });
+      expect((await SalesEngine.getSalesOrder(ORG, invoiceFirst.id))?.status).toBe('PARTIALLY_INVOICED');
+      await SalesEngine.fulfillSalesOrder(ORG, invoiceFirst.id, ACTOR, { fulfilledAmount: 700 });
+      expect((await SalesEngine.getSalesOrder(ORG, invoiceFirst.id))?.status).toBe('PARTIALLY_INVOICED');
+
+      const fullyInvoicedFirst = await SalesEngine.createSalesOrder(ORG, { customerId: CUST, orderDate: '2026-04-07', totalAmount: 700, status: 'CONFIRMED', lineItems: [{ description: 'Fully invoiced before shipment', quantity: 1, unitPrice: 700, taxRate: 0 }] }, undefined, ACTOR);
+      await SalesEngine.createAndPostInvoice(ORG, { salesOrderId: fullyInvoicedFirst.id, customerId: CUST, issueDate: '2026-04-07', dueDate: '2026-05-07', status: 'POSTED', lineItems: [{ description: 'Full invoice', quantity: 1, unitPrice: 700, taxRate: 0 }] }, ACTOR);
+      await SalesEngine.fulfillSalesOrder(ORG, fullyInvoicedFirst.id, ACTOR, { fulfilledAmount: 700 });
+      expect((await SalesEngine.getSalesOrder(ORG, fullyInvoicedFirst.id))?.status).toBe('INVOICED');
+    });
   describe('Purchasing Journey (Purchase Order -> Goods Receipt -> Bill -> Payment)', () => {
     it('executes full purchasing journey with partial receipt, partial billing, and settlements', async () => {
       // 1. Create Purchase Order

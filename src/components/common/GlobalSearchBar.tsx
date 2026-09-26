@@ -2,18 +2,68 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Search, FileText, User, ShoppingBag, CreditCard, ArrowRight, X, Layers, BookOpen, AlertCircle } from 'lucide-react';
 import { ApiClient } from '../../api/client';
 import { useBooks } from '../../context/BooksContext';
-import { SearchCategory, SearchResultItem as BaseSearchResultItem } from '../../types';
+import { NavigationTab, SearchCategory, SearchResultItem as BaseSearchResultItem } from '../../types';
 
-export interface SearchResultItem extends BaseSearchResultItem {
-  tabTarget: string;
+export interface SearchResultItem {
+  id: string;
+  category: SearchCategory | string;
+  title: string;
+  subtitle: string;
+  organizationId: string;
+  status?: string;
+  amount?: number;
+  date?: string;
+  tabTarget?: NavigationTab;
+}
+
+export interface SearchResultNavigation {
+  tab: NavigationTab;
+  entityId: string;
+  organizationId: string;
 }
 
 interface GlobalSearchBarProps {
   onNavigate?: (tab: string, options?: { entityId?: string; autoCreate?: boolean }) => void;
+  onSearchResult?: (result: SearchResultNavigation) => void;
   isMobileTrigger?: boolean;
 }
 
-export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, isMobileTrigger }) => {
+const SEARCH_RESULT_TABS: Readonly<Record<string, NavigationTab>> = {
+  Invoice: 'invoices',
+  Quotation: 'estimates',
+  'Sales Order': 'sales_orders',
+  Customer: 'clients',
+  Vendor: 'vendors',
+  'Vendor Bill': 'bills',
+  'Purchase Order': 'purchase_orders',
+  Expense: 'expenses',
+  'Payment Received': 'payments_received',
+  'Payment Made': 'payments_made',
+  Account: 'coa',
+  'Vendor Credit': 'vendor_credits',
+};
+const MAX_SEARCH_RESULT_ID_LENGTH = 200;
+
+function isSearchResultItem(value: unknown): value is BaseSearchResultItem {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const result = value as Partial<BaseSearchResultItem>;
+  return typeof result.id === 'string'
+    && result.id.length > 0
+    && result.id.length <= MAX_SEARCH_RESULT_ID_LENGTH
+    && typeof result.category === 'string'
+    && result.category.length > 0
+    && result.category.length <= 100
+    && typeof result.title === 'string'
+    && result.title.trim().length > 0
+    && result.title.length <= 300
+    && typeof result.subtitle === 'string'
+    && result.subtitle.length <= 500
+    && (result.status === undefined || typeof result.status === 'string')
+    && (result.amount === undefined || (typeof result.amount === 'number' && Number.isFinite(result.amount)))
+    && (result.date === undefined || typeof result.date === 'string');
+}
+
+export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, onSearchResult, isMobileTrigger }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResultItem[]>([]);
@@ -22,10 +72,27 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, is
   const [selectedIndex, setSelectedIndex] = useState(0);
 
   const { currentOrg } = useBooks();
+  const [recentResults, setRecentResults] = useState<SearchResultItem[]>([]);
+  const [recentOrgId, setRecentOrgId] = useState<string | null>(currentOrg?.id || null);
 
   const apiClient = useMemo(() => new ApiClient(), []);
   const inputRef = useRef<HTMLInputElement>(null);
   const requestSeqRef = useRef(0);
+
+  const showRecentResults = query.trim().length === 0;
+  const recentResultsForOrg = recentOrgId === (currentOrg?.id || null) ? recentResults : [];
+  const activeResults = showRecentResults ? recentResultsForOrg : results.filter((result) => result.organizationId === (currentOrg?.id || null));
+
+  useEffect(() => {
+    requestSeqRef.current += 1;
+    setRecentResults([]);
+    setRecentOrgId(currentOrg?.id || null);
+    setResults([]);
+    setError(null);
+    setLoading(false);
+    setQuery('');
+    setSelectedIndex(0);
+  }, [currentOrg?.id]);
 
   // Keyboard shortcut: Cmd/Ctrl + K and Escape
   useEffect(() => {
@@ -46,6 +113,7 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, is
   useEffect(() => {
     const trimmed = query.trim().slice(0, 100);
     if (!trimmed || trimmed.length < 2) {
+      requestSeqRef.current += 1;
       setResults([]);
       setSelectedIndex(0);
       setLoading(false);
@@ -53,45 +121,38 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, is
       return;
     }
 
+    const requestOrganizationId = currentOrg?.id || null;
+    if (!requestOrganizationId) {
+      requestSeqRef.current += 1;
+      setResults([]);
+      setLoading(false);
+      setError('Search is temporarily unavailable.');
+      return;
+    }
     const currentSeq = ++requestSeqRef.current;
     setError(null);
     setLoading(true);
 
     const timer = setTimeout(async () => {
       try {
-        const res = await apiClient.get<{ results: BaseSearchResultItem[] }>(`/search?q=${encodeURIComponent(trimmed)}`);
+        const res = await apiClient.get<{ results: BaseSearchResultItem[] }>(`/search?q=${encodeURIComponent(trimmed)}`, requestOrganizationId);
         // If a newer request occurred, discard
-        if (currentSeq !== requestSeqRef.current) return;
+        if (currentSeq !== requestSeqRef.current || requestOrganizationId !== (currentOrg?.id || null)) return;
 
-        if (res.data?.results && Array.isArray(res.data.results)) {
-          const mapped: SearchResultItem[] = res.data.results.map((r: BaseSearchResultItem) => {
-            let tabTarget = 'dashboard';
-            if (r.category === 'Invoice') tabTarget = 'invoices';
-            else if (r.category === 'Quotation') tabTarget = 'estimates';
-            else if (r.category === 'Sales Order') tabTarget = 'sales_orders';
-            else if (r.category === 'Customer') tabTarget = 'clients';
-            else if (r.category === 'Vendor') tabTarget = 'vendors';
-            else if (r.category === 'Vendor Bill') tabTarget = 'bills';
-            else if (r.category === 'Purchase Order') tabTarget = 'purchase_orders';
-            else if (r.category === 'Payment Received') tabTarget = 'payments_received';
-            else if (r.category === 'Payment Made') tabTarget = 'payments_made';
-            else if (r.category === 'Bank Transaction') tabTarget = 'banking';
-            else if (r.category === 'Account') tabTarget = 'coa';
-            else if (r.category === 'Credit Note') tabTarget = 'credit_notes';
-            else if (r.category === 'Vendor Credit') tabTarget = 'vendor_credits';
-
-            return {
+        if (Array.isArray(res.data?.results) && res.data.results.every(isSearchResultItem)) {
+          const mapped: SearchResultItem[] = res.data.results
+            .filter((r: BaseSearchResultItem) => typeof r.id === 'string' && r.id.length > 0 && r.id.length <= MAX_SEARCH_RESULT_ID_LENGTH)
+            .map((r: BaseSearchResultItem) => ({
               id: r.id,
               category: r.category,
               title: r.title,
               subtitle: r.subtitle,
+              organizationId: requestOrganizationId,
               status: r.status,
               amount: r.amount,
               date: r.date,
-              linkRoute: r.linkRoute,
-              tabTarget,
-            };
-          });
+              tabTarget: Object.prototype.hasOwnProperty.call(SEARCH_RESULT_TABS, r.category) ? SEARCH_RESULT_TABS[r.category] : undefined,
+            }));
           setResults(mapped);
           setError(null);
           setLoading(false);
@@ -102,12 +163,12 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, is
           setLoading(false);
         } else {
           setResults([]);
-          setError(null);
+          setError('Search is temporarily unavailable.');
           setLoading(false);
         }
       } catch (err) {
         // If a newer request occurred, discard
-        if (currentSeq !== requestSeqRef.current) return;
+        if (currentSeq !== requestSeqRef.current || requestOrganizationId !== (currentOrg?.id || null)) return;
         setResults([]);
         setError('Search is temporarily unavailable.');
         setLoading(false);
@@ -115,41 +176,47 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, is
     }, 300);
 
     return () => clearTimeout(timer);
-  }, [query, apiClient]);
+  }, [query, apiClient, currentOrg?.id]);
 
   // Group results by category
   const groupedResults = useMemo(() => {
-    const groups: { [key: string]: SearchResultItem[] } = {};
-    results.forEach((item) => {
+    const groups = Object.create(null) as Record<string, SearchResultItem[]>;
+    activeResults.forEach((item) => {
       if (!groups[item.category]) {
         groups[item.category] = [];
       }
       groups[item.category].push(item);
     });
     return groups;
-  }, [results]);
+  }, [activeResults]);
 
   const handleSelect = (item: SearchResultItem) => {
+    const organizationId = currentOrg?.id || null;
+    if (!item.tabTarget || !item.id || item.id.length > MAX_SEARCH_RESULT_ID_LENGTH || (onSearchResult && !organizationId)) return;
+    setRecentOrgId(organizationId);
+    setRecentResults((previous) => [{ ...item, subtitle: 'Open this recent record', status: undefined, amount: undefined, date: undefined }, ...previous.filter((recent) => recent.id !== item.id || recent.category !== item.category)].slice(0, 5));
     setIsOpen(false);
     setQuery('');
-    if (onNavigate) {
+    if (onSearchResult) {
+      onSearchResult({ tab: item.tabTarget, entityId: item.id, organizationId: organizationId! });
+    } else if (onNavigate) {
       onNavigate(item.tabTarget, { entityId: item.id });
     }
   };
 
   const handleKeyDownInList = (e: React.KeyboardEvent) => {
-    if (results.length === 0) return;
+    if (activeResults.length === 0) return;
 
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      setSelectedIndex((prev) => (prev + 1) % results.length);
+      setSelectedIndex((prev) => (prev + 1) % activeResults.length);
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      setSelectedIndex((prev) => (prev - 1 + results.length) % results.length);
+      setSelectedIndex((prev) => (prev - 1 + activeResults.length) % activeResults.length);
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      if (results[selectedIndex]) {
-        handleSelect(results[selectedIndex]);
+      if (activeResults[selectedIndex]) {
+        handleSelect(activeResults[selectedIndex]);
       }
     }
   };
@@ -207,7 +274,7 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, is
 
       {/* Global Search Modal Overlay */}
       {isOpen && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center pt-16 sm:pt-24 bg-slate-900/60 backdrop-blur-xs p-4 animate-fade-in">
+        <div role="dialog" aria-modal="true" aria-label="Global search" className="fixed inset-0 z-50 flex items-start justify-center pt-16 sm:pt-24 bg-slate-900/60 backdrop-blur-xs p-4 animate-fade-in">
           <div className="w-full max-w-2xl bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col max-h-[80vh]">
             {/* Search Top Input */}
             <div className="flex items-center px-4 py-3.5 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/50">
@@ -216,6 +283,11 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, is
                 ref={inputRef}
                 type="text"
                 autoFocus
+                role="combobox"
+                aria-autocomplete="list"
+                aria-expanded={!loading && activeResults.length > 0}
+                aria-controls={!loading && activeResults.length > 0 ? 'global-search-results' : undefined}
+                aria-activedescendant={activeResults[selectedIndex] ? `global-search-option-${encodeURIComponent(activeResults[selectedIndex].category)}-${encodeURIComponent(activeResults[selectedIndex].id)}` : undefined}
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={handleKeyDownInList}
@@ -271,23 +343,28 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, is
                 </div>
               )}
 
-              {!loading && !error && results.length > 0 && (
-                <div className="space-y-4">
+              {!loading && !error && activeResults.length > 0 && (
+                <div id="global-search-results" role="listbox" aria-label={showRecentResults ? "Recent records" : "Search results"} className="space-y-4">
                   {(Object.entries(groupedResults) as [string, SearchResultItem[]][]).map(([category, items]) => (
-                    <div key={category} className="space-y-1">
+                    <div key={category} role="group" aria-label={`${category}, ${items.length} results`} className="space-y-1">
                       <div className="px-2 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
                         {category} ({items.length})
                       </div>
                       {items.map((item) => {
-                        const globalIdx = results.findIndex((r) => r.id === item.id && r.category === item.category);
+                        const globalIdx = activeResults.findIndex((r) => r.id === item.id && r.category === item.category);
                         const isSelected = globalIdx === selectedIndex;
 
                         return (
                           <div
+                            id={`global-search-option-${encodeURIComponent(item.category)}-${encodeURIComponent(item.id)}`}
                             key={`${item.category}-${item.id}`}
+                            role="option"
+                            aria-selected={isSelected}
+                            aria-disabled={!item.tabTarget}
+                            aria-label={[item.title, item.category, item.status, item.subtitle, !item.tabTarget ? 'No direct view' : undefined].filter(Boolean).join(', ')}
                             onClick={() => handleSelect(item)}
                             onMouseEnter={() => setSelectedIndex(globalIdx)}
-                            className={`flex items-center justify-between p-2.5 rounded-xl cursor-pointer transition-all ${
+                            className={`flex items-center justify-between p-2.5 rounded-xl transition-all ${item.tabTarget ? 'cursor-pointer' : 'cursor-not-allowed opacity-70'} ${
                               isSelected
                                 ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-900 dark:text-blue-100 border border-blue-200 dark:border-blue-800'
                                 : 'hover:bg-slate-50 dark:hover:bg-slate-800/50 text-slate-800 dark:text-slate-200 border border-transparent'
@@ -320,7 +397,7 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({ onNavigate, is
                                   {item.date}
                                 </span>
                               )}
-                              <ArrowRight className={`w-3.5 h-3.5 ${isSelected ? 'text-blue-600 dark:text-blue-400' : 'text-slate-300 dark:text-slate-600'}`} />
+                              {item.tabTarget ? <ArrowRight className={`w-3.5 h-3.5 ${isSelected ? 'text-blue-600 dark:text-blue-400' : 'text-slate-300 dark:text-slate-600'}`} /> : <span className="text-[10px] text-slate-400">No direct view</span>}
                             </div>
                           </div>
                         );

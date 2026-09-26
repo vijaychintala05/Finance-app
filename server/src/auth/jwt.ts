@@ -9,6 +9,8 @@ const JWT_AUDIENCE = 'firmbooks-web';
 export interface TokenPayload {
   userId: string;
   email: string;
+  sid?: string;
+  credentialProof?: string;
   purpose?: string;
   jti?: string;
   iat?: number;
@@ -21,6 +23,8 @@ export class JwtAuth {
       userId: payload.userId,
       email: payload.email,
     };
+    if (payload.sid) claims.sid = payload.sid;
+    if (payload.credentialProof) claims.credentialProof = payload.credentialProof;
     if (payload.purpose) {
       claims.purpose = payload.purpose;
     }

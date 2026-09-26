@@ -1,8 +1,61 @@
-import { Router } from 'express';
+import { Router, type Response, type NextFunction } from 'express';
 import { FinanceController } from '../controllers/financeController';
-import { requirePermission } from '../middleware/organizationIsolation.middleware';
+import { AuthenticatedRequest, requirePermission } from '../middleware/organizationIsolation.middleware';
 import { protectAsyncRoutes } from './asyncRouter';
 import { requireTrustedFinanceFeature } from '../middleware/trustedFeature.middleware';
+import { getTimeEntryCreateOperationStatus } from '../services/TimeEntryCreateOperationStatusService';
+import { getInvoiceCreateOperationStatus } from '../services/InvoiceCreateOperationStatusService';
+const PDF_CATEGORY_VIEW_PERMISSION: Record<string, string> = {
+  quotes: 'estimates.view',
+  'sales-orders': 'sales_orders.view',
+  'delivery-challans': 'delivery_challans.view',
+  invoices: 'invoices.view',
+  'credit-notes': 'credit_notes.view',
+  'payment-receipts': 'customer_payments.view',
+  'customer-statements': 'reports.receivables',
+  bills: 'bills.view',
+  expenses: 'expenses.view',
+  'vendor-credits': 'vendor_credits.view',
+  'vendor-payments': 'vendor_payments.view',
+  'vendor-statements': 'reports.payables',
+  'purchase-orders': 'purchase_orders.view',
+  journals: 'journals.view',
+};
+
+const PDF_CATEGORY_ISSUE_PERMISSION: Record<string, string> = {
+  quotes: 'estimates.send',
+  'sales-orders': 'sales_orders.create',
+  'delivery-challans': 'delivery_challans.create',
+  invoices: 'invoices.send',
+  'credit-notes': 'credit_notes.create',
+  'payment-receipts': 'customer_payments.create',
+  bills: 'bills.create',
+  expenses: 'expenses.create',
+  'vendor-credits': 'vendor_credits.create',
+  'vendor-payments': 'vendor_payments.create',
+  'purchase-orders': 'purchase_orders.create',
+  journals: 'journals.post',
+};
+
+const requirePdfIssuePermission = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
+  const permission = PDF_CATEGORY_ISSUE_PERMISSION[String(req.params.category || '')];
+  if (!permission) {
+    res.status(403).json({ error: 'This document category cannot be issued with the available permissions' });
+    return;
+  }
+  await requirePermission(permission)(req, res, next);
+};
+
+const requirePdfCategoryPermission = (allowSettings = false) => async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
+  const permission = PDF_CATEGORY_VIEW_PERMISSION[String(req.params.category || '')];
+  if (!permission) {
+    res.status(400).json({ error: `Unsupported document PDF category: ${String(req.params.category || '')}` });
+    return;
+  }
+  const codes = allowSettings ? [permission, 'settings.manage'] : permission;
+  await requirePermission(codes)(req, res, next);
+};
+
 
 const router = Router();
 
@@ -12,6 +65,7 @@ router.get('/gst/return-summary', requirePermission(['reports.gst', 'reports.vie
 
 // Accounts & Transactions
 router.get('/accounts', requirePermission(['accounts.view', 'accounting.view']), FinanceController.getAccounts);
+router.get('/accounts/:id/usage-impact', requirePermission(['accounts.view', 'accounting.view']), FinanceController.getAccountUsageImpact);
 router.get('/accounting-defaults', requirePermission(['accounts.view', 'accounting.view']), FinanceController.getAccountingDefaults);
 router.patch('/accounting-defaults/:systemRole', requirePermission(['accounts.edit', 'settings.manage_accounts']), FinanceController.updateAccountingDefault);
 router.post('/accounts', requirePermission(['accounts.create', 'settings.manage_accounts']), FinanceController.createAccount);
@@ -24,7 +78,14 @@ router.get('/clients', requirePermission(['customers.view', 'invoices.view']), F
 router.post('/clients', requirePermission(['customers.create', 'invoices.create']), FinanceController.createClient);
 router.get('/customers', requirePermission(['customers.view', 'invoices.view']), FinanceController.getCustomers);
 router.post('/customers', requirePermission(['customers.create', 'invoices.create']), FinanceController.createCustomer);
+router.patch('/customers/:id', requirePermission('customers.edit'), FinanceController.updateCustomer);
+router.post('/customers/:id/archive', requirePermission('customers.archive'), FinanceController.archiveCustomer);
 router.get('/customers/:id/summary', requirePermission(['customers.view', 'invoices.view']), FinanceController.getCustomerSummary);
+router.get('/salespersons', requirePermission('salespersons.view'), FinanceController.getSalespersons);
+router.post('/salespersons', requirePermission('salespersons.create'), FinanceController.createSalesperson);
+router.patch('/salespersons/:id', requirePermission('salespersons.edit'), FinanceController.updateSalesperson);
+router.post('/salespersons/:id/archive', requirePermission('salespersons.archive'), FinanceController.archiveSalesperson);
+router.post('/salespersons/:id/restore', requirePermission('salespersons.archive'), FinanceController.restoreSalesperson);
 router.get('/vendors', requirePermission(['vendors.view', 'purchases.view']), FinanceController.getVendors);
 router.get('/vendors/:id', requirePermission(['vendors.view', 'purchases.view']), FinanceController.getVendor);
 router.get('/vendors/:id/activity', requirePermission(['vendors.view', 'purchases.view']), FinanceController.getVendorActivity);
@@ -44,7 +105,23 @@ router.post('/vendors/:id/restore', requirePermission('vendors.archive'), Financ
 // Projects
 router.get('/projects', requirePermission(['projects.view', 'invoices.view']), FinanceController.getProjects);
 router.post('/projects', requirePermission(['projects.create', 'invoices.create']), FinanceController.createProject);
+router.patch('/projects/:id', requirePermission('projects.edit'), FinanceController.updateProject);
+router.post('/projects/:id/archive', requirePermission('projects.archive'), FinanceController.archiveProject);
 router.get('/project-summaries', requirePermission(['projects.view', 'invoices.view']), FinanceController.getProjectSummaries);
+router.get('/time-entries/create-operation-status', requirePermission(['projects.time_entries', 'invoices.create']), async (req: AuthenticatedRequest, res) => {
+  try {
+    const status = await getTimeEntryCreateOperationStatus({
+      organizationId: req.auth!.organizationId,
+      userId: req.auth!.userId,
+      role: req.auth!.role,
+      idempotencyKey: req.header('idempotency-key') || '',
+    });
+    res.json(status);
+  } catch (error) {
+    console.error('TIME_ENTRY_OPERATION_STATUS_ERROR:', error);
+    res.status(503).json({ error: 'Operation status is temporarily unavailable' });
+  }
+});
 router.get('/time-entries', requirePermission(['projects.time_entries', 'projects.view', 'invoices.view']), FinanceController.getTimeEntries);
 router.post('/time-entries', requirePermission(['projects.time_entries', 'invoices.create']), FinanceController.createTimeEntry);
 router.put('/time-entries/:id', requirePermission(['projects.edit', 'invoices.edit']), FinanceController.updateTimeEntry);
@@ -60,7 +137,7 @@ router.post('/estimates/:id/revise', requirePermission(['estimates.edit', 'invoi
 router.get('/sales-orders', requirePermission(['sales_orders.view', 'invoices.view']), FinanceController.getSalesOrders);
 router.get('/sales-orders/:id', requirePermission(['sales_orders.view', 'invoices.view']), FinanceController.getSalesOrder);
 router.post('/sales-orders', requirePermission(['sales_orders.create', 'invoices.create']), FinanceController.createSalesOrder);
-router.put('/sales-orders/:id', requirePermission(['sales_orders.edit', 'invoices.edit', 'sales_orders.create']), FinanceController.updateSalesOrder);
+router.put('/sales-orders/:id', requirePermission(['sales_orders.edit', 'invoices.edit']), FinanceController.updateSalesOrder);
 router.post('/sales-orders/:id/convert-inv', requirePermission(['invoices.create', 'sales_orders.create']), FinanceController.convertSalesOrderToInvoice);
 router.post('/sales-orders/:id/fulfill', requirePermission(['delivery_challans.create', 'sales_orders.create', 'invoices.create']), FinanceController.fulfillSalesOrder);
 router.post('/sales-orders/:id/cancel', requirePermission(['sales_orders.delete', 'sales_orders.edit', 'invoices.edit']), FinanceController.cancelSalesOrder);
@@ -70,21 +147,42 @@ router.get('/delivery-challans', requirePermission(['delivery_challans.view', 'i
 router.post('/delivery-challans', requirePermission(['delivery_challans.create', 'invoices.create']), requireTrustedFinanceFeature('delivery-challans'), FinanceController.createDeliveryChallan);
 
 // Invoices
+router.get('/invoices/create-operation-status', requirePermission('invoices.create'), async (req: AuthenticatedRequest, res) => {
+  try {
+    const status = await getInvoiceCreateOperationStatus({
+      organizationId: req.auth!.organizationId,
+      userId: req.auth!.userId,
+      role: req.auth!.role,
+      idempotencyKey: req.header('idempotency-key') || '',
+      requestHash: req.header('x-operation-request-hash') || '',
+    });
+    res.json(status);
+  } catch (error) {
+    console.error('INVOICE_CREATE_OPERATION_STATUS_ERROR:', error);
+    res.status(503).json({ error: 'Invoice operation status is temporarily unavailable' });
+  }
+});
 router.get('/invoices', requirePermission(['invoices.view']), FinanceController.getInvoices);
 router.get('/invoices/:id', requirePermission(['invoices.view']), FinanceController.getInvoice);
 router.get('/invoices/:id/pdf', requirePermission(['invoices.view']), FinanceController.getInvoicePdf);
 
 // PDF gallery / live-document endpoint. The service verifies the category and
 // template ID and performs tenant-scoped database reads for every render.
-router.get('/documents/:category/recent', requirePermission(['invoices.view', 'purchases.view', 'expenses.view', 'journals.view', 'reports.view']), FinanceController.getRecentPdfDocuments);
-router.get('/documents/:category/templates', requirePermission(['invoices.view', 'purchases.view', 'expenses.view', 'journals.view', 'reports.view']), FinanceController.getDocumentTemplates);
+router.get('/documents/:category/recent', requirePdfCategoryPermission(), FinanceController.getRecentPdfDocuments);
+router.get('/documents/:category/templates', requirePdfCategoryPermission(true), FinanceController.getDocumentTemplates);
+router.patch('/documents/:category/templates/:templateId/configuration', requirePermission('settings.manage'), FinanceController.updateDocumentTemplateConfiguration);
 router.patch('/documents/:category/templates/:templateId/default', requirePermission('settings.manage'), FinanceController.setDocumentTemplateDefault);
-router.get('/documents/:category/:id/pdf', requirePermission(['invoices.view', 'purchases.view', 'expenses.view', 'journals.view', 'reports.view']), FinanceController.getDocumentPdf);
+router.post('/documents/:category/templates/restore-default', requirePermission('settings.manage'), FinanceController.restoreDocumentTemplateDefault);
+router.get('/documents/:category/preview/pdf', requirePdfCategoryPermission(true), FinanceController.getSamplePreviewPdf);
+router.get('/documents/:category/:id/pdf', requirePdfCategoryPermission(), FinanceController.getDocumentPdf);
+router.post('/documents/:category/:id/pdf/issue', requirePdfIssuePermission, FinanceController.issueDocumentPdf);
+router.get('/documents/:category/artifacts/:artifactId/pdf', requirePdfCategoryPermission(), FinanceController.getIssuedDocumentPdf);
 router.post('/invoices', requirePermission(['invoices.create']), FinanceController.createInvoice);
 router.put('/invoices/:id', requirePermission(['invoices.edit', 'invoices.create']), FinanceController.updateInvoice);
 router.post('/invoices/:id/post-approved', requirePermission(['invoices.create', 'accounting.post']), FinanceController.postApprovedInvoice);
-router.post('/invoices/:id/send-email', requirePermission(['invoices.view', 'invoices.create']), FinanceController.sendInvoiceEmail);
-router.post('/invoices/:id/reminder', requirePermission(['invoices.view', 'invoices.create']), FinanceController.sendInvoiceReminder);
+router.post('/invoices/:id/send-email', requirePermission('invoices.send'), FinanceController.sendInvoiceEmail);
+router.get('/invoices/:id/email-deliveries', requirePermission(['invoices.view']), FinanceController.getInvoiceEmailDeliveries);
+router.post('/invoices/:id/reminder', requirePermission('invoices.send'), FinanceController.sendInvoiceReminder);
 router.get('/invoices/:id/journal', requirePermission(['invoices.view']), FinanceController.getInvoiceJournal);
 
 // Payments Received & Advances

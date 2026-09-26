@@ -13,7 +13,7 @@ test.describe('Self-Hosted FirmBooks Identity & Security Lifecycle', () => {
     await expect(page.getByText('Tailscale Private HTTPS')).toBeVisible();
 
     // Verify Active Devices card is visible
-    await expect(page.getByText('Active Devices & Opaque Sessions')).toBeVisible();
+    await expect(page.getByRole('heading', { name: /Active Devices & Login Sessions/ })).toBeVisible();
 
     // Verify Invite Team Member card is visible
     await expect(page.getByText('Invite Team Member')).toBeVisible();

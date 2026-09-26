@@ -1,85 +1,124 @@
 import { db, DbQueryClient } from './db';
+// Document-template registry bootstrap is also used during tenant provisioning.
 import { newId } from '../utils/ids';
 
-export const ALL_42_TEMPLATE_MODELS = [
-  // 1. Quotes (3 models)
-  { category: 'quotes', modelId: 'proposal', name: 'Formal Proposal', layoutFamily: 'standard', presetTitle: 'COMMERCIAL PROPOSAL' },
-  { category: 'quotes', modelId: 'commercial', name: 'Commercial Estimate', layoutFamily: 'ledger', presetTitle: 'COMMERCIAL ESTIMATE' },
-  { category: 'quotes', modelId: 'compact', name: 'Compact Quote', layoutFamily: 'compact', presetTitle: 'PRICE QUOTATION' },
+export const ALL_44_TEMPLATE_MODELS = [
+  // 1. Quotes (4 models)
+  { category: 'quotes', modelId: 'proposal', name: 'Standard Quote', layoutFamily: 'standard', presetTitle: 'FORMAL ESTIMATE' },
+  { category: 'quotes', modelId: 'commercial', name: 'Ledger Quote', layoutFamily: 'ledger', presetTitle: 'COMMERCIAL QUOTATION' },
+  { category: 'quotes', modelId: 'milestone-proposal', name: 'Proposal / Bid', layoutFamily: 'standard', presetTitle: 'PROPOSAL / BID' },
+  { category: 'quotes', modelId: 'compact', name: 'Compact Quote', layoutFamily: 'compact', presetTitle: 'QUOTATION' },
 
   // 2. Sales Orders (3 models)
-  { category: 'sales-orders', modelId: 'confirmation', name: 'Order Confirmation', layoutFamily: 'standard', presetTitle: 'SALES ORDER CONFIRMATION' },
-  { category: 'sales-orders', modelId: 'commercial', name: 'Commercial Order Ledger', layoutFamily: 'ledger', presetTitle: 'COMMERCIAL ORDER VOUCHER' },
-  { category: 'sales-orders', modelId: 'fulfillment', name: 'Fulfillment Schedule', layoutFamily: 'compact', presetTitle: 'DISPATCH BOOKING SLIP' },
+  { category: 'sales-orders', modelId: 'confirmation', name: 'Standard Sales Order', layoutFamily: 'standard', presetTitle: 'SALES ORDER' },
+  { category: 'sales-orders', modelId: 'commercial', name: 'Ledger Sales Order', layoutFamily: 'ledger', presetTitle: 'ORDER CONFIRMATION' },
+  { category: 'sales-orders', modelId: 'fulfillment', name: 'Compact Sales Order', layoutFamily: 'compact', presetTitle: 'SALES ORDER' },
 
   // 3. Delivery Challans (3 models)
-  { category: 'delivery-challans', modelId: 'dispatch', name: 'Dispatch Challan', layoutFamily: 'standard', presetTitle: 'DELIVERY CHALLAN' },
-  { category: 'delivery-challans', modelId: 'packing-list', name: 'Packing List Manifest', layoutFamily: 'ledger', presetTitle: 'PACKING LIST & TRANSIT MANIFEST' },
-  { category: 'delivery-challans', modelId: 'jobwork', name: 'Job Work Returnable Challan', layoutFamily: 'compact', presetTitle: 'JOB WORK RETURNABLE CHALLAN' },
+  { category: 'delivery-challans', modelId: 'dispatch', name: 'Standard Delivery Challan', layoutFamily: 'standard', presetTitle: 'DELIVERY CHALLAN' },
+  { category: 'delivery-challans', modelId: 'packing-list', name: 'Dispatch Note', layoutFamily: 'standard', presetTitle: 'DISPATCH NOTE' },
+  { category: 'delivery-challans', modelId: 'jobwork', name: 'Compact Challan Layout', layoutFamily: 'compact', presetTitle: 'DELIVERY CHALLAN' },
 
-  // 4. Invoices (3 models)
-  { category: 'invoices', modelId: 'tax-invoice', name: 'GST Tax Invoice', layoutFamily: 'standard', presetTitle: 'TAX INVOICE' },
-  { category: 'invoices', modelId: 'pos', name: 'Service / POS Invoice', layoutFamily: 'compact', presetTitle: 'RETAIL / POS SLIP' },
-  { category: 'invoices', modelId: 'export', name: 'Export Commercial Invoice', layoutFamily: 'ledger', presetTitle: 'COMMERCIAL EXPORT INVOICE' },
+  // 4. Invoices (4 models)
+  { category: 'invoices', modelId: 'tax-invoice', name: 'Standard Tax Invoice', layoutFamily: 'standard', presetTitle: 'TAX INVOICE' },
+  { category: 'invoices', modelId: 'ledger-invoice', name: 'Ledger Invoice', layoutFamily: 'ledger', presetTitle: 'TAX INVOICE' },
+  { category: 'invoices', modelId: 'export', name: 'Alternate Ledger Invoice', layoutFamily: 'ledger', presetTitle: 'INVOICE' },
+  { category: 'invoices', modelId: 'pos', name: 'Compact Invoice', layoutFamily: 'compact', presetTitle: 'RETAIL INVOICE' },
 
   // 5. Credit Notes (3 models)
-  { category: 'credit-notes', modelId: 'statutory', name: 'Statutory Credit Note', layoutFamily: 'standard', presetTitle: 'CREDIT NOTE' },
-  { category: 'credit-notes', modelId: 'goods-return', name: 'Goods Return Memo', layoutFamily: 'ledger', presetTitle: 'SALES RETURN MEMO' },
-  { category: 'credit-notes', modelId: 'adjustment', name: 'Rate Adjustment Memo', layoutFamily: 'compact', presetTitle: 'CREDIT ADJUSTMENT MEMORANDUM' },
+  { category: 'credit-notes', modelId: 'statutory', name: 'Standard Credit Note', layoutFamily: 'standard', presetTitle: 'CREDIT NOTE' },
+  { category: 'credit-notes', modelId: 'goods-return', name: 'Credit Application Ledger', layoutFamily: 'ledger', presetTitle: 'CREDIT NOTE' },
+  { category: 'credit-notes', modelId: 'adjustment', name: 'Compact Credit Note', layoutFamily: 'compact', presetTitle: 'CREDIT ADJUSTMENT MEMO' },
 
   // 6. Purchase Orders (3 models)
   { category: 'purchase-orders', modelId: 'standard-po', name: 'Standard Purchase Order', layoutFamily: 'standard', presetTitle: 'PURCHASE ORDER' },
-  { category: 'purchase-orders', modelId: 'requisition', name: 'Material Requisition Slip', layoutFamily: 'compact', presetTitle: 'MATERIAL REQUISITION SLIP' },
-  { category: 'purchase-orders', modelId: 'contract-po', name: 'Contract Purchase Order', layoutFamily: 'ledger', presetTitle: 'PROCUREMENT CONTRACT ORDER' },
+  { category: 'purchase-orders', modelId: 'contract-po', name: 'Ledger Purchase Order', layoutFamily: 'ledger', presetTitle: 'PURCHASE ORDER' },
+  { category: 'purchase-orders', modelId: 'requisition', name: 'Compact Purchase Order', layoutFamily: 'compact', presetTitle: 'PURCHASE ORDER' },
 
   // 7. Payment Receipts (3 models)
-  { category: 'payment-receipts', modelId: 'receipt-voucher', name: 'Official Receipt Voucher', layoutFamily: 'standard', presetTitle: 'PAYMENT RECEIPT VOUCHER' },
-  { category: 'payment-receipts', modelId: 'allocation-advice', name: 'Invoice Allocation Advice', layoutFamily: 'ledger', presetTitle: 'REMITTANCE ALLOCATION ADVICE' },
-  { category: 'payment-receipts', modelId: 'cash-receipt', name: 'Cash Receipt Slip', layoutFamily: 'compact', presetTitle: 'CASH RECEIPT SLIP' },
+  { category: 'payment-receipts', modelId: 'receipt-voucher', name: 'Standard Receipt Voucher', layoutFamily: 'standard', presetTitle: 'PAYMENT RECEIPT' },
+  { category: 'payment-receipts', modelId: 'cash-receipt', name: 'Compact Receipt Layout', layoutFamily: 'compact', presetTitle: 'PAYMENT RECEIPT' },
+  { category: 'payment-receipts', modelId: 'allocation-advice', name: 'Ledger Receipt Layout', layoutFamily: 'ledger', presetTitle: 'PAYMENT RECEIPT' },
 
   // 8. Customer Statements (3 models)
-  { category: 'customer-statements', modelId: 'running-ledger', name: 'Running Transaction Ledger', layoutFamily: 'ledger', presetTitle: 'STATEMENT OF ACCOUNT' },
-  { category: 'customer-statements', modelId: 'aging-statement', name: 'Receivables Aging Statement', layoutFamily: 'standard', presetTitle: 'RECEIVABLES AGING ANALYSIS' },
-  { category: 'customer-statements', modelId: 'open-summary', name: 'Open Invoices Summary', layoutFamily: 'compact', presetTitle: 'OUTSTANDING INVOICE SUMMARY' },
-
+  { category: 'customer-statements', modelId: 'running-ledger', name: 'Detailed Transaction Ledger', layoutFamily: 'ledger', presetTitle: 'STATEMENT OF ACCOUNT' },
+  { category: 'customer-statements', modelId: 'aging-statement', name: 'Receivables Activity Summary', layoutFamily: 'standard', presetTitle: 'RECEIVABLES ACTIVITY SUMMARY' },
+  { category: 'customer-statements', modelId: 'open-summary', name: 'Account Summary', layoutFamily: 'compact', presetTitle: 'CUSTOMER ACCOUNT SUMMARY' },
   // 9. Bills (3 models)
-  { category: 'bills', modelId: 'bill-itc', name: 'Vendor Bill with ITC', layoutFamily: 'standard', presetTitle: 'VENDOR BILL VOUCHER' },
-  { category: 'bills', modelId: 'accrual-voucher', name: 'AP Accrual Voucher', layoutFamily: 'ledger', presetTitle: 'ACCOUNTS PAYABLE ACCRUAL VOUCHER' },
-  { category: 'bills', modelId: 'matching', name: 'Three-Way Match Voucher', layoutFamily: 'compact', presetTitle: 'PURCHASE MATCHING VOUCHER' },
+  { category: 'bills', modelId: 'bill-itc', name: 'Standard Vendor Bill', layoutFamily: 'standard', presetTitle: 'VENDOR BILL VOUCHER' },
+  { category: 'bills', modelId: 'accrual-voucher', name: 'Ledger Vendor Bill', layoutFamily: 'ledger', presetTitle: 'VENDOR BILL' },
+  { category: 'bills', modelId: 'matching', name: 'Compact Vendor Bill', layoutFamily: 'compact', presetTitle: 'VENDOR BILL' },
 
   // 10. Expenses (3 models)
-  { category: 'expenses', modelId: 'reimbursement', name: 'Expense Reimbursement Voucher', layoutFamily: 'standard', presetTitle: 'EXPENSE REIMBURSEMENT VOUCHER' },
-  { category: 'expenses', modelId: 'petty-cash', name: 'Petty Cash Voucher', layoutFamily: 'compact', presetTitle: 'PETTY CASH DISBURSEMENT SLIP' },
-  { category: 'expenses', modelId: 'project-billable', name: 'Project-Billable Expense Voucher', layoutFamily: 'ledger', presetTitle: 'PROJECT EXPENSE VOUCHER' },
+  { category: 'expenses', modelId: 'reimbursement', name: 'Standard Expense Voucher', layoutFamily: 'standard', presetTitle: 'EXPENSE VOUCHER' },
+  { category: 'expenses', modelId: 'petty-cash', name: 'Compact Expense Voucher', layoutFamily: 'compact', presetTitle: 'EXPENSE VOUCHER' },
+  { category: 'expenses', modelId: 'project-billable', name: 'Project Recovery Voucher', layoutFamily: 'ledger', presetTitle: 'PROJECT EXPENSE RECOVERY VOUCHER' },
 
   // 11. Vendor Credits (3 models)
-  { category: 'vendor-credits', modelId: 'debit-note', name: 'Statutory Debit Note', layoutFamily: 'standard', presetTitle: 'DEBIT NOTE' },
-  { category: 'vendor-credits', modelId: 'purchase-return', name: 'Purchase Return Note', layoutFamily: 'ledger', presetTitle: 'PURCHASE RETURN MEMO' },
-  { category: 'vendor-credits', modelId: 'adjustment-memo', name: 'AP Adjustment Memo', layoutFamily: 'compact', presetTitle: 'VENDOR ADJUSTMENT MEMO' },
+  { category: 'vendor-credits', modelId: 'debit-note', name: 'Standard Vendor Credit', layoutFamily: 'standard', presetTitle: 'VENDOR CREDIT' },
+  { category: 'vendor-credits', modelId: 'purchase-return', name: 'Ledger Vendor Credit', layoutFamily: 'ledger', presetTitle: 'VENDOR CREDIT' },
+  { category: 'vendor-credits', modelId: 'adjustment-memo', name: 'Compact Vendor Credit', layoutFamily: 'compact', presetTitle: 'VENDOR CREDIT' },
 
   // 12. Vendor Payments (3 models)
-  { category: 'vendor-payments', modelId: 'remittance-advice', name: 'Remittance Advice', layoutFamily: 'standard', presetTitle: 'PAYMENT REMITTANCE ADVICE' },
-  { category: 'vendor-payments', modelId: 'cheque-disbursement', name: 'Cheque Disbursement Voucher', layoutFamily: 'compact', presetTitle: 'CHEQUE DISBURSEMENT VOUCHER' },
-  { category: 'vendor-payments', modelId: 'allocation-advice', name: 'Bill Allocation Advice', layoutFamily: 'ledger', presetTitle: 'PAYMENT ALLOCATION ADVICE' },
+  { category: 'vendor-payments', modelId: 'remittance-advice', name: 'Standard Vendor Payment Advice', layoutFamily: 'standard', presetTitle: 'PAYMENT ADVICE' },
+  { category: 'vendor-payments', modelId: 'cheque-disbursement', name: 'Compact Vendor Payment', layoutFamily: 'compact', presetTitle: 'VENDOR PAYMENT' },
+  { category: 'vendor-payments', modelId: 'allocation-advice', name: 'Ledger Vendor Payment Advice', layoutFamily: 'ledger', presetTitle: 'VENDOR SETTLEMENT CONFIRMATION' },
 
   // 13. Vendor Statements (3 models)
-  { category: 'vendor-statements', modelId: 'vendor-ledger', name: 'Vendor Account Ledger', layoutFamily: 'ledger', presetTitle: 'VENDOR STATEMENT OF ACCOUNT' },
-  { category: 'vendor-statements', modelId: 'payables-aging', name: 'Payables Aging Schedule', layoutFamily: 'standard', presetTitle: 'PAYABLES AGING REPORT' },
-  { category: 'vendor-statements', modelId: 'reconciliation', name: 'Account Reconciliation Statement', layoutFamily: 'compact', presetTitle: 'SUPPLIER RECONCILIATION STATEMENT' },
-
+  { category: 'vendor-statements', modelId: 'vendor-ledger', name: 'Vendor Transaction Ledger', layoutFamily: 'ledger', presetTitle: 'VENDOR TRANSACTION LEDGER' },
+  { category: 'vendor-statements', modelId: 'payables-aging', name: 'Payables Activity Summary', layoutFamily: 'standard', presetTitle: 'PAYABLES ACTIVITY SUMMARY' },
+  { category: 'vendor-statements', modelId: 'reconciliation', name: 'Vendor Balance Overview', layoutFamily: 'compact', presetTitle: 'VENDOR BALANCE OVERVIEW' },
   // 14. Journals (3 models)
-  { category: 'journals', modelId: 'general-voucher', name: 'General Journal Voucher', layoutFamily: 'standard', presetTitle: 'JOURNAL VOUCHER' },
-  { category: 'journals', modelId: 'audit-voucher', name: 'Audit Certified Approval Voucher', layoutFamily: 'ledger', presetTitle: 'AUDIT CERTIFIED JOURNAL VOUCHER' },
-  { category: 'journals', modelId: 'adjustment-journal', name: 'Adjusting Journal Entry', layoutFamily: 'compact', presetTitle: 'ADJUSTING JOURNAL VOUCHER' },
+  { category: 'journals', modelId: 'general-voucher', name: 'Standard Journal Voucher', layoutFamily: 'standard', presetTitle: 'JOURNAL VOUCHER' },
+  { category: 'journals', modelId: 'audit-voucher', name: 'Ledger Journal Voucher', layoutFamily: 'ledger', presetTitle: 'ADJUSTING JOURNAL VOUCHER' },
+  { category: 'journals', modelId: 'adjustment-journal', name: 'Compact Journal Voucher', layoutFamily: 'compact', presetTitle: 'LEDGER POSTING VOUCHER' },
 ] as const;
 
-export async function applyDocumentTemplateSchema(client: DbQueryClient): Promise<void> {
-  // pg-mem does not support the composite foreign-key/constraint syntax used
-  // by this PostgreSQL-only template registry.  The registry is not part of
-  // the in-memory accounting fixture, so skip its DDL and seed work there.
-  // Production PostgreSQL still executes the complete schema below.
-  if (db.isMemoryMode()) return;
+export const DEFAULT_TEMPLATE_MODEL_BY_CATEGORY: Record<string, string> = {
+  quotes: 'proposal',
+  'sales-orders': 'confirmation',
+  'delivery-challans': 'dispatch',
+  invoices: 'tax-invoice',
+  'credit-notes': 'statutory',
+  'purchase-orders': 'standard-po',
+  'payment-receipts': 'receipt-voucher',
+  'customer-statements': 'running-ledger',
+  bills: 'bill-itc',
+  expenses: 'reimbursement',
+  'vendor-credits': 'debit-note',
+  'vendor-payments': 'remittance-advice',
+  'vendor-statements': 'vendor-ledger',
+  journals: 'general-voucher',
+};
+export const ALL_42_TEMPLATE_MODELS = ALL_44_TEMPLATE_MODELS;
 
+export async function applyDocumentTemplateSchema(client: DbQueryClient): Promise<void> {
+  // Keep the in-memory registry usable in tests without PostgreSQL-only
+  // constraints and partial composite indexes.
+  if (db.isMemoryMode()) {
+    await client.query(`CREATE TABLE IF NOT EXISTS document_templates (
+      id VARCHAR(64), organization_id VARCHAR(64), category VARCHAR(32), model_id VARCHAR(32), name VARCHAR(128),
+      paper_size VARCHAR(16), orientation VARCHAR(16), layout_family VARCHAR(32), is_active BOOLEAN, is_system BOOLEAN,
+      current_version_id VARCHAR(64), created_at TIMESTAMP WITH TIME ZONE, updated_at TIMESTAMP WITH TIME ZONE
+    )`);
+    await client.query(`CREATE TABLE IF NOT EXISTS document_template_versions (
+      id VARCHAR(64), template_id VARCHAR(64), version_number INT, configuration JSONB, created_by VARCHAR(64),
+      created_at TIMESTAMP WITH TIME ZONE
+    )`);
+    await client.query(`CREATE TABLE IF NOT EXISTS document_template_assignments (
+      id VARCHAR(64), organization_id VARCHAR(64), category VARCHAR(32), template_id VARCHAR(64),
+      entity_type VARCHAR(16), entity_id VARCHAR(64), created_at TIMESTAMP WITH TIME ZONE, updated_at TIMESTAMP WITH TIME ZONE
+    )`);
+    await client.query(`CREATE TABLE IF NOT EXISTS document_render_snapshots (
+      id VARCHAR(64), organization_id VARCHAR(64), category VARCHAR(32), document_id VARCHAR(64),
+      template_version_id VARCHAR(64), source_data_hash VARCHAR(64), render_model JSONB, pdf_byte_size INT,
+      artifact_state VARCHAR(32), issuance_number INT, idempotency_key VARCHAR(256), idempotency_payload_hash VARCHAR(64),
+      source_revision_ref VARCHAR(128), issued_by VARCHAR(64), issued_at TIMESTAMP WITH TIME ZONE, issuance_reason TEXT,
+      filename VARCHAR(255), pdf_bytes TEXT, pdf_sha256 VARCHAR(64), created_at TIMESTAMP WITH TIME ZONE
+    )`);
+    await seedMemoryOrganizationTemplates(client);
+    return;
+  }
   // 1. Table: document_templates
   await client.query(`
     CREATE TABLE IF NOT EXISTS document_templates (
@@ -139,8 +178,63 @@ export async function applyDocumentTemplateSchema(client: DbQueryClient): Promis
       source_data_hash VARCHAR(64) NOT NULL,
       render_model JSONB NOT NULL,
       pdf_byte_size INT NOT NULL,
+      artifact_state VARCHAR(32) DEFAULT 'LEGACY_METADATA_ONLY',
+      issuance_number INT,
+      idempotency_key VARCHAR(256),
+      idempotency_payload_hash VARCHAR(64),
+      source_revision_ref VARCHAR(128),
+      issued_by VARCHAR(64),
+      issued_at TIMESTAMP WITH TIME ZONE,
+      issuance_reason TEXT,
+      filename VARCHAR(255),
+      pdf_bytes BYTEA,
+      pdf_sha256 VARCHAR(64),
       created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
     )
+  `);
+
+  // Extend existing metadata-only snapshots without replacing or inventing PDF bytes.
+  await client.query(`ALTER TABLE document_render_snapshots ADD COLUMN IF NOT EXISTS artifact_state VARCHAR(32)`);
+  await client.query(`ALTER TABLE document_render_snapshots ADD COLUMN IF NOT EXISTS issuance_number INT`);
+  await client.query(`ALTER TABLE document_render_snapshots ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(256)`);
+  await client.query(`ALTER TABLE document_render_snapshots ADD COLUMN IF NOT EXISTS idempotency_payload_hash VARCHAR(64)`);
+  await client.query(`ALTER TABLE document_render_snapshots ADD COLUMN IF NOT EXISTS source_revision_ref VARCHAR(128)`);
+  await client.query(`ALTER TABLE document_render_snapshots ADD COLUMN IF NOT EXISTS issued_by VARCHAR(64)`);
+  await client.query(`ALTER TABLE document_render_snapshots ADD COLUMN IF NOT EXISTS issued_at TIMESTAMP WITH TIME ZONE`);
+  await client.query(`ALTER TABLE document_render_snapshots ADD COLUMN IF NOT EXISTS issuance_reason TEXT`);
+  await client.query(`ALTER TABLE document_render_snapshots ADD COLUMN IF NOT EXISTS filename VARCHAR(255)`);
+  await client.query(`ALTER TABLE document_render_snapshots ADD COLUMN IF NOT EXISTS pdf_bytes BYTEA`);
+  await client.query(`ALTER TABLE document_render_snapshots ADD COLUMN IF NOT EXISTS pdf_sha256 VARCHAR(64)`);
+
+  await client.query(`
+    WITH legacy AS (
+      SELECT id,
+             ROW_NUMBER() OVER (
+               PARTITION BY organization_id, category, document_id
+               ORDER BY created_at, id
+             ) AS sequence_number
+      FROM document_render_snapshots
+      WHERE artifact_state IS NULL
+    )
+    UPDATE document_render_snapshots AS snapshots
+       SET artifact_state = 'LEGACY_METADATA_ONLY',
+           issuance_number = legacy.sequence_number
+      FROM legacy
+     WHERE snapshots.id = legacy.id
+  `);
+  await client.query(`UPDATE document_render_snapshots SET artifact_state = 'LEGACY_METADATA_ONLY' WHERE artifact_state IS NULL`);
+  await client.query(`ALTER TABLE document_render_snapshots ALTER COLUMN artifact_state SET DEFAULT 'LEGACY_METADATA_ONLY'`);
+  await client.query(`ALTER TABLE document_render_snapshots ALTER COLUMN artifact_state SET NOT NULL`);
+
+  await client.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_doc_render_snapshot_issuance
+    ON document_render_snapshots (organization_id, category, document_id, issuance_number)
+    WHERE issuance_number IS NOT NULL
+  `);
+  await client.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_doc_render_snapshot_idempotency
+    ON document_render_snapshots (organization_id, category, document_id, idempotency_key)
+    WHERE idempotency_key IS NOT NULL
   `);
 
   await client.query(`
@@ -153,6 +247,11 @@ export async function applyDocumentTemplateSchema(client: DbQueryClient): Promis
   for (const org of orgs.rows) {
     await seedAndMigrateOrganizationTemplates(client, org.id);
   }
+}
+
+async function seedMemoryOrganizationTemplates(client: DbQueryClient): Promise<void> {
+  const orgs = await client.query('SELECT id FROM organizations');
+  for (const org of orgs.rows) await seedAndMigrateOrganizationTemplates(client, org.id);
 }
 
 export async function seedAndMigrateOrganizationTemplates(client: DbQueryClient, organizationId: string): Promise<void> {
@@ -209,7 +308,7 @@ export async function seedAndMigrateOrganizationTemplates(client: DbQueryClient,
     if (!assigned.rows.length) {
       // Check if legacy default template specified
       const legacyDefault = legacyTemplates[def.category]?.defaultTemplate;
-      const isDefault = legacyDefault ? legacyDefault === def.modelId : ALL_42_TEMPLATE_MODELS.find(m => m.category === def.category)?.modelId === def.modelId;
+      const isDefault = legacyDefault ? legacyDefault === def.modelId : DEFAULT_TEMPLATE_MODEL_BY_CATEGORY[def.category] === def.modelId;
 
       if (isDefault) {
         await client.query(

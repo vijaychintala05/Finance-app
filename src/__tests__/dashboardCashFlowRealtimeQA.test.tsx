@@ -1,19 +1,24 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, cleanup } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, cleanup, within } from '@testing-library/react';
 import { DashboardView } from '../components/dashboard/DashboardView';
 import { apiClient } from '../api/client';
+
+const dashboardMocks = vi.hoisted(() => ({ addTimeEntry: vi.fn(), getTimeEntryCreateOperationStatus: vi.fn() }));
 
 vi.mock('../api/client', () => ({
   apiClient: {
     get: vi.fn(),
     post: vi.fn(),
+    createIdempotencyKey: vi.fn(() => 'dashboard-operation-key-123456'),
+    getTimeEntryCreateOperationStatus: vi.fn().mockResolvedValue({ data: { state: 'UNKNOWN' }, error: null, status: 200 }),
   },
 }));
 
 vi.mock('../context/BooksContext', () => ({
   useBooks: () => ({
+    currentOrg: { id: 'org-dashboard' },
     settings: {
       currency: 'USD',
       currencySymbol: '$',
@@ -28,7 +33,8 @@ vi.mock('../context/BooksContext', () => ({
     projects: [],
     journalEntries: [],
     timeEntries: [],
-    addTimeEntry: vi.fn().mockResolvedValue(true),
+    addTimeEntry: dashboardMocks.addTimeEntry,
+    getTimeEntryCreateOperationStatus: dashboardMocks.getTimeEntryCreateOperationStatus,
   }),
   BooksProvider: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
@@ -38,12 +44,107 @@ describe('DashboardView & Cash Flow Real-Data QA Tests', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    dashboardMocks.addTimeEntry.mockResolvedValue({ data: { id: 'time-dashboard' }, requestId: 'req-time-dashboard', refreshFailed: false });
+    dashboardMocks.getTimeEntryCreateOperationStatus.mockResolvedValue({ data: { state: 'UNKNOWN' }, error: null, status: 200 });
+    localStorage.clear();
+    sessionStorage.clear();
   });
 
   afterEach(() => {
     cleanup();
+    vi.restoreAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
   });
 
+  it('restores a visible committed-stale receipt after remount', async () => {
+    sessionStorage.setItem('firmbooks_committed_time_entry_receipt', JSON.stringify({ id: 'time-stale-receipt', requestId: 'req-stale-receipt', organizationId: 'org-dashboard' }));
+    vi.mocked(apiClient.get).mockResolvedValue({ data: { dashboard: { availableViews: ['overview'], overview: { bankBalance: 0, bankReconciliationAttentionCount: 0, activityTrend: [], recentTransactions: [], collections: [], billsDue: [] }, commandCenter: { attention: [], insights: { bankAccounts: [], topExpenses: [] }, performance: { cashMovement: [] } }, view: 'overview', cashOperations: { available: false, bankReconciliationAttentionCount: null, oldestUnmatchedDate: null, collectionsDue7Days: 0, collectionsDue30Days: 0, billsDue7Days: 0, billsDue30Days: 0, forecast: { available: false, reason: '' } }, closeControls: { available: false, periodClose: null, integrity: null } } as any }, error: null, status: 200 });
+    render(<DashboardView onNavigate={mockOnNavigate} />);
+    const mobile = await screen.findByTestId('mobile-dashboard-overview');
+    const receipt = await within(mobile).findByRole('status');
+    expect(receipt.textContent).toContain('time-stale-receipt');
+    expect(receipt.textContent).toContain('req-stale-receipt');
+  });
+
+  it('shows an accessible retry-safe timer error and preserves the elapsed session', async () => {
+    dashboardMocks.getTimeEntryCreateOperationStatus.mockResolvedValue({ data: { state: 'UNKNOWN' }, error: null, status: 200 });
+    dashboardMocks.addTimeEntry
+      .mockRejectedValueOnce({ message: 'Network request failed', response: { status: 0, requestId: 'req-time-uncertain', retryable: true } })
+      .mockResolvedValueOnce({ data: { id: 'time-dashboard-committed' }, requestId: 'req-time-committed', refreshFailed: true });
+    localStorage.setItem('firmbooks_dashboard_timer', JSON.stringify({ projectId: '', taskName: 'Close books', startTime: Date.now() + 60000, elapsedSeconds: 3661, isRunning: true, workDate: '2026-09-23', organizationId: 'org-dashboard' }));
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => undefined);
+    vi.mocked(apiClient.get).mockResolvedValue({ data: { dashboard: { availableViews: ['overview'], overview: { bankBalance: 0, bankReconciliationAttentionCount: 0, activityTrend: [], recentTransactions: [], collections: [], billsDue: [] }, commandCenter: { attention: [], insights: { bankAccounts: [], topExpenses: [] }, performance: { cashMovement: [] } }, view: 'overview', cashOperations: { available: false, bankReconciliationAttentionCount: null, oldestUnmatchedDate: null, collectionsDue7Days: 0, collectionsDue30Days: 0, billsDue7Days: 0, billsDue30Days: 0, forecast: { available: false, reason: '' } }, closeControls: { available: false, periodClose: null, integrity: null } } as any }, error: null, status: 200 });
+
+    render(<DashboardView onNavigate={mockOnNavigate} />);
+    const mobile = await screen.findByTestId('mobile-dashboard-overview');
+    fireEvent.click(within(mobile).getByRole('button', { name: 'Stop Timer' }));
+    fireEvent.click(within(mobile).getByRole('button', { name: 'Save Entry' }));
+
+    const receipt = await within(mobile).findByRole('alert');
+    expect(receipt.textContent).toContain('could not confirm whether this time entry was saved');
+    expect(receipt.textContent).toContain('Check Time Logs before retrying');
+    expect(receipt.textContent).toContain('req-time-uncertain');
+    expect(within(mobile).getByText('01:01:01')).toBeTruthy();
+    expect(within(mobile).getByRole('button', { name: 'Retry Same Save' })).toBeTruthy();
+    expect((within(mobile).getByRole('button', { name: 'Resume' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(alertSpy).not.toHaveBeenCalled();
+    const firstPayload = dashboardMocks.addTimeEntry.mock.calls[0];
+    fireEvent.click(within(mobile).getByRole('button', { name: 'Retry Same Save' }));
+    await waitFor(() => expect(within(mobile).getByRole('status').textContent).toContain('Time entry time-dashboard-committed was saved'));
+    expect(dashboardMocks.addTimeEntry).toHaveBeenCalledTimes(2);
+    expect(dashboardMocks.addTimeEntry.mock.calls[1]).toEqual(firstPayload);
+    expect(within(mobile).getByText('00:00:00')).toBeTruthy();
+    expect(within(mobile).getByRole('status').textContent).toContain('req-time-committed');
+  });
+  it('blocks replay of a malformed successful receipt until the user verifies Time Logs', async () => {
+    dashboardMocks.addTimeEntry.mockRejectedValueOnce({ message: 'Missing entry ID', response: { status: 201, requestId: 'req-malformed-time', retryable: true } });
+    localStorage.setItem('firmbooks_dashboard_timer', JSON.stringify({ projectId: '', taskName: 'Close books', startTime: null, elapsedSeconds: 1200, isRunning: false, workDate: '2026-09-23', organizationId: 'org-dashboard' }));
+    vi.mocked(apiClient.get).mockResolvedValue({ data: { dashboard: { availableViews: ['overview'], overview: { bankBalance: 0, bankReconciliationAttentionCount: 0, activityTrend: [], recentTransactions: [], collections: [], billsDue: [] }, commandCenter: { attention: [], insights: { bankAccounts: [], topExpenses: [] }, performance: { cashMovement: [] } }, view: 'overview', cashOperations: { available: false, bankReconciliationAttentionCount: null, oldestUnmatchedDate: null, collectionsDue7Days: 0, collectionsDue30Days: 0, billsDue7Days: 0, billsDue30Days: 0, forecast: { available: false, reason: '' } }, closeControls: { available: false, periodClose: null, integrity: null } } as any }, error: null, status: 200 });
+    render(<DashboardView onNavigate={mockOnNavigate} />);
+    const mobile = await screen.findByTestId('mobile-dashboard-overview');
+    fireEvent.click(within(mobile).getByRole('button', { name: 'Save Entry' }));
+    expect(await within(mobile).findByRole('alert')).toBeTruthy();
+    expect((within(mobile).getByRole('button', { name: 'Verify in Time Logs' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(mobile).getByRole('button', { name: 'Reset Timer' }) as HTMLButtonElement).disabled).toBe(false);
+    const guard = JSON.parse(localStorage.getItem('firmbooks_dashboard_timer') || '{}');
+    expect(guard).toMatchObject({ saveUncertain: true, retryBlocked: true, requestId: 'req-malformed-time', organizationId: 'org-dashboard', pendingPayload: expect.objectContaining({ taskName: 'Close books' }) });
+    fireEvent.click(within(mobile).getByRole('button', { name: 'Reset Timer' }));
+    expect(JSON.parse(localStorage.getItem('firmbooks_dashboard_timer') || '{}')).toMatchObject({ saveUncertain: true, retryBlocked: true, requestId: 'req-malformed-time', pendingPayload: expect.objectContaining({ taskName: 'Close books' }) });
+    expect((within(mobile).getByRole('button', { name: 'Start Timer' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(dashboardMocks.addTimeEntry).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not submit the timer when its operation receipt cannot be persisted', async () => {
+    localStorage.setItem('firmbooks_dashboard_timer', JSON.stringify({ projectId: '', taskName: 'Close books', startTime: null, elapsedSeconds: 1200, isRunning: false, workDate: '2026-09-23', organizationId: 'org-dashboard' }));
+    const originalSetItem = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key: string, value: string) {
+      if (this === window.sessionStorage && key === 'firmbooks_pending_time_entry_create') throw new Error('session storage unavailable');
+      return originalSetItem.call(this, key, value);
+    });
+    vi.mocked(apiClient.get).mockResolvedValue({ data: { dashboard: { availableViews: ['overview'], overview: { bankBalance: 0, bankReconciliationAttentionCount: 0, activityTrend: [], recentTransactions: [], collections: [], billsDue: [] }, commandCenter: { attention: [], insights: { bankAccounts: [], topExpenses: [] }, performance: { cashMovement: [] } }, view: 'overview', cashOperations: { available: false, bankReconciliationAttentionCount: null, oldestUnmatchedDate: null, collectionsDue7Days: 0, collectionsDue30Days: 0, billsDue7Days: 0, billsDue30Days: 0, forecast: { available: false, reason: '' } }, closeControls: { available: false, periodClose: null, integrity: null } } as any }, error: null, status: 200 });
+    render(<DashboardView onNavigate={mockOnNavigate} />);
+    const mobile = await screen.findByTestId('mobile-dashboard-overview');
+    fireEvent.click(within(mobile).getByRole('button', { name: 'Save Entry' }));
+    expect(await within(mobile).findByText(/safe save receipt could not be stored/)).toBeTruthy();
+    expect(dashboardMocks.addTimeEntry).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem('firmbooks_pending_time_entry_create')).toBeNull();
+    expect(within(mobile).getByText('00:20:00')).toBeTruthy();
+  });
+
+  it('blocks dashboard time creation when a manual-entry attempt is unresolved', async () => {
+    sessionStorage.setItem('firmbooks_pending_time_entry_create', JSON.stringify({
+      payload: { projectId: 'project-1', taskName: 'Reconcile bank', date: '2026-09-23', hours: 1 },
+      organizationId: 'org-dashboard', status: 'retryable',
+    }));
+    localStorage.setItem('firmbooks_dashboard_timer', JSON.stringify({ projectId: '', taskName: 'Close books', startTime: null, elapsedSeconds: 1200, isRunning: false, workDate: '2026-09-23', organizationId: 'org-dashboard' }));
+    vi.mocked(apiClient.get).mockResolvedValue({ data: { dashboard: { availableViews: ['overview'], overview: { bankBalance: 0, bankReconciliationAttentionCount: 0, activityTrend: [], recentTransactions: [], collections: [], billsDue: [] }, commandCenter: { attention: [], insights: { bankAccounts: [], topExpenses: [] }, performance: { cashMovement: [] } }, view: 'overview', cashOperations: { available: false, bankReconciliationAttentionCount: null, oldestUnmatchedDate: null, collectionsDue7Days: 0, collectionsDue30Days: 0, billsDue7Days: 0, billsDue30Days: 0, forecast: { available: false, reason: '' } }, closeControls: { available: false, periodClose: null, integrity: null } } as any }, error: null, status: 200 });
+    render(<DashboardView onNavigate={mockOnNavigate} />);
+    const mobile = await screen.findByTestId('mobile-dashboard-overview');
+    expect(await within(mobile).findByRole('alert')).toBeTruthy();
+    expect((within(mobile).getByRole('button', { name: 'Verify in Time Logs' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(dashboardMocks.addTimeEntry).not.toHaveBeenCalled();
+  });
   it('renders real cash flow transactions, dynamic legend, and SVG bars when data exists', async () => {
     const mockDashboardData = {
       overview: {
@@ -310,7 +411,7 @@ describe('DashboardView & Cash Flow Real-Data QA Tests', () => {
     render(<DashboardView onNavigate={mockOnNavigate} />);
 
     await waitFor(() => {
-      expect(screen.getByText(/Needs Attention/i)).toBeTruthy();
+      expect(within(screen.getByTestId('mobile-dashboard-overview')).getByText(/Needs Attention/i)).toBeTruthy();
     });
 
     // Verify attention items are rendered

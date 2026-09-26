@@ -32,6 +32,7 @@ export async function fetchAuthoritativeReport(
   fromDate: string,
   toDate: string,
   filters: { projectId?: string } = {},
+  organizationId: string,
 ): Promise<any> {
   const definition = AUTHORITATIVE_REPORTS[reportId];
   if (!definition) throw new Error('This report is not in the certified reporting scope');
@@ -48,7 +49,7 @@ export async function fetchAuthoritativeReport(
   const projectQuery = reportId === 'project_profitability' && filters.projectId
     ? `&projectId=${encodeURIComponent(filters.projectId)}`
     : '';
-  const response = await apiClient.get<any>(`${definition.endpoint}?${query}${projectQuery}`);
+  const response = await apiClient.get<any>(`${definition.endpoint}?${query}${projectQuery}`, organizationId);
   if (response.error || !response.data) throw new Error(response.error || 'The report returned no data');
   return response.data;
 }

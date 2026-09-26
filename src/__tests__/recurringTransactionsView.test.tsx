@@ -153,7 +153,7 @@ describe('RecurringTransactionsView authoritative workspace', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create Schedule' }));
 
     expect(await screen.findByText('Schedule created, but the list is stale')).toBeTruthy();
-    expect(screen.getByText(/do not submit it again/i)).toBeTruthy();
+    expect(screen.getByText(/Use Verify status here before taking any further action/i)).toBeTruthy();
     await waitFor(() => expect(postMock).toHaveBeenCalledTimes(1));
   });
 });

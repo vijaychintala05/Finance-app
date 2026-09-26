@@ -285,19 +285,18 @@ export class ReportWorkspaceService {
 
   private static async salesBySalesperson(orgId: string, dates: ReturnType<typeof period>, filter: WorkspaceReportFilter) {
     const result = await db.query(
-      `SELECT COALESCE(sp.name, 'Unassigned') AS salesperson, COUNT(*) AS invoice_count,
+      `SELECT i.salesperson_id, MAX(sp.name) AS current_salesperson_name, COUNT(*) AS invoice_count,
               COALESCE(SUM(i.subtotal), 0) AS sales, COALESCE(SUM(i.total_amount), 0) AS sales_with_tax,
               COALESCE(SUM(i.paid_amount), 0) AS received
          FROM invoices i
-         LEFT JOIN customers c ON c.organization_id = i.organization_id AND (c.id = i.customer_id OR c.id = i.client_id)
-         LEFT JOIN salespersons sp ON sp.organization_id = i.organization_id AND sp.id = COALESCE(i.salesperson_id, c.salesperson_id)
+         LEFT JOIN salespersons sp ON sp.organization_id = i.organization_id AND sp.id = i.salesperson_id
         WHERE i.organization_id = $1 AND i.issue_date >= $2 AND i.issue_date <= $3
           AND UPPER(COALESCE(i.status, '')) NOT IN ('DRAFT','SUBMITTED','VOID','VOIDED','REVERSED','CANCELLED')
-        GROUP BY COALESCE(sp.name, 'Unassigned') ORDER BY sales DESC, salesperson`,
+        GROUP BY i.salesperson_id ORDER BY sales DESC, current_salesperson_name`,
       [orgId, dates.fromDate, dates.toDate],
     );
-    const rows = result.rows.map((row: any) => ({ ...row, invoice_count: Number(row.invoice_count), sales: number(row.sales), sales_with_tax: number(row.sales_with_tax), received: number(row.received) })).filter((row: any) => includesSearch(row, filter.search));
-    return baseResult('sales_by_salesperson', 'Sales by Salesperson', 'Invoice value and collections attributed to each salesperson.', 'POSTED_DOCUMENTS', dates,
+    const rows = result.rows.map((row: any) => ({ ...row, salesperson: row.salesperson_id == null ? 'Unassigned' : (row.current_salesperson_name || `Former salesperson (${row.salesperson_id})`), invoice_count: Number(row.invoice_count), sales: number(row.sales), sales_with_tax: number(row.sales_with_tax), received: number(row.received) })).filter((row: any) => includesSearch(row, filter.search));
+    return baseResult('sales_by_salesperson', 'Sales by Salesperson', 'Posted invoice value and collections attributed by the invoice’s stored salesperson ID. Legacy invoices without a stored ID are Unassigned.', 'POSTED_DOCUMENTS', dates,
       [{ key: 'salesperson', label: 'Salesperson', type: 'text' }, { key: 'invoice_count', label: 'Invoices', type: 'number', align: 'right' }, { key: 'sales', label: 'Sales', type: 'money', align: 'right' }, { key: 'sales_with_tax', label: 'Sales with tax', type: 'money', align: 'right' }, { key: 'received', label: 'Received', type: 'money', align: 'right' }], rows,
       [{ key: 'sales', label: 'Sales', value: sum(rows, 'sales'), type: 'money' }, { key: 'received', label: 'Received', value: sum(rows, 'received'), type: 'money' }], { categoryKey: 'salesperson', valueKeys: [{ key: 'sales', label: 'Sales' }] });
   }

@@ -213,4 +213,30 @@ describe('InvoicesView Click to Show Invoice Tests', () => {
     expect(screen.getAllByText('$6,500.00').length).toBeGreaterThanOrEqual(2);
     expect(screen.getAllByText('$8,500.00').length).toBeGreaterThanOrEqual(2);
   });
+
+  it('clears an open invoice preview when the active organization changes', () => {
+    const context: any = {
+      invoices: sampleInvoices,
+      clients: [],
+      projects: [],
+      salespersons: [],
+      accounts: [],
+      currentOrg: { id: 'org-1' },
+      invoiceVoidGuards: [{ invoiceId: 'inv-1', organizationId: 'org-1', status: 'needs-verification' }],
+      settings: { firmName: 'FirmBooks Demo', firmAddress: '', firmEmail: '', currencySymbol: '$', currencyCode: 'USD' },
+      deleteInvoice: vi.fn(),
+    };
+    vi.spyOn(BooksContextModule, 'useBooks').mockImplementation(() => context);
+    const view = render(<InvoicesView />);
+    fireEvent.click(screen.getAllByText('INV/2026-27/0001')[0]);
+    expect(screen.getByText('TAX INVOICE')).toBeDefined();
+
+    context.currentOrg = { id: 'org-2' };
+    context.invoices = [];
+    context.invoiceVoidGuards = [];
+    view.rerender(<InvoicesView />);
+
+    expect(screen.queryByText('TAX INVOICE')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Record Payment/i })).toBeNull();
+  });
 });

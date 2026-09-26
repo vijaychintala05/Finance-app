@@ -3,6 +3,7 @@ import { AlertTriangle, ArrowLeft, Loader2, RefreshCw, ShieldCheck, Star, X } fr
 import { INITIAL_REPORTS_CATALOG } from './reportCatalog';
 import { ReportCategory, ReportItem, SidebarGroup } from './reportTypes';
 import { useBooks } from '../../context/BooksContext';
+import { useOptionalAuth } from '../../context/AuthContext';
 import { ReportSidebarNav } from './ReportSidebarNav';
 import { ReportFilterToolbar } from './ReportFilterToolbar';
 import { ReportCardGrid } from './ReportCardGrid';
@@ -16,6 +17,7 @@ import {
 import { downloadWorkspaceReport, fetchWorkspaceReport, isWorkspaceReportId, WorkspaceReportResult } from '../../services/reportWorkspaceService';
 import { WorkspaceReportRenderer } from './WorkspaceReportRenderer';
 import { fetchSavedReportViews, saveReportView, SavedReportView } from '../../services/savedReportViewsService';
+import { buildFinanceHash, FINANCE_REPORT_SOURCE_ROUTES, parseFinanceHash, type FinanceHashRoute, type FinanceReportRouteState } from '../../navigation/financeRoute';
 
 function localIsoDate(date: Date): string {
   const year = date.getFullYear();
@@ -24,31 +26,60 @@ function localIsoDate(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
-export const ReportsView: React.FC = () => {
-  const { settings, projects, clients, vendors, accounts } = useBooks();
+export const ReportsView: React.FC<{ initialRoute?: FinanceHashRoute }> = ({ initialRoute }) => {
+  const { settings, projects, clients, vendors, accounts, currentOrg } = useBooks();
+  const auth = useOptionalAuth();
   const today = new Date();
+  const initialReportRoute = initialRoute?.tab === 'reports' ? initialRoute.report : undefined;
   const [reportsCatalog, setReportsCatalog] = useState<ReportItem[]>(INITIAL_REPORTS_CATALOG);
   const [activeGroup, setActiveGroup] = useState<SidebarGroup>('home');
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
-  const [fromDate, setFromDate] = useState(() => localIsoDate(new Date(today.getFullYear(), 0, 1)));
-  const [toDate, setToDate] = useState(() => localIsoDate(today));
-  const [selectedProjectId, setSelectedProjectId] = useState('');
-  const [selectedCustomerId, setSelectedCustomerId] = useState('');
-  const [selectedVendorId, setSelectedVendorId] = useState('');
-  const [selectedAccountId, setSelectedAccountId] = useState('');
-  const [selectedStatus, setSelectedStatus] = useState('');
+  const [selectedReportId, setSelectedReportId] = useState<string | null>(initialReportRoute?.reportId || null);
+  const [fromDate, setFromDate] = useState(() => initialReportRoute?.fromDate || localIsoDate(new Date(today.getFullYear(), 0, 1)));
+  const [toDate, setToDate] = useState(() => initialReportRoute?.toDate || localIsoDate(today));
+  const [selectedProjectId, setSelectedProjectId] = useState(initialReportRoute?.projectId || '');
+  const [selectedCustomerId, setSelectedCustomerId] = useState(initialReportRoute?.customerId || '');
+  const [selectedVendorId, setSelectedVendorId] = useState(initialReportRoute?.vendorId || '');
+  const [selectedAccountId, setSelectedAccountId] = useState(initialReportRoute?.accountId || '');
+  const [selectedStatus, setSelectedStatus] = useState(initialReportRoute?.status || '');
   const [reportData, setReportData] = useState<any | null>(null);
+  const [reportDataContext, setReportDataContext] = useState<string | null>(null);
   const [visibleColumns, setVisibleColumns] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sourceNavigationError, setSourceNavigationError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
   const [savedViews, setSavedViews] = useState<SavedReportView[]>([]);
+  const [savedViewsContext, setSavedViewsContext] = useState<string | null>(null);
+  const [savedViewsNotice, setSavedViewsNotice] = useState<string | null>(null);
+  const savedViewsRequestSequence = useRef(0);
+  const savedViewsOrganizationRef = useRef(currentOrg?.id);
+  savedViewsOrganizationRef.current = currentOrg?.id;
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
   const [savedViewName, setSavedViewName] = useState('');
   const [saveVisibility, setSaveVisibility] = useState<'PRIVATE' | 'ORGANIZATION'>('PRIVATE');
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savingView, setSavingView] = useState(false);
+  const [favoriteStorageError, setFavoriteStorageError] = useState<string | null>(null);
+  const favoriteStorageKey = auth?.user?.id && currentOrg?.id
+    ? `firmbooks.report-favorites.${currentOrg.id}.${auth.user.id}`
+    : null;
+  const reportRequestContext = JSON.stringify({
+    organizationId: currentOrg?.id || null,
+    reportId: selectedReportId,
+    fromDate,
+    toDate,
+    projectId: selectedProjectId,
+    customerId: selectedCustomerId,
+    vendorId: selectedVendorId,
+    accountId: selectedAccountId,
+    status: selectedStatus,
+    reloadToken,
+    currencyCode: settings.currencyCode,
+    currencySymbol: settings.currencySymbol,
+  });
+  const reportRequestContextRef = useRef(reportRequestContext);
+  reportRequestContextRef.current = reportRequestContext;
   const requestSequence = useRef(0);
 
   useEffect(() => {
@@ -56,17 +87,32 @@ export const ReportsView: React.FC = () => {
   }, [selectedReportId]);
 
   useEffect(() => {
+    const sequence = ++requestSequence.current;
+    const organizationId = currentOrg?.id;
+    const contextKey = reportRequestContext;
     if (!selectedReportId) {
       setReportData(null);
+      setReportDataContext(null);
       setError(null);
+      setLoading(false);
+      return;
+    }
+    if (!organizationId) {
+      setReportData(null);
+      setReportDataContext(null);
+      setLoading(false);
+      setError('Select an organization to load reports.');
       return;
     }
     if (!settings.currencyCode || !settings.currencySymbol) {
       setReportData(null);
+      setReportDataContext(null);
+      setLoading(false);
       setError('Organization currency metadata is unavailable. Reports are blocked to avoid ambiguous amounts.');
       return;
     }
-    const sequence = ++requestSequence.current;
+    setReportData(null);
+    setReportDataContext(null);
     setLoading(true);
     setError(null);
     const reportRequest = isWorkspaceReportId(selectedReportId)
@@ -78,34 +124,92 @@ export const ReportsView: React.FC = () => {
           vendorId: selectedVendorId || undefined,
           accountId: selectedAccountId || undefined,
           status: selectedStatus || undefined,
-        })
+        }, organizationId)
       : fetchAuthoritativeReport(selectedReportId as CertifiedReportId, fromDate, toDate, {
           projectId: selectedReportId === 'project_profitability' ? selectedProjectId || undefined : undefined,
-        });
+        }, organizationId);
     reportRequest
       .then((data) => {
-        if (sequence === requestSequence.current) setReportData(data);
+        if (sequence === requestSequence.current && contextKey === reportRequestContextRef.current) {
+          setReportData(data);
+          setReportDataContext(contextKey);
+        }
       })
       .catch((reportError) => {
-        if (sequence === requestSequence.current) {
+        if (sequence === requestSequence.current && contextKey === reportRequestContextRef.current) {
           setReportData(null);
+          setReportDataContext(null);
           setError(reportError instanceof Error ? reportError.message : 'Report generation failed');
         }
       })
       .finally(() => {
-        if (sequence === requestSequence.current) setLoading(false);
+        if (sequence === requestSequence.current && contextKey === reportRequestContextRef.current) setLoading(false);
       });
-  }, [selectedReportId, fromDate, toDate, selectedProjectId, selectedCustomerId, selectedVendorId, selectedAccountId, selectedStatus, reloadToken, settings.currencyCode, settings.currencySymbol]);
+  }, [selectedReportId, fromDate, toDate, selectedProjectId, selectedCustomerId, selectedVendorId, selectedAccountId, selectedStatus, reloadToken, settings.currencyCode, settings.currencySymbol, currentOrg?.id, reportRequestContext]);
 
   useEffect(() => {
-    fetchSavedReportViews().then(setSavedViews).catch(() => setSavedViews([]));
-  }, []);
+    const sequence = ++savedViewsRequestSequence.current;
+    const organizationId = currentOrg?.id;
+    setSavedViews([]);
+    setSavedViewsContext(null);
+    setSavedViewsNotice(null);
+    setSaveDialogOpen(false);
+    setSavedViewName('');
+    setSaveError(null);
+    setSavingView(false);
+    if (!organizationId) return;
+    fetchSavedReportViews(organizationId)
+      .then((views) => {
+        if (sequence === savedViewsRequestSequence.current && savedViewsOrganizationRef.current === organizationId) {
+          setSavedViews(views);
+          setSavedViewsContext(organizationId);
+        }
+      })
+      .catch(() => {
+        if (sequence === savedViewsRequestSequence.current && savedViewsOrganizationRef.current === organizationId) {
+          setSavedViews([]);
+          setSavedViewsContext(organizationId);
+        }
+      });
+    return () => {
+      if (savedViewsRequestSequence.current === sequence) savedViewsRequestSequence.current += 1;
+    };
+  }, [currentOrg?.id]);
+
+  useEffect(() => {
+    if (!favoriteStorageKey) return;
+    try {
+      const stored = window.localStorage.getItem(favoriteStorageKey);
+      if (stored === null) {
+        setReportsCatalog(INITIAL_REPORTS_CATALOG);
+        setFavoriteStorageError(null);
+        return;
+      }
+      const parsed: unknown = JSON.parse(stored);
+      if (!Array.isArray(parsed) || parsed.some((id) => typeof id !== 'string')) throw new Error('Invalid saved report favorites');
+      const favorites = new Set(parsed);
+      setReportsCatalog(INITIAL_REPORTS_CATALOG.map((report) => ({ ...report, isFavorite: favorites.has(report.id) })));
+      setFavoriteStorageError(null);
+    } catch {
+      setReportsCatalog(INITIAL_REPORTS_CATALOG);
+      setFavoriteStorageError('Report favorites could not be loaded from this browser. Changes will remain available until you leave this workspace.');
+    }
+  }, [favoriteStorageKey]);
 
   const handleToggleFavorite = (reportId: string, event: React.MouseEvent) => {
     event.stopPropagation();
-    setReportsCatalog((previous) => previous.map((report) => (
+    const updated = reportsCatalog.map((report) => (
       report.id === reportId ? { ...report, isFavorite: !report.isFavorite } : report
-    )));
+    ));
+    setReportsCatalog(updated);
+    setFavoriteStorageError(null);
+    if (favoriteStorageKey) {
+      try {
+        window.localStorage.setItem(favoriteStorageKey, JSON.stringify(updated.filter((report) => report.isFavorite).map((report) => report.id)));
+      } catch {
+        setFavoriteStorageError('Favorite changes could not be saved in this browser. They will be lost when you leave this workspace.');
+      }
+    }
   };
 
   const filteredReports = reportsCatalog.filter((report) => {
@@ -128,16 +232,125 @@ export const ReportsView: React.FC = () => {
   const periodLabel = selectedReportId && periodMode === 'as_of'
     ? `As of ${toDate}`
     : `${fromDate} through ${toDate}`;
+  const getReportRouteState = (reportId: string, preserveViewState = true): FinanceReportRouteState => {
+    const previous = parseFinanceHash(window.location.hash).report;
+    return {
+      reportId,
+      fromDate,
+      toDate,
+      ...(selectedProjectId ? { projectId: selectedProjectId } : {}),
+      ...(selectedCustomerId ? { customerId: selectedCustomerId } : {}),
+      ...(selectedVendorId ? { vendorId: selectedVendorId } : {}),
+      ...(selectedAccountId ? { accountId: selectedAccountId } : {}),
+      ...(selectedStatus ? { status: selectedStatus } : {}),
+      ...(preserveViewState && previous?.reportId === reportId ? {
+        ...(previous.search ? { search: previous.search } : {}),
+        ...(previous.page ? { page: previous.page } : {}),
+        ...(previous.focusType && previous.focusId ? { focusType: previous.focusType, focusId: previous.focusId } : {}),
+      } : {}),
+    };
+  };
+  const selectReport = (reportId: string | null) => {
+    let targetHash: string;
+    try {
+      targetHash = reportId
+        ? buildFinanceHash({ tab: 'reports', report: getReportRouteState(reportId, false) })
+        : '#/reports';
+    } catch {
+      setSourceNavigationError('This report cannot be opened because its filters are too large for a shareable route. Reduce the filters and try again.');
+      return;
+    }
+    setVisibleColumns([]);
+    setSelectedReportId(reportId);
+    setSourceNavigationError(null);
+    window.history.pushState(null, '', targetHash);
+  };
+  const openReportSource = (sourceType: string, sourceId: string) => {
+    if (!Object.prototype.hasOwnProperty.call(FINANCE_REPORT_SOURCE_ROUTES, sourceType) || !selectedReportId || !sourceId || sourceId.length > 200) return;
+    const targetTab = FINANCE_REPORT_SOURCE_ROUTES[sourceType as keyof typeof FINANCE_REPORT_SOURCE_ROUTES];
+    const current = parseFinanceHash(window.location.hash).report;
+    const report = current?.reportId === selectedReportId ? current : getReportRouteState(selectedReportId);
+    const focusedReport = { ...report, focusType: sourceType, focusId: sourceId };
+    try {
+      const reportHash = buildFinanceHash({ tab: 'reports', report: focusedReport });
+      const targetHash = buildFinanceHash({
+        tab: targetTab,
+        entityId: sourceId,
+        back: { tab: 'reports', report: focusedReport },
+      });
+      window.history.replaceState(null, '', reportHash);
+      window.location.hash = targetHash.slice(1);
+      setSourceNavigationError(null);
+    } catch {
+      setSourceNavigationError('This source could not be opened because the report return link is too large. Reduce the report filters and try again.');
+    }
+  };
+  useEffect(() => {
+    if (!selectedReportId || parseFinanceHash(window.location.hash).tab !== 'reports') return;
+    try {
+      const targetHash = buildFinanceHash({ tab: 'reports', report: getReportRouteState(selectedReportId) });
+      if (window.location.hash !== targetHash) window.history.replaceState(null, '', targetHash);
+      setSourceNavigationError(null);
+    } catch {
+      setSourceNavigationError('These report filters are too large for the current URL. Reduce the filters to keep the report link shareable.');
+    }
+  }, [selectedReportId, fromDate, toDate, selectedProjectId, selectedCustomerId, selectedVendorId, selectedAccountId, selectedStatus]);
+  useEffect(() => {
+    const restoreRoute = () => {
+      const route = parseFinanceHash(window.location.hash);
+      if (route.tab !== 'reports') return;
+      setVisibleColumns([]);
+      setSelectedReportId(route.report?.reportId || null);
+      if (route.report?.fromDate) setFromDate(route.report.fromDate);
+      if (route.report?.toDate) setToDate(route.report.toDate);
+      setSelectedProjectId(route.report?.projectId || '');
+      setSelectedCustomerId(route.report?.customerId || '');
+      setSelectedVendorId(route.report?.vendorId || '');
+      setSelectedAccountId(route.report?.accountId || '');
+      setSelectedStatus(route.report?.status || '');
+    };
+    window.addEventListener('hashchange', restoreRoute);
+    window.addEventListener('popstate', restoreRoute);
+    return () => {
+      window.removeEventListener('hashchange', restoreRoute);
+      window.removeEventListener('popstate', restoreRoute);
+    };
+  }, []);
 
+  const refreshSavedViews = async () => {
+    const organizationId = currentOrg?.id;
+    if (!organizationId) return;
+    const sequence = ++savedViewsRequestSequence.current;
+    setSavedViewsNotice(null);
+    try {
+      const views = await fetchSavedReportViews(organizationId);
+      if (sequence === savedViewsRequestSequence.current && savedViewsOrganizationRef.current === organizationId) {
+        setSavedViews(views);
+        setSavedViewsContext(organizationId);
+      }
+    } catch {
+      if (sequence === savedViewsRequestSequence.current && savedViewsOrganizationRef.current === organizationId) {
+        setSavedViewsNotice('Saved views could not be refreshed. Retry the refresh before trying to create the view again.');
+      }
+    }
+  };
   const saveCurrentView = async () => {
+    const organizationId = currentOrg?.id;
+    if (!organizationId) {
+      setSaveError('Choose an organization before saving a report view.');
+      return;
+    }
     if (!selectedReportId || !savedViewName.trim()) {
       setSaveError('Enter a name for this report view.');
       return;
     }
+    savedViewsRequestSequence.current += 1;
+    setSavedViewsNotice(null);
     setSavingView(true);
     setSaveError(null);
     try {
       await saveReportView({
+        organizationId,
         name: savedViewName.trim(),
         reportId: selectedReportId,
         fromDate,
@@ -150,13 +363,28 @@ export const ReportsView: React.FC = () => {
         status: selectedStatus || undefined,
         visibility: saveVisibility,
       });
-      setSavedViews(await fetchSavedReportViews());
+      if (savedViewsOrganizationRef.current !== organizationId) return;
       setSaveDialogOpen(false);
       setSavedViewName('');
+      const refreshSequence = ++savedViewsRequestSequence.current;
+      try {
+        const refreshedViews = await fetchSavedReportViews(organizationId);
+        if (refreshSequence === savedViewsRequestSequence.current && savedViewsOrganizationRef.current === organizationId) {
+          setSavedViews(refreshedViews);
+          setSavedViewsContext(organizationId);
+          setSavedViewsNotice(null);
+        }
+      } catch {
+        if (refreshSequence === savedViewsRequestSequence.current && savedViewsOrganizationRef.current === organizationId) {
+          setSavedViewsNotice('This report view was saved, but its list could not be refreshed. Refresh saved views to confirm before trying again.');
+        }
+      }
     } catch (saveViewError) {
-      setSaveError(saveViewError instanceof Error ? saveViewError.message : 'Unable to save this report view.');
+      if (savedViewsOrganizationRef.current === organizationId) {
+        setSaveError(saveViewError instanceof Error ? saveViewError.message : 'Unable to save this report view.');
+      }
     } finally {
-      setSavingView(false);
+      if (savedViewsOrganizationRef.current === organizationId) setSavingView(false);
     }
   };
 
@@ -174,39 +402,49 @@ export const ReportsView: React.FC = () => {
   };
 
   const exportReport = async (format: 'csv' | 'xlsx' | 'pdf') => {
-    if (!selectedReportId || !reportData) return;
+    if (!selectedReportId || !visibleReportData) return;
+    const organizationId = currentOrg?.id;
+    const exportContext = reportRequestContext;
+    if (!organizationId || reportDataContext !== exportContext) return;
     try {
       if (isWorkspaceReportId(selectedReportId)) {
-        await downloadWorkspaceReport(selectedReportId, { fromDate, toDate, projectId: selectedProjectId || undefined, customerId: selectedCustomerId || undefined, vendorId: selectedVendorId || undefined, accountId: selectedAccountId || undefined, status: selectedStatus || undefined }, format, visibleColumns);
+        await downloadWorkspaceReport(selectedReportId, { fromDate, toDate, projectId: selectedProjectId || undefined, customerId: selectedCustomerId || undefined, vendorId: selectedVendorId || undefined, accountId: selectedAccountId || undefined, status: selectedStatus || undefined }, format, visibleColumns, organizationId, () => reportRequestContextRef.current === exportContext);
       } else if (format === 'csv') {
-        downloadAuthoritativeReportCsv(selectedReportId as CertifiedReportId, reportData, `${selectedReportId}_${fromDate}_${toDate}.csv`);
+        downloadAuthoritativeReportCsv(selectedReportId as CertifiedReportId, visibleReportData, `${selectedReportId}_${fromDate}_${toDate}.csv`);
       }
     } catch (exportError) {
-      setError(exportError instanceof Error ? exportError.message : 'Report export failed');
+      if (currentOrg?.id === organizationId && reportRequestContextRef.current === exportContext) {
+        setError(exportError instanceof Error ? exportError.message : 'Report export failed');
+      }
     }
   };
 
+  const visibleReportData = reportDataContext === reportRequestContext ? reportData : null;
   return (
     <div className="flex min-w-0 flex-1 flex-col bg-slate-50 font-sans text-slate-900 dark:bg-slate-950 dark:text-slate-100">
+      {sourceNavigationError && <div role="alert" className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">{sourceNavigationError}</div>}
       <div className="flex min-w-0 flex-1 flex-col lg:flex-row">
         <ReportSidebarNav
           activeGroup={activeGroup}
           setActiveGroup={setActiveGroup}
           selectedReportId={selectedReportId}
-          setSelectedReportId={(id) => { setVisibleColumns([]); setSelectedReportId(id); }}
+          setSelectedReportId={selectReport}
           reportsCatalog={reportsCatalog}
           categoriesList={categoriesList}
         />
 
         <main className="flex min-w-0 flex-1 flex-col bg-white dark:bg-slate-900">
+          {favoriteStorageError && <p role="status" className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">{favoriteStorageError}</p>}
           {!selectedReportId && (
             <ReportCardGrid
               activeGroup={activeGroup}
+              categoriesList={categoriesList}
+              onSelectGroup={(group) => { setActiveGroup(group); setSelectedReportId(null); }}
               searchQuery={searchQuery}
               setSearchQuery={setSearchQuery}
               filteredReports={filteredReports}
               dateRange={`${fromDate} to ${toDate}`}
-              onSelectReport={(id) => { setVisibleColumns([]); setSelectedReportId(id); }}
+              onSelectReport={selectReport}
               onToggleFavorite={handleToggleFavorite}
             />
           )}
@@ -216,7 +454,7 @@ export const ReportsView: React.FC = () => {
               <div className="flex flex-col items-start justify-between gap-3 border-b border-slate-200 pb-3 md:flex-row md:items-center dark:border-slate-800">
                 <div>
                   <button
-                    onClick={() => setSelectedReportId(null)}
+                    onClick={() => selectReport(null)}
                     className="mb-1.5 flex cursor-pointer items-center space-x-1 text-xs font-bold text-blue-600 hover:underline dark:text-blue-400"
                   >
                     <ArrowLeft className="h-4 w-4" />
@@ -288,9 +526,9 @@ export const ReportsView: React.FC = () => {
                     <span>{error}. No financial values are shown from stale or inferred data.</span>
                   </div>
                 )}
-                {!loading && !error && reportData && (
+                {!loading && !error && visibleReportData && (
                   isWorkspaceReportId(selectedReportId)
-                    ? <WorkspaceReportRenderer report={reportData as WorkspaceReportResult} currencySymbol={settings.currencySymbol} visibleColumns={visibleColumns} onVisibleColumnsChange={setVisibleColumns} />
+                    ? <WorkspaceReportRenderer report={visibleReportData as WorkspaceReportResult} currencySymbol={settings.currencySymbol} visibleColumns={visibleColumns} onVisibleColumnsChange={setVisibleColumns} reportRoute={getReportRouteState(selectedReportId)} onOpenSource={openReportSource} />
                     : <AuthoritativeReportRenderer reportId={selectedReportId as CertifiedReportId} data={reportData} currencySymbol={settings.currencySymbol} />
                 )}
 
@@ -303,7 +541,8 @@ export const ReportsView: React.FC = () => {
           )}
         </main>
       </div>
-      {savedViews.length > 0 && !selectedReportId && (
+      {savedViewsNotice && <div role="alert" className="border-t border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">{savedViewsNotice} <button type="button" onClick={refreshSavedViews} className="ml-2 underline">Refresh saved views</button></div>}
+      {savedViewsContext === currentOrg?.id && savedViews.length > 0 && !selectedReportId && (
         <div className="border-t border-slate-200 bg-white px-3 py-3 dark:border-slate-800 dark:bg-slate-900 sm:px-6">
           <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-2">
             <span className="text-xs font-bold text-slate-500 dark:text-slate-400">Saved views</span>

@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 import { Client } from '../../types';
 import { useBooks } from '../../context/BooksContext';
+import { OperationNoticeBanner } from '../common/OperationNoticeBanner';
+import { committedButStaleNotice, mutationExceptionNotice, type OperationNotice } from '../../utils/operationNotice';
 
 interface ClientModalProps {
   isOpen: boolean;
@@ -14,7 +16,7 @@ export const ClientModal: React.FC<ClientModalProps> = ({
   onClose,
   clientToEdit,
 }) => {
-  const { settings, addClient, updateClient } = useBooks();
+  const { clients, settings, addClient, updateClient } = useBooks();
 
   const [name, setName] = useState(clientToEdit?.name || '');
   const [companyName, setCompanyName] = useState(clientToEdit?.companyName || '');
@@ -26,6 +28,13 @@ export const ClientModal: React.FC<ClientModalProps> = ({
   const [paymentTerms, setPaymentTerms] = useState(clientToEdit?.paymentTerms || 'Net 30');
   const [notes, setNotes] = useState(clientToEdit?.notes || '');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [notice, setNotice] = useState<OperationNotice | null>(null);
+  const [wasCommitted, setWasCommitted] = useState(false);
+
+  const normalizedEmail = email.trim().toLocaleLowerCase();
+  const emailMatch = normalizedEmail
+    ? clients.find((client) => client.id !== clientToEdit?.id && client.email.trim().toLocaleLowerCase() === normalizedEmail)
+    : undefined;
 
   useEffect(() => {
     if (!isOpen) return;
@@ -39,6 +48,8 @@ export const ClientModal: React.FC<ClientModalProps> = ({
     setPaymentTerms(clientToEdit?.paymentTerms || 'Net 30');
     setNotes(clientToEdit?.notes || '');
     setIsSubmitting(false);
+    setNotice(null);
+    setWasCommitted(false);
   }, [clientToEdit, isOpen]);
 
   useEffect(() => {
@@ -51,65 +62,64 @@ export const ClientModal: React.FC<ClientModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || isSubmitting) return;
+    if (!name.trim() || isSubmitting || wasCommitted) return;
 
     const submittedCurrency = settings.currencyCode.toUpperCase();
-    if (!/^[A-Z]{3}$/.test(submittedCurrency)) {
-      window.alert('The organization base currency is not configured. Reload the page before creating a client.');
+    if (!clientToEdit && !/^[A-Z]{3}$/.test(submittedCurrency)) {
+      setNotice({ tone: 'error', title: 'Client was not created', message: 'The organization base currency is not configured.', recovery: 'Reload the page after configuring the organization currency.' });
       return;
     }
 
-    if (clientToEdit) {
-      updateClient(clientToEdit.id, {
-        name,
-        companyName,
-        email,
-        phone,
-        billingAddress,
-        taxId,
-        currency,
+    setIsSubmitting(true);
+    setNotice(null);
+    try {
+      const fields = {
+        name: name.trim(),
+        companyName: companyName.trim() || name.trim(),
+        email: email.trim(),
+        phone: phone.trim(),
+        billingAddress: billingAddress.trim(),
+        taxId: taxId.trim(),
         paymentTerms,
-        notes,
-      });
-      return;
-    } else {
-      setIsSubmitting(true);
-      try {
-        await addClient({
-          name: name.trim(),
-          companyName: companyName.trim() || name.trim(),
-          email: email.trim(),
-          phone: phone.trim(),
-          billingAddress: billingAddress.trim(),
-          taxId: taxId.trim(),
-          currency: submittedCurrency,
-          paymentTerms,
-          notes: notes.trim(),
-        });
-      } catch (error: any) {
-        window.alert(error.message || 'Client could not be created');
-        return;
-      } finally {
-        setIsSubmitting(false);
-      }
+        notes: notes.trim(),
+      };
+      const result = clientToEdit
+        ? await updateClient(clientToEdit.id, fields)
+        : await addClient({ ...fields, currency: submittedCurrency });
+      setWasCommitted(true);
+      setNotice(result.refreshFailed
+        ? committedButStaleNotice(
+            clientToEdit ? 'Customer updated; list refresh failed' : 'Customer created; list refresh failed',
+            'The server committed this customer change, but the latest list could not be loaded.',
+            result.requestId
+          )
+        : {
+            tone: 'success',
+            title: clientToEdit ? 'Customer updated' : 'Customer created',
+            message: `${fields.companyName} was saved successfully.`,
+            requestId: result.requestId,
+          });
+    } catch (error) {
+      setNotice(mutationExceptionNotice(error, { action: clientToEdit ? 'Customer update' : 'Customer creation' }));
+    } finally {
+      setIsSubmitting(false);
     }
-
-    onClose();
   };
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 w-full max-w-lg overflow-hidden shadow-xl">
+      <div role="dialog" aria-modal="true" aria-labelledby="client-modal-title" className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 w-full max-w-lg max-h-[calc(100dvh-2rem)] overflow-y-auto shadow-xl">
         <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center">
-          <h3 className="font-bold text-slate-900 dark:text-slate-100 text-sm">
+          <h3 id="client-modal-title" className="font-bold text-slate-900 dark:text-slate-100 text-sm">
             {clientToEdit ? 'Edit Client Record' : 'Add New Client'}
           </h3>
-          <button onClick={onClose} className="p-1 text-slate-400 hover:text-slate-600">
+          <button aria-label="Close customer form" onClick={onClose} disabled={isSubmitting} className="p-1 text-slate-400 hover:text-slate-600">
             <X className="w-5 h-5" />
           </button>
         </div>
 
         <form onSubmit={handleSubmit} className="p-5 space-y-4 text-xs">
+          {notice && <OperationNoticeBanner notice={notice} />}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-slate-600 dark:text-slate-300 font-medium mb-1">
@@ -150,6 +160,11 @@ export const ClientModal: React.FC<ClientModalProps> = ({
                 placeholder="billing@company.com"
                 className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-2 text-slate-800 dark:text-slate-200"
               />
+              {emailMatch && (
+                <p role="status" aria-live="polite" className="mt-1 text-[11px] text-amber-700 dark:text-amber-300">
+                  Another customer already uses this email: {emailMatch.companyName || emailMatch.name}. You can still save if this is intentional.
+                </p>
+              )}
             </div>
             <div>
               <label className="block text-slate-600 dark:text-slate-300 font-medium mb-1">
@@ -257,11 +272,11 @@ export const ClientModal: React.FC<ClientModalProps> = ({
               onClick={onClose}
               className="px-4 py-2 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 font-medium"
             >
-              Cancel
+              {wasCommitted ? 'Close' : 'Cancel'}
             </button>
             <button
               type="submit"
-              disabled={isSubmitting}
+              disabled={isSubmitting || wasCommitted}
               className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-semibold shadow-sm cursor-pointer disabled:cursor-not-allowed disabled:opacity-60"
             >
               {isSubmitting ? 'Saving…' : 'Save Client'}

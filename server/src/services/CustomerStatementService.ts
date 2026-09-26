@@ -1,4 +1,4 @@
-import { db } from '../database/db';
+import { db, type DbQueryClient } from '../database/db';
 
 export interface StatementLine {
   date: string;
@@ -30,7 +30,8 @@ export class CustomerStatementService {
     orgId: string,
     customerId: string,
     fromDate: string,
-    toDate: string
+    toDate: string,
+    queryClient: DbQueryClient = db,
   ): Promise<CustomerStatementResponse> {
     const [
       custRes,
@@ -48,10 +49,10 @@ export class CustomerStatementService {
       writeOffs,
       advanceApplications,
     ] = await Promise.all([
-      db.query(`SELECT id, display_name, legal_name FROM customers WHERE organization_id = $1 AND (id = $2 OR customer_id = $2)`, [orgId, customerId]),
-      db.query(`SELECT id, name, company_name FROM clients WHERE organization_id = $1 AND id = $2`, [orgId, customerId]),
-      db.query(`SELECT COALESCE(SUM(total_amount), 0) as total FROM invoices WHERE organization_id = $1 AND (customer_id = $2 OR client_id = $2) AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED') AND issue_date < $3`, [orgId, customerId, fromDate]),
-      db.query(`SELECT COALESCE(SUM(
+      queryClient.query(`SELECT id, display_name, legal_name FROM customers WHERE organization_id = $1 AND (id = $2 OR customer_id = $2)`, [orgId, customerId]),
+      queryClient.query(`SELECT id, name, company_name FROM clients WHERE organization_id = $1 AND id = $2`, [orgId, customerId]),
+      queryClient.query(`SELECT COALESCE(SUM(total_amount), 0) as total FROM invoices WHERE organization_id = $1 AND (customer_id = $2 OR client_id = $2) AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED') AND issue_date < $3`, [orgId, customerId, fromDate]),
+      queryClient.query(`SELECT COALESCE(SUM(
                   COALESCE(pra.allocated, pr.amount - COALESCE(pr.unallocated_amount, 0))
                 ), 0) as total
                 FROM payments_received pr
@@ -64,10 +65,10 @@ export class CustomerStatementService {
                 WHERE pr.organization_id = $1 AND pr.client_id = $2
                   AND UPPER(pr.status) NOT IN ('DRAFT', 'SUBMITTED', 'REVERSED', 'VOID', 'VOIDED')
                   AND pr.payment_date < $3`, [orgId, customerId, fromDate]),
-      db.query(`SELECT COALESCE(SUM(total_amount), 0) as total FROM credit_notes WHERE organization_id = $1 AND client_id = $2 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED', 'REVERSED') AND date < $3`, [orgId, customerId, fromDate]),
-      db.query(`SELECT COALESCE(SUM(amount), 0) as total FROM customer_refunds WHERE organization_id = $1 AND customer_id = $2 AND UPPER(status) NOT IN ('REVERSED', 'VOID') AND refund_date < $3`, [orgId, customerId, fromDate]),
-      db.query(`SELECT COALESCE(SUM(amount), 0) as total FROM ar_write_offs WHERE organization_id = $1 AND customer_id = $2 AND write_off_date < $3`, [orgId, customerId, fromDate]),
-      db.query(`SELECT COALESCE(SUM(caa.amount_applied), 0) as total
+      queryClient.query(`SELECT COALESCE(SUM(total_amount), 0) as total FROM credit_notes WHERE organization_id = $1 AND client_id = $2 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED', 'REVERSED') AND date < $3`, [orgId, customerId, fromDate]),
+      queryClient.query(`SELECT COALESCE(SUM(amount), 0) as total FROM customer_refunds WHERE organization_id = $1 AND customer_id = $2 AND UPPER(status) NOT IN ('REVERSED', 'VOID') AND refund_date < $3`, [orgId, customerId, fromDate]),
+      queryClient.query(`SELECT COALESCE(SUM(amount), 0) as total FROM ar_write_offs WHERE organization_id = $1 AND customer_id = $2 AND write_off_date < $3`, [orgId, customerId, fromDate]),
+      queryClient.query(`SELECT COALESCE(SUM(caa.amount_applied), 0) as total
                 FROM customer_advance_applications caa
                 JOIN customer_advances ca ON ca.id = caa.advance_id AND ca.organization_id = caa.organization_id
                 LEFT JOIN invoices i ON i.id = caa.invoice_id AND i.organization_id = caa.organization_id
@@ -76,8 +77,8 @@ export class CustomerStatementService {
                   AND UPPER(COALESCE(caa.status, 'POSTED')) = 'POSTED'
                   AND caa.reversed_at IS NULL
                   AND caa.applied_date < $3`, [orgId, customerId, fromDate]),
-      db.query(`SELECT id, invoice_number as number, issue_date as date, total_amount as amount, notes FROM invoices WHERE organization_id = $1 AND (customer_id = $2 OR client_id = $2) AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED') AND issue_date >= $3 AND issue_date <= $4`, [orgId, customerId, fromDate, toDate]),
-      db.query(`SELECT pr.id, pr.payment_number as number, pr.payment_date as date,
+      queryClient.query(`SELECT id, invoice_number as number, issue_date as date, total_amount as amount, notes FROM invoices WHERE organization_id = $1 AND (customer_id = $2 OR client_id = $2) AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED') AND issue_date >= $3 AND issue_date <= $4`, [orgId, customerId, fromDate, toDate]),
+      queryClient.query(`SELECT pr.id, pr.payment_number as number, pr.payment_date as date,
                        COALESCE(pra.allocated, pr.amount - COALESCE(pr.unallocated_amount, 0)) as amount,
                        pr.reference
                 FROM payments_received pr
@@ -90,10 +91,10 @@ export class CustomerStatementService {
                 WHERE pr.organization_id = $1 AND pr.client_id = $2
                   AND UPPER(pr.status) NOT IN ('DRAFT', 'SUBMITTED', 'REVERSED', 'VOID', 'VOIDED')
                   AND pr.payment_date >= $3 AND pr.payment_date <= $4`, [orgId, customerId, fromDate, toDate]),
-      db.query(`SELECT id, credit_note_number as number, date, total_amount as amount, reason FROM credit_notes WHERE organization_id = $1 AND client_id = $2 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED', 'REVERSED') AND date >= $3 AND date <= $4`, [orgId, customerId, fromDate, toDate]),
-      db.query(`SELECT id, refund_number as number, refund_date as date, amount, reference FROM customer_refunds WHERE organization_id = $1 AND customer_id = $2 AND UPPER(status) NOT IN ('REVERSED', 'VOID') AND refund_date >= $3 AND refund_date <= $4`, [orgId, customerId, fromDate, toDate]),
-      db.query(`SELECT id, id as number, write_off_date as date, amount, reason FROM ar_write_offs WHERE organization_id = $1 AND customer_id = $2 AND write_off_date >= $3 AND write_off_date <= $4`, [orgId, customerId, fromDate, toDate]),
-      db.query(`SELECT caa.id, caa.amount_applied as amount, caa.applied_date as date, caa.advance_id, i.invoice_number
+      queryClient.query(`SELECT id, credit_note_number as number, date, total_amount as amount, reason FROM credit_notes WHERE organization_id = $1 AND client_id = $2 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED', 'REVERSED') AND date >= $3 AND date <= $4`, [orgId, customerId, fromDate, toDate]),
+      queryClient.query(`SELECT id, refund_number as number, refund_date as date, amount, reference FROM customer_refunds WHERE organization_id = $1 AND customer_id = $2 AND UPPER(status) NOT IN ('REVERSED', 'VOID') AND refund_date >= $3 AND refund_date <= $4`, [orgId, customerId, fromDate, toDate]),
+      queryClient.query(`SELECT id, id as number, write_off_date as date, amount, reason FROM ar_write_offs WHERE organization_id = $1 AND customer_id = $2 AND write_off_date >= $3 AND write_off_date <= $4`, [orgId, customerId, fromDate, toDate]),
+      queryClient.query(`SELECT caa.id, caa.amount_applied as amount, caa.applied_date as date, caa.advance_id, i.invoice_number
                 FROM customer_advance_applications caa
                 JOIN customer_advances ca ON ca.id = caa.advance_id AND ca.organization_id = caa.organization_id
                 LEFT JOIN invoices i ON i.id = caa.invoice_id AND i.organization_id = caa.organization_id
@@ -103,6 +104,8 @@ export class CustomerStatementService {
                   AND caa.reversed_at IS NULL
                   AND caa.applied_date >= $3 AND caa.applied_date <= $4`, [orgId, customerId, fromDate, toDate]),
     ]);
+
+    if (!custRes.rows.length && !clientRes.rows.length) throw new Error('Customer not found');
 
     const customerName =
       custRes.rows[0]?.display_name ||

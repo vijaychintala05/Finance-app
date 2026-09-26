@@ -1,11 +1,13 @@
 import React, { useState } from 'react';
-import { Edit, Mail, Phone, Plus, Search, Trash2, Users } from 'lucide-react';
+import { Archive, Edit, Mail, Phone, Plus, Search, Users } from 'lucide-react';
 import { Client } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 import { formatCurrency } from '../../utils/formatters';
 import { EmptyStateCard } from '../common/EmptyStateCard';
 import { ClientModal } from './ClientModal';
 import { CustomerWorkspace } from './CustomerWorkspace';
+import { OperationNoticeBanner } from '../common/OperationNoticeBanner';
+import { committedButStaleNotice, mutationExceptionNotice, type OperationNotice } from '../../utils/operationNotice';
 
 interface ClientsViewProps {
   autoOpenCreateModal?: boolean;
@@ -20,12 +22,15 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
   selectedEntityId,
   onSelectedEntityClosed,
 }) => {
-  const { clients, invoices, projects, settings, deleteClient } = useBooks();
+  const { clients, invoices, projects, settings, archiveClient } = useBooks();
 
   const [search, setSearch] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [clientToEdit, setClientToEdit] = useState<Client | null>(null);
   const [viewingClient, setViewingClient] = useState<Client | null>(null);
+  const [archiveCandidate, setArchiveCandidate] = useState<Client | null>(null);
+  const [isArchiving, setIsArchiving] = useState(false);
+  const [archiveNotice, setArchiveNotice] = useState<OperationNotice | null>(null);
 
   React.useEffect(() => {
     if (autoOpenCreateModal) {
@@ -44,6 +49,50 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
     }
   }, [selectedEntityId, clients]);
 
+  React.useEffect(() => {
+    setViewingClient((current) => current ? clients.find((client) => client.id === current.id) || current : null);
+  }, [clients]);
+
+  const openArchiveDialog = (client: Client) => {
+    setArchiveNotice(null);
+    setArchiveCandidate(client);
+  };
+
+  const confirmArchive = async () => {
+    if (!archiveCandidate || isArchiving) return;
+    setIsArchiving(true);
+    setArchiveNotice(null);
+    try {
+      const result = await archiveClient(archiveCandidate.id);
+      setArchiveNotice(result.refreshFailed
+        ? committedButStaleNotice('Customer archived; list refresh failed', 'The server archived this customer, but the latest list could not be loaded.', result.requestId)
+        : { tone: 'success', title: 'Customer archived', message: `${archiveCandidate.companyName || archiveCandidate.name} is no longer available for new business. Historical records remain available.`, requestId: result.requestId });
+      setViewingClient(null);
+      setArchiveCandidate(null);
+      if (onSelectedEntityClosed) onSelectedEntityClosed();
+    } catch (error) {
+      setArchiveNotice(mutationExceptionNotice(error, { action: 'Customer archive' }));
+    } finally {
+      setIsArchiving(false);
+    }
+  };
+
+  const archiveDialog = archiveCandidate && (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 p-4">
+      <div role="dialog" aria-modal="true" aria-labelledby="archive-customer-title" className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl dark:bg-slate-900">
+        <h3 id="archive-customer-title" className="text-base font-bold text-slate-900 dark:text-white">Archive customer?</h3>
+        <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+          {archiveCandidate.companyName || archiveCandidate.name} will be unavailable for new business. Existing invoices, payments, statements, and audit history are retained.
+        </p>
+        {archiveNotice && <div className="mt-4"><OperationNoticeBanner notice={archiveNotice} /></div>}
+        <div className="mt-5 flex justify-end gap-2">
+          <button type="button" disabled={isArchiving} onClick={() => setArchiveCandidate(null)} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 dark:text-slate-200">Cancel</button>
+          <button type="button" disabled={isArchiving} onClick={confirmArchive} className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{isArchiving ? 'Archiving…' : 'Archive customer'}</button>
+        </div>
+      </div>
+    </div>
+  );
+
   // If a client is selected, render the dedicated Full-Page Customer Workspace!
   if (viewingClient) {
     return (
@@ -58,7 +107,10 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
             setClientToEdit(client);
             setIsModalOpen(true);
           }}
+          onArchive={openArchiveDialog}
         />
+
+        {archiveDialog}
 
         <ClientModal
           isOpen={isModalOpen}
@@ -78,6 +130,7 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
 
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-7xl mx-auto">
+      {archiveNotice && !archiveCandidate && <OperationNoticeBanner notice={archiveNotice} />}
       {/* Top Bar */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
@@ -166,14 +219,11 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
                     <Edit className="w-4 h-4" />
                   </button>
                   <button
-                    onClick={() => {
-                      if (window.confirm(`Delete client ${client.name}? Linked invoices will remain.`)) {
-                        deleteClient(client.id);
-                      }
-                    }}
+                    onClick={() => openArchiveDialog(client)}
+                    aria-label={`Archive ${client.name}`}
                     className="p-1 text-slate-400 hover:text-rose-600 rounded-md"
                   >
-                    <Trash2 className="w-4 h-4" />
+                    <Archive className="w-4 h-4" />
                   </button>
                 </div>
               </div>
@@ -325,19 +375,12 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
                           <Edit className="w-4 h-4" />
                         </button>
                         <button
-                          onClick={() => {
-                            if (
-                              window.confirm(
-                                `Delete client ${client.name}? Linked invoices will remain.`
-                              )
-                            ) {
-                              deleteClient(client.id);
-                            }
-                          }}
+                          onClick={() => openArchiveDialog(client)}
                           className="p-1.5 text-rose-500 hover:bg-rose-50 dark:hover:bg-slate-800 rounded-lg cursor-pointer"
-                          title="Delete Client"
+                          title="Archive Client"
+                          aria-label={`Archive ${client.name}`}
                         >
-                          <Trash2 className="w-4 h-4" />
+                          <Archive className="w-4 h-4" />
                         </button>
                       </td>
                     </tr>
@@ -353,6 +396,7 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
         onClose={() => setIsModalOpen(false)}
         clientToEdit={clientToEdit}
       />
+      {archiveDialog}
     </div>
   );
 };

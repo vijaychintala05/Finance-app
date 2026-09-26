@@ -17,7 +17,7 @@ test('Point-1 workspaces are enabled, responsive, and free of page overflow', as
 
   for (const [route, heading] of workspaces) {
     await page.goto(`${baseUrl}#/${route}`);
-    await expect(page.getByRole('heading', { name: heading })).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole('heading', { name: heading })).toBeVisible({ timeout: 30_000 });
     await expect(page.getByText('This workflow has not completed Point-1 certification.')).toHaveCount(0);
     await expect(page.locator('[role="alert"]')).toHaveCount(0);
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);

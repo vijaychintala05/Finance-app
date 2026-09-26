@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
 import { GlobalSearchBar } from '../components/common/GlobalSearchBar';
 import { BooksProvider } from '../context/BooksContext';
+import * as BooksContextModule from '../context/BooksContext';
 
 const renderWithProvider = (ui: React.ReactElement) => {
   return render(<BooksProvider>{ui}</BooksProvider>);
@@ -12,6 +13,9 @@ const renderWithProvider = (ui: React.ReactElement) => {
 describe('Phase 8.3C — Real GlobalSearchBar Component & UI Comprehensive Regression Tests', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.spyOn(BooksContextModule, 'useBooks').mockImplementation(() => ({
+      currentOrg: { id: 'org-test', name: 'Test Organization' },
+    } as any));
   });
 
   afterEach(() => {
@@ -63,7 +67,7 @@ describe('Phase 8.3C — Real GlobalSearchBar Component & UI Comprehensive Regre
 
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ results: mockResults }),
+      text: async () => JSON.stringify ({ results: mockResults }),
     } as Response);
 
     renderWithProvider(<GlobalSearchBar />);
@@ -97,7 +101,7 @@ describe('Phase 8.3C — Real GlobalSearchBar Component & UI Comprehensive Regre
 
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ results: mockResults }),
+      text: async () => JSON.stringify ({ results: mockResults }),
     } as Response);
 
     renderWithProvider(<GlobalSearchBar onNavigate={onNavigate} />);
@@ -138,7 +142,7 @@ describe('Phase 8.3C — Real GlobalSearchBar Component & UI Comprehensive Regre
 
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ results: mockResults }),
+      text: async () => JSON.stringify ({ results: mockResults }),
     } as Response);
 
     renderWithProvider(<GlobalSearchBar onNavigate={onNavigate} />);
@@ -153,7 +157,18 @@ describe('Phase 8.3C — Real GlobalSearchBar Component & UI Comprehensive Regre
       expect(screen.getByText('VCR-2026-001')).toBeTruthy();
     });
 
+    expect(screen.getByRole('dialog', { name: 'Global search' })).toBeTruthy();
+    expect(modalInput.getAttribute('role')).toBe('combobox');
+    expect(modalInput.getAttribute('aria-expanded')).toBe('true');
+    const optionsBeforeMove = screen.getAllByRole('option');
+    expect(optionsBeforeMove[0].getAttribute('aria-selected')).toBe('true');
+    expect(modalInput.getAttribute('aria-activedescendant')).toBe(optionsBeforeMove[0].id);
+
     fireEvent.keyDown(modalInput, { key: 'ArrowDown' });
+    const optionsAfterMove = screen.getAllByRole('option');
+    expect(optionsAfterMove[0].getAttribute('aria-selected')).toBe('false');
+    expect(optionsAfterMove[1].getAttribute('aria-selected')).toBe('true');
+    expect(modalInput.getAttribute('aria-activedescendant')).toBe(optionsAfterMove[1].id);
     fireEvent.keyDown(modalInput, { key: 'Enter' });
 
     expect(onNavigate).toHaveBeenCalledWith('vendor_credits', { entityId: 'vc-1' });
@@ -193,13 +208,13 @@ describe('Phase 8.3C — Real GlobalSearchBar Component & UI Comprehensive Regre
     });
 
     // Cleanup promise
-    resolveFetch({ ok: true, json: async () => ({ results: [] }) });
+    resolveFetch({ ok: true, text: async () => JSON.stringify ({ results: [] }) });
   });
 
   it('9. No-results state appears when backend returns an empty result list', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ results: [] }),
+      text: async () => JSON.stringify ({ results: [] }),
     } as Response);
 
     renderWithProvider(<GlobalSearchBar />);
@@ -218,7 +233,7 @@ describe('Phase 8.3C — Real GlobalSearchBar Component & UI Comprehensive Regre
   it('10. Clearing the input clears displayed results and returns to idle state', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
       ok: true,
-      json: async () => ({
+      text: async () => JSON.stringify ({
         results: [
           {
             id: 'so-1',
@@ -283,7 +298,7 @@ describe('Phase 8.3C — Real GlobalSearchBar Component & UI Comprehensive Regre
     // Resolve 2nd (newer) request first
     resolveSecond({
       ok: true,
-      json: async () => ({
+      text: async () => JSON.stringify ({
         results: [
           {
             id: 'new-1',
@@ -303,7 +318,7 @@ describe('Phase 8.3C — Real GlobalSearchBar Component & UI Comprehensive Regre
     // Now resolve 1st (older) request with stale data
     resolveFirst({
       ok: true,
-      json: async () => ({
+      text: async () => JSON.stringify ({
         results: [
           {
             id: 'old-1',
@@ -350,5 +365,162 @@ describe('Phase 8.3C — Real GlobalSearchBar Component & UI Comprehensive Regre
     await waitFor(() => {
       expect(screen.getByText('Search is temporarily unavailable.')).toBeTruthy();
     });
+  });
+
+  it('shows an unavailable state when a successful response has no results array', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      text: async () => JSON.stringify({ unexpected: true }),
+    } as Response);
+
+    renderWithProvider(<GlobalSearchBar />);
+    fireEvent.click(screen.getByPlaceholderText('Search invoices, customers, bills, accounts... (⌘K)'));
+    fireEvent.change(screen.getByPlaceholderText('Search across all invoices, quotes, bills, customers, accounts...'), { target: { value: 'Malformed' } });
+
+    expect(await screen.findByText('Search is temporarily unavailable.')).toBeTruthy();
+    expect(screen.queryByText(/No matching records found/i)).toBeNull();
+  });
+  it('invalidates an in-flight response when the query becomes too short', async () => {
+    let resolveSearch: (value: any) => void = () => {};
+    vi.spyOn(globalThis, 'fetch').mockImplementationOnce(() => new Promise((resolve) => { resolveSearch = resolve; }) as any);
+
+    renderWithProvider(<GlobalSearchBar />);
+    fireEvent.click(screen.getByPlaceholderText(/Search invoices, customers, bills, accounts... \(⌘K\)/i));
+    const input = screen.getByPlaceholderText('Search across all invoices, quotes, bills, customers, accounts...');
+    fireEvent.change(input, { target: { value: 'OldQuery' } });
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    fireEvent.change(input, { target: { value: 'O' } });
+    resolveSearch({ ok: true, text: async () => JSON.stringify({ results: [{ id: 'old-1', category: 'Invoice', title: 'Stale invoice', subtitle: 'Old tenant' }] }) });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(screen.queryByText('Stale invoice')).toBeNull();
+    expect(screen.queryByRole('listbox', { name: 'Search results' })).toBeNull();
+  });
+
+  it('rejects malformed search rows before they reach React rendering', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      text: async () => JSON.stringify({ results: [
+        { id: 'valid-1', category: 'Invoice', title: 'Valid result', subtitle: 'Ready' },
+        { id: 'bad-1', category: 'Invoice', title: { text: 'not renderable' }, subtitle: 'Malformed' },
+      ] }),
+    } as Response);
+
+    renderWithProvider(<GlobalSearchBar />);
+    fireEvent.click(screen.getByPlaceholderText(/Search invoices, customers, bills, accounts... \(⌘K\)/i));
+    fireEvent.change(screen.getByPlaceholderText('Search across all invoices, quotes, bills, customers, accounts...'), { target: { value: 'MalformedRow' } });
+
+    expect(await screen.findByText('Search is temporarily unavailable.')).toBeTruthy();
+    expect(screen.queryByText('Valid result')).toBeNull();
+  });
+  it('offers in-memory recent records on reopen and keeps them keyboard navigable without stale financial metadata', async () => {
+    const onNavigate = vi.fn();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      text: async () => JSON.stringify({ results: [{
+        id: 'inv-recent-1',
+        category: 'Invoice',
+        title: 'INV-RECENT-001',
+        subtitle: 'Northwind · ₹50,000',
+        status: 'Sent',
+        amount: 50000,
+        date: '2026-09-22',
+        linkRoute: '/sales/invoices?id=inv-recent-1',
+      }] }),
+    } as Response);
+
+    renderWithProvider(<GlobalSearchBar onNavigate={onNavigate} />);
+    const trigger = screen.getByPlaceholderText(/Search invoices, customers, bills, accounts... \(⌘K\)/i);
+    fireEvent.click(trigger);
+    const modalInput = screen.getByPlaceholderText('Search across all invoices, quotes, bills, customers, accounts...');
+    fireEvent.change(modalInput, { target: { value: 'INV-RECENT' } });
+    fireEvent.click(await screen.findByText('INV-RECENT-001'));
+    expect(onNavigate).toHaveBeenLastCalledWith('invoices', { entityId: 'inv-recent-1' });
+
+    fireEvent.click(trigger);
+    const recentOption = await screen.findByRole('option', { name: /INV-RECENT-001, Invoice, Open this recent record/i });
+    expect(screen.getByRole('listbox', { name: 'Recent records' })).toBeTruthy();
+    expect(recentOption.getAttribute('aria-selected')).toBe('true');
+    expect(recentOption.textContent).not.toContain('50,000');
+    expect(recentOption.textContent).not.toContain('Sent');
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    fireEvent.keyDown(screen.getByPlaceholderText('Search across all invoices, quotes, bills, customers, accounts...'), { key: 'Enter' });
+    expect(onNavigate).toHaveBeenCalledTimes(2);
+    expect(onNavigate).toHaveBeenLastCalledWith('invoices', { entityId: 'inv-recent-1' });
+  });
+  it('routes only explicit supported categories with the active organization and keeps unknown results non-navigable', async () => {
+    const onSearchResult = vi.fn();
+    vi.spyOn(BooksContextModule, 'useBooks').mockImplementation(() => ({ currentOrg: { id: 'org-search-safe', name: 'Safe Org' } } as any));
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      text: async () => JSON.stringify({ results: [
+        { id: 'expense-1', category: 'Expense', title: 'Office supplies', subtitle: '₹25', linkRoute: 'https://evil.example' },
+        { id: 'unknown-1', category: 'Unrecognized', title: 'Unknown record', subtitle: 'No route' },
+        { id: 'proto-1', category: '__proto__', title: 'Prototype category', subtitle: 'No route' },
+        { id: 'constructor-1', category: 'constructor', title: 'Constructor category', subtitle: 'No route' },
+        { id: 'credit-1', category: 'Credit Note', title: 'Credit note', subtitle: 'Unsupported exact view' },
+      ] })
+    } as Response);
+
+    renderWithProvider(<GlobalSearchBar onSearchResult={onSearchResult} />);
+    fireEvent.click(screen.getByPlaceholderText(/Search invoices, customers, bills, accounts... \(⌘K\)/i));
+    fireEvent.change(screen.getByPlaceholderText('Search across all invoices, quotes, bills, customers, accounts...'), { target: { value: 'Office' } });
+    const expense = await screen.findByText('Office supplies');
+    const searchRequest = vi.mocked(globalThis.fetch).mock.calls[0];
+    expect(new Headers(searchRequest[1]?.headers).get('x-organization-id')).toBe('org-search-safe');
+    fireEvent.click(expense);
+    expect(onSearchResult).toHaveBeenCalledWith({ tab: 'expenses', entityId: 'expense-1', organizationId: 'org-search-safe' });
+
+    fireEvent.click(screen.getByPlaceholderText(/Search invoices, customers, bills, accounts... \(⌘K\)/i));
+    fireEvent.change(screen.getByPlaceholderText('Search across all invoices, quotes, bills, customers, accounts...'), { target: { value: 'Unknown' } });
+    const unknown = await screen.findByRole('option', { name: /Unknown record, Unrecognized, No route, No direct view/i });
+    expect(unknown.getAttribute('aria-disabled')).toBe('true');
+    expect((await screen.findByRole('option', { name: /Prototype category, __proto__, No route, No direct view/i })).getAttribute('aria-disabled')).toBe('true');
+    expect((await screen.findByRole('option', { name: /Constructor category, constructor, No route, No direct view/i })).getAttribute('aria-disabled')).toBe('true');
+    expect(onSearchResult).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not show recent records after the active organization changes', async () => {
+    let activeOrganization = { id: 'org-recent-a', name: 'Organization A' };
+    vi.spyOn(BooksContextModule, 'useBooks').mockImplementation(() => ({ currentOrg: activeOrganization } as any));
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      text: async () => JSON.stringify({ results: [{ id: 'vendor-org-a', category: 'Vendor', title: 'Private Vendor', subtitle: 'private@example.test' }] }),
+    } as Response);
+
+    const view = render(<GlobalSearchBar />);
+    const trigger = screen.getByPlaceholderText(/Search invoices, customers, bills, accounts... \(⌘K\)/i);
+    fireEvent.click(trigger);
+    fireEvent.change(screen.getByPlaceholderText('Search across all invoices, quotes, bills, customers, accounts...'), { target: { value: 'Private' } });
+    fireEvent.click(await screen.findByText('Private Vendor'));
+
+    activeOrganization = { id: 'org-recent-b', name: 'Organization B' };
+    view.rerender(<GlobalSearchBar />);
+    fireEvent.click(trigger);
+
+    expect(screen.queryByRole('listbox', { name: 'Recent records' })).toBeNull();
+    expect(screen.queryByText('Private Vendor')).toBeNull();
+  });
+  it('discards an in-flight search when the active organization changes', async () => {
+    let activeOrganization = { id: 'org-pending-a', name: 'Organization A' };
+    vi.spyOn(BooksContextModule, 'useBooks').mockImplementation(() => ({ currentOrg: activeOrganization } as any));
+    let resolveSearch: (value: any) => void = () => {};
+    vi.spyOn(globalThis, 'fetch').mockImplementationOnce(() => new Promise((resolve) => { resolveSearch = resolve; }) as any);
+
+    const view = render(<GlobalSearchBar />);
+    fireEvent.click(screen.getByPlaceholderText(/Search invoices, customers, bills, accounts... \(⌘K\)/i));
+    const modalInput = screen.getByPlaceholderText('Search across all invoices, quotes, bills, customers, accounts...');
+    fireEvent.change(modalInput, { target: { value: 'Private' } });
+    await new Promise((resolve) => setTimeout(resolve, 350));
+
+    activeOrganization = { id: 'org-pending-b', name: 'Organization B' };
+    view.rerender(<GlobalSearchBar />);
+    expect(screen.getByPlaceholderText('Search across all invoices, quotes, bills, customers, accounts...').getAttribute('value')).not.toBe('Private');
+    resolveSearch({ ok: true, text: async () => JSON.stringify({ results: [{ id: 'old-private', category: 'Vendor', title: 'Old organization vendor', subtitle: 'private@example.test' }] }) });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(screen.queryByText('Old organization vendor')).toBeNull();
+    expect(screen.queryByRole('listbox', { name: 'Search results' })).toBeNull();
   });
 });

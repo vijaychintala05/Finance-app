@@ -1,4 +1,4 @@
-import { apiClient } from '../api/client';
+import { ApiRequestError, apiClient } from '../api/client';
 
 export interface QuotationLineItemInput {
   id?: string;
@@ -70,7 +70,7 @@ export const quotationApi = {
 
   async convertQuotationToInvoice(id: string) {
     const res = await apiClient.post<{ invoice: any }>(`/quotations/${id}/convert-inv`);
-    if (res.error) throw new Error(res.error);
+    if (res.error) throw new ApiRequestError(res, 'Failed to convert quotation to invoice');
     return res.data?.invoice;
   },
 
@@ -88,8 +88,19 @@ export const quotationApi = {
   },
 
   async getQuotationPdf(id: string, revisionNumber?: number): Promise<Blob> {
+    if (revisionNumber === undefined) {
+      const endpoint = `/finance/documents/quotes/${id}/pdf/issue`;
+      const issued = await apiClient.postBlob(endpoint, {});
+      if (issued.error && /only finalized documents/i.test(issued.error)) {
+        const preview = await apiClient.getBlob(`/finance/documents/quotes/${id}/pdf?preview=true`);
+        if (preview.error || !preview.data) throw new ApiRequestError(preview, 'Failed to generate quotation preview');
+        return preview.data;
+      }
+      if (issued.error || !issued.data) throw new ApiRequestError(issued, 'Failed to issue quotation PDF');
+      return issued.data;
+    }
     const token = typeof window !== 'undefined' && !import.meta.env.PROD ? localStorage.getItem('auth_token') : null;
-    const revPath = revisionNumber !== undefined ? `/revisions/${revisionNumber}` : '';
+    const revPath = `/revisions/${revisionNumber}`;
     const res = await fetch(`/api/v1/quotations/${id}${revPath}/pdf`, {
       method: 'GET',
       headers: {

@@ -14,6 +14,8 @@ export interface QueryOptions {
   timeoutMs?: number;
 }
 
+export type TransactionIsolationLevel = 'READ COMMITTED' | 'REPEATABLE READ' | 'SERIALIZABLE';
+
 export interface DbQueryClient {
   query: <T = any>(text: string, params?: any[], options?: QueryOptions) => Promise<DbQueryResult<T>>;
 }
@@ -317,11 +319,14 @@ class DatabaseService {
 
   public async transaction<T>(
     callback: (client: DbQueryClient) => Promise<T>,
-    options?: { organizationId?: string }
+    options?: { organizationId?: string; isolationLevel?: TransactionIsolationLevel }
   ): Promise<T> {
     const orgId = options?.organizationId || this.currentOrgContext.getStore();
     const ambientClient = this.transactionContext.getStore();
     if (ambientClient) {
+      if (options?.isolationLevel) {
+        throw new Error('Transaction isolation cannot be changed inside a nested transaction');
+      }
       if (this.memDbInstance) {
         const nestedBackup = this.memDbInstance.backup();
         try {
@@ -396,6 +401,9 @@ class DatabaseService {
         let committed = false;
         try {
           await client.query('BEGIN');
+          if (options?.isolationLevel) {
+            await client.query(`SET TRANSACTION ISOLATION LEVEL ${options.isolationLevel}`);
+          }
           if (orgId && !this.isMemoryMode()) {
             try {
               await client.query("SELECT set_config('app.current_org_id', $1, true)", [orgId]);

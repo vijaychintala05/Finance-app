@@ -1,0 +1,23 @@
+name: firmbooks-test
+
+services:
+  database:
+    image: postgres:16-alpine
+    container_name: firmbooks-postgres-test
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: firmbooks
+      POSTGRES_USER: firmbooks
+      POSTGRES_PASSWORD: firmbooks_test_secret
+    ports:
+      - "5433:5432"
+    volumes:
+      - firmbooks_test_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U firmbooks -d firmbooks"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  firmbooks_test_data:

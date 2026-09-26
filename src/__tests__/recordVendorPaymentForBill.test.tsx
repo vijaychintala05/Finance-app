@@ -59,12 +59,14 @@ describe('Verification Suite: Record Vendor Payment for Bill Workflow', () => {
 
   const mockAddPaymentMade = vi.fn().mockResolvedValue({ id: 'pay-1', amount: 10000 });
   const mockAddVendorAdvance = vi.fn().mockResolvedValue({ id: 'adv-1', amount: 10000 });
+  let mockDeleteBill: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     vi.restoreAllMocks();
     cleanup();
     localStorage.setItem('firmbooks_authenticated', 'true');
     localStorage.setItem('firmbooks_current_org_id', 'test-org');
+    mockDeleteBill = vi.fn().mockResolvedValue({ requestId: 'req-bill-void-1' });
 
     vi.spyOn(BooksContext, 'useBooks').mockReturnValue({
       vendors: [mockVendor, mockVendor2],
@@ -74,7 +76,7 @@ describe('Verification Suite: Record Vendor Payment for Bill Workflow', () => {
       addPaymentMade: mockAddPaymentMade,
       addVendorAdvance: mockAddVendorAdvance,
       refreshAccounts: vi.fn().mockResolvedValue(undefined),
-      deleteBill: vi.fn().mockResolvedValue(undefined),
+      deleteBill: mockDeleteBill,
       updateBill: vi.fn(),
       settings: {
         currencySymbol: '₹',
@@ -183,7 +185,46 @@ describe('Verification Suite: Record Vendor Payment for Bill Workflow', () => {
     expect(screen.getByText('Record Vendor Payment')).toBeDefined();
   });
 
-  it('5. SettlementWorkspace populates open bills dropdown for payables with camelCase vendorId and balanceDue', async () => {
+  it('5. voids a bill through one reason-required dialog and preserves the operation receipt', async () => {
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => undefined);
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const promptSpy = vi.spyOn(window, 'prompt').mockReturnValue(null);
+
+    render(<BillDetailsModal isOpen={true} onClose={vi.fn()} bill={mockBill} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    fireEvent.click(screen.getByText('Void Bill'));
+
+    expect(screen.getByRole('dialog', { name: 'Void bill BILL-2026-001?' })).toBeTruthy();
+    expect(screen.getByText(/does not delete history/i)).toBeTruthy();
+    expect(mockDeleteBill).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText('Reason for voiding'), { target: { value: 'Duplicate vendor invoice' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Void with reversal' }));
+
+    await waitFor(() => expect(mockDeleteBill).toHaveBeenCalledWith('bill-101', 'Duplicate vendor invoice'));
+    expect(await screen.findByText(/original remains in history/i)).toBeTruthy();
+    expect(screen.getByText('req-bill-void-1')).toBeTruthy();
+    expect(alertSpy).not.toHaveBeenCalled();
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(promptSpy).not.toHaveBeenCalled();
+  });
+
+  it('6. treats a failed post-commit refresh as committed and warns against resubmission', async () => {
+    mockDeleteBill.mockResolvedValueOnce({ requestId: 'req-bill-stale-1', refreshFailed: true });
+    render(<BillDetailsModal isOpen={true} onClose={vi.fn()} bill={mockBill} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    fireEvent.click(screen.getByText('Void Bill'));
+    fireEvent.change(screen.getByLabelText('Reason for voiding'), { target: { value: 'Duplicate vendor invoice' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Void with reversal' }));
+
+    expect(await screen.findByText('Bill voided; refreshed state unavailable')).toBeTruthy();
+    expect(screen.getByText(/Use Verify status here before taking any further action/i)).toBeTruthy();
+    expect(screen.getByText('req-bill-stale-1')).toBeTruthy();
+  });
+
+  it('7. SettlementWorkspace populates open bills dropdown for payables with camelCase vendorId and balanceDue', async () => {
     // Mock apiClient.get
     vi.spyOn(apiClient, 'get').mockImplementation(async (url: string) => {
       if (url === '/finance/vendor-payments') {

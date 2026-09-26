@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import { db } from '../database/db';
 import { newId } from '../utils/ids';
+import { getJwtSecret } from '../config/environment';
 
 export interface RateLimitStatus {
   allowed: boolean;
@@ -115,6 +116,17 @@ export class SessionSecurity {
   public static async verifyPassword(password: string, hash: string): Promise<boolean> {
     if (!hash) return false;
     return bcrypt.compare(password, hash);
+  }
+
+  public static credentialProof(passwordHash: string): string {
+    return crypto.createHmac('sha256', getJwtSecret()).update(passwordHash).digest('hex');
+  }
+
+  public static verifyCredentialProof(passwordHash: string, proof: string): boolean {
+    if (!proof || !/^[a-f0-9]{64}$/i.test(proof)) return false;
+    const expected = Buffer.from(this.credentialProof(passwordHash), 'hex');
+    const received = Buffer.from(proof, 'hex');
+    return expected.length === received.length && crypto.timingSafeEqual(expected, received);
   }
 
   public static async revokeAllUserTokens(userId: string): Promise<void> {

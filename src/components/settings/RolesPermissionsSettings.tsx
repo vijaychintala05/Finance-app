@@ -1,10 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Shield, Plus, Copy, Trash2, Edit3, AlertTriangle, CheckCircle, X, Search, Check } from 'lucide-react';
 import { apiClient } from '../../api/client';
+import { useBooks } from '../../context/BooksContext';
 import { detectSodConflicts, type PermissionMetadata, type SodConflict } from '../../types/permissions';
 
 interface RoleData {
   id: string;
+  organizationId?: string;
   name: string;
   description?: string;
   isSystemRole: boolean;
@@ -12,50 +14,164 @@ interface RoleData {
   assignedUsersCount?: number;
 }
 
+interface RoleDeleteOperation {
+  organizationId: string;
+  roleId: string;
+  roleName: string;
+  idempotencyKey: string;
+  attempted?: boolean;
+}
+
+interface RoleDeleteReceipt {
+  id: string;
+  deleted: true;
+}
+
+const ROLE_DELETE_GUARD_PREFIX = 'firmbooks.role-delete.v1';
+
+function roleDeleteGuardKey(organizationId: string, roleId: string): string {
+  return ROLE_DELETE_GUARD_PREFIX + ':' + encodeURIComponent(organizationId) + ':' + encodeURIComponent(roleId);
+}
+
+function readRoleDeleteGuard(organizationId: string, roleId: string): RoleDeleteOperation | null {
+  try {
+    const raw = localStorage.getItem(roleDeleteGuardKey(organizationId, roleId));
+    if (!raw) return null;
+    const value = JSON.parse(raw) as RoleDeleteOperation;
+    return value.organizationId === organizationId && value.roleId === roleId &&
+      typeof value.roleName === 'string' && typeof value.idempotencyKey === 'string' ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeRoleDeleteGuard(operation: RoleDeleteOperation): boolean {
+  try {
+    localStorage.setItem(roleDeleteGuardKey(operation.organizationId, operation.roleId), JSON.stringify(operation));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function clearRoleDeleteGuard(operation: RoleDeleteOperation): void {
+  try {
+    localStorage.removeItem(roleDeleteGuardKey(operation.organizationId, operation.roleId));
+  } catch {
+    // A stale guard can only cause a same-key replay, which the server safely handles.
+  }
+}
 export const RolesPermissionsSettings: React.FC = () => {
+  const { currentOrg } = useBooks();
+  const activeOrganizationIdRef = useRef(currentOrg.id);
+  activeOrganizationIdRef.current = currentOrg.id;
+  const deleteDialogRef = useRef<HTMLDivElement>(null);
+  const deleteTriggerRef = useRef<HTMLButtonElement>(null);
+  const restoreDeleteFocusRef = useRef(false);
+  const deleteInFlightRef = useRef<string | null>(null);
   const [roles, setRoles] = useState<RoleData[]>([]);
+  const [rolesOrganizationId, setRolesOrganizationId] = useState('');
   const [allPermissions, setAllPermissions] = useState<PermissionMetadata[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedRole, setSelectedRole] = useState<RoleData | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [isCloning, setIsCloning] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
-
   const [formName, setFormName] = useState('');
   const [formDescription, setFormDescription] = useState('');
   const [formPermissions, setFormPermissions] = useState<string[]>([]);
   const [permSearch, setPermSearch] = useState('');
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
+  const [deleteOperation, setDeleteOperation] = useState<RoleDeleteOperation | null>(null);
+  const [deleteSaving, setDeleteSaving] = useState(false);
+  const [deleteUncertain, setDeleteUncertain] = useState(false);
+  const [deleteNeedsReload, setDeleteNeedsReload] = useState<string | null>(null);
 
   useEffect(() => {
-    loadRolesAndPermissions();
-  }, []);
+    setRoles([]);
+    setRolesOrganizationId('');
+    setSelectedRole(null);
+    setAllPermissions([]);
+    setStatusMessage(null);
+    setDeleteOperation(null);
+    setDeleteSaving(false);
+    setDeleteUncertain(false);
+    setDeleteNeedsReload(null);
+    deleteInFlightRef.current = null;
+    restoreDeleteFocusRef.current = false;
+    void loadRolesAndPermissions(currentOrg.id);
+  }, [currentOrg.id]);
 
-  const loadRolesAndPermissions = async () => {
+  useEffect(() => {
+    if (!deleteOperation) {
+      if (restoreDeleteFocusRef.current) {
+        restoreDeleteFocusRef.current = false;
+        deleteTriggerRef.current?.focus();
+      }
+      return;
+    }
+    const dialog = deleteDialogRef.current;
+    if (!dialog) return;
+    dialog.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !deleteSaving) {
+        event.preventDefault();
+
+        restoreDeleteFocusRef.current = true;
+        setDeleteOperation(null);
+        setDeleteUncertain(false);
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const buttons = dialog.querySelectorAll<HTMLButtonElement>('button:not([disabled])');
+      if (buttons.length === 0) return;
+      const first = buttons.item(0);
+      const last = buttons.item(buttons.length - 1);
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    dialog.addEventListener('keydown', handleKeyDown);
+    return () => dialog.removeEventListener('keydown', handleKeyDown);
+  }, [deleteOperation, deleteSaving, deleteUncertain]);
+
+  const loadRolesAndPermissions = async (
+    organizationId: string = currentOrg.id,
+    removedRoleId?: string,
+  ): Promise<RoleData[] | null> => {
+    if (activeOrganizationIdRef.current !== organizationId) return null;
     setLoading(true);
     try {
       const [rolesRes, permsRes] = await Promise.all([
-        apiClient.get<{ roles: RoleData[] }>('/security/roles'),
-        apiClient.get<{ permissions: PermissionMetadata[] }>('/security/permissions'),
+        apiClient.get<{ roles: RoleData[] }>('/security/roles', organizationId),
+        apiClient.get<{ permissions: PermissionMetadata[] }>('/security/permissions', organizationId),
       ]);
-
-      if (rolesRes.data?.roles) {
-        setRoles(rolesRes.data.roles);
-        if (!selectedRole && rolesRes.data.roles.length > 0) {
-          setSelectedRole(rolesRes.data.roles[0]);
+      if (activeOrganizationIdRef.current !== organizationId) return null;
+      const roleList = rolesRes.data?.roles;
+      const permissionList = permsRes.data?.permissions;
+      if (rolesRes.error || permsRes.error || !Array.isArray(roleList) || !Array.isArray(permissionList)) return null;
+      setRoles(roleList);
+      setRolesOrganizationId(organizationId);
+      setAllPermissions(permissionList);
+      setSelectedRole((current) => {
+        if (current && current.id !== removedRoleId) {
+          const retained = roleList.find((role) => role.id === current.id);
+          if (retained) return retained;
         }
-      }
-      if (permsRes.data?.permissions) {
-        setAllPermissions(permsRes.data.permissions);
-      }
+        return roleList[0] || null;
+      });
+      return roleList;
     } catch {
-      // Fallback
+      return null;
     } finally {
-      setLoading(false);
+      if (activeOrganizationIdRef.current === organizationId) setLoading(false);
     }
   };
-
   const handleStartCreate = () => {
     setIsCreating(true);
     setIsCloning(false);
@@ -157,23 +273,199 @@ export const RolesPermissionsSettings: React.FC = () => {
     }
   };
 
-  const handleDeleteRole = async (role: RoleData) => {
-    if (role.isSystemRole) return;
-    if (!window.confirm(`Are you sure you want to delete the custom role '${role.name}'?`)) return;
+  const handleDeleteRole = (role: RoleData) => {
+    if (role.isSystemRole || loading || activeOrganizationIdRef.current !== currentOrg.id) return;
+    let operation = readRoleDeleteGuard(currentOrg.id, role.id);
+    if (!operation) {
+      try {
+        operation = {
+          organizationId: currentOrg.id,
+          roleId: role.id,
+          roleName: role.name,
+          idempotencyKey: apiClient.createIdempotencyKey(),
+        };
+      } catch {
+        setStatusMessage({ type: 'error', text: 'Secure randomness is unavailable, so the role was not deleted.' });
+        return;
+      }
+      if (!writeRoleDeleteGuard(operation)) {
+        setStatusMessage({ type: 'error', text: 'This browser could not save a safe retry record, so the role was not deleted.' });
+        return;
+      }
+    }
+    setStatusMessage(null);
+    setDeleteUncertain(Boolean(operation.attempted));
+    setDeleteOperation(operation);
+  };
 
+  const verifyRoleDelete = async (operation: RoleDeleteOperation): Promise<'deleted' | 'present' | 'unknown'> => {
+    if (activeOrganizationIdRef.current !== operation.organizationId) return 'unknown';
     try {
-      await apiClient.delete(`/security/roles/${role.id}`);
-      setStatusMessage({ type: 'success', text: `Role '${role.name}' deleted.` });
-      await loadRolesAndPermissions();
-      setSelectedRole(roles.find((r) => r.id !== role.id) || null);
-    } catch (err: any) {
-      setStatusMessage({
-        type: 'error',
-        text: err.response?.data?.error || err.message || 'Failed to delete role.',
-      });
+      const response = await apiClient.get<{ roles: RoleData[] }>('/security/roles', operation.organizationId);
+      if (activeOrganizationIdRef.current !== operation.organizationId || response.error || !Array.isArray(response.data?.roles)) return 'unknown';
+      return response.data.roles.some((role) => role.id === operation.roleId) ? 'present' : 'deleted';
+    } catch {
+      return 'unknown';
     }
   };
 
+  const finishRoleDelete = async (operation: RoleDeleteOperation) => {
+    clearRoleDeleteGuard(operation);
+    setDeleteOperation(null);
+    setDeleteUncertain(false);
+    if (activeOrganizationIdRef.current !== operation.organizationId) return;
+    const freshRoles = await loadRolesAndPermissions(operation.organizationId, operation.roleId);
+    if (activeOrganizationIdRef.current !== operation.organizationId) return;
+    if (!freshRoles || freshRoles.some((role) => role.id === operation.roleId)) {
+      setDeleteNeedsReload(operation.roleId);
+      setStatusMessage({
+        type: 'error',
+        text: 'The server confirmed deletion of ' + operation.roleName + ', but the role list did not refresh. Reload the list before taking another role action.',
+      });
+      return;
+    }
+    setDeleteNeedsReload(null);
+    setStatusMessage({ type: 'success', text: 'Role ' + operation.roleName + ' deleted.' });
+  };
+
+  const confirmDeleteRole = async () => {
+    const operation = deleteOperation;
+    if (!operation) return;
+    const operationToken = operation.organizationId + ':' + operation.roleId + ':' + operation.idempotencyKey;
+    if (deleteInFlightRef.current === operationToken) return;
+    if (activeOrganizationIdRef.current !== operation.organizationId) {
+      setDeleteOperation(null);
+      return;
+    }
+    deleteInFlightRef.current = operationToken;
+    const attemptedOperation = { ...operation, attempted: true };
+    writeRoleDeleteGuard(attemptedOperation);
+    setDeleteOperation(attemptedOperation);
+    setDeleteUncertain(true);
+    setDeleteSaving(true);
+    setStatusMessage(null);
+    try {
+      const response = await apiClient.delete<RoleDeleteReceipt>(
+        '/security/roles/' + operation.roleId,
+        operation.organizationId,
+        operation.idempotencyKey,
+      );
+      if (activeOrganizationIdRef.current !== operation.organizationId) {
+        if (response.status >= 200 && response.status < 300 && response.data?.id === operation.roleId && response.data.deleted === true) {
+          clearRoleDeleteGuard(operation);
+        }
+        setDeleteOperation(null);
+        return;
+      }
+
+      if (response.status >= 200 && response.status < 300 && response.data?.id === operation.roleId && response.data.deleted === true) {
+        await finishRoleDelete(operation);
+        return;
+      }
+
+      if (response.status === 404) {
+        const freshRoles = await loadRolesAndPermissions(operation.organizationId, operation.roleId);
+        if (activeOrganizationIdRef.current !== operation.organizationId) return;
+        if (freshRoles && !freshRoles.some((role) => role.id === operation.roleId)) {
+          clearRoleDeleteGuard(operation);
+          setDeleteOperation(null);
+          setDeleteUncertain(false);
+          setStatusMessage({ type: 'success', text: 'Role ' + operation.roleName + ' was already removed.' });
+        } else {
+          setDeleteUncertain(true);
+          setStatusMessage({
+            type: 'error',
+            text: freshRoles
+              ? 'The server returned not found, but still lists ' + operation.roleName + '. The saved request remains available for verification or same-key retry.'
+              : 'The delete outcome is still unknown. The saved request remains available for verification or same-key retry.',
+          });
+        }
+        return;
+      }      const definitiveFailure =
+        response.status === 400 || response.status === 401 || response.status === 403 ||
+        response.status === 404 || (response.status === 409 && response.errorCode === 'ROLE_ASSIGNED');
+      if (definitiveFailure) {
+        clearRoleDeleteGuard(operation);
+        setDeleteOperation(null);
+        setDeleteUncertain(false);
+        setStatusMessage({ type: 'error', text: response.error || 'The role could not be deleted. The role remains available.' });
+        return;
+      }
+
+      setDeleteUncertain(true);
+      const verified = await verifyRoleDelete(operation);
+      if (activeOrganizationIdRef.current !== operation.organizationId) {
+        setDeleteOperation(null);
+        return;
+      }
+      if (verified === 'deleted') {
+        await finishRoleDelete(operation);
+      } else if (verified === 'present') {
+        setStatusMessage({ type: 'error', text: 'The server still lists ' + operation.roleName + '. You can safely retry this exact delete request.' });
+      } else {
+        setStatusMessage({ type: 'error', text: 'The delete outcome is still unknown. Check status or retry with the saved request key.' });
+      }
+    } catch {
+      setDeleteUncertain(true);
+      const verified = await verifyRoleDelete(operation);
+      if (activeOrganizationIdRef.current !== operation.organizationId) {
+        setDeleteOperation(null);
+        return;
+      }
+      if (verified === 'deleted') {
+        await finishRoleDelete(operation);
+      } else {
+        setStatusMessage({
+          type: 'error',
+          text: verified === 'present'
+            ? 'The server still lists ' + operation.roleName + '. You can safely retry this exact delete request.'
+            : 'The delete outcome is still unknown. Check status or retry with the saved request key.',
+        });
+      }
+    } finally {
+      const ownsInFlightRequest = deleteInFlightRef.current === operationToken;
+      if (ownsInFlightRequest) {
+        deleteInFlightRef.current = null;
+        setDeleteSaving(false);
+      }
+    }
+  };
+
+  const checkDeleteStatus = async () => {
+    const operation = deleteOperation;
+    if (!operation || deleteSaving) return;
+    setDeleteSaving(true);
+    setStatusMessage(null);
+    const result = await verifyRoleDelete(operation);
+    if (activeOrganizationIdRef.current !== operation.organizationId) {
+      setDeleteOperation(null);
+      setDeleteSaving(false);
+      return;
+    }
+    if (result === 'deleted') {
+      await finishRoleDelete(operation);
+    } else if (result === 'present') {
+      setDeleteUncertain(true);
+      setStatusMessage({ type: 'error', text: 'The server still lists ' + operation.roleName + '. You can safely retry this exact delete request.' });
+    } else {
+      setDeleteUncertain(true);
+      setStatusMessage({ type: 'error', text: 'The server could not verify the saved delete request. Retry the same request key.' });
+    }
+    setDeleteSaving(false);
+  };
+  const reloadRoleListAfterDelete = async () => {
+    if (!deleteNeedsReload) return;
+    const organizationId = currentOrg.id;
+    const removedRoleId = deleteNeedsReload;
+    const freshRoles = await loadRolesAndPermissions(organizationId, removedRoleId);
+    if (activeOrganizationIdRef.current !== organizationId) return;
+    if (!freshRoles || freshRoles.some((role) => role.id === removedRoleId)) {
+      setStatusMessage({ type: 'error', text: 'The role list is still stale. Try reloading again before using role actions.' });
+      return;
+    }
+    setDeleteNeedsReload(null);
+    setStatusMessage({ type: 'success', text: 'Role list refreshed.' });
+  };
   // Group permissions by module
   const modules: string[] = Array.from(new Set<string>(allPermissions.map((p) => p.module)));
   const filteredPermissions = allPermissions.filter((p) => {
@@ -224,6 +516,9 @@ export const RolesPermissionsSettings: React.FC = () => {
         >
           {statusMessage.type === 'success' ? <CheckCircle className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
           {statusMessage.text}
+          {deleteNeedsReload && (
+            <button type="button" onClick={() => void reloadRoleListAfterDelete()} className="ml-auto underline">Reload roles</button>
+          )}
         </div>
       )}
 
@@ -458,7 +753,7 @@ export const RolesPermissionsSettings: React.FC = () => {
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => handleStartClone(selectedRole)}
+                    onClick={() => handleStartClone(selectedRole)} disabled={loading || rolesOrganizationId !== currentOrg.id || deleteNeedsReload === selectedRole.id}
                     className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-xs font-semibold hover:bg-slate-50 dark:hover:bg-slate-800"
                   >
                     <Copy className="w-3.5 h-3.5 text-slate-500" />
@@ -468,7 +763,7 @@ export const RolesPermissionsSettings: React.FC = () => {
                     <>
                       <button
                         type="button"
-                        onClick={() => handleStartEdit(selectedRole)}
+                        onClick={() => handleStartEdit(selectedRole)} disabled={loading || rolesOrganizationId !== currentOrg.id || deleteNeedsReload === selectedRole.id}
                         className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-indigo-200 text-indigo-600 text-xs font-semibold hover:bg-indigo-50"
                       >
                         <Edit3 className="w-3.5 h-3.5" />
@@ -476,7 +771,8 @@ export const RolesPermissionsSettings: React.FC = () => {
                       </button>
                       <button
                         type="button"
-                        onClick={() => handleDeleteRole(selectedRole)}
+                        onClick={(event) => { deleteTriggerRef.current = event.currentTarget; handleDeleteRole(selectedRole); }}
+                        disabled={loading || deleteNeedsReload === selectedRole.id || rolesOrganizationId !== currentOrg.id}
                         className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-rose-200 text-rose-600 text-xs font-semibold hover:bg-rose-50"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
@@ -539,6 +835,49 @@ export const RolesPermissionsSettings: React.FC = () => {
           )}
         </div>
       </div>
+      {deleteOperation && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/50 p-4">
+          <div
+            ref={deleteDialogRef}
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="role-delete-title"
+            aria-describedby="role-delete-description"
+            className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-700 dark:bg-slate-900"
+          >
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-rose-600" aria-hidden="true" />
+              <div>
+                <h3 id="role-delete-title" className="text-sm font-bold text-slate-900 dark:text-white">Delete custom role?</h3>
+                <p id="role-delete-description" className="mt-2 text-xs leading-5 text-slate-600 dark:text-slate-300">
+                  Delete “{deleteOperation.roleName}”? Members assigned to it must be reassigned first. This action cannot be undone.
+                </p>
+              </div>
+            </div>
+            {deleteUncertain && (
+              <p className="mt-3 rounded-lg bg-amber-50 p-3 text-xs text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+                This request has an unresolved outcome. Any retry will use the same saved request key.
+              </p>
+            )}
+            <div className="mt-5 flex flex-wrap justify-end gap-2">
+              {deleteUncertain && (
+                <button type="button" onClick={() => void checkDeleteStatus()} disabled={deleteSaving}
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold disabled:opacity-50 dark:border-slate-700">
+                  Check status
+                </button>
+              )}
+              <button type="button" onClick={() => { restoreDeleteFocusRef.current = true; setDeleteOperation(null); setDeleteUncertain(false); }} disabled={deleteSaving}
+                className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold disabled:opacity-50 dark:border-slate-700">
+                Cancel
+              </button>
+              <button type="button" onClick={() => void confirmDeleteRole()} disabled={deleteSaving}
+                className="rounded-lg bg-rose-600 px-3 py-2 text-xs font-bold text-white disabled:opacity-50">
+                {deleteSaving ? 'Working…' : deleteUncertain ? 'Retry same delete' : 'Delete role'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

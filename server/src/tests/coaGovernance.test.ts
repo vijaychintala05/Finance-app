@@ -109,6 +109,41 @@ describe('chart of accounts governance', () => {
     expect(audit.rows).toHaveLength(1);
   });
 
+  it('reports tenant-scoped usage, expense tax references, defaults, and archive blockers', async () => {
+    const taxAccount = await request(app).post('/api/v1/finance/accounts').set(auth).send({
+      code: '1012', name: 'Input tax holding', type: 'Asset', subType: 'Other Current Asset',
+    });
+    expect(taxAccount.status).toBe(201);
+    const bankAccount = (await db.query(`SELECT id FROM accounts WHERE organization_id = $1 AND code = '1000'`, [orgId])).rows[0];
+    await db.query(
+      `INSERT INTO expenses (id, organization_id, expense_number, expense_account_id, paid_from_account_id, date, amount, tax_account_id, rcm_tax_account_id, tds_account_id)
+       VALUES ('coa-usage-expense-tax', $1, 'EXP-COA-USAGE-TAX', $2, $3, '2026-09-24', 100, $2, NULL, NULL),
+              ('coa-usage-expense-rcm', $1, 'EXP-COA-USAGE-RCM', $2, $3, '2026-09-24', 100, NULL, $2, NULL),
+              ('coa-usage-expense-tds', $1, 'EXP-COA-USAGE-TDS', $2, $3, '2026-09-24', 100, NULL, NULL, $2)`,
+      [orgId, taxAccount.body.id, bankAccount.id],
+    );
+    const mapped = await request(app).patch('/api/v1/finance/accounting-defaults/GST_INPUT').set(auth).send({ accountId: taxAccount.body.id });
+    expect(mapped.status).toBe(200);
+
+    const impact = await request(app).get(`/api/v1/finance/accounts/${taxAccount.body.id}/usage-impact`).set(auth);
+    expect(impact.status).toBe(200);
+    expect(impact.body.inventoryComplete).toBe(true);
+    expect(impact.body.totalReferences).toBeGreaterThanOrEqual(2);
+    expect(impact.body.references.find((reference: any) => reference.label === 'expenses and tax allocations')?.count).toBe(3);
+    expect(impact.body.accountingDefaults).toContain('GST_INPUT');
+    expect(impact.body.archiveBlockers.join(' ')).toMatch(/defaults/i);
+
+    const archive = await request(app).patch(`/api/v1/finance/accounts/${taxAccount.body.id}`).set(auth).send({ status: 'Archived' });
+    expect(archive.status).toBe(400);
+    expect(archive.body.error).toMatch(/defaults/i);
+
+    const foreign = await request(app).post('/api/v1/auth/register').send({
+      email: `coa-usage-foreign-${Date.now()}@firmbooks.local`, password: 'SecurePassword123!', fullName: 'Other Owner', organizationName: 'Other Usage Firm',
+    });
+    const foreignImpact = await request(app).get(`/api/v1/finance/accounts/${taxAccount.body.id}/usage-impact`).set({ Authorization: `Bearer ${foreign.body.token}` });
+    expect(foreignImpact.status).toBe(404);
+  });
+
   it('deletes only unused custom accounts and preserves all referenced or system accounts', async () => {
     const disposable = await request(app).post('/api/v1/finance/accounts').set(auth).send({
       code: '8990', name: 'Temporary supplies', type: 'Expense', subType: 'Office & Administrative',

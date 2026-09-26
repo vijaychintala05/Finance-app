@@ -188,9 +188,21 @@ export class OrganizationProvisioningService {
       await client.query(
         `INSERT INTO accounting_defaults (organization_id, system_role, account_id)
          VALUES ($1, $2, $3)
-         ON CONFLICT (organization_id, system_role) DO UPDATE SET account_id = EXCLUDED.account_id, updated_at = CURRENT_TIMESTAMP`,
+         ON CONFLICT (organization_id, system_role) DO NOTHING`,
         [organizationId, account.role, resolved.rows[0].id]
       );
+      const mapping = await client.query(
+        `SELECT d.account_id, a.type, a.status, a.allow_direct_posting
+           FROM accounting_defaults d
+           LEFT JOIN accounts a ON a.organization_id = d.organization_id AND a.id = d.account_id
+          WHERE d.organization_id = $1 AND d.system_role = $2`,
+        [organizationId, account.role],
+      );
+      const roleTypes = SYSTEM_ACCOUNT_ROLE_TYPES[account.role];
+      const selected = mapping.rows[0];
+      if (mapping.rows.length !== 1 || !selected?.type || selected.status !== 'Active' || selected.allow_direct_posting === false || !roleTypes.includes(selected.type)) {
+        throw new Error(`Accounting default ${account.role} is missing, inactive, non-posting, cross-tenant, or has an invalid account type`);
+      }
     }
 
     for (const account of INDIA_STARTER_ACCOUNTS) {

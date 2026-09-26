@@ -10,6 +10,7 @@ const router = Router();
 
 // Statement-First Zoho-Style Banking Endpoints
 router.get('/accounts/overview', requirePermission('banking.view'), BankingController.getAccountsOverview);
+router.get('/gateway-activity', requirePermission('banking.view'), BankingController.getGatewayActivity);
 router.post('/imports/preview', requirePermission('banking.import'), requireTrustedFinanceFeature('bank-statement-import'), BankingController.previewImport);
 router.post('/imports/confirm', requirePermission('banking.import'), requireTrustedFinanceFeature('bank-statement-import'), BankingController.confirmImport);
 router.get('/workspace', requirePermission('banking.view'), BankingController.getWorkspace);

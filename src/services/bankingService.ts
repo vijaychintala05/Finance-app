@@ -13,10 +13,11 @@ import {
   CSVColumnMapping,
   MatchSuggestion,
 } from '../types/banking';
+import { ApiRequestError } from '../api/client';
 import { createBrowserId } from '../utils/browserIds';
 
 export class BankingService {
-  private static async apiCall<T>(endpoint: string, method: string = 'GET', body?: any): Promise<T> {
+  private static async apiCall<T>(endpoint: string, method: string = 'GET', body?: any, validateSuccessData?: (data: unknown) => string | null): Promise<T> {
     const orgId = typeof window !== 'undefined' ? localStorage.getItem('active_organization_id') : null;
     const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null;
 
@@ -42,17 +43,79 @@ export class BankingService {
       body: isGetOrHead || !body ? undefined : JSON.stringify(body),
       credentials: 'same-origin',
     });
-    const json = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(json.error || `Banking request failed (${response.status})`);
-    return (json.success ? json.data : json) as T;
+    const json = await response.json().catch(() => null);
+    const isObject = (value: unknown): value is Record<string, any> => Boolean(value && typeof value === 'object' && !Array.isArray(value));
+    const errorBody = isObject(json) ? json : {};
+    if (!response.ok) {
+      throw new ApiRequestError({
+        data: null,
+        error: typeof errorBody.error === 'string' ? errorBody.error : `Banking request failed (${response.status})`,
+        status: response.status,
+        errorCode: typeof errorBody.errorCode === 'string' ? errorBody.errorCode : typeof errorBody.code === 'string' ? errorBody.code : undefined,
+        requestId: typeof errorBody.requestId === 'string' ? errorBody.requestId : response.headers.get('x-request-id') || undefined,
+        recovery: typeof errorBody.recovery === 'string' ? errorBody.recovery : undefined,
+        fix: typeof errorBody.fix === 'string' ? errorBody.fix : undefined,
+        cause: typeof errorBody.cause === 'string' ? errorBody.cause : undefined,
+        retryable: typeof errorBody.retryable === 'boolean' ? errorBody.retryable : undefined,
+      }, `Banking request failed (${response.status})`);
+    }
+    const requestId = isObject(json) && typeof json.requestId === 'string' ? json.requestId : response.headers.get('x-request-id') || undefined;
+    const malformedSuccess = (message: string) => new ApiRequestError({
+      data: null,
+      error: message,
+      status: 500,
+      errorCode: 'MALFORMED_SUCCESS_RECEIPT',
+      requestId,
+    }, 'Banking operation outcome could not be confirmed');
+    if (isObject(json) && json.success === false) {
+      throw malformedSuccess(typeof errorBody.error === 'string' ? errorBody.error : 'Banking returned an unsuccessful response without an HTTP error status.');
+    }
+    const hasSuccessEnvelope = isObject(json) && json.success === true && Object.prototype.hasOwnProperty.call(json, 'data');
+    if (validateSuccessData && !hasSuccessEnvelope) {
+      throw malformedSuccess('Banking did not return a valid success receipt.');
+    }
+    const data = hasSuccessEnvelope ? json.data : json;
+    const validationError = validateSuccessData?.(data);
+    if (validationError) throw malformedSuccess(validationError);
+    return data as T;
   }
 
   public static getAccounts(): Promise<BankAccount[]> {
     return this.apiCall<BankAccount[]>('/accounts', 'GET');
   }
 
+  public static getGatewayActivity(options: { limit?: number; cursor?: string; gateway?: string; status?: string } = {}) {
+    const params = new URLSearchParams();
+    if (options.limit) params.set('limit', String(options.limit));
+    if (options.cursor) params.set('cursor', options.cursor);
+    if (options.gateway) params.set('gateway', options.gateway);
+    if (options.status) params.set('status', options.status);
+    const query = params.toString();
+    return this.apiCall<{
+      events: Array<{
+        eventId: string; gateway: string; eventType: string; status: string; evidenceStatus: string;
+        occurredAt: string; processedAt: string | null; settlementReference: string | null;
+        amount: number | null; currency: string | null; paymentId: string | null; paymentNumber: string | null;
+        invoiceId: string | null; invoiceNumber: string | null; expenseId: string | null;
+        journalEntryId: string | null; journalNumber: string | null; feeJournalId: string | null;
+        feeJournalNumber: string | null; reversalJournalNumber: string | null; relatedEventId: string | null; reversalJournalId: string | null;
+        payoutBankMatchCount: number | null;
+      }>;
+      nextCursor: string | null;
+      hasMore: boolean;
+    }>(`/gateway-activity${query ? `?${query}` : ''}`, 'GET');
+  }
+
   public static createAccount(data: Partial<BankAccount>): Promise<BankAccount> {
-    return this.apiCall<BankAccount>('/accounts', 'POST', data);
+    return this.apiCall<BankAccount>('/accounts', 'POST', data, (received) => {
+      if (!received || typeof received !== 'object' || Array.isArray(received)) return 'Bank account setup did not return a bank account record.';
+      const account = received as Partial<BankAccount>;
+      const activeOrganizationId = typeof window !== 'undefined' ? localStorage.getItem('active_organization_id') : null;
+      if (typeof account.id !== 'string' || !account.id.trim()) return 'Bank account setup did not return a bank account ID.';
+      if (!data.ledgerAccountId || account.ledgerAccountId !== data.ledgerAccountId) return 'Bank account setup did not confirm its link to the saved ledger account.';
+      if (!activeOrganizationId || account.organizationId !== activeOrganizationId) return 'Bank account setup did not confirm the active organization.';
+      return null;
+    });
   }
 
   public static deleteAccount(bankAccountId: string): Promise<{ deleted: boolean; id: string; ledgerAccountId?: string }> {

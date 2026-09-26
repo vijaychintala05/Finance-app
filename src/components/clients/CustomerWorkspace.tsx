@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import {
   AlertCircle,
+  Archive,
   ArrowLeft,
   BadgeDollarSign,
   Building2,
@@ -33,7 +34,6 @@ import {
   ShieldCheck,
   Sparkles,
   Tag,
-  Trash2,
   TrendingDown,
   TrendingUp,
   User,
@@ -52,6 +52,7 @@ interface CustomerWorkspaceProps {
   client: Client;
   onBack: () => void;
   onEdit: (client: Client) => void;
+  onArchive?: (client: Client) => void;
 }
 
 interface CustomerStatementData {
@@ -81,6 +82,7 @@ export const CustomerWorkspace: React.FC<CustomerWorkspaceProps> = ({
   client,
   onBack,
   onEdit,
+  onArchive,
 }) => {
   const {
     invoices,
@@ -89,7 +91,6 @@ export const CustomerWorkspace: React.FC<CustomerWorkspaceProps> = ({
     creditNotes,
     projects,
     settings,
-    deleteClient,
   } = useBooks();
 
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('details');
@@ -227,13 +228,6 @@ export const CustomerWorkspace: React.FC<CustomerWorkspaceProps> = ({
       };
     }
   }, [clientInvoices, clientPayments, agingBuckets]);
-
-  const handleDelete = () => {
-    if (confirm(`Are you sure you want to delete customer "${client.companyName}"? This action cannot be undone.`)) {
-      deleteClient(client.id);
-      onBack();
-    }
-  };
 
   const handleConvertToInvoice = (est: Estimate) => {
     setSelectedEstimateForConvert(est);
@@ -493,11 +487,13 @@ export const CustomerWorkspace: React.FC<CustomerWorkspaceProps> = ({
             <span>Customer Portal</span>
           </button>
           <button
-            onClick={handleDelete}
-            title="Delete customer"
+            onClick={() => onArchive?.(client)}
+            disabled={!onArchive}
+            title="Archive customer"
+            aria-label="Archive customer"
             className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-400 shadow-xs hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-rose-950/40 cursor-pointer"
           >
-            <Trash2 className="h-4 w-4" />
+            <Archive className="h-4 w-4" />
           </button>
         </div>
       </div>

@@ -19,23 +19,27 @@ import {
 import { useBooks } from '../../context/BooksContext';
 import { TimeEntry } from '../../types';
 import { formatCurrency, formatDate } from '../../utils/formatters';
+import { OperationNoticeBanner } from '../common/OperationNoticeBanner';
+import { committedButStaleNotice, mutationExceptionNotice, type OperationNotice } from '../../utils/operationNotice';
 
 interface TimeLogsViewProps {
   onOpenLogTime: (projectId?: string, entryToEdit?: TimeEntry | null) => void;
-  onNavigateToInvoiceEditor?: (projectId?: string) => void;
 }
 
 export const TimeLogsView: React.FC<TimeLogsViewProps> = ({
   onOpenLogTime,
-  onNavigateToInvoiceEditor,
 }) => {
   const {
     timeEntries,
     projects,
-    clients,
     settings,
     deleteTimeEntry,
     convertUnbilledTimeToInvoice,
+    timeOperationGuards,
+    beginTimeOperation,
+    completeTimeOperation,
+    holdTimeOperationGuard,
+    refreshTimeOperationStatus,
   } = useBooks();
 
   const [search, setSearch] = useState('');
@@ -45,6 +49,11 @@ export const TimeLogsView: React.FC<TimeLogsViewProps> = ({
   const [sortBy, setSortBy] = useState<'date-desc' | 'date-asc' | 'hours-desc' | 'amount-desc'>(
     'date-desc'
   );
+  const [notice, setNotice] = useState<OperationNotice | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<TimeEntry | null>(null);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [verifyingTimeStatus, setVerifyingTimeStatus] = useState(false);
+  const [verificationNotice, setVerificationNotice] = useState<OperationNotice | null>(null);
 
   // Extract unique staff names from timeEntries
   const uniqueStaff = Array.from(
@@ -121,12 +130,55 @@ export const TimeLogsView: React.FC<TimeLogsViewProps> = ({
     .filter((e) => e.isBilled)
     .reduce((sum, e) => sum + e.hours * e.hourlyRate, 0);
 
-  const handleDelete = async (id: string, task: string) => {
-    if (confirm(`Are you sure you want to delete the time log for "${task}"?`)) {
-      await deleteTimeEntry(id);
+  const matchingTimeOperationGuard = timeOperationGuards.find((guard) => (
+    selectedProjectId === 'ALL' || guard.projectId === selectedProjectId
+  ));
+  const guardNotice = matchingTimeOperationGuard?.notice;
+  const handleVerifyTimeStatus = async () => {
+    if (verifyingTimeStatus) return;
+    setVerifyingTimeStatus(true);
+    const verified = await refreshTimeOperationStatus();
+    setVerifyingTimeStatus(false);
+    setVerificationNotice(verified ? null : {
+      tone: 'warning',
+      title: 'Time operation status is still unavailable',
+      message: 'The server did not return an authoritative time-log list. The guarded action remains disabled.',
+      recovery: 'Ask an administrator to restore time-log read access, then verify the status again.',
+    });
+  };
+  const handleDelete = async () => {
+    if (!deleteTarget || busyAction) return;
+    const entry = deleteTarget;
+    const actionId = `delete:${entry.id}`;
+    setBusyAction(actionId);
+    beginTimeOperation(actionId, entry.projectId);
+    setNotice(null);
+    try {
+      const result = await deleteTimeEntry(entry.id);
+      if (result.refreshFailed) {
+        holdTimeOperationGuard(actionId, entry.projectId, committedButStaleNotice('Time entry deleted; list not refreshed', 'The server confirmed the deletion, but the latest time-log list could not be verified.', result.requestId));
+      } else {
+        completeTimeOperation(actionId);
+        setNotice({ tone: 'success', title: 'Time entry deleted', message: `“${entry.taskName}” was removed from the project timesheet.`, requestId: result.requestId });
+      }
+      setDeleteTarget(null);
+    } catch (error) {
+      const failure = mutationExceptionNotice(error, {
+        action: 'Time entry deletion',
+        failureTitle: 'Time entry was not deleted',
+        uncertainTitle: 'Time entry deletion could not be confirmed',
+        uncertainRecovery: 'Use Verify status below before taking any further action; the entry may already have been deleted.',
+      });
+      if (failure.tone === 'warning') holdTimeOperationGuard(actionId, entry.projectId, failure);
+      else {
+        completeTimeOperation(actionId);
+        setNotice(failure);
+      }
+      setDeleteTarget(null);
+    } finally {
+      setBusyAction(null);
     }
   };
-
   const handleExportCSV = () => {
     const headers = [
       'Date',
@@ -169,23 +221,38 @@ export const TimeLogsView: React.FC<TimeLogsViewProps> = ({
   };
 
   const handleBatchInvoice = async () => {
-    if (selectedProjectId !== 'ALL') {
-      const prj = projects.find((p) => p.id === selectedProjectId);
-      if (prj) {
-        const inv = await convertUnbilledTimeToInvoice(prj.id, prj.clientId);
-        if (inv) {
-          alert(
-            `Successfully created Invoice ${inv.invoiceNumber} from unbilled time logs for project ${prj.name}!`
-          );
-          if (onNavigateToInvoiceEditor) {
-            onNavigateToInvoiceEditor(prj.id);
-          }
-        } else {
-          alert('No unbilled billable hours found for this project.');
-        }
+    if (selectedProjectId === 'ALL' || busyAction) return;
+    const project = projects.find((candidate) => candidate.id === selectedProjectId);
+    if (!project) {
+      setNotice({ tone: 'error', title: 'Project is unavailable', message: 'Refresh the project list, then select the project again.' });
+      return;
+    }
+    const actionId = `invoice:${project.id}`;
+    setBusyAction(actionId);
+    beginTimeOperation(actionId, project.id);
+    setNotice(null);
+    try {
+      const result = await convertUnbilledTimeToInvoice(project.id, project.clientId);
+      if (result.refreshFailed) {
+        holdTimeOperationGuard(actionId, project.id, committedButStaleNotice(`Invoice ${result.data.invoiceNumber} posted; list not refreshed`, 'The invoice was created and the server marked its time entries billed, but the latest project data could not be verified.', result.requestId));
+      } else {
+        completeTimeOperation(actionId);
+        setNotice({ tone: 'success', title: `Invoice ${result.data.invoiceNumber} created`, message: 'The invoice was posted from unbilled project time and is linked to the project.', requestId: result.requestId });
       }
-    } else {
-      alert('Please select a specific project in the filter above to generate its invoice.');
+    } catch (error) {
+      const failure = mutationExceptionNotice(error, {
+        action: 'Unbilled time invoicing',
+        failureTitle: 'Invoice was not created',
+        uncertainTitle: 'Invoice outcome could not be confirmed',
+        uncertainRecovery: 'Use Verify status below before taking any further action; the invoice may already have posted.',
+      });
+      if (failure.tone === 'warning') holdTimeOperationGuard(actionId, project.id, failure);
+      else {
+        completeTimeOperation(actionId);
+        setNotice(failure);
+      }
+    } finally {
+      setBusyAction(null);
     }
   };
 
@@ -222,6 +289,7 @@ export const TimeLogsView: React.FC<TimeLogsViewProps> = ({
           {selectedProjectId !== 'ALL' && (
             <button
               onClick={handleBatchInvoice}
+              disabled={!!busyAction || timeOperationGuards.some((guard) => guard.key === 'invoice:' + selectedProjectId && guard.status !== 'resolved')}
               className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl flex items-center space-x-1.5 shadow-xs transition-colors cursor-pointer"
             >
               <FileText className="w-3.5 h-3.5" />
@@ -238,6 +306,17 @@ export const TimeLogsView: React.FC<TimeLogsViewProps> = ({
           </button>
         </div>
       </div>
+
+      {notice && <OperationNoticeBanner notice={notice} />}
+      {guardNotice && (
+        <div>
+          <OperationNoticeBanner notice={guardNotice} />
+          {matchingTimeOperationGuard?.status === 'uncertain' && <button type="button" onClick={handleVerifyTimeStatus} disabled={verifyingTimeStatus} className="mt-2 rounded-lg border border-amber-300 px-3 py-1.5 text-xs font-semibold text-amber-800 disabled:opacity-50">
+            {verifyingTimeStatus ? 'Checking status…' : 'Verify status'}
+          </button>}
+        </div>
+      )}
+      {verificationNotice && <OperationNoticeBanner notice={verificationNotice} />}
 
       {/* KPI METRIC CARDS */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -513,15 +592,18 @@ export const TimeLogsView: React.FC<TimeLogsViewProps> = ({
                         <div className="flex items-center justify-center space-x-2">
                           <button
                             onClick={() => onOpenLogTime(entry.projectId, entry)}
+                            disabled={!!busyAction}
                             className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950 rounded-lg transition-colors cursor-pointer"
                             title="Edit Time Entry"
                           >
                             <Edit2 className="w-3.5 h-3.5" />
                           </button>
                           <button
-                            onClick={() => handleDelete(entry.id, entry.taskName)}
+                            onClick={() => setDeleteTarget(entry)}
+                            disabled={!!busyAction || timeOperationGuards.some((guard) => guard.key === `delete:${entry.id}`)}
                             className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950 rounded-lg transition-colors cursor-pointer"
                             title="Delete Time Entry"
+                            aria-label={`Delete time entry ${entry.taskName}`}
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
@@ -535,6 +617,18 @@ export const TimeLogsView: React.FC<TimeLogsViewProps> = ({
           </table>
         </div>
       </div>
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
+          <section role="alertdialog" aria-modal="true" aria-labelledby="delete-time-entry-title" aria-describedby="delete-time-entry-description" className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-700 dark:bg-slate-900">
+            <h3 id="delete-time-entry-title" className="text-lg font-bold text-slate-900 dark:text-slate-100">Delete time entry?</h3>
+            <p id="delete-time-entry-description" className="mt-2 text-sm text-slate-600 dark:text-slate-300">Delete “{deleteTarget.taskName}” ({deleteTarget.hours} hours) from {deleteTarget.projectName}? Billed time cannot be deleted.</p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={() => setDeleteTarget(null)} disabled={!!busyAction} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 disabled:opacity-50 dark:border-slate-600 dark:text-slate-200">Cancel</button>
+              <button type="button" onClick={handleDelete} disabled={!!busyAction} className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{busyAction === `delete:${deleteTarget.id}` ? 'Deleting…' : 'Delete time entry'}</button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 };

@@ -1,8 +1,9 @@
 import crypto from 'node:crypto';
-import type { DbQueryClient } from '../database/db';
+import { db, type DbQueryClient } from '../database/db';
 import { newId } from '../utils/ids';
 import { RecoveryError } from './errors';
-import { POINT1_RECOVERY_SCHEMA } from './schema';
+import { seedAndMigrateOrganizationTemplates } from '../database/documentTemplateSchema';
+import { decodeRecoveryPdfRow, POINT1_RECOVERY_SCHEMA } from './schema';
 import type {
   OwnerAuthorizer,
   RecoveryJob,
@@ -181,17 +182,24 @@ export class SqlRecoveryPromoter implements RecoveryPromoter {
     }
     for (const table of POINT1_RECOVERY_SCHEMA) {
       for (const stagedRow of payload.tables[table.name]) {
-        const row = table.tenantColumn
+        let row = table.tenantColumn
           ? { ...stagedRow, [table.tenantColumn]: job.targetOrganizationId }
           : table.name === 'journal_lines'
             ? { ...stagedRow, organization_id: job.targetOrganizationId }
             : stagedRow;
+        if (table.name === 'document_render_snapshots') {
+          row = decodeRecoveryPdfRow(row);
+          if (db.isMemoryMode() && Buffer.isBuffer(row.pdf_bytes)) row.pdf_bytes = row.pdf_bytes.toString('base64');
+        }
         const placeholders = table.columns.map((_, index) => `$${index + 1}`).join(', ');
         await client.query(
           `INSERT INTO ${table.name} (${table.columns.join(', ')}) VALUES (${placeholders})`,
           table.columns.map((column) => row[column])
         );
       }
+    }
+    if (!(payload.tables.document_templates || []).length) {
+      await seedAndMigrateOrganizationTemplates(client, job.targetOrganizationId);
     }
     await client.query(
       `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state, after_state)

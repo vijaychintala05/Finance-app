@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Clock,
   FileText,
@@ -17,9 +17,12 @@ import { ProjectDetailModal } from './ProjectDetailModal';
 import { TimeLogsView } from './TimeLogsView';
 import { InvoiceEditorModal } from '../invoices/InvoiceEditorModal';
 import { ExpenseModal } from '../expenses/ExpenseModal';
+import { EditProjectModal } from './EditProjectModal';
+import { OperationNoticeBanner } from '../common/OperationNoticeBanner';
+import { committedButStaleNotice, mutationExceptionNotice, type OperationNotice } from '../../utils/operationNotice';
 
 export const ProjectsView: React.FC = () => {
-  const { projects, getProjectSummary, settings } = useBooks();
+  const { projects, getProjectSummary, settings, archiveProject } = useBooks();
 
   const [activeMainTab, setActiveMainTab] = useState<'projects' | 'time_logs'>('projects');
   const [search, setSearch] = useState('');
@@ -30,6 +33,11 @@ export const ProjectsView: React.FC = () => {
   const [logTimeDefaultProject, setLogTimeDefaultProject] = useState<string | undefined>(undefined);
   const [editingTimeEntry, setEditingTimeEntry] = useState<TimeEntry | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [isEditProjectOpen, setIsEditProjectOpen] = useState(false);
+  const [archiveCandidateId, setArchiveCandidateId] = useState<string | null>(null);
+  const [isArchivingProject, setIsArchivingProject] = useState(false);
+  const [archiveOutcomeUncertainProjectId, setArchiveOutcomeUncertainProjectId] = useState<string | null>(null);
+  const [archiveNotice, setArchiveNotice] = useState<OperationNotice | null>(null);
 
   const [isCreateInvoiceOpen, setIsCreateInvoiceOpen] = useState(false);
   const [invoiceDefaultProject, setInvoiceDefaultProject] = useState<string | undefined>(undefined);
@@ -48,11 +56,62 @@ export const ProjectsView: React.FC = () => {
       p.code.toLowerCase().includes(search.toLowerCase()) ||
       p.clientName.toLowerCase().includes(search.toLowerCase());
 
-    const matchesStatus = statusFilter === 'All' || p.status === statusFilter;
+    const matchesStatus = statusFilter === 'All' || (statusFilter === 'Archived'
+      ? Boolean(p.archivedAt)
+      : !p.archivedAt && p.status === statusFilter);
     return matchesSearch && matchesStatus;
   });
 
   const selectedProject = projects.find((p) => p.id === selectedProjectId) || null;
+  const archiveCandidate = projects.find((p) => p.id === archiveCandidateId) || null;
+  const archiveOutcomeUncertain = archiveCandidateId === archiveOutcomeUncertainProjectId;
+
+  useEffect(() => {
+    if (archiveOutcomeUncertainProjectId && projects.some((project) => project.id === archiveOutcomeUncertainProjectId && project.archivedAt)) {
+      setArchiveOutcomeUncertainProjectId(null);
+    }
+  }, [archiveOutcomeUncertainProjectId, projects]);
+
+  const openArchiveConfirmation = (projectId: string) => {
+    if (projectId !== archiveOutcomeUncertainProjectId) setArchiveNotice(null);
+    setArchiveCandidateId(projectId);
+  };
+
+  const confirmArchiveProject = async () => {
+    if (!archiveCandidate || isArchivingProject || archiveOutcomeUncertain) return;
+    setIsArchivingProject(true);
+    setArchiveNotice(null);
+    try {
+      const result = await archiveProject(archiveCandidate.id);
+      setArchiveNotice(result.refreshFailed
+        ? committedButStaleNotice('Project archived; project list refresh failed', 'The server archived this project, but the latest project data could not be loaded.', result.requestId)
+        : { tone: 'success', title: result.data.changed ? 'Project archived' : 'Project already archived', message: `${archiveCandidate.name} is unavailable for new work. Historical records remain available.`, requestId: result.requestId });
+      if (result.refreshFailed) setArchiveOutcomeUncertainProjectId(archiveCandidate.id);
+      else if (archiveOutcomeUncertainProjectId === archiveCandidate.id) setArchiveOutcomeUncertainProjectId(null);
+      setArchiveCandidateId(null);
+    } catch (error) {
+      const notice = mutationExceptionNotice(error, { action: 'Project archive' });
+      setArchiveNotice(notice);
+      if (notice.tone === 'warning') setArchiveOutcomeUncertainProjectId(archiveCandidate.id);
+      if (notice.tone !== 'warning') setArchiveCandidateId(null);
+    } finally {
+      setIsArchivingProject(false);
+    }
+  };
+
+  const archiveDialog = archiveCandidate && (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/60 p-4">
+      <section role="alertdialog" aria-modal="true" aria-labelledby="archive-project-title" className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl dark:bg-slate-900">
+        <h3 id="archive-project-title" className="text-base font-bold text-slate-900 dark:text-white">Archive project?</h3>
+        <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">{archiveCandidate.name} will no longer accept new invoices, expenses, or time entries. Its history and existing unbilled time remain available.</p>
+        {archiveNotice && <div className="mt-4"><OperationNoticeBanner notice={archiveNotice} /></div>}
+        <div className="mt-5 flex justify-end gap-2">
+          <button type="button" disabled={isArchivingProject} onClick={() => setArchiveCandidateId(null)} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 dark:text-slate-200">Cancel</button>
+          <button type="button" disabled={isArchivingProject || archiveOutcomeUncertain} onClick={confirmArchiveProject} className="rounded-lg bg-amber-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{isArchivingProject ? 'Archiving…' : archiveOutcomeUncertain ? 'Awaiting verification' : 'Archive project'}</button>
+        </div>
+      </section>
+    </div>
+  );
 
   if (selectedProject) {
     return (
@@ -60,6 +119,10 @@ export const ProjectsView: React.FC = () => {
         <ProjectDetailModal
           project={selectedProject}
           onClose={() => setSelectedProjectId(null)}
+          onEdit={() => setIsEditProjectOpen(true)}
+          onArchive={() => openArchiveConfirmation(selectedProject.id)}
+          isNewWorkBlocked={archiveOutcomeUncertainProjectId === selectedProject.id}
+          archiveNotice={archiveNotice}
           onOpenLogTime={(pId) => {
             setLogTimeDefaultProject(pId);
             setIsLogTimeOpen(true);
@@ -70,6 +133,8 @@ export const ProjectsView: React.FC = () => {
           onClose={() => setIsLogTimeOpen(false)}
           defaultProjectId={logTimeDefaultProject}
         />
+        <EditProjectModal isOpen={isEditProjectOpen} project={selectedProject} onClose={() => setIsEditProjectOpen(false)} />
+        {archiveDialog}
       </div>
     );
   }
@@ -134,13 +199,7 @@ export const ProjectsView: React.FC = () => {
       </div>
 
       {activeMainTab === 'time_logs' ? (
-        <TimeLogsView
-          onOpenLogTime={(pId, entryToEdit) => handleOpenLogTime(pId, entryToEdit)}
-          onNavigateToInvoiceEditor={(pId) => {
-            setInvoiceDefaultProject(pId);
-            setIsCreateInvoiceOpen(true);
-          }}
-        />
+        <TimeLogsView onOpenLogTime={(pId, entryToEdit) => handleOpenLogTime(pId, entryToEdit)} />
       ) : (
         <>
           {/* Filter & Search Bar */}
@@ -157,7 +216,7 @@ export const ProjectsView: React.FC = () => {
         </div>
 
         <div className="flex items-center space-x-1 overflow-x-auto w-full sm:w-auto text-xs">
-          {['All', 'Active', 'On Hold', 'Completed'].map((st) => (
+          {['All', 'Active', 'On Hold', 'Completed', 'Archived'].map((st) => (
             <button
               key={st}
               onClick={() => setStatusFilter(st)}
@@ -202,6 +261,7 @@ export const ProjectsView: React.FC = () => {
                   >
                     {p.status}
                   </span>
+                  {p.archivedAt && <span className="ml-1 rounded border border-slate-300 bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">Archived</span>}
                 </div>
 
                 <p className="text-xs text-slate-600 dark:text-slate-400 mt-3 line-clamp-2">
@@ -277,7 +337,8 @@ export const ProjectsView: React.FC = () => {
                     setInvoiceDefaultProject(p.id);
                     setIsCreateInvoiceOpen(true);
                   }}
-                  className="p-2 border border-slate-200 dark:border-slate-700 hover:bg-emerald-50 dark:hover:bg-slate-800 rounded-xl text-emerald-600 cursor-pointer"
+                  disabled={Boolean(p.archivedAt) || archiveOutcomeUncertainProjectId === p.id}
+                  className="p-2 border border-slate-200 dark:border-slate-700 hover:bg-emerald-50 dark:hover:bg-slate-800 rounded-xl text-emerald-600 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
                   title="Create Invoice for this project"
                 >
                   <FileText className="w-4 h-4 text-emerald-600" />
@@ -288,7 +349,8 @@ export const ProjectsView: React.FC = () => {
                     setExpenseDefaultProject(p.id);
                     setIsRecordExpenseOpen(true);
                   }}
-                  className="p-2 border border-slate-200 dark:border-slate-700 hover:bg-rose-50 dark:hover:bg-slate-800 rounded-xl text-rose-600 cursor-pointer"
+                  disabled={Boolean(p.archivedAt) || archiveOutcomeUncertainProjectId === p.id}
+                  className="p-2 border border-slate-200 dark:border-slate-700 hover:bg-rose-50 dark:hover:bg-slate-800 rounded-xl text-rose-600 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
                   title="Record Expense for this project"
                 >
                   <Receipt className="w-4 h-4 text-rose-600" />
@@ -299,7 +361,8 @@ export const ProjectsView: React.FC = () => {
                     setLogTimeDefaultProject(p.id);
                     setIsLogTimeOpen(true);
                   }}
-                  className="p-2 border border-slate-200 dark:border-slate-700 hover:bg-blue-50 dark:hover:bg-slate-800 rounded-xl text-blue-600 cursor-pointer"
+                  disabled={Boolean(p.archivedAt) || archiveOutcomeUncertainProjectId === p.id}
+                  className="p-2 border border-slate-200 dark:border-slate-700 hover:bg-blue-50 dark:hover:bg-slate-800 rounded-xl text-blue-600 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
                   title="Log Hours for this project"
                 >
                   <Clock className="w-4 h-4 text-blue-600" />
@@ -333,6 +396,7 @@ export const ProjectsView: React.FC = () => {
         onClose={() => setIsRecordExpenseOpen(false)}
         defaultProjectId={expenseDefaultProject}
       />
+      {archiveDialog}
     </div>
   );
 };

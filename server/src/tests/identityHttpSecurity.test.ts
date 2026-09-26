@@ -205,6 +205,95 @@ describe('Identity & Security Center HTTP Boundary Test Suite', () => {
       expect(res.body.sessions[0].deviceName).toBe('Mac Desktop');
     });
 
+    it('binds JWTs to their active device, redacts token hashes, and revokes only the selected device', async () => {
+      const current = await SessionService.createSession('usr_owner_a', { deviceName: 'Current laptop' });
+      const other = await SessionService.createSession('usr_owner_a', { deviceName: 'Other phone' });
+      const currentToken = JwtAuth.generateToken({ userId: 'usr_owner_a', email: 'owner@acme.com', sid: current.sessionId });
+      const otherToken = JwtAuth.generateToken({ userId: 'usr_owner_a', email: 'owner@acme.com', sid: other.sessionId });
+
+      const listed = await request(app).get('/api/v1/identity/sessions').set('Authorization', `Bearer ${currentToken}`);
+      expect(listed.status).toBe(200);
+      expect(listed.body.currentSessionId).toBe(current.sessionId);
+      expect(listed.body.sessions[0]).not.toHaveProperty('sessionTokenHash');
+      expect(listed.body.sessions[0]).not.toHaveProperty('userId');
+
+      const revoked = await request(app).post(`/api/v1/identity/sessions/${other.sessionId}/revoke`).set('Authorization', `Bearer ${currentToken}`).send({});
+      expect(revoked.status).toBe(200);
+      expect(revoked.body.success).toBe(true);
+      expect((await request(app).get('/api/v1/identity/sessions').set('Authorization', `Bearer ${currentToken}`)).status).toBe(200);
+      expect((await request(app).get('/api/v1/identity/sessions').set('Authorization', `Bearer ${otherToken}`)).status).toBe(401);
+      expect((await request(app).get('/api/v1/identity/sessions').set('Authorization', `Bearer ${other.sessionToken}`)).status).toBe(401);
+    });
+
+    it('revoke-others requires a valid current JWT session and preserves only that device', async () => {
+      const current = await SessionService.createSession('usr_owner_a');
+      const other = await SessionService.createSession('usr_owner_a');
+      const currentToken = JwtAuth.generateToken({ userId: 'usr_owner_a', email: 'owner@acme.com', sid: current.sessionId });
+      const otherToken = JwtAuth.generateToken({ userId: 'usr_owner_a', email: 'owner@acme.com', sid: other.sessionId });
+      const revoked = await request(app).post('/api/v1/identity/sessions/revoke-others').set('Authorization', `Bearer ${currentToken}`).send({});
+      expect(revoked.status).toBe(200);
+      expect(revoked.body.revokedCount).toBe(1);
+      expect((await request(app).get('/api/v1/identity/sessions').set('Authorization', `Bearer ${currentToken}`)).status).toBe(200);
+      expect((await request(app).get('/api/v1/identity/sessions').set('Authorization', `Bearer ${otherToken}`)).status).toBe(401);
+    });
+
+    it('requires reauthentication for legacy JWTs without a signed session ID', async () => {
+      const legacyToken = JwtAuth.generateToken({ userId: 'usr_owner_a', email: 'owner@acme.com' });
+      process.env.NODE_ENV = 'development';
+      try {
+        const res = await request(app).get('/api/v1/identity/sessions').set('Authorization', `Bearer ${legacyToken}`);
+        expect(res.status).toBe(401);
+      } finally {
+        process.env.NODE_ENV = 'test';
+      }
+    });
+
+    it('preserves the active session during refresh and rejects refresh after revocation', async () => {
+      const session = await SessionService.createSession('usr_owner_a');
+      const token = JwtAuth.generateToken({ userId: 'usr_owner_a', email: 'owner@acme.com', sid: session.sessionId });
+      const refreshed = await request(app).post('/api/v1/auth/refresh').set('Authorization', `Bearer ${token}`).send({});
+      expect(refreshed.status).toBe(200);
+      expect(JwtAuth.verifyToken(refreshed.body.token)?.sid).toBe(session.sessionId);
+      await SessionService.revokeSession(session.sessionId, 'usr_owner_a');
+      expect((await request(app).post('/api/v1/auth/refresh').set('Authorization', `Bearer ${token}`).send({})).status).toBe(401);
+    });
+    it('logout revokes only the current device session', async () => {
+      const current = await SessionService.createSession('usr_owner_a');
+      const other = await SessionService.createSession('usr_owner_a');
+      const currentToken = JwtAuth.generateToken({ userId: 'usr_owner_a', email: 'owner@acme.com', sid: current.sessionId });
+      const otherToken = JwtAuth.generateToken({ userId: 'usr_owner_a', email: 'owner@acme.com', sid: other.sessionId });
+
+      const logout = await request(app).post('/api/v1/auth/logout').set('Authorization', `Bearer ${currentToken}`).send({});
+      expect(logout.status).toBe(200);
+      expect((await request(app).get('/api/v1/identity/sessions').set('Authorization', `Bearer ${currentToken}`)).status).toBe(401);
+      expect((await request(app).get('/api/v1/identity/sessions').set('Authorization', `Bearer ${otherToken}`)).status).toBe(200);
+    });
+
+    it('password change updates both credential stores and revokes every device', async () => {
+      const oldPassword = 'Old-Password123!';
+      const oldHash = await SessionSecurity.hashPassword(oldPassword);
+      await db.query('UPDATE users SET password_hash = $1 WHERE id = $2', [oldHash, 'usr_owner_a']);
+      await db.query(
+        `INSERT INTO user_identities (id, user_id, email, password_hash, account_state)
+         VALUES ('identity-owner', 'usr_owner_a', 'owner@acme.com', $1, 'ACTIVE')`,
+        [oldHash]
+      );
+      const current = await SessionService.createSession('usr_owner_a');
+      const other = await SessionService.createSession('usr_owner_a');
+      const currentToken = JwtAuth.generateToken({ userId: 'usr_owner_a', email: 'owner@acme.com', sid: current.sessionId });
+      const otherToken = JwtAuth.generateToken({ userId: 'usr_owner_a', email: 'owner@acme.com', sid: other.sessionId });
+
+      const changed = await request(app).post('/api/v1/auth/change-password')
+        .set('Authorization', `Bearer ${currentToken}`)
+        .send({ oldPassword, newPassword: 'New-Password456!' });
+      expect(changed.status).toBe(200);
+      const user = await db.query('SELECT password_hash FROM users WHERE id = $1', ['usr_owner_a']);
+      const identity = await db.query('SELECT password_hash FROM user_identities WHERE user_id = $1', ['usr_owner_a']);
+      expect(user.rows[0].password_hash).toBe(identity.rows[0].password_hash);
+      expect(await SessionSecurity.verifyPassword('New-Password456!', user.rows[0].password_hash)).toBe(true);
+      expect((await request(app).get('/api/v1/identity/sessions').set('Authorization', `Bearer ${currentToken}`)).status).toBe(401);
+      expect((await request(app).get('/api/v1/identity/sessions').set('Authorization', `Bearer ${otherToken}`)).status).toBe(401);
+    });
     it('rejects request without valid authentication', async () => {
       const res = await request(app).get('/api/v1/identity/sessions');
       expect(res.status).toBe(401);

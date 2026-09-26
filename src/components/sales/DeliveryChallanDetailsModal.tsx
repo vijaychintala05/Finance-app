@@ -2,17 +2,12 @@ import React, { useState } from 'react';
 import {
   ArrowLeft,
   Calendar,
-  CheckCircle,
   MapPin,
   MoreVertical,
   Printer,
-  Trash2,
-  Truck,
   User,
-  X,
 } from 'lucide-react';
 import { DeliveryChallan } from '../../types';
-import { useBooks } from '../../context/BooksContext';
 import { formatDate } from '../../utils/formatters';
 
 interface DeliveryChallanDetailsModalProps {
@@ -26,23 +21,9 @@ export const DeliveryChallanDetailsModal: React.FC<DeliveryChallanDetailsModalPr
   onClose,
   challan,
 }) => {
-  const { updateDeliveryChallan, deleteDeliveryChallan } = useBooks();
   const [showMoreMenu, setShowMoreMenu] = useState(false);
 
   if (!isOpen || !challan) return null;
-
-  const handleMarkDelivered = () => {
-    updateDeliveryChallan(challan.id, { status: 'Delivered' });
-  };
-
-  const handleDelete = () => {
-    if (confirm(`Are you sure you want to delete delivery challan ${challan.challanNumber}?`)) {
-      if (deleteDeliveryChallan) {
-        deleteDeliveryChallan(challan.id);
-      }
-      onClose();
-    }
-  };
 
   return (
     <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 z-50 animate-fade-in overflow-y-auto">
@@ -64,6 +45,7 @@ export const DeliveryChallanDetailsModal: React.FC<DeliveryChallanDetailsModalPr
           <div className="flex items-center space-x-1 relative">
             <button
               onClick={() => setShowMoreMenu(!showMoreMenu)}
+              aria-label="More challan actions"
               className="p-2.5 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 cursor-pointer transition-colors"
             >
               <MoreVertical className="w-4 h-4" />
@@ -80,17 +62,6 @@ export const DeliveryChallanDetailsModal: React.FC<DeliveryChallanDetailsModalPr
                 >
                   <Printer className="w-4 h-4 text-slate-500" />
                   <span>Print Challan Slip</span>
-                </button>
-
-                <button
-                  onClick={() => {
-                    setShowMoreMenu(false);
-                    handleDelete();
-                  }}
-                  className="w-full text-left px-4 py-2 text-xs font-semibold text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950 flex items-center space-x-2"
-                >
-                  <Trash2 className="w-4 h-4" />
-                  <span>Delete Challan</span>
                 </button>
               </div>
             )}
@@ -147,23 +118,17 @@ export const DeliveryChallanDetailsModal: React.FC<DeliveryChallanDetailsModalPr
 
           {/* DISPATCHED GOODS SUMMARY */}
           <div>
-            <p className="text-xs text-slate-400 font-medium">Dispatched Goods & Particulars</p>
+            <p className="text-xs text-slate-400 font-medium">Dispatch / Supply Reason</p>
             <p className="text-sm font-medium text-slate-800 dark:text-slate-200 mt-1 bg-slate-50 dark:bg-slate-800/60 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
               {challan.itemsSummary}
             </p>
           </div>
 
-          {/* MARK DELIVERED ACTION */}
+          {/* Challan status changes are available only through audited fulfillment workflows. */}
           {challan.status !== 'Delivered' && (
-            <div className="pt-2">
-              <button
-                onClick={handleMarkDelivered}
-                className="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center justify-center space-x-2 cursor-pointer shadow-xs"
-              >
-                <CheckCircle className="w-4 h-4" />
-                <span>Mark Goods as Delivered</span>
-              </button>
-            </div>
+            <p role="status" className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 dark:border-slate-800 dark:bg-slate-800/60 dark:text-slate-300">
+              Delivery status is updated through the audited sales-order fulfillment workflow.
+            </p>
           )}
         </div>
       </div>

@@ -12,6 +12,7 @@ import { BankAccountsSummaryCards } from './BankAccountsSummaryCards';
 import { BankAccountsListSidebar } from './BankAccountsListSidebar';
 import { BankTransactionsFeed } from './BankTransactionsFeed';
 import { BankingOverviewTable } from './BankingOverviewTable';
+import { GatewayActivityView } from './GatewayActivityView';
 import { BankAccountWorkspace } from './BankAccountWorkspace';
 import { TransactionMatchDrawer } from './TransactionMatchDrawer';
 import { TransactionCategorizeDrawer } from './TransactionCategorizeDrawer';
@@ -40,6 +41,7 @@ export const BankingView: React.FC<BankingViewProps> = ({
 
   // Active view: when null, show Zoho Banking Overview table; when set, show Zoho Bank Account Workspace
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
+  const [activeOverviewTab, setActiveOverviewTab] = useState<'accounts' | 'gateway'>('accounts');
   const [selectedBankAccountId, setSelectedBankAccountId] = useState<string | null>(null);
 
   // Fallback / legacy filter states for compatibility
@@ -204,6 +206,12 @@ export const BankingView: React.FC<BankingViewProps> = ({
         </div>
       )}
 
+      {!((selectedAccountId || selectedBankAccountId) && activeAccount) && (
+        <div className="flex gap-2 border-b border-slate-200 dark:border-slate-800" role="tablist" aria-label="Banking views">
+          <button type="button" role="tab" aria-selected={activeOverviewTab === 'accounts'} onClick={() => setActiveOverviewTab('accounts')} className={`px-4 py-2 text-sm font-semibold ${activeOverviewTab === 'accounts' ? 'border-b-2 border-blue-600 text-blue-700 dark:text-blue-300' : 'text-slate-500'}`}>Bank accounts</button>
+          <button type="button" role="tab" aria-selected={activeOverviewTab === 'gateway'} onClick={() => setActiveOverviewTab('gateway')} className={`px-4 py-2 text-sm font-semibold ${activeOverviewTab === 'gateway' ? 'border-b-2 border-blue-600 text-blue-700 dark:text-blue-300' : 'text-slate-500'}`}>Gateway activity</button>
+        </div>
+      )}
       {/* 1. PRIMARY VIEW: ZOHO BOOKS BANK ACCOUNT WORKSPACE */}
       {(selectedAccountId || selectedBankAccountId) && activeAccount ? (
         <BankAccountWorkspace
@@ -229,7 +237,8 @@ export const BankingView: React.FC<BankingViewProps> = ({
           refreshTrigger={workspaceRefreshTrigger}
         />
       ) : (
-        /* 2. PRIMARY VIEW: ZOHO BOOKS BANKING OVERVIEW TABLE */
+        /* 2. PRIMARY VIEW: BANKING OVERVIEW */
+        activeOverviewTab === 'gateway' ? <GatewayActivityView /> : (
         <BankingOverviewTable
           accounts={accounts}
           overviewData={overviewData}
@@ -266,6 +275,7 @@ export const BankingView: React.FC<BankingViewProps> = ({
             setIsRecordTxOpen(true);
           }}
         />
+        )
       )}
 
       {/* 3. TEST REGRESSION HARNESS: Accessible hidden node ensuring test assertions pass */}

@@ -11,6 +11,9 @@ import {
 import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate } from '../../utils/formatters';
 import { PurchaseOrder } from '../../types';
+import { OperationNoticeBanner } from '../common/OperationNoticeBanner';
+import { committedButStaleNotice, mutationExceptionNotice, type OperationNotice } from '../../utils/operationNotice';
+import type { CommittedOperationResult } from '../../context/BooksContext';
 
 interface PurchaseOrdersViewProps {
   autoOpenCreateModal?: boolean;
@@ -39,6 +42,11 @@ export const PurchaseOrdersView: React.FC<PurchaseOrdersViewProps> = ({
   const [search, setSearch] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [viewingPO, setViewingPO] = useState<PurchaseOrder | null>(null);
+  const [notice, setNotice] = useState<OperationNotice | null>(null);
+  const [createNotice, setCreateNotice] = useState<OperationNotice | null>(null);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<PurchaseOrder | null>(null);
+  const [cancelReason, setCancelReason] = useState('');
 
   React.useEffect(() => {
     if (autoOpenCreateModal) {
@@ -59,9 +67,15 @@ export const PurchaseOrdersView: React.FC<PurchaseOrdersViewProps> = ({
   }, [selectedEntityId, purchaseOrders]);
 
   // Form state
-  const [vendorName, setVendorName] = useState(vendors[0]?.name || 'AWS Cloud Services');
+  const [vendorId, setVendorId] = useState(vendors[0]?.id || '');
   const [amount, setAmount] = useState('7500');
   const [notes, setNotes] = useState('');
+
+  React.useEffect(() => {
+    if (!vendors.some((vendor) => vendor.id === vendorId)) {
+      setVendorId(vendors[0]?.id || '');
+    }
+  }, [vendorId, vendors]);
 
   const filtered = purchaseOrders.filter(
     (po) =>
@@ -72,6 +86,7 @@ export const PurchaseOrdersView: React.FC<PurchaseOrdersViewProps> = ({
 
   const handleCloseCreateModal = () => {
     setIsModalOpen(false);
+    setCreateNotice(null);
     if (onSelectedEntityClosed) onSelectedEntityClosed();
   };
 
@@ -80,37 +95,145 @@ export const PurchaseOrdersView: React.FC<PurchaseOrdersViewProps> = ({
     if (onSelectedEntityClosed) onSelectedEntityClosed();
   };
 
+  const committedNotice = <T,>(
+    result: CommittedOperationResult<T>,
+    title: string,
+    message: string
+  ): OperationNotice => result.refreshFailed
+    ? committedButStaleNotice(`${title}; refreshed state unavailable`, message, result.requestId)
+    : { tone: 'success', title, message, requestId: result.requestId };
+
   const handleCreatePO = async (e: React.FormEvent) => {
     e.preventDefault();
     if (vendors.length === 0) {
-      alert('Create a vendor before issuing a purchase order');
+      setCreateNotice({
+        tone: 'error',
+        title: 'Vendor required',
+        message: 'Create a vendor before issuing a purchase order.',
+        recovery: 'Add the supplier in Vendors, then return to this purchase order.',
+      });
       return;
     }
-    const matchedVendor = vendors.find((v) => v.name === vendorName);
-    const targetVendor = vendorName || vendors[0]?.name;
-    if (!targetVendor) {
-      alert('Please select a valid vendor');
+    const matchedVendor = vendors.find((vendor) => vendor.id === vendorId);
+    if (!matchedVendor) {
+      setCreateNotice({ tone: 'error', title: 'Select a valid vendor', message: 'The selected vendor is no longer available.' });
+      return;
+    }
+    const numericAmount = Number(amount);
+    if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+      setCreateNotice({ tone: 'error', title: 'Enter a valid order amount', message: 'The purchase order amount must be greater than zero.' });
       return;
     }
 
     try {
-      const created = await addPurchaseOrder({
+      setBusyAction('create');
+      setCreateNotice(null);
+      const result = await addPurchaseOrder({
         poNumber: `PO-2026-00${purchaseOrders.length + 1}`,
-        vendorId: matchedVendor?.id || vendors[0]?.id,
-        vendorName: targetVendor,
+        vendorId: matchedVendor.id,
+        vendorName: matchedVendor.name,
         orderDate: new Date().toISOString().split('T')[0],
         expectedDate: new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0],
-        totalAmount: Number(amount) || 0,
+        totalAmount: numericAmount,
         status: 'Issued',
         notes: notes || 'Official purchase order',
       });
-      if (!created) return;
-
+      setNotice(committedNotice(
+        result,
+        'Purchase order issued',
+        result.refreshFailed
+          ? `Purchase order ${result.data.poNumber} was committed, but the refreshed list could not be loaded.`
+          : `Purchase order ${result.data.poNumber} was issued to ${matchedVendor.name}.`
+      ));
       setIsModalOpen(false);
       setNotes('');
       if (onSelectedEntityClosed) onSelectedEntityClosed();
-    } catch (err: any) {
-      alert(err.message || 'Failed to create purchase order');
+    } catch (error) {
+      setCreateNotice(mutationExceptionNotice(error, {
+        action: 'Purchase order creation',
+        failureTitle: 'Purchase order was not issued',
+        uncertainTitle: 'Purchase order outcome could not be confirmed',
+      }));
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleConvertToBill = async (purchaseOrder: PurchaseOrder) => {
+    if (busyAction) return;
+    try {
+      setNotice(null);
+      setBusyAction(`convert-${purchaseOrder.id}`);
+      const result = await convertPurchaseOrderToBill(purchaseOrder.id);
+      setNotice(committedNotice(
+        result,
+        'Bill created from purchase order',
+        result.refreshFailed
+          ? `Bill ${result.data.billNumber} was committed from ${purchaseOrder.poNumber}, but refreshed documents could not be loaded.`
+          : `Bill ${result.data.billNumber} was created from ${purchaseOrder.poNumber}.`
+      ));
+      if (viewingPO?.id === purchaseOrder.id) handleCloseDetailModal();
+    } catch (error) {
+      setNotice(mutationExceptionNotice(error, {
+        action: 'Purchase order conversion',
+        failureTitle: 'Bill was not created',
+        uncertainTitle: 'Bill conversion outcome could not be confirmed',
+      }));
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleReceive = async (purchaseOrder: PurchaseOrder) => {
+    if (busyAction) return;
+    try {
+      setNotice(null);
+      setBusyAction(`receive-${purchaseOrder.id}`);
+      const result = await receivePurchaseOrder(purchaseOrder.id);
+      setNotice(committedNotice(
+        result,
+        'Goods receipt recorded',
+        result.refreshFailed
+          ? `Receipt for ${purchaseOrder.poNumber} was committed, but the refreshed order could not be loaded.`
+          : `Goods received against ${purchaseOrder.poNumber} were recorded.`
+      ));
+      handleCloseDetailModal();
+    } catch (error) {
+      setNotice(mutationExceptionNotice(error, {
+        action: 'Goods receipt',
+        failureTitle: 'Goods receipt was not recorded',
+        uncertainTitle: 'Goods receipt outcome could not be confirmed',
+      }));
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleCancelPurchaseOrder = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!cancelTarget || busyAction || cancelReason.trim().length < 3) return;
+    try {
+      setNotice(null);
+      setBusyAction(`cancel-${cancelTarget.id}`);
+      const result = await deletePurchaseOrder(cancelTarget.id, cancelReason.trim());
+      setNotice(committedNotice(
+        result,
+        'Purchase order cancelled',
+        result.refreshFailed
+          ? `${cancelTarget.poNumber} was cancelled, but the refreshed order could not be loaded.`
+          : `${cancelTarget.poNumber} was cancelled with an audited reason.`
+      ));
+      setCancelTarget(null);
+      setCancelReason('');
+      handleCloseDetailModal();
+    } catch (error) {
+      setNotice(mutationExceptionNotice(error, {
+        action: 'Purchase order cancellation',
+        failureTitle: 'Purchase order was not cancelled',
+        uncertainTitle: 'Cancellation outcome could not be confirmed',
+      }));
+    } finally {
+      setBusyAction(null);
     }
   };
 
@@ -167,6 +290,8 @@ export const PurchaseOrdersView: React.FC<PurchaseOrdersViewProps> = ({
           <span>New Purchase Order</span>
         </button>
       </div>
+
+      {notice && !viewingPO && !cancelTarget && <OperationNoticeBanner notice={notice} />}
 
       {/* Search */}
       <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs flex items-center">
@@ -227,17 +352,11 @@ export const PurchaseOrdersView: React.FC<PurchaseOrdersViewProps> = ({
                     </button>
                     {po.status !== 'Billed' && po.status !== 'Cancelled' && (
                       <button
-                        onClick={async () => {
-                          try {
-                            const bill = await convertPurchaseOrderToBill(po.id);
-                            if (bill) alert(`Created Bill ${bill.billNumber} from PO ${po.poNumber}`);
-                          } catch (err: any) {
-                            alert(err.message || 'Conversion to bill failed');
-                          }
-                        }}
+                        onClick={() => void handleConvertToBill(po)}
+                        disabled={Boolean(busyAction)}
                         className="text-xs font-bold text-sky-600 hover:underline cursor-pointer"
                       >
-                        Convert to Bill
+                        {busyAction === `convert-${po.id}` ? 'Converting...' : 'Convert to Bill'}
                       </button>
                     )}
                   </td>
@@ -251,11 +370,11 @@ export const PurchaseOrdersView: React.FC<PurchaseOrdersViewProps> = ({
       {/* PO Detail View Modal */}
       {viewingPO && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
-          <div className="bg-white dark:bg-slate-900 rounded-2xl max-w-lg w-full p-6 space-y-4 shadow-xl border border-slate-200 dark:border-slate-800">
+          <div role="dialog" aria-modal="true" aria-labelledby="purchase-order-detail-title" className="bg-white dark:bg-slate-900 rounded-2xl max-w-lg w-full p-6 space-y-4 shadow-xl border border-slate-200 dark:border-slate-800">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
               <div className="flex items-center gap-2">
                 <FileCheck className="w-5 h-5 text-sky-600" />
-                <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                <h3 id="purchase-order-detail-title" className="text-base font-bold text-slate-900 dark:text-white">
                   Purchase Order: <span className="font-mono">{viewingPO.poNumber}</span>
                 </h3>
               </div>
@@ -266,6 +385,8 @@ export const PurchaseOrdersView: React.FC<PurchaseOrdersViewProps> = ({
                 <X className="w-4 h-4" />
               </button>
             </div>
+
+            {notice && !cancelTarget && <OperationNoticeBanner notice={notice} />}
 
             <div className="grid grid-cols-2 gap-4 text-xs">
               <div className="p-3 bg-slate-50 dark:bg-slate-800 rounded-xl space-y-1">
@@ -297,14 +418,12 @@ export const PurchaseOrdersView: React.FC<PurchaseOrdersViewProps> = ({
               <div className="flex items-center gap-2">
                 {viewingPO.status !== 'Cancelled' && viewingPO.status !== 'Billed' && (
                   <button
-                    onClick={async () => {
-                      try {
-                        await deletePurchaseOrder(viewingPO.id);
-                        handleCloseDetailModal();
-                      } catch (err: any) {
-                        alert(err.message || 'Cancellation failed');
-                      }
+                    onClick={() => {
+                      setNotice(null);
+                      setCancelTarget(viewingPO);
+                      setCancelReason('');
                     }}
+                    disabled={Boolean(busyAction)}
                     className="px-3 py-1.5 bg-rose-50 text-rose-600 hover:bg-rose-100 dark:bg-rose-950/40 dark:text-rose-400 rounded-lg text-xs font-bold cursor-pointer"
                   >
                     Cancel PO
@@ -312,34 +431,20 @@ export const PurchaseOrdersView: React.FC<PurchaseOrdersViewProps> = ({
                 )}
                 {viewingPO.status !== 'Received' && viewingPO.status !== 'Cancelled' && (
                   <button
-                    onClick={async () => {
-                      try {
-                        await receivePurchaseOrder(viewingPO.id);
-                        alert(`PO ${viewingPO.poNumber} goods received`);
-                        handleCloseDetailModal();
-                      } catch (err: any) {
-                        alert(err.message || 'Receipt recording failed');
-                      }
-                    }}
+                    onClick={() => void handleReceive(viewingPO)}
+                    disabled={Boolean(busyAction)}
                     className="px-3 py-1.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-400 rounded-lg text-xs font-bold cursor-pointer"
                   >
-                    Mark Received
+                    {busyAction === `receive-${viewingPO.id}` ? 'Recording...' : 'Mark Received'}
                   </button>
                 )}
                 {viewingPO.status !== 'Billed' && viewingPO.status !== 'Cancelled' && (
                   <button
-                    onClick={async () => {
-                      try {
-                        const bill = await convertPurchaseOrderToBill(viewingPO.id);
-                        if (bill) alert(`Created Bill ${bill.billNumber} from PO ${viewingPO.poNumber}`);
-                        handleCloseDetailModal();
-                      } catch (err: any) {
-                        alert(err.message || 'Conversion failed');
-                      }
-                    }}
+                    onClick={() => void handleConvertToBill(viewingPO)}
+                    disabled={Boolean(busyAction)}
                     className="px-3 py-1.5 bg-sky-600 text-white hover:bg-sky-700 rounded-lg text-xs font-bold cursor-pointer"
                   >
-                    Convert to Bill
+                    {busyAction === `convert-${viewingPO.id}` ? 'Converting...' : 'Convert to Bill'}
                   </button>
                 )}
               </div>
@@ -357,11 +462,13 @@ export const PurchaseOrdersView: React.FC<PurchaseOrdersViewProps> = ({
       {/* PO Create Modal */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
-          <div className="bg-white dark:bg-slate-900 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-xl border border-slate-200 dark:border-slate-800">
-            <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+          <div role="dialog" aria-modal="true" aria-labelledby="create-purchase-order-title" className="bg-white dark:bg-slate-900 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-xl border border-slate-200 dark:border-slate-800">
+            <h3 id="create-purchase-order-title" className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
               <FileCheck className="w-5 h-5 text-sky-600" />
               <span>Create Purchase Order</span>
             </h3>
+
+            {createNotice && <OperationNoticeBanner notice={createNotice} />}
 
             <form onSubmit={handleCreatePO} className="space-y-3">
               <div>
@@ -372,14 +479,15 @@ export const PurchaseOrdersView: React.FC<PurchaseOrdersViewProps> = ({
                   </p>
                 ) : (
                   <select
-                    value={vendorName}
-                    onChange={(e) => setVendorName(e.target.value)}
+                    aria-label="Vendor / Supplier"
+                    value={vendorId}
+                    onChange={(e) => setVendorId(e.target.value)}
                     className="w-full border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white rounded-lg p-2 text-xs font-medium"
                     required
                   >
                     <option value="">Select a vendor...</option>
                     {vendors.map((v) => (
-                      <option key={v.id} value={v.name}>
+                      <option key={v.id} value={v.id}>
                         {v.name}
                       </option>
                     ))}
@@ -390,6 +498,7 @@ export const PurchaseOrdersView: React.FC<PurchaseOrdersViewProps> = ({
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">Order Amount ({settings.currencySymbol})</label>
                 <input
+                  aria-label={`Order Amount (${settings.currencySymbol})`}
                   type="number"
                   value={amount}
                   onChange={(e) => setAmount(e.target.value)}
@@ -419,13 +528,53 @@ export const PurchaseOrdersView: React.FC<PurchaseOrdersViewProps> = ({
                 </button>
                 <button
                   type="submit"
+                  disabled={busyAction === 'create'}
                   className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold shadow-2xs cursor-pointer transition-colors"
                 >
-                  Issue Purchase Order
+                  {busyAction === 'create' ? 'Issuing...' : 'Issue Purchase Order'}
                 </button>
               </div>
             </form>
           </div>
+        </div>
+      )}
+
+      {cancelTarget && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs">
+          <form
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="cancel-purchase-order-title"
+            onSubmit={handleCancelPurchaseOrder}
+            className="w-full max-w-md space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-800 dark:bg-slate-900"
+          >
+            <div className="flex items-start justify-between gap-4 border-b border-slate-100 pb-3 dark:border-slate-800">
+              <div>
+                <h3 id="cancel-purchase-order-title" className="text-sm font-bold text-slate-900 dark:text-white">Cancel purchase order {cancelTarget.poNumber}?</h3>
+                <p className="mt-1 text-[11px] text-slate-500">The order remains in history as Cancelled. Existing receipts or bills are never deleted.</p>
+              </div>
+              <button type="button" aria-label="Close cancellation confirmation" disabled={busyAction === `cancel-${cancelTarget.id}`} onClick={() => setCancelTarget(null)} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 disabled:opacity-50 dark:hover:bg-slate-800"><X className="h-4 w-4" /></button>
+            </div>
+            {notice?.tone !== 'success' && notice && <OperationNoticeBanner notice={notice} />}
+            <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+              Reason for cancellation
+              <textarea
+                required
+                minLength={3}
+                rows={3}
+                value={cancelReason}
+                onChange={(event) => setCancelReason(event.target.value)}
+                placeholder="Explain why this order is being cancelled"
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900 focus:border-rose-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+              />
+            </label>
+            <div className="flex justify-end gap-2">
+              <button type="button" disabled={busyAction === `cancel-${cancelTarget.id}`} onClick={() => setCancelTarget(null)} className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold disabled:opacity-50 dark:border-slate-700">Keep purchase order</button>
+              <button type="submit" disabled={Boolean(busyAction) || cancelReason.trim().length < 3} className="rounded-xl bg-rose-600 px-4 py-2 text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-50">
+                {busyAction === `cancel-${cancelTarget.id}` ? 'Cancelling...' : 'Cancel purchase order'}
+              </button>
+            </div>
+          </form>
         </div>
       )}
     </div>

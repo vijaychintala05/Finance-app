@@ -185,7 +185,7 @@ export const JournalModal: React.FC<JournalModalProps> = ({ isOpen, onClose }) =
                 className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-2 text-slate-800 dark:text-slate-200"
               >
                 <option value="">-- No Project --</option>
-                {projects.map((p) => (
+                {projects.filter((p) => !p.archivedAt).map((p) => (
                   <option key={p.id} value={p.id}>
                     [{p.code}] {p.name}
                   </option>

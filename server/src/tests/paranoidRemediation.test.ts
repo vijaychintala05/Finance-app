@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../index';
 import { db } from '../database/db';
@@ -7,6 +7,8 @@ import { MasterFinanceFixture } from './fixtures/masterFinanceFixture';
 import { OrganizationProvisioningService } from '../services/OrganizationProvisioningService';
 import { FinancialDestructiveActionsService } from '../accounting/FinancialDestructiveActionsService';
 import { ServerPostingEngine } from '../accounting/postingEngine';
+import { SalesEngine } from '../sales/SalesEngine';
+import { RoutePermissionRegistry } from '../auth/RoutePermissionRegistry';
 
 describe('Staff-Engineer Audit Remediation Suite', () => {
   const orgA = 'org-remedy-a';
@@ -85,6 +87,116 @@ describe('Staff-Engineer Audit Remediation Suite', () => {
     expect(res.body.error).toContain('Sales order does not belong to this organization');
   });
 
+  it('registers order mutation replay permissions and retries conversion after transient failure', async () => {
+    expect(RoutePermissionRegistry.getRequiredPermissions('POST', '/api/v1/finance/sales-orders/so-permission/convert-inv')).toEqual(['invoices.create', 'sales_orders.create']);
+    expect(RoutePermissionRegistry.getRequiredPermissions('POST', '/api/v1/finance/sales-orders/so-permission/fulfill')).toEqual(['delivery_challans.create', 'sales_orders.create', 'invoices.create']);
+    expect(RoutePermissionRegistry.getRequiredPermissions('POST', '/api/v1/finance/delivery-challans')).toEqual(['delivery_challans.create', 'invoices.create']);
+
+    const customerId = 'cust-replay-convert-a';
+    await db.query(`INSERT INTO customers (id, organization_id, display_name, currency) VALUES ($1, $2, 'Replay Customer', 'INR') ON CONFLICT DO NOTHING`, [customerId, orgA]);
+    const order = await SalesEngine.createSalesOrder(orgA, { customerId, orderDate: '2026-09-02', totalAmount: 450, status: 'CONFIRMED', lineItems: [{ description: 'Replay conversion', quantity: 1, unitPrice: 450, taxRate: 0 }] }, undefined, 'usr-admin-a');
+    const key = `so-convert-retry-${Date.now()}`;
+    vi.spyOn(SalesEngine, 'convertSalesOrderToInvoice').mockRejectedValueOnce(new Error('injected transient database failure'));
+    const payload = { partialAmount: 200 };
+    const first = await request(app)
+      .post(`/api/v1/finance/sales-orders/${order.id}/convert-inv`)
+      .set('Authorization', `Bearer ${tokenA}`)
+      .set('x-organization-id', orgA)
+      .set('Idempotency-Key', key)
+      .send(payload);
+    expect(first.status).toBe(500);
+
+    const retry = await request(app)
+      .post(`/api/v1/finance/sales-orders/${order.id}/convert-inv`)
+      .set('Authorization', `Bearer ${tokenA}`)
+      .set('x-organization-id', orgA)
+      .set('Idempotency-Key', key)
+      .send(payload);
+    expect(retry.status).toBe(201);
+    const replay = await request(app)
+      .post(`/api/v1/finance/sales-orders/${order.id}/convert-inv`)
+      .set('Authorization', `Bearer ${tokenA}`)
+      .set('x-organization-id', orgA)
+      .set('Idempotency-Key', key)
+      .send(payload);
+    expect(replay.status).toBe(201);
+    expect(replay.body.id).toBe(retry.body.id);
+    const invoiceCount = await db.query(`SELECT COUNT(*)::int AS count FROM invoices WHERE organization_id = $1 AND sales_order_id = $2`, [orgA, order.id]);
+    expect(invoiceCount.rows[0].count).toBe(1);
+
+    const taxedOrder = await SalesEngine.createSalesOrder(orgA, { customerId, orderDate: '2026-09-03', totalAmount: 1180, status: 'CONFIRMED', lineItems: [{ description: 'GST replay source', quantity: 1, unitPrice: 1000, taxRate: 18 }] }, undefined, 'usr-admin-a');
+    const forgedLines = await request(app)
+      .post(`/api/v1/finance/sales-orders/${taxedOrder.id}/convert-inv`)
+      .set('Authorization', `Bearer ${tokenA}`)
+      .set('x-organization-id', orgA)
+      .set('Idempotency-Key', `so-lines-reject-${Date.now()}`)
+      .send({ lineItems: [{ description: 'Forged zero-tax line', quantity: 1, unitPrice: 1180, taxRate: 0 }] });
+    expect(forgedLines.status).toBe(422);
+    const forgedInvoiceCount = await db.query(`SELECT COUNT(*)::int AS count FROM invoices WHERE organization_id = $1 AND sales_order_id = $2`, [orgA, taxedOrder.id]);
+    expect(forgedInvoiceCount.rows[0].count).toBe(0);
+
+    await db.query(`UPDATE organization_members SET role = 'Viewer' WHERE organization_id = $1 AND user_id = $2`, [orgA, 'usr-admin-a']);
+    const revokedReplay = await request(app)
+      .post(`/api/v1/finance/sales-orders/${order.id}/convert-inv`)
+      .set('Authorization', `Bearer ${tokenA}`)
+      .set('x-organization-id', orgA)
+      .set('Idempotency-Key', key)
+      .send(payload);
+    await db.query(`UPDATE organization_members SET role = 'Owner' WHERE organization_id = $1 AND user_id = $2`, [orgA, 'usr-admin-a']);
+    expect(revokedReplay.status).toBe(403);
+  });
+  it('issues linked challans through the audited fulfillment workflow and rejects overage', async () => {
+    const customerId = 'cust-linked-challan-a';
+    const salesOrderId = 'so-linked-challan-a';
+    await db.query(
+      `INSERT INTO customers (id, organization_id, display_name, currency) VALUES ($1, $2, 'Linked Challan Customer', 'INR') ON CONFLICT DO NOTHING`,
+      [customerId, orgA]
+    );
+    await db.query(
+      `INSERT INTO sales_orders (id, organization_id, sales_order_number, order_date, customer_id, customer_name, total_amount, status, invoiced_amount, fulfilled_amount) VALUES ($1, $2, 'SO-LINKED-CHALLAN-A', '2026-09-01', $3, 'Linked Challan Customer', 500, 'CONFIRMED', 0, 0) ON CONFLICT DO NOTHING`,
+      [salesOrderId, orgA, customerId]
+    );
+
+    const draftAttempt = await request(app)
+      .post('/api/v1/finance/delivery-challans')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .set('x-organization-id', orgA)
+      .send({ customerId, salesOrderId, status: 'DRAFT', fulfilledAmount: 200 });
+    expect(draftAttempt.status).toBe(400);
+
+    const issued = await request(app)
+      .post('/api/v1/finance/delivery-challans')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .set('x-organization-id', orgA)
+      .set('Idempotency-Key', 'challan-issued-replay-001')
+      .send({ customerId, salesOrderId, status: 'ISSUED', fulfilledAmount: 200, lineItems: [{ description: 'First delivery', quantity: 1, unitPrice: 200 }] });
+    expect(issued.status).toBe(201);
+    expect(issued.body.status).toBe('ISSUED');
+    const replay = await request(app)
+      .post('/api/v1/finance/delivery-challans')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .set('x-organization-id', orgA)
+      .set('Idempotency-Key', 'challan-issued-replay-001')
+      .send({ customerId, salesOrderId, status: 'ISSUED', fulfilledAmount: 200, lineItems: [{ description: 'First delivery', quantity: 1, unitPrice: 200 }] });
+    expect(replay.status).toBe(201);
+    expect(replay.body.id).toBe(issued.body.id);
+    const order = await db.query(`SELECT status, fulfilled_amount FROM sales_orders WHERE organization_id = $1 AND id = $2`, [orgA, salesOrderId]);
+    expect(order.rows[0].status).toBe('PARTIALLY_FULFILLED');
+    expect(Number(order.rows[0].fulfilled_amount)).toBe(200);
+    const challan = await db.query(`SELECT status, sales_order_id FROM delivery_challans WHERE organization_id = $1 AND id = $2`, [orgA, issued.body.id]);
+    expect(challan.rows[0].status).toBe('ISSUED');
+    expect(challan.rows[0].sales_order_id).toBe(salesOrderId);
+
+    const excess = await request(app)
+      .post('/api/v1/finance/delivery-challans')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .set('x-organization-id', orgA)
+      .send({ customerId, salesOrderId, status: 'ISSUED', fulfilledAmount: 301 });
+    expect(excess.status).toBe(409);
+    expect(excess.body.error).toMatch(/exceeds the remaining unfulfilled/i);
+    const afterExcess = await db.query(`SELECT fulfilled_amount FROM sales_orders WHERE organization_id = $1 AND id = $2`, [orgA, salesOrderId]);
+    expect(Number(afterExcess.rows[0].fulfilled_amount)).toBe(200);
+  });
   it('3. Can void an unpaid bill even if vendor balance is reduced by credits/advances', async () => {
     const vendorId = 'vend-remedy-1';
     await db.query(

@@ -62,7 +62,16 @@ function validatePeriodIdentity(periodKey: string, periodStart: string, periodEn
   }
 }
 
-const dbDate = (value: unknown) => value instanceof Date ? value.toISOString().slice(0, 10) : String(value).slice(0, 10);
+function dbDate(value: unknown): string {
+  if (value instanceof Date && Number.isFinite(value.getTime())) {
+    const year = value.getFullYear();
+    const month = String(value.getMonth() + 1).padStart(2, '0');
+    const day = String(value.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+  if (typeof value === 'string' && isIsoCalendarDate(value)) return value;
+  throw new Error('PERIOD_CLOSE_DATE_INVALID: Stored period date is invalid');
+}
 
 async function validateWithClient(
   orgId: string, periodKey: string, periodStart: string, periodEnd: string, client: DbQueryClient

@@ -13,6 +13,9 @@ import {
 } from 'lucide-react';
 import { Account, AccountSubType, AccountType } from '../../types';
 import { useBooks } from '../../context/BooksContext';
+import { ApiRequestError } from '../../api/client';
+import { OperationNoticeBanner } from './OperationNoticeBanner';
+import { isUncertainMutationOutcome, mutationExceptionNotice, type OperationNotice } from '../../utils/operationNotice';
 import { BankingService } from '../../services/bankingService';
 import { RESERVED_CODES } from '../coa/AccountModal';
 
@@ -66,6 +69,8 @@ export const QuickAddAccountModal: React.FC<QuickAddAccountModalProps> = ({
   const [accountNumber, setAccountNumber] = useState('');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [committedNotice, setCommittedNotice] = useState<OperationNotice | null>(null);
+  const [creationBlocked, setCreationBlocked] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -78,6 +83,8 @@ export const QuickAddAccountModal: React.FC<QuickAddAccountModalProps> = ({
       setBankName('');
       setAccountNumber('');
       setError('');
+      setCommittedNotice(null);
+      setCreationBlocked(false);
       setIsSubmitting(false);
     }
   }, [isOpen, defaultCategory]);
@@ -111,6 +118,7 @@ export const QuickAddAccountModal: React.FC<QuickAddAccountModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (creationBlocked || isSubmitting) return;
     setError('');
     const normalizedCode = code.trim();
     if (!name.trim() || !normalizedCode) return;
@@ -145,31 +153,86 @@ export const QuickAddAccountModal: React.FC<QuickAddAccountModalProps> = ({
 
     setIsSubmitting(true);
     try {
-      const newAcc = await addAccount({
-        code: normalizedCode,
-        name: name.trim(),
-        type,
-        subType,
-        description: description.trim() || undefined,
-        balance: 0,
-      });
-      if (categoryPreset === 'Bank') {
-        await BankingService.createAccount({
-          ledgerAccountId: newAcc.id,
-          accountName: newAcc.name,
-          accountNumber: accountNumber.trim(),
-          bankName: bankName.trim(),
-          currency: settings.currencyCode,
-          openingBalanceDate: new Date().toISOString().slice(0, 10),
-          currentBalance: 0,
+      let result;
+      try {
+        result = await addAccount({
+          code: normalizedCode,
+          name: name.trim(),
+          type,
+          subType,
+          description: description.trim() || undefined,
+          balance: 0,
         });
+      } catch (err: any) {
+        const notice = mutationExceptionNotice(err, {
+          action: 'Account creation',
+          uncertainTitle: 'Account creation outcome could not be confirmed',
+          uncertainRecovery: 'Reload Chart of Accounts and inspect this account code before retrying; account creation has no safe replay receipt.',
+        });
+        if (err instanceof ApiRequestError && err.response.status >= 200 && err.response.status < 300) {
+          setCreationBlocked(true);
+          setCommittedNotice({ tone: 'warning', title: 'Account save needs verification', message: notice.message, recovery: 'Reload Chart of Accounts and inspect this account code before taking another action.', requestId: err.response.requestId });
+        } else if (notice.tone === 'warning') {
+          setCreationBlocked(true);
+          setCommittedNotice(notice);
+        } else {
+          setError(notice.message);
+        }
+        return;
+      }
+
+      if (result.organizationChanged || result.refreshFailed) {
+        setCreationBlocked(true);
+        setCommittedNotice({
+          tone: 'warning',
+          title: result.organizationChanged ? 'Ledger account saved in the previous organization' : 'Ledger account saved; refresh could not verify it',
+          message: result.organizationChanged
+            ? 'The active organization changed while this account was being created. Bank setup was not started; check the original organization before continuing.'
+            : 'The chart refresh could not verify the new account. Bank setup was not started; reload and inspect the account before continuing.',
+          recovery: result.organizationChanged
+            ? 'Switch back to the original organization and inspect Chart of Accounts before creating another account.'
+            : 'Reload Chart of Accounts and inspect this account code before taking another action.',
+          requestId: result.requestId,
+        });
+        return;
+      }
+
+      const newAcc = result.data;
+      if (categoryPreset === 'Bank') {
+        try {
+          await BankingService.createAccount({
+            ledgerAccountId: newAcc.id,
+            accountName: newAcc.name,
+            accountNumber: accountNumber.trim(),
+            bankName: bankName.trim(),
+            currency: settings.currencyCode,
+            openingBalanceDate: new Date().toISOString().slice(0, 10),
+            currentBalance: 0,
+          });
+        } catch (bankError: any) {
+          const notice = mutationExceptionNotice(bankError, {
+            action: 'Bank account setup',
+            uncertainTitle: 'Bank account setup outcome could not be confirmed',
+            uncertainRecovery: 'Open Banking and inspect the account before attempting any setup again.',
+          });
+          const confirmedRejection = bankError instanceof ApiRequestError && !isUncertainMutationOutcome(bankError.response);
+          setCreationBlocked(true);
+          setCommittedNotice({
+            tone: confirmedRejection ? 'error' : 'warning',
+            title: confirmedRejection ? 'Ledger account saved; bank setup was rejected' : 'Ledger account saved; bank setup outcome needs review',
+            message: notice.message,
+            recovery: confirmedRejection
+              ? 'The ledger account is already saved. Open Banking and complete the missing bank setup; do not create another ledger account.'
+              : 'The ledger account is saved. Open Banking and inspect setup status before creating another account.',
+            requestId: bankError instanceof ApiRequestError ? bankError.response.requestId : undefined,
+          });
+          return;
+        }
       }
       if (onAccountCreated) onAccountCreated(newAcc);
       setName('');
       setDescription('');
       onClose();
-    } catch (err: any) {
-      setError(err?.message || 'Account could not be created');
     } finally {
       setIsSubmitting(false);
     }
@@ -263,6 +326,7 @@ export const QuickAddAccountModal: React.FC<QuickAddAccountModalProps> = ({
 
         {/* Form Body */}
         <form onSubmit={handleSubmit} className="p-6 space-y-5 text-xs">
+          {committedNotice && <OperationNoticeBanner notice={committedNotice} />}
           {error && (
             <div role="alert" className="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-rose-800">
               <AlertCircle className="h-4 w-4 shrink-0 mt-0.5 text-rose-600" />
@@ -391,11 +455,11 @@ export const QuickAddAccountModal: React.FC<QuickAddAccountModalProps> = ({
             </button>
             <button
               type="submit"
-              disabled={isSubmitting || Boolean(codeConflict)}
+              disabled={isSubmitting || creationBlocked || Boolean(codeConflict)}
               className="bg-blue-600 hover:bg-blue-500 text-white font-bold px-5 py-2 rounded-xl flex items-center space-x-1.5 shadow-sm transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Plus className="w-4 h-4" />
-              <span>{isSubmitting ? 'Saving...' : 'Save Account'}</span>
+              <span>{creationBlocked ? 'Inspect before continuing' : isSubmitting ? 'Saving...' : 'Save Account'}</span>
             </button>
           </div>
         </form>

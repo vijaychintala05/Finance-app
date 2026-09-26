@@ -64,8 +64,8 @@ function queryString(filters: WorkspaceReportFilters): string {
   return query.toString();
 }
 
-export async function fetchWorkspaceReport(reportId: WorkspaceReportId, filters: WorkspaceReportFilters): Promise<WorkspaceReportResult> {
-  const response = await apiClient.get<WorkspaceReportResult>(`/finance/reports/workspace/${reportId}?${queryString(filters)}`);
+export async function fetchWorkspaceReport(reportId: WorkspaceReportId, filters: WorkspaceReportFilters, organizationId: string): Promise<WorkspaceReportResult> {
+  const response = await apiClient.get<WorkspaceReportResult>(`/finance/reports/workspace/${reportId}?${queryString(filters)}`, organizationId);
   if (response.error || !response.data) throw new Error(response.error || 'The report returned no data');
   return response.data;
 }
@@ -75,12 +75,15 @@ export async function downloadWorkspaceReport(
   filters: WorkspaceReportFilters,
   format: 'csv' | 'xlsx' | 'pdf',
   columns: string[],
+  organizationId: string,
+  isContextCurrent: () => boolean = () => true,
 ): Promise<void> {
   const query = new URLSearchParams(queryString(filters));
   query.set('format', format);
   if (columns.length) query.set('columns', columns.join(','));
-  const response = await apiClient.getBlob(`/finance/reports/workspace/${reportId}/export?${query.toString()}`);
+  const response = await apiClient.getBlob(`/finance/reports/workspace/${reportId}/export?${query.toString()}`, organizationId);
   if (response.error || !response.data) throw new Error(response.error || 'Report export failed');
+  if (!isContextCurrent()) return;
   const blob = response.data;
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');

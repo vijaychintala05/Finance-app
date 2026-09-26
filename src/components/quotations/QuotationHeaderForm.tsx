@@ -19,6 +19,7 @@ interface Project {
   id: string;
   name: string;
   code?: string;
+  archivedAt?: string | null;
 }
 
 interface QuotationHeaderFormProps {
@@ -31,6 +32,7 @@ interface QuotationHeaderFormProps {
   projectId: string;
   setProjectId: (id: string) => void;
   projects: Project[];
+  allowArchivedProject?: boolean;
   onOpenQuickProject: () => void;
   issueDate: string;
   setIssueDate: (d: string) => void;
@@ -55,6 +57,7 @@ export const QuotationHeaderForm: React.FC<QuotationHeaderFormProps> = ({
   projectId,
   setProjectId,
   projects,
+  allowArchivedProject = false,
   onOpenQuickProject,
   issueDate,
   setIssueDate,
@@ -256,7 +259,7 @@ export const QuotationHeaderForm: React.FC<QuotationHeaderFormProps> = ({
               className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-2.5 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
               <option value="">No linked project</option>
-              {projects.map((p) => (
+              {projects.filter((p) => !p.archivedAt || (allowArchivedProject && p.id === projectId)).map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name} {p.code ? `(${p.code})` : ''}
                 </option>

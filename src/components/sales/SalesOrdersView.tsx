@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   CheckCircle2,
   Clock,
@@ -13,6 +13,8 @@ import { formatCurrency, formatDate } from '../../utils/formatters';
 import { Invoice, SalesOrder } from '../../types';
 import { SalesOrderDetailsModal } from './SalesOrderDetailsModal';
 import { InvoicePreviewModal } from '../invoices/InvoicePreviewModal';
+import { OperationNoticeBanner } from '../common/OperationNoticeBanner';
+import { committedButStaleNotice, mutationExceptionNotice, type OperationNotice } from '../../utils/operationNotice';
 
 interface SalesOrdersViewProps {
   autoOpenCreateModal?: boolean;
@@ -27,13 +29,19 @@ export const SalesOrdersView: React.FC<SalesOrdersViewProps> = ({
   selectedEntityId,
   onSelectedEntityClosed,
 }) => {
-  const { salesOrders, addSalesOrder, convertSalesOrderToInvoice, clients, settings } = useBooks();
+  const { salesOrders, addSalesOrder, convertSalesOrderToInvoice, clients, settings, currentOrg } = useBooks();
 
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [viewingOrder, setViewingOrder] = useState<SalesOrder | null>(null);
   const [previewInvoice, setPreviewInvoice] = useState<Invoice | null>(null);
+  const [createNotice, setCreateNotice] = useState<OperationNotice | null>(null);
+  const [retryCreatePayload, setRetryCreatePayload] = useState<Omit<SalesOrder, 'id'> | null>(null);
+  const [retryCreateOrganization, setRetryCreateOrganization] = useState<{ id: string; name: string } | null>(null);
+  const [busyAction, setBusyAction] = useState(false);
+  const createInFlightRef = useRef(false);
+  const canRetryCreate = retryCreatePayload !== null && retryCreateOrganization?.id === currentOrg.id;
 
   React.useEffect(() => {
     if (autoOpenCreateModal) {
@@ -64,28 +72,71 @@ export const SalesOrdersView: React.FC<SalesOrdersViewProps> = ({
     return matchesSearch && matchesStatus;
   });
 
-  const handleCreateOrder = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const matchedClient = clients.find((c) => c.name === clientName);
-    const targetClient = clientName || clients[0]?.name || 'Unassigned Customer';
+  const submitSalesOrder = async (orderData: Omit<SalesOrder, 'id'>, organizationId: string) => {
+    if (createInFlightRef.current || currentOrg.id !== organizationId) return;
+    createInFlightRef.current = true;
+    setBusyAction(true);
+    setCreateNotice(null);
 
     try {
-      const created = await addSalesOrder({
-        orderNumber: `SO-2026-0${salesOrders.length + 1}`,
-        clientId: matchedClient?.id || clients[0]?.id,
-        clientName: targetClient,
-        orderDate: new Date().toISOString().split('T')[0],
-        expectedDeliveryDate: new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0],
-        totalAmount: Number(amount) || 0,
-        status: 'Confirmed',
-        notes: notes || 'Confirmed sales order',
-      });
-      if (!created) return;
-
+      const result = await addSalesOrder(orderData, organizationId);
+      setCreateNotice(result.refreshFailed
+        ? committedButStaleNotice(
+            'Sales order ' + result.data.orderNumber + ' was created; refreshed list unavailable',
+            'The server confirmed this order, but the current list could not be refreshed. Do not create it again.',
+            result.requestId
+          )
+        : {
+            tone: 'success',
+            title: 'Sales order created',
+            message: 'Sales order ' + result.data.orderNumber + ' was created successfully.',
+            requestId: result.requestId,
+          });
+      setRetryCreatePayload(null);
+      setRetryCreateOrganization(null);
       setIsModalOpen(false);
       setNotes('');
-    } catch (err: any) {
-      alert(err.message || 'Failed to create sales order');
+    } catch (error) {
+      const notice = mutationExceptionNotice(error, {
+        action: 'Sales order creation',
+        failureTitle: 'Sales order was not created',
+        uncertainTitle: 'Sales order outcome could not be confirmed',
+        uncertainRecovery: 'Retry the same saved request to avoid creating a duplicate if the first attempt already committed.',
+      });
+      setCreateNotice(notice);
+      setRetryCreatePayload(notice.tone === 'warning' ? orderData : null);
+      setRetryCreateOrganization(notice.tone === 'warning' ? { id: organizationId, name: currentOrg.name } : null);
+    } finally {
+      createInFlightRef.current = false;
+      setBusyAction(false);
+    }
+  };
+
+  const handleCreateOrder = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (busyAction || retryCreatePayload) return;
+    const totalAmount = Number(amount);
+    if (!Number.isFinite(totalAmount) || totalAmount <= 0) {
+      setCreateNotice({ tone: 'error', title: 'Enter a valid order amount', message: 'The sales order amount must be greater than zero.' });
+      return;
+    }
+    const matchedClient = clients.find((client) => client.name === clientName);
+    const targetClient = clientName || clients[0]?.name || 'Unassigned Customer';
+    void submitSalesOrder({
+      orderNumber: 'SO-2026-0' + (salesOrders.length + 1),
+      clientId: matchedClient?.id || clients[0]?.id,
+      clientName: targetClient,
+      orderDate: new Date().toISOString().split('T')[0],
+      expectedDeliveryDate: new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0],
+      totalAmount,
+      status: 'Confirmed',
+      notes: notes || 'Confirmed sales order',
+    }, currentOrg.id);
+  };
+
+  const handleRetryCreateOrder = () => {
+    if (retryCreatePayload && retryCreateOrganization?.id === currentOrg.id) {
+      void submitSalesOrder(retryCreatePayload, retryCreateOrganization.id);
     }
   };
 
@@ -129,13 +180,31 @@ export const SalesOrdersView: React.FC<SalesOrdersViewProps> = ({
         </div>
 
         <button
-          onClick={() => setIsModalOpen(true)}
-          className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-2xs cursor-pointer transition-colors"
+          onClick={() => { setCreateNotice(null); setIsModalOpen(true); }}
+          disabled={busyAction || retryCreatePayload !== null}
+          title={retryCreatePayload ? "Resolve the pending sales order request before starting another" : undefined}
+          className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-2xs cursor-pointer transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
         >
           <Plus className="w-4 h-4" />
           <span>New Sales Order</span>
         </button>
       </div>
+
+      {createNotice && !isModalOpen && (
+        <div className="space-y-2">
+          <OperationNoticeBanner notice={createNotice} />
+          {retryCreatePayload && retryCreateOrganization && !canRetryCreate && (
+            <p role="status" className="text-xs font-semibold text-amber-900">
+              This pending request belongs to {retryCreateOrganization.name}. Switch back to that organization to retry; no request was sent from this workspace.
+            </p>
+          )}
+          {retryCreatePayload && (
+            <button type="button" onClick={handleRetryCreateOrder} disabled={busyAction || !canRetryCreate} className="px-3 py-2 rounded-lg border border-amber-700 text-xs font-bold text-amber-800 disabled:opacity-60">
+              {busyAction ? 'Retrying…' : 'Retry same sales order'}
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Filter & Search */}
       <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs flex flex-col sm:flex-row justify-between items-center gap-3">
@@ -237,11 +306,28 @@ export const SalesOrdersView: React.FC<SalesOrdersViewProps> = ({
               <span>Create New Sales Order</span>
             </h3>
 
+            {createNotice && (
+              <div className="space-y-2">
+                <OperationNoticeBanner notice={createNotice} />
+                {retryCreatePayload && retryCreateOrganization && !canRetryCreate && (
+                  <p role="status" className="text-xs font-semibold text-amber-900">
+                    This pending request belongs to {retryCreateOrganization.name}. Switch back to that organization to retry; no request was sent from this workspace.
+                  </p>
+                )}
+                {retryCreatePayload && (
+                  <button type="button" onClick={handleRetryCreateOrder} disabled={busyAction || !canRetryCreate} className="px-3 py-2 rounded-lg border border-amber-700 text-xs font-bold text-amber-800 disabled:opacity-60">
+                    {busyAction ? 'Retrying…' : 'Retry same sales order'}
+                  </button>
+                )}
+              </div>
+            )}
+
             <form onSubmit={handleCreateOrder} className="space-y-3">
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">Customer / Client</label>
                 <select
                   value={clientName}
+                  disabled={busyAction || retryCreatePayload !== null}
                   onChange={(e) => setClientName(e.target.value)}
                   className="w-full border border-slate-300 rounded-lg p-2 text-xs font-medium"
                 >
@@ -258,6 +344,9 @@ export const SalesOrdersView: React.FC<SalesOrdersViewProps> = ({
                 <input
                   type="number"
                   value={amount}
+                  min="0.01"
+                  step="0.01"
+                  disabled={busyAction || retryCreatePayload !== null}
                   onChange={(e) => setAmount(e.target.value)}
                   className="w-full border border-slate-300 rounded-lg p-2 text-xs font-mono font-bold"
                   required
@@ -268,6 +357,7 @@ export const SalesOrdersView: React.FC<SalesOrdersViewProps> = ({
                 <label className="block text-xs font-bold text-slate-700 mb-1">Order Notes / Scope</label>
                 <textarea
                   value={notes}
+                  disabled={busyAction || retryCreatePayload !== null}
                   onChange={(e) => setNotes(e.target.value)}
                   rows={3}
                   className="w-full border border-slate-300 rounded-lg p-2 text-xs font-medium"
@@ -279,12 +369,14 @@ export const SalesOrdersView: React.FC<SalesOrdersViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setIsModalOpen(false)}
+                  disabled={busyAction}
                   className="px-4 py-2 border border-slate-300 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-50 cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
+                  disabled={busyAction || retryCreatePayload !== null}
                   className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold shadow-2xs cursor-pointer transition-colors"
                 >
                   Save Sales Order

@@ -95,6 +95,92 @@ describe('Bank account deletion API and safeguards', () => {
     expect(auditRes.rows[0].entity_type).toBe('BankAccount');
   });
 
+  it('deletes a clean linked bank profile before evaluating account dependencies', async () => {
+    const suffix = Date.now() + 2;
+    const registered = await request(app).post('/api/v1/auth/register').send({
+      email: `bank-linked-account-delete-${suffix}@example.test`,
+      password: 'SecurePassword123!',
+      fullName: 'Linked Account Deleter',
+      organizationName: `Linked Account Delete Firm ${suffix}`,
+    });
+    expect(registered.status).toBe(201);
+    const authHeaders = {
+      Authorization: `Bearer ${registered.body.token}`,
+      'X-Organization-ID': registered.body.organizationId,
+    };
+    const ledger = await request(app).post('/api/v1/finance/accounts').set(authHeaders).send({
+      code: `96${String(suffix).slice(-2)}`,
+      name: 'Unused linked bank ledger',
+      type: 'Asset',
+      subType: 'Bank',
+      balance: 0,
+    });
+    expect(ledger.status).toBe(201);
+    const profile = await request(app).post('/api/v1/banking/accounts').set(authHeaders).send({
+      ledgerAccountId: ledger.body.id,
+      accountName: 'Unused linked bank ledger',
+      accountNumber: `55${String(suffix).slice(-8)}`,
+      bankName: 'Test Bank',
+      currency: 'INR',
+      openingBalanceDate: '2026-09-01',
+      currentBalance: 0,
+    });
+    expect(profile.status).toBe(201);
+
+    const deletion = await request(app).delete(`/api/v1/finance/accounts/${ledger.body.id}`).set(authHeaders);
+    expect(deletion.status).toBe(200);
+    expect(deletion.body.deleted).toBe(true);
+    const remainingProfile = await db.query(
+      'SELECT id FROM bank_accounts WHERE organization_id = $1 AND id = $2',
+      [registered.body.organizationId, profile.body.data.id],
+    );
+    expect(remainingProfile.rows).toHaveLength(0);
+  });
+  it('blocks deletion when a feed connection or internal transfer references a bank profile', async () => {
+    const suffix = Date.now() + 3;
+    const registered = await request(app).post('/api/v1/auth/register').send({
+      email: `bank-dependency-owner-${suffix}@example.test`,
+      password: 'SecurePassword123!',
+      fullName: 'Bank Dependency Tester',
+      organizationName: `Bank Dependency Firm ${suffix}`,
+    });
+    expect(registered.status).toBe(201);
+    const orgId = registered.body.organizationId;
+    const authHeaders = { Authorization: `Bearer ${registered.body.token}`, 'X-Organization-ID': orgId };
+    const createBank = async (code: string, accountNumber: string) => {
+      const ledger = await request(app).post('/api/v1/finance/accounts').set(authHeaders).send({
+        code, name: `Bank ${code}`, type: 'Asset', subType: 'Bank', balance: 0,
+      });
+      expect(ledger.status).toBe(201);
+      const profile = await request(app).post('/api/v1/banking/accounts').set(authHeaders).send({
+        ledgerAccountId: ledger.body.id, accountName: `Bank ${code}`, accountNumber,
+        bankName: 'Test Bank', currency: 'INR', openingBalanceDate: '2026-09-01', currentBalance: 0,
+      });
+      expect(profile.status).toBe(201);
+      return { ledgerId: ledger.body.id as string, bankId: profile.body.data.id as string };
+    };
+    const feedBank = await createBank('1661', `61${String(suffix).slice(-8)}`);
+    const transferFrom = await createBank('1662', `62${String(suffix).slice(-8)}`);
+    const transferTo = await createBank('1663', `63${String(suffix).slice(-8)}`);
+    await db.query(
+      `INSERT INTO bank_feed_connections (id, organization_id, bank_account_id, provider)
+       VALUES ($1, $2, $3, 'test-provider')`,
+      [`feed-${suffix}`, orgId, feedBank.bankId],
+    );
+    await db.query(
+      `INSERT INTO bank_transfers (id, organization_id, transfer_number, transfer_date, from_bank_account_id, to_bank_account_id,
+        from_ledger_account_id, to_ledger_account_id, amount, journal_entry_id)
+       VALUES ($1, $2, $3, '2026-09-24', $4, $5, $6, $7, 1, $8)`,
+      [`transfer-${suffix}`, orgId, `TR-${suffix}`, transferFrom.bankId, transferTo.bankId, transferFrom.ledgerId, transferTo.ledgerId, `je-${suffix}`],
+    );
+
+    const feedDelete = await request(app).delete(`/api/v1/banking/accounts/${feedBank.bankId}`).set(authHeaders);
+    expect(feedDelete.status).toBe(409);
+    expect(feedDelete.body.error).toMatch(/feed connection/i);
+    const transferDelete = await request(app).delete(`/api/v1/banking/accounts/${transferFrom.bankId}`).set(authHeaders);
+    expect(transferDelete.status).toBe(409);
+    expect(transferDelete.body.error).toMatch(/bank transfer/i);
+  });
   it('rejects deletion of a bank account with non-zero balance', async () => {
     const suffix = Date.now() + 1;
     const registered = await request(app).post('/api/v1/auth/register').send({

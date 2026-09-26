@@ -26,6 +26,7 @@ interface MobileNavProps {
   setActiveTab: (tab: string) => void;
   onOpenQuickCreate?: () => void;
   capabilities?: readonly FinanceCapability[];
+  itemsVisible?: boolean;
 }
 
 const NAV_ICONS: Record<FinanceNavigationIcon, React.ReactNode> = {
@@ -46,6 +47,7 @@ export const MobileNav: React.FC<MobileNavProps> = ({
   setActiveTab,
   onOpenQuickCreate,
   capabilities = [],
+  itemsVisible = false,
 }) => {
   const auth = useOptionalAuth();
   const { settings, currentUser } = useBooks();
@@ -65,7 +67,7 @@ export const MobileNav: React.FC<MobileNavProps> = ({
     }
   };
 
-  const navSections = resolveFinanceNavigation(capabilities);
+  const navSections = resolveFinanceNavigation(capabilities, itemsVisible);
 
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     sales_section: true,

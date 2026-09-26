@@ -242,6 +242,21 @@ export class BankReconciliationService {
         throw new Error('BANK_ACCOUNT_DELETE_IN_USE: This bank account has reconciliation sessions and cannot be deleted.');
       }
 
+      const feedCheck = await client.query(
+        `SELECT 1 FROM bank_feed_connections WHERE organization_id = $1 AND bank_account_id = $2 LIMIT 1`,
+        [orgId, bankAccount.id]
+      );
+      if (feedCheck.rows.length > 0) {
+        throw new Error('BANK_ACCOUNT_DELETE_IN_USE: This bank account has an active feed connection and cannot be deleted. Disconnect the feed first.');
+      }
+
+      const transferCheck = await client.query(
+        `SELECT 1 FROM bank_transfers WHERE organization_id = $1 AND (from_bank_account_id = $2 OR to_bank_account_id = $2) LIMIT 1`,
+        [orgId, bankAccount.id]
+      );
+      if (transferCheck.rows.length > 0) {
+        throw new Error('BANK_ACCOUNT_DELETE_IN_USE: This bank account is referenced by a bank transfer and cannot be deleted.');
+      }
       // 5. Linked ledger account check
       const ledgerAccountId = bankAccount.ledger_account_id;
       if (ledgerAccountId) {

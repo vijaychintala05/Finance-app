@@ -17,6 +17,8 @@ import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate } from '../../utils/formatters';
 import { RecordVendorPaymentModal } from './RecordVendorPaymentModal';
 import { TransactionHistoryTab } from '../common/TransactionHistoryTab';
+import { OperationNoticeBanner } from '../common/OperationNoticeBanner';
+import { committedButStaleNotice, mutationExceptionNotice, type OperationNotice } from '../../utils/operationNotice';
 
 interface BillDetailsModalProps {
   isOpen: boolean;
@@ -37,6 +39,10 @@ export const BillDetailsModal: React.FC<BillDetailsModalProps> = ({
   const [showMoreMenu, setShowMoreMenu] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [activeTab, setActiveTab] = useState<'details' | 'history'>('details');
+  const [showVoidDialog, setShowVoidDialog] = useState(false);
+  const [voidReason, setVoidReason] = useState('');
+  const [isVoiding, setIsVoiding] = useState(false);
+  const [notice, setNotice] = useState<OperationNotice | null>(null);
 
   if (!isOpen || !bill) return null;
 
@@ -45,11 +51,35 @@ export const BillDetailsModal: React.FC<BillDetailsModalProps> = ({
       ? bill.balanceDue
       : Math.max(0, bill.totalAmount - (bill.amountPaid || 0));
 
-  const handleDelete = () => {
-    if (confirm(`Void bill #${bill.billNumber} by posting an audited reversal?`)) {
-      if (deleteBill) {
-        void deleteBill(bill.id).then(onClose).catch((error) => window.alert(error.message));
-      }
+  const handleDelete = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (isVoiding || voidReason.trim().length < 3) return;
+    try {
+      setIsVoiding(true);
+      const result = await deleteBill(bill.id, voidReason.trim());
+      setShowVoidDialog(false);
+      setVoidReason('');
+      setNotice(result?.refreshFailed
+        ? committedButStaleNotice(
+            'Bill voided; refreshed state unavailable',
+            `Bill ${bill.billNumber} and its reversal were committed, but the refreshed document could not be loaded.`,
+            result.requestId
+          )
+        : {
+            tone: 'success',
+            title: 'Bill voided',
+            message: `Bill ${bill.billNumber} was voided. The original remains in history with its audited general ledger reversal.`,
+            requestId: result?.requestId,
+          });
+    } catch (error) {
+      setNotice(mutationExceptionNotice(error, {
+        action: 'Bill void',
+        failureTitle: 'Bill was not voided',
+        uncertainTitle: 'Bill void outcome could not be confirmed',
+        uncertainRecovery: 'Refresh the bill and journal history before retrying; the reversal may already have posted.',
+      }));
+    } finally {
+      setIsVoiding(false);
     }
   };
 
@@ -95,6 +125,8 @@ export const BillDetailsModal: React.FC<BillDetailsModalProps> = ({
 
             <button
               onClick={() => setShowMoreMenu(!showMoreMenu)}
+              aria-label="More actions"
+              title="More actions"
               className="p-2.5 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 cursor-pointer transition-colors"
             >
               <MoreVertical className="w-4 h-4" />
@@ -116,7 +148,7 @@ export const BillDetailsModal: React.FC<BillDetailsModalProps> = ({
                 <button
                   onClick={() => {
                     setShowMoreMenu(false);
-                    handleDelete();
+                    setShowVoidDialog(true);
                   }}
                   className="w-full text-left px-4 py-2 text-xs font-semibold text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950 flex items-center space-x-2"
                 >
@@ -127,6 +159,8 @@ export const BillDetailsModal: React.FC<BillDetailsModalProps> = ({
             )}
           </div>
         </div>
+
+        {notice && <div className="px-5 pt-4"><OperationNoticeBanner notice={notice} /></div>}
 
         {/* SUBHEADER TABS */}
         <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900 px-5 py-2.5 shrink-0 select-none">
@@ -270,6 +304,46 @@ export const BillDetailsModal: React.FC<BillDetailsModalProps> = ({
           }}
           initialBill={bill}
         />
+      )}
+      {showVoidDialog && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs">
+          <form
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="void-bill-title"
+            onSubmit={handleDelete}
+            className="w-full max-w-md space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-800 dark:bg-slate-900"
+          >
+            <div className="flex items-start justify-between gap-4 border-b border-slate-100 pb-3 dark:border-slate-800">
+              <div>
+                <h3 id="void-bill-title" className="text-sm font-bold text-slate-900 dark:text-white">Void bill {bill.billNumber}?</h3>
+                <p className="mt-1 text-[11px] text-slate-500">This posts an audited general-ledger reversal; it does not delete history.</p>
+              </div>
+              <button type="button" aria-label="Close void bill confirmation" disabled={isVoiding} onClick={() => setShowVoidDialog(false)} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 disabled:opacity-50 dark:hover:bg-slate-800"><X className="h-4 w-4" /></button>
+            </div>
+            <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-900 dark:border-rose-900/50 dark:bg-rose-950/40 dark:text-rose-200">
+              The bill remains visible as Void. Its payable, tax, and expense postings are reversed through linked journal evidence.
+            </div>
+            <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+              Reason for voiding
+              <textarea
+                required
+                minLength={3}
+                rows={3}
+                value={voidReason}
+                onChange={(event) => setVoidReason(event.target.value)}
+                placeholder="Explain the correction for the audit trail"
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900 focus:border-amber-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+              />
+            </label>
+            <div className="flex justify-end gap-2">
+              <button type="button" disabled={isVoiding} onClick={() => setShowVoidDialog(false)} className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold disabled:opacity-50 dark:border-slate-700">Keep bill</button>
+              <button type="submit" disabled={isVoiding || voidReason.trim().length < 3} className="rounded-xl bg-rose-600 px-4 py-2 text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-50">
+                {isVoiding ? 'Posting reversal...' : 'Void with reversal'}
+              </button>
+            </div>
+          </form>
+        </div>
       )}
     </div>
   );

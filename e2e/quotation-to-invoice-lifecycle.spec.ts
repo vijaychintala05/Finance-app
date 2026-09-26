@@ -25,6 +25,8 @@ test.describe('Authenticated financial master-data lifecycle', () => {
       createClientResponse.status(),
       `Customer creation failed: ${await createClientResponse.text()}`,
     ).toBe(201);
+    await expect(page.getByText('Customer created', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Close customer form' }).click();
     await expect(page.getByRole('heading', { name: 'Add New Client' })).toBeHidden({ timeout: 10_000 });
 
     const visibleCustomer = () => testInfo.project.name.includes('mobile')

@@ -62,7 +62,6 @@ export class BudgetService {
     const budgetId = newId('bgt');
     await db.transaction(async (client) => {
       const checkedAccounts = new Set<string>();
-      const checkedProjects = new Set<string>();
       for (const line of input.lines) {
         if (!checkedAccounts.has(line.accountId)) {
           const account = await client.query(
@@ -72,11 +71,12 @@ export class BudgetService {
           if (account.rows.length !== 1) throw new Error(`Budget account ${line.accountId} does not belong to this organization or is inactive`);
           checkedAccounts.add(line.accountId);
         }
-        if (line.projectId && !checkedProjects.has(line.projectId)) {
-          const project = await client.query(`SELECT id FROM projects WHERE organization_id = $1 AND id = $2`, [orgId, line.projectId]);
-          if (project.rows.length !== 1) throw new Error(`Budget project ${line.projectId} does not belong to this organization`);
-          checkedProjects.add(line.projectId);
-        }
+      }
+      const projectIds = Array.from(new Set(input.lines.map((line) => line.projectId).filter((id): id is string => Boolean(id)))).sort();
+      for (const projectId of projectIds) {
+        const project = await client.query(`SELECT id, archived_at FROM projects WHERE organization_id = $1 AND id = $2 FOR UPDATE`, [orgId, projectId]);
+        if (project.rows.length !== 1) throw new Error(`Budget project ${projectId} does not belong to this organization`);
+        if (project.rows[0].archived_at) throw new Error('Archived projects cannot be assigned to new budgets');
       }
       await client.query(
         `INSERT INTO budgets (id, organization_id, name, financial_year, version, status, created_by)

@@ -125,6 +125,13 @@ export class EmployeeReimbursementService {
         }
       }
 
+      const projectIds = [...new Set(input.items.map((item) => item.projectId).filter((id): id is string => Boolean(id)))].sort();
+      for (const projectId of projectIds) {
+        const project = await client.query('SELECT id, archived_at FROM projects WHERE organization_id = $1 AND id = $2 FOR UPDATE', [organizationId, projectId]);
+        if (project.rows.length !== 1) throw new Error('CLAIM_PROJECT_INVALID: Project does not belong to this organization');
+        if (project.rows[0].archived_at) throw new Error('CLAIM_PROJECT_ARCHIVED: Archived projects cannot be assigned to a new employee claim');
+      }
+
       const id = newId('clm');
       const claimNumber = await DocumentNumberingEngine.getNextNumber(organizationId, 'EMPLOYEE_CLAIM', input.claimDate, undefined, client);
 

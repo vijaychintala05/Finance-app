@@ -131,7 +131,7 @@ export class PaymentGatewayService {
       ],
     }, client);
     await client.query(
-      `UPDATE invoices SET paid_amount = $1, balance_due = $2, status = $3 WHERE organization_id = $4 AND id = $5`,
+      `UPDATE invoices SET paid_amount = $1, balance_due = $2, status = $3, edit_version = edit_version + 1 WHERE organization_id = $4 AND id = $5`,
       [newPaid, newBalance, newStatus, organizationId, invoiceId]
     );
     if (original.client_id) {
@@ -190,7 +190,7 @@ export class PaymentGatewayService {
     const reversalJournalId = await FinancialDestructiveActionsService.reversePostedJournal(
       client, params.organizationId, original.journal_entry_id, 'gateway-system', `Provider ${params.eventType}`, `gateway event ${original.event_id}`
     );
-    await client.query(`UPDATE invoices SET paid_amount = $1, balance_due = $2, status = $3 WHERE organization_id = $4 AND id = $5`, [restoredPaid, restoredBalance, restoredStatus, params.organizationId, original.invoice_id]);
+    await client.query(`UPDATE invoices SET paid_amount = $1, balance_due = $2, status = $3, edit_version = edit_version + 1 WHERE organization_id = $4 AND id = $5`, [restoredPaid, restoredBalance, restoredStatus, params.organizationId, original.invoice_id]);
     if (original.client_id) {
       await client.query(
         `UPDATE customers SET receivables_balance = CASE WHEN COALESCE(receivables_balance, 0) - $1 < 0 THEN 0 ELSE receivables_balance - $1 END WHERE organization_id = $2 AND id = $3`,

@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { BankReconciliationService } from '../banking/BankReconciliationService';
 import { FinancialCommandService } from '../accounting/FinancialCommandService';
 import { toFinancialCommandError } from '../accounting/FinancialCommandError';
+import { GatewayActivityService } from '../services/GatewayActivityService';
 
 function getOrgId(req: Request): string {
   const orgId = (req as any).auth?.organizationId;
@@ -14,6 +15,36 @@ function sanitizeError(e: any): string {
 }
 
 export class BankingController {
+  // GET /api/v1/banking/gateway-activity
+  public static async getGatewayActivity(req: Request, res: Response) {
+    try {
+      const rawLimit = req.query.limit;
+      const limit = rawLimit === undefined ? 50 : Number(rawLimit);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+        return res.status(400).json({ success: false, error: 'limit must be an integer between 1 and 100' });
+      }
+      const { cursor, gateway, status } = req.query;
+      if ((cursor !== undefined && (typeof cursor !== 'string' || cursor.length > 256)) ||
+          (gateway !== undefined && (typeof gateway !== 'string' || gateway.length > 32)) ||
+          (status !== undefined && (typeof status !== 'string' || status.length > 30))) {
+        return res.status(400).json({ success: false, error: 'cursor, gateway, or status filter is malformed' });
+      }
+      const data = await GatewayActivityService.list(getOrgId(req), {
+        limit,
+        cursor: cursor as string | undefined,
+        gateway: gateway as string | undefined,
+        status: status as string | undefined,
+      });
+      res.json({ success: true, data });
+    } catch (e: any) {
+      const message = e instanceof Error ? e.message : '';
+      if (message === 'Invalid gateway activity cursor') {
+        return res.status(400).json({ success: false, error: message });
+      }
+      res.status(500).json({ success: false, error: sanitizeError(e) });
+    }
+  }
+
   // GET /api/banking/accounts
   public static async getAccounts(req: Request, res: Response) {
     try {

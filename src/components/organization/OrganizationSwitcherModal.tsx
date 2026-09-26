@@ -15,6 +15,7 @@ export const OrganizationSwitcherModal: React.FC<OrganizationSwitcherModalProps>
 }) => {
   const { organizations, currentOrg, switchOrganization } = useBooks();
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [switchError, setSwitchError] = useState<string | null>(null);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -26,8 +27,12 @@ export const OrganizationSwitcherModal: React.FC<OrganizationSwitcherModalProps>
 
   if (!isOpen) return null;
 
-  const handleSwitch = async (organizationId: string) => {
-    await switchOrganization(organizationId);
+  const handleSwitch = (organizationId: string) => {
+    setSwitchError(null);
+    if (!switchOrganization(organizationId)) {
+      setSwitchError('This organization is no longer available in your verified memberships. Refresh your organizations and try again.');
+      return;
+    }
     onClose();
   };
 
@@ -82,6 +87,8 @@ export const OrganizationSwitcherModal: React.FC<OrganizationSwitcherModalProps>
             <span>New organization</span>
           </button>
         </div>
+
+        {switchError && <p role="alert" className="mx-4 mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-800 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-200">{switchError}</p>}
 
         <div className="max-h-[55vh] space-y-2 overflow-y-auto px-4 py-3">
           {organizations.map((organization) => {

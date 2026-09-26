@@ -37,12 +37,17 @@ export const authMiddleware = async (
     ?.split('=')[1];
 
   if ((authHeader && authHeader.startsWith('Bearer ')) || cookieToken) {
-    const token = cookieToken || authHeader!.substring(7).trim();
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7).trim() : cookieToken!;
 
     // 1. If token is a JWT (contains dot)
     if (token.includes('.')) {
       const decoded = JwtAuth.verifyToken(token);
       if (decoded) {
+        // Legacy JWTs are tolerated only by synthetic test fixtures; every runtime requires a signed session binding.
+        if (!decoded.sid && process.env.NODE_ENV !== 'test') {
+          res.status(401).json({ error: 'Unauthorized: Sign in again to establish a device session' });
+          return;
+        }
         if (!decoded.iat || (await SessionSecurity.isTokenRevoked(decoded.userId, decoded.iat))) {
           res.status(401).json({ error: 'Unauthorized: Token has been revoked' });
           return;
@@ -52,7 +57,12 @@ export const authMiddleware = async (
           res.status(401).json({ error: 'Unauthorized: User account is unavailable or inactive' });
           return;
         }
+        if (decoded.sid && !(await SessionService.validateJwtSession(decoded.sid, decoded.userId))) {
+          res.status(401).json({ error: 'Unauthorized: Authentication session is revoked or expired' });
+          return;
+        }
         req.user = { userId: decoded.userId, email: userResult.rows[0].email };
+        req.sessionId = decoded.sid;
         return next();
       }
     }
@@ -129,8 +139,14 @@ export const organizationIsolationMiddleware = async (
     userRole = membershipRes.rows[0].role;
   }
 
-  // 3. Resolve permissions for role via RbacService
-  const permissionsList = await RbacService.getPermissionsForRoleAsync(requestedOrgId, userRole);
+  // 3. Resolve permissions for role via RbacService. Authorization lookup failures deny the request.
+  let permissionsList: string[];
+  try {
+    permissionsList = await RbacService.getPermissionsForRoleAsync(requestedOrgId, userRole);
+  } catch {
+    res.status(503).json({ error: 'Authorization could not be verified. Retry the request.' });
+    return;
+  }
 
   req.auth = {
     userId: req.user.userId,
@@ -163,11 +179,15 @@ export const requirePermission = (permissionCode: string | string[]) => {
 
     const codes = Array.isArray(permissionCode) ? permissionCode : [permissionCode];
     (req as any).requiredPermissions = codes;
-    const permissionChecks = await Promise.all(
-      codes.map((code) =>
-        RbacService.hasPermissionAsync(req.auth!.organizationId, req.auth!.role, code)
-      )
-    );
+    let permissionChecks: boolean[];
+    try {
+      permissionChecks = await Promise.all(
+        codes.map((code) => RbacService.hasPermissionAsync(req.auth!.organizationId, req.auth!.role, code))
+      );
+    } catch {
+      res.status(503).json({ error: 'Authorization could not be verified. Retry the request.' });
+      return;
+    }
     const hasAny = permissionChecks.some(Boolean);
 
     if (!hasAny) {

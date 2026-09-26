@@ -8,6 +8,7 @@ import { EstimateDetailsModal } from './EstimateDetailsModal';
 import { QuotationBuilder } from '../quotations/QuotationBuilder';
 import { quotationApi } from '../../services/quotationApi';
 import { customerApi } from '../../services/customerApi';
+import { mutationExceptionNotice, type OperationNotice } from '../../utils/operationNotice';
 
 interface EstimatesViewProps {
   autoOpenCreateModal?: boolean;
@@ -33,6 +34,8 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
   const [projectsLoading, setProjectsLoading] = useState(false);
   const [projectError, setProjectError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [conversionFailure, setConversionFailure] = useState<{ quotationId: string; notice: OperationNotice } | null>(null);
+  const [convertingQuotationId, setConvertingQuotationId] = useState<string | null>(null);
 
   const customerReqSeqRef = useRef(0);
 
@@ -121,6 +124,9 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
 
   const handleConvert = async (est: any, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
+    if (convertingQuotationId) return;
+    setConvertingQuotationId(est.id);
+    setConversionFailure(null);
     try {
       const result = await quotationApi.convertQuotationToInvoice(est.id);
       if (result) {
@@ -150,7 +156,16 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
         await loadQuotations();
       }
     } catch (err: any) {
-      alert(`Conversion failed: ${err.message}`);
+      setConversionFailure({
+        quotationId: est.id,
+        notice: mutationExceptionNotice(err, {
+          action: 'Estimate conversion',
+          uncertainTitle: 'Conversion outcome needs verification',
+          uncertainRecovery: 'Retrying resubmits this quotation conversion; if the prior request may have committed, the API client reuses its idempotency key.',
+        }),
+      });
+    } finally {
+      setConvertingQuotationId(null);
     }
   };
 
@@ -199,6 +214,36 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
         <div className="p-4 bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-800 rounded-xl text-xs text-rose-600 dark:text-rose-400 flex items-center space-x-2">
           <AlertCircle className="w-4 h-4 shrink-0" />
           <span>{error}</span>
+        </div>
+      )}
+
+      {conversionFailure && (
+        <div
+          role="alert"
+          aria-live="assertive"
+          className={"p-4 border rounded-xl text-xs flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 " + (conversionFailure.notice.tone === 'warning'
+            ? 'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300'
+            : 'bg-rose-50 dark:bg-rose-900/20 border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300')}
+        >
+          <div className="flex items-start gap-2 min-w-0">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <p className="font-bold">{conversionFailure.notice.title}</p>
+              <p>{conversionFailure.notice.message}</p>
+              {conversionFailure.notice.recovery && <p>{conversionFailure.notice.recovery}</p>}
+              {conversionFailure.notice.requestId && (
+                <p className="font-mono text-[11px]">Request ID: {conversionFailure.notice.requestId}</p>
+              )}
+            </div>
+          </div>
+          <button
+            type="button"
+            disabled={convertingQuotationId !== null}
+            onClick={() => void handleConvert({ id: conversionFailure.quotationId })}
+            className="shrink-0 self-start rounded-lg border border-current px-3 py-2 font-bold disabled:opacity-60"
+          >
+            {convertingQuotationId === conversionFailure.quotationId ? 'Retrying…' : 'Retry same conversion'}
+          </button>
         </div>
       )}
 
@@ -284,11 +329,12 @@ export const EstimatesView: React.FC<EstimatesViewProps> = ({
                           )}
                           {!isConverted ? (
                             <button
-                              onClick={(e) => handleConvert(est, e)}
-                              className="bg-emerald-600 hover:bg-emerald-500 text-white px-2.5 py-1 rounded text-[11px] font-semibold flex items-center space-x-1 ml-auto cursor-pointer shadow-xs"
+                              onClick={(e) => void handleConvert(est, e)}
+                              disabled={convertingQuotationId !== null}
+                              className="bg-emerald-600 hover:bg-emerald-500 text-white px-2.5 py-1 rounded text-[11px] font-semibold flex items-center space-x-1 ml-auto cursor-pointer shadow-xs disabled:opacity-60 disabled:cursor-wait"
                             >
-                              <FileCheck className="w-3.5 h-3.5" />
-                              <span>Convert to Invoice</span>
+                              {convertingQuotationId === est.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileCheck className="w-3.5 h-3.5" />}
+                              <span>{convertingQuotationId === est.id ? 'Converting…' : 'Convert to Invoice'}</span>
                             </button>
                           ) : (
                             <span className="text-[11px] text-emerald-600 font-semibold">

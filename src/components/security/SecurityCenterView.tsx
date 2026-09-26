@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Shield,
   Smartphone,
@@ -52,7 +52,9 @@ export const SecurityCenterView: React.FC = () => {
   const { currentOrg } = useBooks();
 
   const [currentSessionId, setCurrentSessionId] = useState<string>('');
+  const sessionsFetchSequence = useRef(0);
   const [sessions, setSessions] = useState<SessionItem[]>([]);
+  const [sessionsError, setSessionsError] = useState('');
   const [outbox, setOutbox] = useState<OutboxItem[]>([]);
   const [events, setEvents] = useState<SecurityEventItem[]>([]);
   const [mfaStatus, setMfaStatus] = useState<{ isEnrolled: boolean; isVerified: boolean; remainingRecoveryCodes: number }>({
@@ -67,8 +69,10 @@ export const SecurityCenterView: React.FC = () => {
   const [inviteError, setInviteError] = useState('');
   const [inviteSuccess, setInviteSuccess] = useState('');
   const [busy, setBusy] = useState(false);
+  const [sessionNotice, setSessionNotice] = useState<{ tone: 'success' | 'error'; message: string } | null>(null);
 
   const fetchSecurityData = async () => {
+    const requestSequence = ++sessionsFetchSequence.current;
     setBusy(true);
     try {
       const [sessionsRes, outboxRes, eventsRes, mfaRes] = await Promise.all([
@@ -77,10 +81,16 @@ export const SecurityCenterView: React.FC = () => {
         apiClient.get<SecurityEventItem[]>('/identity/security-events'),
         apiClient.get<any>('/identity/mfa/status'),
       ]);
+      if (requestSequence !== sessionsFetchSequence.current) return;
 
       if (sessionsRes.data) {
-        setCurrentSessionId(sessionsRes.data.currentSessionId);
+        setCurrentSessionId(sessionsRes.data.currentSessionId || '');
         setSessions(sessionsRes.data.sessions || []);
+        setSessionsError('');
+      } else {
+        setCurrentSessionId('');
+        setSessions([]);
+        setSessionsError(sessionsRes.error || 'Could not load device sessions. Refresh to try again.');
       }
       if (outboxRes.data) {
         setOutbox(outboxRes.data);
@@ -91,6 +101,11 @@ export const SecurityCenterView: React.FC = () => {
       if (mfaRes.data) {
         setMfaStatus(mfaRes.data);
       }
+    } catch (error) {
+      if (requestSequence !== sessionsFetchSequence.current) return;
+      setCurrentSessionId('');
+      setSessions([]);
+      setSessionsError(error instanceof Error ? error.message : 'Could not load device sessions. Refresh to try again.');
     } finally {
       setBusy(false);
     }
@@ -101,15 +116,28 @@ export const SecurityCenterView: React.FC = () => {
   }, []);
 
   const handleRevokeSession = async (sessionId: string) => {
-    await apiClient.post(`/identity/sessions/${sessionId}/revoke`, {});
-    await fetchSecurityData();
+    if (!currentSessionId || sessionId === currentSessionId || busy) return;
+    setBusy(true); setSessionNotice(null);
+    try {
+      const response = await apiClient.post<{ success: boolean }>(`/identity/sessions/${encodeURIComponent(sessionId)}/revoke`, {});
+      if (!response.data?.success) throw new Error(response.error || 'The selected session was not revoked.');
+      setSessionNotice({ tone: 'success', message: 'Device session revoked. Its access token can no longer be used.' });
+      await fetchSecurityData();
+    } catch (error) { setSessionNotice({ tone: 'error', message: error instanceof Error ? error.message : 'Device session revocation was not confirmed.' }); }
+    finally { setBusy(false); }
   };
 
   const handleRevokeOthers = async () => {
-    await apiClient.post('/identity/sessions/revoke-others', {});
-    await fetchSecurityData();
+    if (!currentSessionId || busy) return;
+    setBusy(true); setSessionNotice(null);
+    try {
+      const response = await apiClient.post<{ success: boolean; revokedCount: number }>('/identity/sessions/revoke-others', {});
+      if (!response.data?.success) throw new Error(response.error || 'Other sessions were not revoked.');
+      setSessionNotice({ tone: 'success', message: `${response.data.revokedCount} other device session${response.data.revokedCount === 1 ? '' : 's'} revoked. This device remains signed in.` });
+      await fetchSecurityData();
+    } catch (error) { setSessionNotice({ tone: 'error', message: error instanceof Error ? error.message : 'Other device sessions were not revoked.' }); }
+    finally { setBusy(false); }
   };
-
   const handleIssueInvite = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inviteEmail) return;
@@ -171,20 +199,25 @@ export const SecurityCenterView: React.FC = () => {
               <div className="flex items-center space-x-2">
                 <Laptop className="w-4 h-4 text-blue-500" />
                 <h3 className="font-bold text-sm text-slate-900 dark:text-slate-100">
-                  Active Devices & Opaque Sessions ({sessions.filter((s) => s.status === 'ACTIVE').length})
+                  Active Devices & Login Sessions ({sessions.filter((s) => s.status === 'ACTIVE').length})
                 </h3>
               </div>
-              {sessions.filter((s) => s.status === 'ACTIVE' && s.id !== currentSessionId).length > 0 && (
+              {Boolean(currentSessionId) && sessions.filter((s) => s.status === 'ACTIVE' && s.id !== currentSessionId).length > 0 && (
                 <button
                   onClick={handleRevokeOthers}
+                  disabled={busy || !currentSessionId}
                   className="text-rose-600 dark:text-rose-400 hover:underline text-xs font-semibold flex items-center space-x-1 cursor-pointer"
                 >
                   <LogOut className="w-3.5 h-3.5" />
-                  <span>Revoke All Other Devices</span>
+                  <span>{busy ? 'Working…' : 'Revoke All Other Devices'}</span>
                 </button>
               )}
             </div>
 
+            {sessionsError && <div role='alert' className='rounded-xl border border-rose-200 bg-rose-50 text-rose-800 p-3 text-xs'>{sessionsError}</div>}
+            {sessionNotice && <div role={sessionNotice.tone === 'error' ? 'alert' : 'status'} className={`rounded-xl border p-3 text-xs ${sessionNotice.tone === 'success' ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-rose-200 bg-rose-50 text-rose-800'}`}>{sessionNotice.message}</div>}
+            {!currentSessionId && !sessionNotice && <p role="status" className="text-xs text-amber-700">Current device could not be verified. Sign in again before using session controls.</p>}
+            {sessions.length === 0 && !sessionsError && <p role="status" className="text-xs text-slate-500">No device sessions are available for this account.</p>}
             <div className="divide-y divide-slate-100 dark:divide-slate-800">
               {sessions.map((sess) => {
                 const isCurrent = sess.id === currentSessionId;
@@ -208,7 +241,7 @@ export const SecurityCenterView: React.FC = () => {
                         )}
                       </div>
                       <div className="text-slate-500 dark:text-slate-400 flex items-center space-x-3 text-[11px]">
-                        <span>IP: {sess.ipAddress || '127.0.0.1'}</span>
+                        <span>IP: {sess.ipAddress || 'Unknown'}</span>
                         <span>Last active: {new Date(sess.lastActivityAt || sess.createdAt).toLocaleString()}</span>
                       </div>
                     </div>
@@ -216,6 +249,7 @@ export const SecurityCenterView: React.FC = () => {
                     {isActive && !isCurrent && (
                       <button
                         onClick={() => handleRevokeSession(sess.id)}
+                        disabled={busy || !currentSessionId}
                         className="px-2.5 py-1 bg-rose-50 dark:bg-rose-950/60 hover:bg-rose-100 dark:hover:bg-rose-900/60 text-rose-700 dark:text-rose-300 font-semibold rounded-lg text-[11px] cursor-pointer"
                       >
                         Terminate
@@ -365,7 +399,7 @@ export const SecurityCenterView: React.FC = () => {
                     {ev.eventType}
                   </div>
                   <div className="text-[10px] text-slate-400 flex justify-between">
-                    <span>IP: {ev.ipAddress || '127.0.0.1'}</span>
+                    <span>IP: {ev.ipAddress || 'Unknown'}</span>
                     <span>{new Date(ev.created_at).toLocaleTimeString()}</span>
                   </div>
                 </div>

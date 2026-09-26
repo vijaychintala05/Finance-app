@@ -103,7 +103,7 @@ test.describe('End-to-End Payment Allocation, Relational Integrity & Ledger Veri
     // 7. Navigate to Reports view and verify General Ledger
     await page.goto(`${baseUrl}#/reports`);
     await page.waitForTimeout(500);
-    await expect(page.getByText('All Reports', { exact: false }).first()).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole('heading', { name: /All Reports/ })).toBeVisible({ timeout: 10_000 });
     await expect(page.getByText('Every listed report uses tenant-scoped server data', { exact: false })).toBeVisible({ timeout: 10_000 });
 
     // 8. Open General Ledger report and verify authoritative entries

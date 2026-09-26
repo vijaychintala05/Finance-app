@@ -22,7 +22,7 @@ function service(userId: string) {
           createdBy: userId,
         }, context.client);
         await context.client.query(
-          'UPDATE invoices SET source_occurrence_key = $1 WHERE organization_id = $2 AND id = $3',
+          'UPDATE invoices SET source_occurrence_key = $1, edit_version = edit_version + 1 WHERE organization_id = $2 AND id = $3',
           [context.occurrenceKey, context.organizationId, invoice.id]
         );
         return { documentId: invoice.id, documentType: 'INVOICE' };

@@ -21,6 +21,7 @@ interface FailureNoticeOptions {
 
 export function isUncertainMutationOutcome(response: ApiResponse<unknown>): boolean {
   if (response.errorCode === 'NETWORK_FAILURE' || response.errorCode === 'COMMAND_IN_PROGRESS') return true;
+  if (response.status === 409 && response.error?.toLowerCase().includes('identical request is already being processed')) return true;
   return response.status >= 500;
 }
 
@@ -69,7 +70,7 @@ export function committedButStaleNotice(
     tone: 'warning',
     title,
     message,
-    recovery: 'Do not submit it again; use Refresh to load the committed state.',
+    recovery: 'Use Verify status here before taking any further action; the server has already confirmed the write.',
     requestId,
   };
 }

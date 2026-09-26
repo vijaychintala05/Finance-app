@@ -41,7 +41,7 @@ describe('Invoice revision transaction safety', () => {
     vi.spyOn(FinancialDestructiveActionsService, 'reversePostedJournal')
       .mockRejectedValueOnce(new Error('Original journal is not reversible'));
 
-    await expect(SalesEngine.updateInvoice(org, invoice.id, revision, owner))
+    await expect(SalesEngine.updateInvoice(org, invoice.id, revision, owner, '1'))
       .rejects.toThrow('Original journal is not reversible');
     expect(await snapshot(invoice.id)).toEqual(before);
   });
@@ -56,15 +56,35 @@ describe('Invoice revision transaction safety', () => {
       return originalPost(...args);
     });
 
-    await expect(SalesEngine.updateInvoice(org, invoice.id, revision, owner))
+    await expect(SalesEngine.updateInvoice(org, invoice.id, revision, owner, '1'))
       .rejects.toThrow('Replacement posting failed');
     expect(calls).toBe(2);
     expect(await snapshot(invoice.id)).toEqual(before);
   });
 
+  it('invalidates an open edit when a customer payment changes the invoice', async () => {
+    const invoice = await createInvoice();
+    const depositAccount = await db.query("SELECT id FROM accounts WHERE organization_id = $1 AND code = '1010'", [org]);
+    expect(depositAccount.rows).toHaveLength(1);
+
+    await SalesEngine.recordCustomerPayment(org, {
+      invoiceId: invoice.id,
+      amount: 10,
+      paymentDate: '2026-03-02',
+      paymentMode: 'BANK_TRANSFER',
+      depositAccountId: depositAccount.rows[0].id,
+      reference: 'EDIT-CONFLICT-PAYMENT',
+    }, owner);
+
+    const current = await db.query('SELECT edit_version, paid_amount, balance_due FROM invoices WHERE organization_id = $1 AND id = $2', [org, invoice.id]);
+    expect(String(current.rows[0].edit_version)).toBe('2');
+    expect(Number(current.rows[0].paid_amount)).toBe(10);
+    await expect(SalesEngine.updateInvoice(org, invoice.id, revision, owner, invoice.editVersion!))
+      .rejects.toMatchObject({ code: 'INVOICE_EDIT_CONFLICT', currentState: { editVersion: '2' } });
+  });
   it('links original, reversal and replacement without doubling the receivable', async () => {
     const invoice = await createInvoice();
-    const updated = await SalesEngine.updateInvoice(org, invoice.id, revision, owner);
+    const updated = await SalesEngine.updateInvoice(org, invoice.id, revision, owner, '1');
     expect(updated.totalAmount).toBe(200);
     expect(updated.journalEntryId).not.toBe(invoice.journalEntryId);
     const journals = (await db.query('SELECT * FROM journal_entries WHERE organization_id = $1', [org])).rows;

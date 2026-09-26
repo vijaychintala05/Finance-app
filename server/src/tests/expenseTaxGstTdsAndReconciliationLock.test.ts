@@ -6,7 +6,16 @@ import { MigrationRunner } from '../database/migrationRunner';
 import { AccountingIntegrityService } from '../services/AccountingIntegrityService';
 import { GSTComplianceService } from '../services/GSTComplianceService';
 import { newId } from '../utils/ids';
+import { DocumentPdfService } from '../services/DocumentPdfService';
 
+async function readPdfText(buffer: Buffer): Promise<string> {
+  const mod = require('pdf-parse');
+  const PDFClass = mod.PDFParse || mod.default || mod;
+  const bytes = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  const instance = new PDFClass(bytes);
+  const result = await instance.getText();
+  return typeof result === 'string' ? result : result?.text || '';
+}
 describe('Direct Expense Tax, GST, TDS, and Reconciliation Lock (Stage 1 & Scope 8)', () => {
   beforeAll(async () => {
     await MigrationRunner.runMigrations();
@@ -387,5 +396,48 @@ describe('Direct Expense Tax, GST, TDS, and Reconciliation Lock (Stage 1 & Scope
     expect(correctSuccess.body.voidedExpenseId).toBe(expenseId);
     expect(correctSuccess.body.replacement.id).toBeTruthy();
     expect(Number(correctSuccess.body.replacement.amount)).toBe(800.0);
+  });
+  it('renders persisted expense totals that reconcile across tax modes, RCM, and TDS', async () => {
+    const f = await createTenantFixture('exp-pdf-parity');
+    const currencyRow = await db.query('SELECT base_currency FROM organizations WHERE id = $1', [f.orgId]);
+    const currency = String(currencyRow.rows[0].base_currency || 'INR');
+    const money = (value: string) => `${currency} ${value}`;
+    const renderExpense = async (body: Record<string, unknown>) => {
+      const created = await request(app).post('/api/v1/finance/expenses').set(f.auth).send({
+        expenseAccountId: f.expenseAccountId,
+        paidFromAccountId: f.bankAccountId,
+        vendorName: 'PDF Parity Vendor',
+        date: '2026-08-20',
+        ...body,
+      });
+      expect(created.status).toBe(201);
+      const rendered = await DocumentPdfService.generatePdf(db, f.orgId, 'expenses', created.body.id, undefined, { persistSnapshot: false });
+      return readPdfText(rendered.pdf);
+    };
+
+    const exclusive = await renderExpense({ amount: 1000, taxRate: 18, isTaxInclusive: false, tdsRate: 10, tdsSection: '194J' });
+    expect(exclusive).toContain(`Subtotal ${money('1,000.00')}`);
+    expect(exclusive).toContain(`Tax ${money('180.00')}`);
+    expect(exclusive).toContain(`Total ${money('1,180.00')}`);
+    expect(exclusive).toContain(`TDS Withheld (194J) -${money('100.00')}`);
+    expect(exclusive).toContain(`Net Paid ${money('1,080.00')}`);
+
+    const fractionalCents = await renderExpense({ amount: 1000.03, taxRate: 18, isTaxInclusive: false, tdsRate: 10, tdsSection: '194J' });
+    expect(fractionalCents).toContain(`Subtotal ${money('1,000.03')}`);
+    expect(fractionalCents).toContain(`Tax ${money('180.01')}`);
+    expect(fractionalCents).toContain(`Total ${money('1,180.04')}`);
+    expect(fractionalCents).toContain(`TDS Withheld (194J) -${money('100.00')}`);
+    expect(fractionalCents).toContain(`Net Paid ${money('1,080.04')}`);
+
+    const inclusive = await renderExpense({ amount: 1180, taxRate: 18, isTaxInclusive: true, tdsRate: 10, tdsSection: '194J' });
+    expect(inclusive).toContain(`Subtotal ${money('1,000.00')}`);
+    expect(inclusive).toContain(`Tax ${money('180.00')}`);
+    expect(inclusive).toContain(`Total ${money('1,180.00')}`);
+    expect(inclusive).toContain(`Net Paid ${money('1,080.00')}`);
+
+    const reverseCharge = await renderExpense({ amount: 5000, taxRate: 5, isRcm: true });
+    expect(reverseCharge).toContain(`Subtotal ${money('5,000.00')}`);
+    expect(reverseCharge).toContain(`RCM tax (not paid to vendor) ${money('250.00')}`);
+    expect(reverseCharge).toContain(`Total ${money('5,000.00')}`);
   });
 });

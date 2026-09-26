@@ -60,6 +60,22 @@ export const PERMISSIONS_REGISTRY: Record<string, PermissionMetadata> = {
     description: 'Archive inactive customer master records',
     dependencies: ['customers.view'],
   },
+  'salespersons.view': {
+    code: 'salespersons.view', module: 'Sales', resource: 'Salespersons', action: 'View', risk: 'LOW',
+    description: 'View salesperson directory and assignment details', dependencies: [],
+  },
+  'salespersons.create': {
+    code: 'salespersons.create', module: 'Sales', resource: 'Salespersons', action: 'Create', risk: 'MEDIUM',
+    description: 'Create salesperson master records', dependencies: ['salespersons.view'],
+  },
+  'salespersons.edit': {
+    code: 'salespersons.edit', module: 'Sales', resource: 'Salespersons', action: 'Edit', risk: 'MEDIUM',
+    description: 'Edit salesperson contact and metadata', dependencies: ['salespersons.view'],
+  },
+  'salespersons.archive': {
+    code: 'salespersons.archive', module: 'Sales', resource: 'Salespersons', action: 'Archive', risk: 'MEDIUM',
+    description: 'Deactivate or restore salesperson records while retaining historical links', dependencies: ['salespersons.view'],
+  },
 
   // ==========================================
   // 2. ESTIMATES & QUOTATIONS
@@ -1016,6 +1032,15 @@ export const PERMISSIONS_REGISTRY: Record<string, PermissionMetadata> = {
     description: 'Update project deliverables, assignees, and deadlines',
     dependencies: ['projects.view'],
   },
+  'projects.archive': {
+    code: 'projects.archive',
+    module: 'Projects',
+    resource: 'Projects',
+    action: 'Archive',
+    risk: 'HIGH',
+    description: 'Archive a project while preserving its financial history',
+    dependencies: ['projects.view'],
+  },
   'projects.financials': {
     code: 'projects.financials',
     module: 'Projects',
@@ -1191,6 +1216,15 @@ export const PERMISSIONS_REGISTRY: Record<string, PermissionMetadata> = {
     description: 'Create, revise, and approve organization budgets',
     dependencies: ['budgets.view'],
   },
+  'items.archive': {
+    code: 'items.archive',
+    module: 'Sales & Purchases',
+    resource: 'Items & Services',
+    action: 'Archive',
+    risk: 'MEDIUM',
+    description: 'Archive item and service master records without deleting referenced history',
+    dependencies: [],
+  },
 };
 
 export type PermissionCode = keyof typeof PERMISSIONS_REGISTRY;
@@ -1208,6 +1242,7 @@ export const SYSTEM_ROLE_PERMISSIONS: Record<string, PermissionCode[]> = {
 
   'Finance Manager': [
     'customers.view', 'customers.create', 'customers.edit',
+    'salespersons.view', 'salespersons.create', 'salespersons.edit', 'salespersons.archive',
     'estimates.view', 'estimates.create', 'estimates.edit', 'estimates.send', 'estimates.convert',
     'sales_orders.view', 'sales_orders.create', 'sales_orders.edit', 'sales_orders.convert',
     'delivery_challans.view', 'delivery_challans.create',
@@ -1229,12 +1264,13 @@ export const SYSTEM_ROLE_PERMISSIONS: Record<string, PermissionCode[]> = {
     'banking.view', 'bank_accounts.create', 'bank_accounts.edit', 'bank_transactions.view', 'bank_statements.import', 'bank_reconciliation.view', 'bank_reconciliation.match', 'bank_reconciliation.reconcile', 'bank_reconciliation.unreconcile', 'bank_transfers.create',
     'reports.view', 'reports.financial_statements', 'reports.receivables', 'reports.payables', 'reports.gst', 'reports.bank', 'reports.projects', 'reports.audit', 'reports.export',
     'budgets.view', 'budgets.manage',
-    'projects.view', 'projects.create', 'projects.edit', 'projects.financials', 'projects.time_entries', 'projects.invoice_time',
+    'projects.view', 'projects.create', 'projects.edit', 'projects.archive', 'projects.financials', 'projects.time_entries', 'projects.invoice_time',
     'roles.view', 'settings.view', 'approvals.manage', 'audit.view', 'backup.view', 'backup.create',
   ],
 
   Accountant: [
     'customers.view', 'customers.create', 'customers.edit',
+    'salespersons.view',
     'estimates.view', 'estimates.create', 'estimates.edit', 'estimates.send', 'estimates.convert',
     'sales_orders.view', 'sales_orders.create', 'sales_orders.edit', 'sales_orders.convert',
     'delivery_challans.view', 'delivery_challans.create',
@@ -1256,7 +1292,7 @@ export const SYSTEM_ROLE_PERMISSIONS: Record<string, PermissionCode[]> = {
     'banking.view', 'bank_transactions.view', 'bank_statements.import', 'bank_reconciliation.view', 'bank_reconciliation.match', 'bank_reconciliation.reconcile', 'bank_transfers.create',
     'reports.view', 'reports.financial_statements', 'reports.receivables', 'reports.payables', 'reports.gst', 'reports.bank', 'reports.projects', 'reports.export',
     'budgets.view', 'budgets.manage',
-    'projects.view', 'projects.create', 'projects.edit', 'projects.financials', 'projects.time_entries', 'projects.invoice_time',
+    'projects.view', 'projects.create', 'projects.edit', 'projects.archive', 'projects.financials', 'projects.time_entries', 'projects.invoice_time',
     'settings.view',
   ],
 
@@ -1273,6 +1309,7 @@ export const SYSTEM_ROLE_PERMISSIONS: Record<string, PermissionCode[]> = {
 
   Sales: [
     'customers.view', 'customers.create', 'customers.edit',
+    'salespersons.view', 'salespersons.create', 'salespersons.edit', 'salespersons.archive',
     'estimates.view', 'estimates.create', 'estimates.edit', 'estimates.send', 'estimates.convert', 'estimates.delete',
     'sales_orders.view', 'sales_orders.create', 'sales_orders.edit', 'sales_orders.convert', 'sales_orders.cancel',
     'delivery_challans.view', 'delivery_challans.create',
@@ -1297,6 +1334,7 @@ export const SYSTEM_ROLE_PERMISSIONS: Record<string, PermissionCode[]> = {
 
   Viewer: [
     'customers.view',
+    'salespersons.view',
     'estimates.view',
     'sales_orders.view',
     'delivery_challans.view',

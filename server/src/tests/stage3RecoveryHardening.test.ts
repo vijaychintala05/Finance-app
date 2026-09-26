@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { db } from '../database/db';
 import { MigrationRunner, CURRENT_SCHEMA_VERSION } from '../database/migrationRunner';
@@ -11,7 +12,7 @@ import {
   SqlRecoveryPromoter,
   SqlRecoveryStager,
 } from '../recovery/ProductionRecoveryAdapters';
-import { POINT1_RECOVERY_SCHEMA } from '../recovery/schema';
+import { POINT1_RECOVERY_SCHEMA, POINT1_RECOVERY_SCHEMA_V13, POINT1_RECOVERY_SCHEMA_V15 } from '../recovery/schema';
 import { RecoveryMigrationPolicy } from '../recovery/RecoveryMigrationPolicy';
 import { TenantRecoveryLockService } from '../recovery/TenantRecoveryLockService';
 import { newId } from '../utils/ids';
@@ -481,5 +482,150 @@ describe('Stage 3: Enterprise Backup/Restore Retirement & Recovery Hardening', (
     } finally {
       RecoveryMigrationPolicy.clearTransformers();
     }
+  });
+
+  it('keeps the committed v13 recovery schema pinned to its original table shape', () => {
+    expect(Object.isFrozen(POINT1_RECOVERY_SCHEMA_V13)).toBe(true);
+    expect(POINT1_RECOVERY_SCHEMA_V13).toHaveLength(87);
+    expect(createHash('sha256').update(JSON.stringify(POINT1_RECOVERY_SCHEMA_V13)).digest('hex'))
+      .toBe('fcf5e35aeeead1d9dcf6d52904cf4f8db81020a4cda1b1ce48072d24743d2be3');
+    expect(POINT1_RECOVERY_SCHEMA_V13).toEqual(POINT1_RECOVERY_SCHEMA_V15);
+    expect(POINT1_RECOVERY_SCHEMA_V13.find((table) => table.name === 'salespersons')?.columns).toEqual([
+      'id', 'organization_id', 'name', 'email', 'phone', 'commission_rate', 'created_at',
+    ]);
+    expect(POINT1_RECOVERY_SCHEMA_V13.find((table) => table.name === 'projects')?.columns).not.toContain('archived_at');
+  });
+
+  it.each([
+    { label: 'v13', version: RecoveryMigrationPolicy.V13_SCHEMA_VERSION, schema: POINT1_RECOVERY_SCHEMA_V13 },
+    { label: 'v15', version: RecoveryMigrationPolicy.V15_SCHEMA_VERSION, schema: POINT1_RECOVERY_SCHEMA_V15 },
+  ])('upgrades a sealed $label recovery artifact and marks unrecoverable historical payment remainder as unknown', async ({ label, version, schema }) => {
+    const artifactId = newId(`art-${label}`);
+    const createdAt = new Date().toISOString();
+    const legacyTables: Record<string, any[]> = Object.fromEntries(schema.map((table) => [table.name, []]));
+    const paymentTable = schema.find((table) => table.name === 'payments_received')!;
+    expect(paymentTable.columns).not.toContain('unallocated_amount_before_reversal');
+    expect(paymentTable.columns).toContain('reversal_reason');
+    const legacyPayment = Object.fromEntries(paymentTable.columns.map((column) => [column, null])) as Record<string, any>;
+    Object.assign(legacyPayment, {
+      id: `legacy-payment-${label}`, organization_id: ORG_A, payment_number: `PAY-${label.toUpperCase()}`, client_id: 'legacy-client',
+      client_name: 'Legacy Customer', payment_date: '2026-09-01', amount: '25.00', payment_mode: 'Bank',
+      deposit_to_account_id: 'legacy-account', unallocated_amount: '0.00', status: 'REVERSED', created_at: createdAt,
+    });
+    legacyTables.payments_received = [legacyPayment];
+    const salespersonTable = schema.find((table) => table.name === 'salespersons')!;
+    const legacySalesperson = Object.fromEntries(salespersonTable.columns.map((column) => [column, null])) as Record<string, any>;
+    Object.assign(legacySalesperson, { id: `legacy-salesperson-${label}`, organization_id: ORG_A, name: 'Legacy Rep', email: 'legacy@example.test', phone: '555-0101', commission_rate: '5.00', created_at: createdAt });
+    legacyTables.salespersons = [legacySalesperson];
+    const projectTable = schema.find((table) => table.name === 'projects')!;
+    const legacyProject = Object.fromEntries(projectTable.columns.map((column) => [column, null])) as Record<string, any>;
+    Object.assign(legacyProject, { id: `legacy-project-${label}`, organization_id: ORG_A, code: 'OLD-PROJECT', name: 'Legacy Project', status: 'Active', budget_type: 'Fixed Cost', total_budget: '0.00', hourly_rate: '0.00', created_at: createdAt });
+    legacyTables.projects = [legacyProject];
+    const invoiceTable = schema.find((table) => table.name === 'invoices')!;
+    const legacyInvoice = Object.fromEntries(invoiceTable.columns.map((column) => [column, null])) as Record<string, any>;
+    Object.assign(legacyInvoice, {
+      id: `legacy-invoice-${label}`, organization_id: ORG_A, invoice_number: `INV-${label.toUpperCase()}`,
+      subtotal: '25.00', total_amount: '25.00', paid_amount: '5.00', balance_due: '20.00', created_at: createdAt,
+    });
+    legacyTables.invoices = [legacyInvoice];
+    const legacyManifest: RecoveryManifest = {
+      format: 'firmbooks.point1-recovery', formatVersion: 1, artifactId, organizationId: ORG_A,
+      schemaVersion: version, createdBy: OWNER_USER_ID, createdAt,
+      keyId: 's3-key-v1', cipher: 'aes-256-gcm',
+      tables: schema.map((table) => ({
+        name: table.name, columns: [...table.columns], rowCount: legacyTables[table.name].length,
+        sha256: sha256(legacyTables[table.name]),
+      })),
+    };
+    const legacyPayload: RecoveryPayload = {
+      organizationId: ORG_A, schemaVersion: version, tables: legacyTables,
+    };
+    await new SqlRecoveryRepository().saveArtifact({
+      id: artifactId, organizationId: ORG_A, status: 'READY',
+      envelope: sealRecoveryPayload(legacyManifest, legacyPayload, recoveryKeyring),
+      createdBy: OWNER_USER_ID, createdAt,
+    }, db);
+
+    let stagedPayment: Record<string, any> | undefined;
+    let stagedSalesperson: Record<string, any> | undefined;
+    let stagedProject: Record<string, any> | undefined;
+    let stagedInvoice: Record<string, any> | undefined;
+    const compatibleService = new RecoveryArtifactService({
+      repository: new SqlRecoveryRepository(), keyring: recoveryKeyring,
+      stager: { stage: async ({ payload }) => { stagedPayment = payload.tables.payments_received[0]; stagedSalesperson = payload.tables.salespersons[0]; stagedProject = payload.tables.projects[0]; stagedInvoice = payload.tables.invoices[0]; } },
+      reconcilers: [{ name: 'compatibility-test', reconcile: async () => ({ passed: true, details: {} }) }],
+      ownerAuthorizer: { assertOwner: async () => {} }, promoter: { promote: async () => {} },
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+    });
+
+    const staged = await compatibleService.stageRestore({ artifactId, targetOrganizationId: ORG_A, requestedBy: OWNER_USER_ID });
+    expect(staged.status).toBe('VALIDATED');
+    expect(stagedPayment).toMatchObject({
+      id: `legacy-payment-${label}`, amount: '25.00', status: 'REVERSED', unallocated_amount: '0.00',
+      unallocated_amount_before_reversal: null,
+    });
+    expect(stagedSalesperson).toMatchObject({ id: `legacy-salesperson-${label}`, region: null, notes: null, status: 'ACTIVE', updated_at: createdAt });
+    expect(stagedSalesperson?.code).toMatch(/^LEGACY-[a-f0-9]{32}$/);
+    expect(stagedProject).toMatchObject({ id: `legacy-project-${label}`, start_date: null, archived_at: null, archived_by: null });
+    expect(stagedInvoice).toMatchObject({
+      id: `legacy-invoice-${label}`, invoice_number: `INV-${label.toUpperCase()}`,
+      subtotal: '25.00', total_amount: '25.00', paid_amount: '5.00', balance_due: '20.00',
+      edit_version: 1, line_items: null, customer_snapshot: null, is_gst_inclusive: null,
+      terms: null, edit_history: null, salesperson_id: null,
+    });
+  });
+
+
+  it('round-trips salesperson code and archived state plus archived project metadata without crossing tenants', async () => {
+    const salespersonId = newId('sp');
+    const projectId = newId('prj');
+    const otherSalespersonId = newId('sp');
+    const otherProjectId = newId('prj');
+    const salespersonUpdatedAt = '2026-09-20T10:30:00.000Z';
+    const projectArchivedAt = '2026-09-21T11:45:00.000Z';
+    await db.query(
+      `INSERT INTO salespersons (id, organization_id, code, name, email, phone, commission_rate, region, notes, status, updated_at)
+       VALUES ($1, $2, 'REP-ARCHIVE-1', 'Archived Rep', 'rep@example.test', '555-0100', 12.5, 'North', 'Retain this note', 'INACTIVE', $3),
+              ($4, $5, 'REP-OTHER-1', 'Other Rep', 'other@example.test', '555-0200', 4, 'South', 'Other tenant', 'ACTIVE', $3)`,
+      [salespersonId, ORG_A, salespersonUpdatedAt, otherSalespersonId, ORG_B]
+    );
+    await db.query(
+      `INSERT INTO projects (id, organization_id, code, name, status, budget_type, total_budget, hourly_rate, start_date, archived_at, archived_by)
+       VALUES ($1, $2, 'PRJ-ARCHIVE-1', 'Archived Project', 'Completed', 'Fixed Cost', 500, 0, '2026-01-15', $3, $4),
+              ($5, $6, 'PRJ-OTHER-1', 'Other Project', 'Active', 'Fixed Cost', 0, 0, NULL, NULL, NULL)`,
+      [projectId, ORG_A, projectArchivedAt, OWNER_USER_ID, otherProjectId, ORG_B]
+    );
+
+    const artifact = await service.createArtifact(ORG_A, OWNER_USER_ID);
+    const salespersonSnapshot = artifact.envelope.manifest.tables.find((table) => table.name === 'salespersons')!;
+    const projectSnapshot = artifact.envelope.manifest.tables.find((table) => table.name === 'projects')!;
+    expect(salespersonSnapshot.columns).toEqual(expect.arrayContaining(['code', 'region', 'notes', 'status', 'updated_at']));
+    expect(projectSnapshot.columns).toEqual(expect.arrayContaining(['start_date', 'archived_at', 'archived_by']));
+
+    await db.query("UPDATE salespersons SET code = 'REP-CHANGED', status = 'ACTIVE', region = 'Changed', notes = 'Changed', updated_at = CURRENT_TIMESTAMP WHERE organization_id = $1 AND id = $2", [ORG_A, salespersonId]);
+    await db.query('UPDATE projects SET archived_at = NULL, archived_by = NULL WHERE organization_id = $1 AND id = $2', [ORG_A, projectId]);
+    const staged = await service.stageRestore({ artifactId: artifact.id, targetOrganizationId: ORG_A, requestedBy: OWNER_USER_ID });
+    await service.promoteRestore({
+      jobId: staged.id,
+      targetOrganizationId: ORG_A,
+      actorUserId: OWNER_USER_ID,
+      authenticatedAt: new Date().toISOString(),
+      confirmation: `PROMOTE RECOVERY ${staged.id} TO ${ORG_A}`,
+    });
+
+    const restoredSalesperson = await db.query('SELECT code, region, notes, status, updated_at FROM salespersons WHERE organization_id = $1 AND id = $2', [ORG_A, salespersonId]);
+    expect(restoredSalesperson.rows[0]).toMatchObject({
+      code: 'REP-ARCHIVE-1', region: 'North', notes: 'Retain this note', status: 'INACTIVE',
+    });
+    expect(new Date(restoredSalesperson.rows[0].updated_at).toISOString()).toBe(salespersonUpdatedAt);
+    const restoredProject = await db.query('SELECT start_date, archived_at, archived_by FROM projects WHERE organization_id = $1 AND id = $2', [ORG_A, projectId]);
+    expect(new Date(restoredProject.rows[0].start_date).toISOString().slice(0, 10)).toBe('2026-01-15');
+    expect(new Date(restoredProject.rows[0].archived_at).toISOString()).toBe(projectArchivedAt);
+    expect(restoredProject.rows[0].archived_by).toBe(OWNER_USER_ID);
+
+    const otherTenantSalesperson = await db.query('SELECT code, status, notes FROM salespersons WHERE organization_id = $1 AND id = $2', [ORG_B, otherSalespersonId]);
+    const otherTenantProject = await db.query('SELECT code, archived_at, archived_by FROM projects WHERE organization_id = $1 AND id = $2', [ORG_B, otherProjectId]);
+    expect(otherTenantSalesperson.rows[0]).toMatchObject({ code: 'REP-OTHER-1', status: 'ACTIVE', notes: 'Other tenant' });
+    expect(otherTenantProject.rows[0]).toMatchObject({ code: 'PRJ-OTHER-1', archived_at: null, archived_by: null });
   });
 });

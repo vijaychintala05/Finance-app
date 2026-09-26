@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Pencil, Plus, Receipt, Search, ShieldCheck, X } from 'lucide-react';
 import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate } from '../../utils/formatters';
@@ -18,7 +18,7 @@ export const PaymentsReceivedView: React.FC<PaymentsReceivedViewProps> = ({
   selectedEntityId,
   onSelectedEntityClosed,
 }) => {
-  const { paymentsReceived, addPaymentReceived, updatePaymentReceived, invoices, accounts, settings } = useBooks();
+  const { currentOrg, paymentsReceived, paymentReversalGuards = [], addPaymentReceived, updatePaymentReceived, invoices, accounts, settings } = useBooks();
   const outstandingInvoices = useMemo(
     () => invoices.filter((invoice) => invoice.balanceDue > 0 && !['Draft', 'Void'].includes(invoice.status)),
     [invoices]
@@ -52,6 +52,25 @@ export const PaymentsReceivedView: React.FC<PaymentsReceivedViewProps> = ({
   const [amount, setAmount] = useState('');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const previousOrganizationId = useRef(currentOrg?.id);
+
+  useEffect(() => {
+    if (previousOrganizationId.current === currentOrg?.id) return;
+    previousOrganizationId.current = currentOrg?.id;
+    setViewingPayment(null);
+    setEditingPayment(null);
+    setIsModalOpen(false);
+  }, [currentOrg?.id]);
+
+  useEffect(() => {
+    if (!editingPayment || !currentOrg) return;
+    const reversalGuarded = paymentReversalGuards.some((guard) => guard.paymentId === editingPayment.id && guard.organizationId === currentOrg.id);
+    if (reversalGuarded) {
+      setEditingPayment(null);
+      setIsModalOpen(false);
+      setIsSubmitting(false);
+    }
+  }, [currentOrg, editingPayment, paymentReversalGuards]);
 
   const availableInvoices = useMemo(() => {
     if (!editingPayment) return outstandingInvoices;
@@ -270,9 +289,14 @@ export const PaymentsReceivedView: React.FC<PaymentsReceivedViewProps> = ({
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {filtered.length === 0 ? (
                 <tr><td colSpan={8} className="p-10 text-center text-sm text-slate-500">No authoritative payment records found.</td></tr>
-              ) : filtered.map((payment) => (
-                <tr key={payment.id} onClick={() => setViewingPayment(payment)} className="cursor-pointer transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                  <td className="p-3 pl-4 font-mono font-bold text-teal-600">{payment.paymentNumber}{payment.status === 'REVERSED' ? ' · Reversed' : ''}</td>
+              ) : filtered.map((payment) => {
+                const reversalGuard = paymentReversalGuards.find((guard) => guard.paymentId === payment.id && guard.organizationId === currentOrg?.id);
+                const reversalGuarded = Boolean(reversalGuard);
+                const displayedPayment = reversalGuard?.committed && reversalGuard.status !== 'conflict' && reversalGuard.reversalJournalId
+                  ? { ...payment, status: 'REVERSED' as const, reversalJournalId: reversalGuard.reversalJournalId }
+                  : payment;
+                return <tr key={payment.id} onClick={() => setViewingPayment(displayedPayment)} className="cursor-pointer transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/50">
+                  <td className="p-3 pl-4 font-mono font-bold text-teal-600">{displayedPayment.paymentNumber}{displayedPayment.status === 'REVERSED' ? ' · Reversed' : ''}</td>
                   <td className="p-3 font-bold text-slate-800 dark:text-slate-200">{payment.clientName}</td>
                   <td className="p-3 font-mono font-bold text-blue-600">{payment.invoiceNumber || 'Unallocated'}</td>
                   <td className="p-3 text-slate-500">{formatDate(payment.paymentDate)}</td>
@@ -280,10 +304,10 @@ export const PaymentsReceivedView: React.FC<PaymentsReceivedViewProps> = ({
                   <td className="p-3 font-mono text-slate-500">{payment.referenceNumber || '—'}</td>
                   <td className="p-3 text-right font-mono text-sm font-extrabold text-teal-700">{formatCurrency(payment.amount, settings.currencySymbol)}</td>
                   <td className="p-3 pr-4 text-right" onClick={(e) => e.stopPropagation()}>
-                    {payment.status !== 'REVERSED' && (
+                    {displayedPayment.status !== 'REVERSED' && !reversalGuarded && (
                       <button
                         type="button"
-                        onClick={() => openEditModal(payment)}
+                        onClick={() => openEditModal(displayedPayment)}
                         title="Edit payment"
                         className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-blue-600 dark:hover:bg-slate-800 dark:hover:text-blue-400"
                       >
@@ -291,8 +315,8 @@ export const PaymentsReceivedView: React.FC<PaymentsReceivedViewProps> = ({
                       </button>
                     )}
                   </td>
-                </tr>
-              ))}
+                </tr>;
+              })}
             </tbody>
           </table>
         </div>

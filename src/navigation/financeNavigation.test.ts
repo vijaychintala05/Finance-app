@@ -12,6 +12,12 @@ describe('finance navigation registry', () => {
     expect(new Set(routeIds).size).toBe(routeIds.length);
   });
 
+  it('shows Items & Services only after view access is verified', () => {
+    const hidden = resolveFinanceNavigation([]).flatMap((section) => section.subItems);
+    const visible = resolveFinanceNavigation([], true).flatMap((section) => section.subItems);
+    expect(hidden.some((item) => item.id === 'items')).toBe(false);
+    expect(visible.filter((item) => item.id === 'items')).toHaveLength(1);
+  });
   it('keeps gated modules visible with a disabled reason', () => {
     const sections = resolveFinanceNavigation([
       {

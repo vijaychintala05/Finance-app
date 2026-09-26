@@ -7,9 +7,9 @@ export const ActiveSessionsSettings: React.FC = () => (
       <div className="flex items-start gap-3">
         <Monitor className="mt-0.5 h-5 w-5 text-indigo-600" />
         <div>
-          <h3 className="text-sm font-bold text-slate-900">Session inventory is not enabled yet</h3>
+          <h3 className="text-sm font-bold text-slate-900">Device sessions are managed in Identity & Security Center</h3>
           <p className="mt-2 text-xs leading-5 text-slate-600">
-            The app does not display fabricated devices, locations, or IP addresses. A session will appear here only after server-side session records and targeted revocation are implemented.
+            Your active login devices, sign-in activity, and session termination controls are available in Identity & Security Center. Sign in again if this device cannot be verified.
           </p>
         </div>
       </div>

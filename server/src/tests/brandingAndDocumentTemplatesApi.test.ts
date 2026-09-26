@@ -75,7 +75,7 @@ describe('Branding and Document Templates API Tests', () => {
     expect(invalidRes2.body.error).toMatch(/Invalid accent brand color hex format/i);
   });
 
-  it('3. PATCH /organizations/current updates logoUrl, branding colors, and documentTemplates', async () => {
+  it('3. PATCH /organizations/current updates branding and rejects legacy documentTemplates writes', async () => {
     const ownerRes = await request(app).post('/api/v1/auth/register').send({
       email: `branding-update-${Date.now()}@example.test`,
       password: 'SecurePassword123!',
@@ -101,12 +101,6 @@ describe('Branding and Document Templates API Tests', () => {
         termsAndConditions: 'All payments due net 15 days upon receipt.',
         authorizedSignatoryTitle: 'Managing Partner',
       },
-      documentTemplates: {
-        invoice: { defaultTemplate: 'modern', showTaxBreakdown: true, showBankDetails: true },
-        estimate: { defaultTemplate: 'framed', showTaxBreakdown: false },
-        delivery_challan: { defaultTemplate: 'dispatch', showPricing: false, showTransportDetails: true },
-        customer_statement: { defaultTemplate: 'ledger', showAgingBuckets: true },
-      },
     };
 
     const updateRes = await request(app)
@@ -120,14 +114,19 @@ describe('Branding and Document Templates API Tests', () => {
     expect(updateRes.body.profile.branding.accentColor).toBe('#064e3b');
     expect(updateRes.body.profile.branding.fontFamily).toBe('Roboto');
     expect(updateRes.body.profile.branding.authorizedSignatoryTitle).toBe('Managing Partner');
-    expect(updateRes.body.profile.documentTemplates.invoice.defaultTemplate).toBe('modern');
-    expect(updateRes.body.profile.documentTemplates.delivery_challan.showPricing).toBe(false);
 
-    // 4. Verify GET /organizations/current receives cache-invalidated fresh profile
+    const beforeLegacyWrite = await request(app).get('/api/v1/organizations/current').set(authHeaders);
+    expect(beforeLegacyWrite.status).toBe(200);
+    const legacyWriteRes = await request(app)
+      .patch('/api/v1/organizations/current')
+      .set(authHeaders)
+      .send({ documentTemplates: { invoice: { defaultTemplate: 'untrusted-legacy-template' } } });
+    expect(legacyWriteRes.status).toBe(400);
+
     const getRes = await request(app).get('/api/v1/organizations/current').set(authHeaders);
     expect(getRes.status).toBe(200);
     expect(getRes.body.profile.logoUrl).toBe(logoSampleBase64);
     expect(getRes.body.profile.branding.primaryColor).toBe('#059669');
-    expect(getRes.body.profile.documentTemplates.customer_statement.showAgingBuckets).toBe(true);
+    expect(getRes.body.profile.documentTemplates).toEqual(beforeLegacyWrite.body.profile.documentTemplates);
   });
 });

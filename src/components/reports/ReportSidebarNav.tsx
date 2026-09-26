@@ -20,7 +20,7 @@ export const ReportSidebarNav: React.FC<ReportSidebarNavProps> = ({
   categoriesList,
 }) => {
   return (
-    <aside className="flex w-full shrink-0 flex-col border-b border-slate-200 bg-slate-50/50 dark:border-slate-800 dark:bg-slate-900/50 lg:w-64 lg:border-b-0 lg:border-r">
+    <aside className="hidden w-full shrink-0 flex-col border-b border-slate-200 bg-slate-50/50 dark:border-slate-800 dark:bg-slate-900/50 lg:flex lg:w-64 lg:border-b-0 lg:border-r">
       <div className="flex gap-1 overflow-x-auto p-2 lg:block lg:space-y-4 lg:overflow-visible lg:p-4">
         {/* Navigation Shortcut Folders */}
         <div className="flex shrink-0 gap-1 lg:block lg:space-y-1">

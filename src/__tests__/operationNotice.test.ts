@@ -26,6 +26,7 @@ describe('financial operation notices', () => {
   it('treats network failures and commands still in progress as uncertain', () => {
     expect(isUncertainMutationOutcome({ data: null, error: 'offline', status: 500, errorCode: 'NETWORK_FAILURE' })).toBe(true);
     expect(isUncertainMutationOutcome({ data: null, error: 'pending', status: 409, errorCode: 'COMMAND_IN_PROGRESS' })).toBe(true);
+    expect(isUncertainMutationOutcome({ data: null, error: 'An identical request is already being processed', status: 409 })).toBe(true);
   });
 
   it('marks committed-but-stale results without inviting a duplicate mutation', () => {
@@ -33,7 +34,7 @@ describe('financial operation notices', () => {
       tone: 'warning',
       title: 'Payment posted, but the register is stale',
       message: 'The journal committed.',
-      recovery: 'Do not submit it again; use Refresh to load the committed state.',
+      recovery: 'Use Verify status here before taking any further action; the server has already confirmed the write.',
       requestId: 'req-7',
     });
   });

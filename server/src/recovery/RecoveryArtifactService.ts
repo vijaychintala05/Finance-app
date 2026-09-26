@@ -3,7 +3,7 @@ import { db } from '../database/db';
 import { newId } from '../utils/ids';
 import { openRecoveryPayload, sealRecoveryPayload, sha256 } from './crypto';
 import { RecoveryError } from './errors';
-import { POINT1_RECOVERY_SCHEMA, type RecoveryTableSchema } from './schema';
+import { decodeRecoveryPdfRow, encodeRecoveryPdfRow, POINT1_RECOVERY_SCHEMA, POINT1_RECOVERY_SCHEMA_V13, POINT1_RECOVERY_SCHEMA_V15, POINT1_RECOVERY_SCHEMA_V16, type RecoverySchemaShape, type RecoveryTableSchema } from './schema';
 import { RecoveryMigrationPolicy } from './RecoveryMigrationPolicy';
 import { TenantRecoveryLockService, type TenantRecoveryLockInfo } from './TenantRecoveryLockService';
 import {
@@ -62,11 +62,10 @@ export class RecoveryArtifactService {
   public async createArtifact(organizationId: string, createdBy: string): Promise<StoredRecoveryArtifact> {
     if (!organizationId || !createdBy) throw new RecoveryError('RECOVERY_MANIFEST_INVALID', 'Organization and actor are required', 400);
     return this.transactions.transaction(async (client) => {
-      if (!db.isMemoryMode()) await client.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
       const tables: Record<string, RecoveryRow[]> = {};
       for (const table of POINT1_RECOVERY_SCHEMA) {
         const result = await client.query<RecoveryRow>(table.selectSql, [organizationId]);
-        tables[table.name] = result.rows.map((row) => this.normalizeRow(table, row));
+        tables[table.name] = result.rows.map((row) => this.normalizeRow(table, row, organizationId));
       }
       const artifactId = newId('rcv-art');
       const createdAt = this.now().toISOString();
@@ -98,7 +97,7 @@ export class RecoveryArtifactService {
       };
       await this.dependencies.repository.saveArtifact(artifact, client);
       return artifact;
-    });
+    }, { organizationId, isolationLevel: 'REPEATABLE READ' });
   }
 
   public async stageRestore(input: { artifactId: string; targetOrganizationId: string; requestedBy: string }): Promise<RecoveryJob> {
@@ -180,7 +179,7 @@ export class RecoveryArtifactService {
         const prePromotionTables: Record<string, RecoveryRow[]> = {};
         for (const table of POINT1_RECOVERY_SCHEMA) {
           const result = await client.query<RecoveryRow>(table.selectSql, [job.targetOrganizationId]);
-          prePromotionTables[table.name] = result.rows.map((row) => this.normalizeRow(table, row));
+          prePromotionTables[table.name] = result.rows.map((row) => this.normalizeRow(table, row, job.targetOrganizationId));
         }
         const rollbackArtifactId = newId('rcv-art-pre');
         const rollbackCreatedAt = this.now().toISOString();
@@ -284,11 +283,15 @@ export class RecoveryArtifactService {
         }
         for (const table of POINT1_RECOVERY_SCHEMA) {
           for (const preRow of rollbackPayload.tables[table.name]) {
-            const row = table.tenantColumn
+            let row = table.tenantColumn
               ? { ...preRow, [table.tenantColumn]: job.targetOrganizationId }
               : table.name === 'journal_lines'
                 ? { ...preRow, organization_id: job.targetOrganizationId }
                 : preRow;
+            if (table.name === 'document_render_snapshots') {
+              row = decodeRecoveryPdfRow(row);
+              if (db.isMemoryMode() && Buffer.isBuffer(row.pdf_bytes)) row.pdf_bytes = row.pdf_bytes.toString('base64');
+            }
             const placeholders = table.columns.map((_, index) => `$${index + 1}`).join(', ');
             await client.query(
               `INSERT INTO ${table.name} (${table.columns.join(', ')}) VALUES (${placeholders})`,
@@ -369,49 +372,111 @@ export class RecoveryArtifactService {
     if (manifest.keyId !== this.dependencies.keyring.activeKeyId) {
       throw new RecoveryError('RECOVERY_MANIFEST_INVALID', 'Recovery artifact key is not active', 422);
     }
-    this.assertManifestSchema(manifest);
+    const sourceSchema = manifest.schemaVersion === RecoveryMigrationPolicy.V13_SCHEMA_VERSION
+      ? POINT1_RECOVERY_SCHEMA_V13
+      : manifest.schemaVersion === RecoveryMigrationPolicy.V15_SCHEMA_VERSION
+        ? POINT1_RECOVERY_SCHEMA_V15
+        : manifest.schemaVersion === RecoveryMigrationPolicy.V16_SCHEMA_VERSION
+          ? POINT1_RECOVERY_SCHEMA_V16
+          : POINT1_RECOVERY_SCHEMA;
+    this.assertManifestSchema(manifest, sourceSchema);
     let payload = openRecoveryPayload(envelope, this.dependencies.keyring);
+    if (payload.organizationId !== manifest.organizationId || payload.schemaVersion !== manifest.schemaVersion) {
+      throw new RecoveryError('RECOVERY_MANIFEST_INVALID', 'Recovery payload metadata does not match its manifest', 422);
+    }
+    this.assertPayloadMatchesManifest(payload, manifest, sourceSchema);
+
     if (manifest.schemaVersion !== this.dependencies.schemaVersion) {
       const migrated = RecoveryMigrationPolicy.evaluateAndMigrate(manifest, payload);
       payload = migrated.payload;
-      manifest = migrated.manifest;
+      if (manifest.schemaVersion === RecoveryMigrationPolicy.V13_SCHEMA_VERSION
+        || manifest.schemaVersion === RecoveryMigrationPolicy.V15_SCHEMA_VERSION) {
+        payload = {
+          ...payload,
+          tables: {
+            ...payload.tables,
+            salespersons: (payload.tables.salespersons || []).map((row) => ({
+              ...row,
+              code: 'LEGACY-' + crypto.createHash('md5').update(row.organization_id + ':' + row.id).digest('hex'),
+              region: null,
+              notes: null,
+              status: 'ACTIVE',
+              updated_at: row.created_at,
+            })),
+            projects: (payload.tables.projects || []).map((row) => ({
+              ...row,
+              start_date: null,
+              archived_at: null,
+              archived_by: null,
+            })),
+          },
+        };
+      }
+      manifest = {
+        ...migrated.manifest,
+        tables: POINT1_RECOVERY_SCHEMA.map((table) => {
+          const rows = payload.tables[table.name];
+          return { name: table.name, columns: [...table.columns], rowCount: rows.length, sha256: sha256(rows) };
+        }),
+      };
     }
     if (payload.organizationId !== manifest.organizationId || payload.schemaVersion !== manifest.schemaVersion) {
       throw new RecoveryError('RECOVERY_MANIFEST_INVALID', 'Recovery payload metadata does not match its manifest', 422);
     }
-    for (const table of POINT1_RECOVERY_SCHEMA) {
-      const rows = payload.tables[table.name];
-      const entry = manifest.tables.find((item) => item.name === table.name)!;
-      if (!Array.isArray(rows) || rows.length !== entry.rowCount || sha256(rows) !== entry.sha256) {
-        throw new RecoveryError('RECOVERY_MANIFEST_INVALID', `Recovery table [${table.name}] failed manifest validation`, 422);
-      }
-      for (const row of rows) this.assertRow(table, row, manifest.organizationId);
-    }
+    this.assertPayloadMatchesManifest(payload, manifest, POINT1_RECOVERY_SCHEMA);
     return payload;
   }
 
-  private assertManifestSchema(manifest: RecoveryManifest): void {
-    if (manifest.tables.length !== POINT1_RECOVERY_SCHEMA.length) {
+  private assertManifestSchema(manifest: RecoveryManifest, schema: readonly RecoverySchemaShape[]): void {
+    if (manifest.tables.length !== schema.length) {
       throw new RecoveryError('RECOVERY_MANIFEST_INVALID', 'Recovery manifest table set is incomplete', 422);
     }
-    POINT1_RECOVERY_SCHEMA.forEach((table, index) => {
+    schema.forEach((table, index) => {
       const entry = manifest.tables[index];
       if (!entry || entry.name !== table.name || JSON.stringify(entry.columns) !== JSON.stringify(table.columns)) {
-        throw new RecoveryError('RECOVERY_MANIFEST_INVALID', `Recovery manifest schema differs at [${table.name}]`, 422);
+        throw new RecoveryError('RECOVERY_MANIFEST_INVALID', 'Recovery manifest schema differs at [' + table.name + ']', 422);
       }
     });
   }
 
-  private normalizeRow(table: RecoveryTableSchema, row: RecoveryRow): RecoveryRow {
-    this.assertRow(table, row);
-    return Object.fromEntries(table.columns.map((column) => [column, row[column]])) as RecoveryRow;
+  private assertPayloadMatchesManifest(payload: RecoveryPayload, manifest: RecoveryManifest, schema: readonly RecoverySchemaShape[]): void {
+    for (const table of schema) {
+      const rows = payload.tables[table.name];
+      const entry = manifest.tables.find((item) => item.name === table.name)!;
+      if (!Array.isArray(rows) || rows.length !== entry.rowCount || sha256(rows) !== entry.sha256) {
+        throw new RecoveryError('RECOVERY_MANIFEST_INVALID', 'Recovery table [' + table.name + '] failed manifest validation', 422);
+      }
+      for (const row of rows) this.assertRow(table, row, manifest.organizationId);
+    }
   }
 
-  private assertRow(table: RecoveryTableSchema, row: RecoveryRow, organizationId?: string): void {
+  private normalizeRow(table: RecoveryTableSchema, row: RecoveryRow, organizationId?: string): RecoveryRow {
+    const normalized = Object.fromEntries(table.columns.map((column) => [column, row[column]])) as RecoveryRow;
+    if (table.name === 'document_render_snapshots') {
+      try {
+        if (db.isMemoryMode() && typeof normalized.pdf_bytes === 'string') normalized.pdf_bytes = decodeRecoveryPdfRow(normalized).pdf_bytes;
+        const encoded = encodeRecoveryPdfRow(normalized) as RecoveryRow;
+        this.assertRow(table, encoded, organizationId);
+        return encoded;
+      } catch (error) {
+        if (error instanceof RecoveryError) throw error;
+        throw new RecoveryError('RECOVERY_MANIFEST_INVALID', error instanceof Error ? error.message : 'Recovery PDF artifact is invalid', 422);
+      }
+    }
+    this.assertRow(table, normalized, organizationId);
+    return normalized;
+  }
+
+  private assertRow(table: RecoverySchemaShape, row: RecoveryRow, organizationId?: string): void {
     const keys = Object.keys(row).sort();
     const expected = [...table.columns].sort();
     if (JSON.stringify(keys) !== JSON.stringify(expected)) {
       throw new RecoveryError('RECOVERY_MANIFEST_INVALID', `Recovery row for [${table.name}] has unexpected columns`, 422);
+    }
+    if (table.name === 'document_render_snapshots') {
+      try { decodeRecoveryPdfRow(row); } catch (error) {
+        throw new RecoveryError('RECOVERY_MANIFEST_INVALID', error instanceof Error ? error.message : 'Recovery PDF artifact is invalid', 422);
+      }
     }
     if (organizationId && table.tenantColumn && row[table.tenantColumn] !== organizationId) {
       throw new RecoveryError('RECOVERY_TENANT_MISMATCH', `Recovery row for [${table.name}] belongs to another organization`, 403);

@@ -1,12 +1,12 @@
 import { Response } from 'express';
 import { AuthenticatedRequest } from '../middleware/organizationIsolation.middleware';
-import { RbacService } from '../auth/RbacService';
+import { RbacDomainError, RbacService } from '../auth/RbacService';
 import { PERMISSIONS_REGISTRY, SOD_CONFLICTS, detectSodConflicts } from '../auth/PermissionRegistry';
 import { AuditTrailService } from '../security/AuditTrailService';
 import { ApprovalWorkflowService } from '../approvals/ApprovalWorkflowService';
 import { BackupRestoreService } from '../database/BackupRestoreService';
 import { DataExportService } from '../services/DataExportService';
-import { FinancialDestructiveActionsService } from '../accounting/FinancialDestructiveActionsService';
+import { FinancialActionDomainError, FinancialDestructiveActionsService } from '../accounting/FinancialDestructiveActionsService';
 
 export class SecurityController {
   // ==========================================
@@ -116,12 +116,15 @@ export class SecurityController {
       const { id } = req.params;
 
       await RbacService.deleteCustomRole(orgId, id, req.auth!.userId);
-      res.json({ message: 'Role deleted successfully' });
+      res.json({ id, deleted: true });
     } catch (err: any) {
-      res.status(400).json({ error: err.message });
+      if (err instanceof RbacDomainError) {
+        res.status(err.statusCode).json({ error: err.message, code: err.code });
+        return;
+      }
+      res.status(500).json({ error: 'Failed to delete custom role' });
     }
   }
-
   public static async reassignMemberRole(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const orgId = req.organizationId!;
@@ -361,7 +364,7 @@ export class SecurityController {
       const { invoiceId, reason } = req.body;
 
       if (!invoiceId || !reason) {
-        res.status(400).json({ error: 'Missing invoiceId or reason' });
+        res.status(400).json({ error: 'Missing invoiceId or reason', code: 'INVOICE_VOID_INPUT_INVALID' });
         return;
       }
 
@@ -372,9 +375,15 @@ export class SecurityController {
         reason
       );
 
-      res.json({ result });
+      const requestId = res.getHeader('X-Request-ID');
+      res.json({ result, ...(typeof requestId === 'string' ? { requestId } : {}) });
     } catch (err: any) {
-      res.status(400).json({ error: err.message });
+      if (err instanceof FinancialActionDomainError) {
+        res.status(err.statusCode).json({ error: err.message, code: err.code });
+        return;
+      }
+      console.error('INVOICE_VOID_FAILED:', err);
+      res.status(500).json({ error: 'Invoice void failed unexpectedly', code: 'INVOICE_VOID_FAILED' });
     }
   }
 

@@ -15,6 +15,47 @@ import { FinancialDestructiveActionsService } from '../accounting/FinancialDestr
 import { MonetaryAccountPolicy } from '../accounting/monetaryAccountPolicy';
 
 const roundMoney = (value: number): number => Math.round((value + Number.EPSILON) * 100) / 100;
+const normalizeSalesOrderStatus = (status: unknown): string => String(status ?? '').trim().toUpperCase().replace(/\s+/g, '_');
+const moneyToCents = (value: unknown, label: string): bigint => {
+  const amount = Number(value ?? 0);
+  if (!Number.isFinite(amount) || !Number.isSafeInteger(Math.round(amount * 100)) || Math.abs(amount * 100 - Math.round(amount * 100)) > 0.000001) throw new Error(`${label} must be a valid amount with no fractional cents`);
+  return BigInt(Math.round(amount * 100));
+};
+const assertSalesOrderCanAcceptInvoice = (order: any, amount: unknown): void => {
+  const status = normalizeSalesOrderStatus(order.status);
+  if (['DRAFT', 'CANCELLED', 'CLOSED', 'SHIPPED'].includes(status)) throw new Error(`Sales order cannot accept invoices in status ${order.status}`);
+  const total = moneyToCents(order.total_amount, 'Sales order total');
+  const invoiced = moneyToCents(order.invoiced_amount, 'Sales order invoiced amount');
+  const fulfilled = moneyToCents(order.fulfilled_amount, 'Sales order fulfilled amount');
+  const invoice = moneyToCents(amount, 'Invoice total');
+  if (total <= 0n || invoiced < 0n || invoiced > total || fulfilled < 0n || fulfilled > total) throw new Error('Sales order counters are inconsistent; invoice posting is blocked');
+  if (invoice <= 0n || invoice > total - invoiced) throw new Error('Invoice amount exceeds the uninvoiced sales order balance');
+};
+const assertSalesOrderCanFulfill = (order: any, amount: unknown): { fulfilledCents: bigint; totalCents: bigint } => {
+  const status = normalizeSalesOrderStatus(order.status);
+  if (status === 'CANCELLED') throw new Error('Cannot fulfill a cancelled sales order');
+  if (['DRAFT', 'CLOSED', 'SHIPPED'].includes(status)) throw new Error(`Sales order cannot be fulfilled in status ${order.status}`);
+  const totalCents = moneyToCents(order.total_amount, 'Sales order total');
+  const fulfilledCents = moneyToCents(order.fulfilled_amount, 'Sales order fulfilled amount');
+  const invoicedCents = moneyToCents(order.invoiced_amount, 'Sales order invoiced amount');
+  const amountCents = moneyToCents(amount, 'Fulfilled amount');
+  if (totalCents <= 0n || fulfilledCents < 0n || fulfilledCents > totalCents || invoicedCents < 0n || invoicedCents > totalCents) throw new Error('Sales order counters are inconsistent; fulfillment is blocked');
+  if (amountCents <= 0n) throw new Error('Fulfilled amount must be positive');
+  if (amountCents > totalCents - fulfilledCents) throw new Error('Fulfillment amount exceeds the remaining unfulfilled sales order balance');
+  return { fulfilledCents, totalCents };
+};
+const salesOrderStatusAfterInvoiceChange = (status: unknown, totalAmount: unknown, invoicedAmount: unknown, fulfilledAmount: unknown): string => {
+  const current = normalizeSalesOrderStatus(status);
+  if (['CANCELLED', 'CLOSED'].includes(current)) return current;
+  const total = moneyToCents(totalAmount, 'Sales order total');
+  const invoiced = moneyToCents(invoicedAmount, 'Sales order invoiced amount');
+  const fulfilled = moneyToCents(fulfilledAmount, 'Sales order fulfilled amount');
+  if (invoiced === total) return 'INVOICED';
+  if (invoiced > 0n) return 'PARTIALLY_INVOICED';
+  if (fulfilled === total) return 'FULFILLED';
+  if (fulfilled > 0n) return 'PARTIALLY_FULFILLED';
+  return ['DRAFT', 'CONFIRMED', 'IN_PRODUCTION', 'SHIPPED'].includes(current) ? current : 'CONFIRMED';
+};
 
 function calculateTrustedInvoiceTotals(
   sourceItems: any[],
@@ -198,7 +239,7 @@ export interface SalesOrderModel {
   totalAmount: number;
   fulfilledAmount: number;
   invoicedAmount: number;
-  status: 'DRAFT' | 'CONFIRMED' | 'PARTIALLY_FULFILLED' | 'FULFILLED' | 'PARTIALLY_INVOICED' | 'INVOICED' | 'CANCELLED' | 'CLOSED';
+  status: 'DRAFT' | 'CONFIRMED' | 'IN_PRODUCTION' | 'SHIPPED' | 'PARTIALLY_FULFILLED' | 'FULFILLED' | 'PARTIALLY_INVOICED' | 'INVOICED' | 'CANCELLED' | 'CLOSED';
   lineItems: any[];
   projectId?: string;
   notes?: string;
@@ -242,6 +283,7 @@ export interface InvoiceModel {
   journalEntryId?: string;
   createdBy?: string;
   createdAt?: string;
+  editVersion?: string;
 }
 
 export class SalesEngine {
@@ -422,8 +464,9 @@ export class SalesEngine {
       if (salesAccount.rows.length !== 1) throw new Error('Default sales account must be an active income account in this organization');
     }
     if (data.salespersonId) {
-      const salesperson = await client.query(`SELECT id FROM salespersons WHERE organization_id = $1 AND id = $2`, [orgId, data.salespersonId]);
+      const salesperson = await client.query(`SELECT id, status FROM salespersons WHERE organization_id = $1 AND id = $2 FOR UPDATE`, [orgId, data.salespersonId]);
       if (salesperson.rows.length !== 1) throw new Error('Customer salesperson does not belong to this organization');
+      if (String(salesperson.rows[0].status || 'ACTIVE').toUpperCase() !== 'ACTIVE') throw new Error('Inactive salespersons cannot be assigned to customers');
     }
     await client.query(
       `INSERT INTO customers (id, organization_id, customer_id, display_name, legal_name, customer_type, gst_status, gstin, pan, billing_address, shipping_addresses, place_of_supply, primary_contact, additional_contacts, email, phone, currency, payment_terms, credit_limit, price_list_id, tax_preferences, default_sales_account_id, salesperson_id, notes, attachments, active, opening_balance, receivables_balance, unused_credits, advance_balance, created_at)
@@ -465,9 +508,9 @@ export class SalesEngine {
 
     // Keep the compatibility clients projection in the same transaction.
       await client.query(
-        `INSERT INTO clients (id, organization_id, name, company_name, email, phone, billing_address, tax_id, currency, payment_terms, receivables_balance, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-         ON CONFLICT (id) DO UPDATE SET name = $3, email = $5`,
+        `INSERT INTO clients (id, organization_id, name, company_name, email, phone, billing_address, tax_id, currency, payment_terms, notes, receivables_balance, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+         ON CONFLICT (id) DO UPDATE SET name = $3, email = $5, notes = $11`,
         [
           id,
           orgId,
@@ -479,6 +522,7 @@ export class SalesEngine {
           data.gstin || '',
           baseCurrency,
           data.paymentTerms || 'Net 30',
+          data.notes || '',
           0,
           now,
         ]
@@ -572,7 +616,12 @@ export class SalesEngine {
 
     const snapshot = { customerId: data.customerId, customerName: data.customerName };
 
-    await db.query(
+    await db.transaction(async (client) => {
+      if (data.customerId) {
+        const customer = await client.query('SELECT active FROM customers WHERE organization_id = $1 AND id = $2 FOR UPDATE', [orgId, data.customerId]);
+        if (customer.rows.length > 0 && customer.rows[0].active === false) throw new Error('Archived customers cannot be assigned to new quotations');
+      }
+      await client.query(
       `INSERT INTO estimates (id, organization_id, estimate_number, revision_number, client_id, client_name, issue_date, expiry_date, subtotal, tax_total, discount, total_amount, status, public_token, created_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
       [
@@ -592,10 +641,10 @@ export class SalesEngine {
         publicToken,
         now,
       ]
-    );
+      );
 
-    // Save initial revision 0
-    await db.query(
+      // Save initial revision 0
+      await client.query(
       `INSERT INTO estimate_revisions (id, organization_id, estimate_id, revision_number, change_summary, snapshot, created_by, created_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
       [
@@ -608,7 +657,8 @@ export class SalesEngine {
         data.createdBy || 'System',
         now,
       ]
-    );
+      );
+    }, { organizationId: orgId });
 
     return {
       id,
@@ -709,12 +759,13 @@ export class SalesEngine {
 
     let resolvedCustomerName = '';
     let resolvedCustomerSnapshot: any = null;
-    const persistSalesOrder = async (client: QueryClient) => {
+   const persistSalesOrder = async (client: QueryClient) => {
       let customer = await client.query(
-        `SELECT id, display_name AS name, legal_name, email, phone, gstin, pan, billing_address, place_of_supply
-           FROM customers WHERE organization_id = $1 AND id = $2`,
+        `SELECT id, display_name AS name, legal_name, email, phone, gstin, pan, billing_address, place_of_supply, active, salesperson_id
+           FROM customers WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
         [orgId, data.customerId]
       );
+      if (customer.rows.length > 0 && customer.rows[0].active === false) throw new Error('Archived customers cannot be assigned to new sales orders');
       if (customer.rows.length === 0) {
         customer = await client.query(
           `SELECT id, name, company_name AS legal_name, email, phone, tax_id AS gstin, billing_address
@@ -736,8 +787,9 @@ export class SalesEngine {
         placeOfSupply: customer.rows[0].place_of_supply || null,
       };
       if (data.projectId) {
-        const project = await client.query(`SELECT id FROM projects WHERE organization_id = $1 AND id = $2`, [orgId, data.projectId]);
+        const project = await client.query(`SELECT id, archived_at FROM projects WHERE organization_id = $1 AND id = $2 FOR UPDATE`, [orgId, data.projectId]);
         if (project.rows.length !== 1) throw new Error('Sales order project does not belong to this organization');
+        if (project.rows[0].archived_at) throw new Error('Archived projects cannot be assigned to new sales orders');
       }
       if (data.estimateId) {
         const estimate = await client.query(
@@ -909,8 +961,27 @@ export class SalesEngine {
       if (existingRes.rows.length === 0) throw new Error(`Sales Order ${salesOrderId} not found`);
       const so = existingRes.rows[0];
 
-      if (so.status === 'CANCELLED') {
+      if (normalizeSalesOrderStatus(so.status) === 'CANCELLED') {
         throw new Error('Cancelled sales orders cannot be edited');
+      }
+
+      if (updates.status !== undefined) {
+        const requestedStatus = normalizeSalesOrderStatus(updates.status);
+        const currentStatus = normalizeSalesOrderStatus(so.status);
+        const manualStatuses = ['DRAFT', 'CONFIRMED', 'IN_PRODUCTION'];
+        if (requestedStatus === 'CANCELLED') {
+          throw new Error('Sales orders must be cancelled through the audited cancellation endpoint');
+        }
+        if (!manualStatuses.includes(requestedStatus)) {
+          throw new Error('Sales order status must be changed through its dedicated lifecycle workflow');
+        }
+        if (!manualStatuses.includes(currentStatus) || Number(so.invoiced_amount || 0) > 0 || Number(so.fulfilled_amount || 0) > 0) {
+          throw new Error('Sales order status cannot be changed after invoicing, fulfillment, shipment, closure, or cancellation');
+        }
+        const allowedNext: Record<string, string[]> = { DRAFT: ['DRAFT', 'CONFIRMED'], CONFIRMED: ['CONFIRMED', 'IN_PRODUCTION'], IN_PRODUCTION: ['IN_PRODUCTION'] };
+        if (!allowedNext[currentStatus]?.includes(requestedStatus)) {
+          throw new Error(`Sales order status cannot move from ${currentStatus} to ${requestedStatus}`);
+        }
       }
 
       if (Number(so.invoiced_amount || 0) > 0 || Number(so.fulfilled_amount || 0) > 0) {
@@ -921,7 +992,7 @@ export class SalesEngine {
 
       const expectedDelivery = updates.expectedDelivery !== undefined ? updates.expectedDelivery : so.expected_delivery;
       const notes = updates.notes !== undefined ? updates.notes : so.notes;
-      const newStatus = updates.status !== undefined ? updates.status : so.status;
+      const newStatus = updates.status !== undefined ? normalizeSalesOrderStatus(updates.status) : so.status;
 
       await client.query(
         `UPDATE sales_orders
@@ -956,34 +1027,44 @@ export class SalesEngine {
       if (soRes.rows.length === 0) throw new Error(`Sales Order ${salesOrderId} not found`);
       const so = soRes.rows[0];
 
-      const currentStatus = String(so.status).toUpperCase();
+      const currentStatus = normalizeSalesOrderStatus(so.status);
       if (currentStatus === 'INVOICED') {
         throw new Error(`Sales order ${so.sales_order_number} is already fully invoiced`);
       }
-      if (['CANCELLED', 'CLOSED'].includes(currentStatus)) {
+      if (['DRAFT', 'CANCELLED', 'CLOSED', 'SHIPPED'].includes(currentStatus)) {
         throw new Error(`Sales Order cannot be converted from status ${so.status}`);
       }
 
-      const totalAmount = Number(so.total_amount || 0);
-      const invoicedAmount = Number(so.invoiced_amount || 0);
-      const remainingUninvoiced = roundMoney(totalAmount - invoicedAmount);
-
-      if (remainingUninvoiced <= 0) {
+      const totalCents = moneyToCents(so.total_amount, 'Sales order total');
+      const invoicedCents = moneyToCents(so.invoiced_amount, 'Sales order invoiced amount');
+      const fulfilledCents = moneyToCents(so.fulfilled_amount, 'Sales order fulfilled amount');
+      if (totalCents <= 0n || invoicedCents < 0n || invoicedCents > totalCents || fulfilledCents < 0n || fulfilledCents > totalCents) throw new Error('Sales order counters are inconsistent; conversion is blocked');
+      const remainingCents = totalCents - invoicedCents;
+      if (remainingCents <= 0n) {
         throw new Error(`Sales order ${so.sales_order_number} is already fully invoiced`);
       }
 
-      const billingAmount = partialAmount ? Number(partialAmount) : remainingUninvoiced;
-      if (billingAmount <= 0) throw new Error('Invoice amount must be greater than zero');
-      if (billingAmount > remainingUninvoiced + 0.009) {
-        throw new Error(`Invoice amount (${billingAmount}) exceeds remaining uninvoiced sales order balance (${remainingUninvoiced})`);
+      const billingCents = partialAmount === undefined ? remainingCents : moneyToCents(partialAmount, 'Invoice amount');
+      if (billingCents <= 0n) throw new Error('Invoice amount must be greater than zero');
+      if (billingCents > remainingCents) {
+        throw new Error(`Invoice amount exceeds remaining uninvoiced sales order balance (${Number(remainingCents) / 100})`);
+      }
+      const totalAmount = Number(totalCents) / 100;
+      const billingAmount = Number(billingCents) / 100;
+      const isPartialConversion = billingCents < totalCents;
+      if (isPartialConversion && Number(so.tax_total || 0) > 0) {
+        throw new Error('Partial conversion of a GST-bearing sales order is unavailable until tax can be allocated across installments without changing the source tax liability');
       }
 
       const orderLines = typeof so.line_items === 'string' ? JSON.parse(so.line_items) : (so.line_items || []);
-      const itemsToInvoice = partialItems && partialItems.length > 0 ? partialItems : orderLines;
+      if (Array.isArray(partialItems) && partialItems.length > 0) {
+        throw new Error('Caller-supplied line items cannot override the authoritative sales order during conversion');
+      }
+      const itemsToInvoice = orderLines;
 
       const issueDate = new Date().toISOString().split('T')[0];
       const dueDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-      const invNumber = await DocumentNumberingEngine.getNextNumber(orgId, 'INVOICE', issueDate, undefined, client);
+
 
       const customerSnapshot = typeof so.customer_snapshot === 'string'
         ? JSON.parse(so.customer_snapshot)
@@ -1027,10 +1108,18 @@ export class SalesEngine {
       }
 
 
+      const invoiceRoundOff = isPartialConversion ? 0 : Number(so.round_off_amount || 0);
+      const invoiceDiscount = isPartialConversion ? 0 : Number(so.discount || 0);
+      const invoiceIsGstInclusive = !isPartialConversion && Boolean(so.is_gst_inclusive);
+      const preparedInvoiceTotal = calculateTrustedInvoiceTotals(invoiceLines, invoiceDiscount, invoiceIsGstInclusive, invoiceRoundOff).totalAmount;
+      if (moneyToCents(preparedInvoiceTotal, 'Invoice total') !== billingCents) {
+        throw new Error('Selected sales order invoice lines do not match the requested invoice amount');
+      }
+
       const invoice = await SalesEngine.createAndPostInvoice(
         orgId,
         {
-          invoiceNumber: invNumber,
+          invoiceNumber: '',
           salesOrderId: so.id,
           customerId: so.customer_id,
           customerName: so.customer_name,
@@ -1040,6 +1129,9 @@ export class SalesEngine {
           issueDate,
           dueDate,
           lineItems: invoiceLines,
+          discount: invoiceDiscount,
+          isGstInclusive: invoiceIsGstInclusive,
+          roundOffAmount: invoiceRoundOff,
           notes: so.notes ? `Converted from Sales Order ${so.sales_order_number}. ${so.notes}` : `Converted from Sales Order ${so.sales_order_number}`,
           status: 'POSTED',
           createdBy: actorId,
@@ -1077,10 +1169,6 @@ export class SalesEngine {
       if (soRes.rows.length === 0) throw new Error(`Sales Order ${salesOrderId} not found`);
       const so = soRes.rows[0];
 
-      if (so.status === 'CANCELLED') {
-        throw new Error('Cannot fulfill a cancelled sales order');
-      }
-
       const totalAmount = Number(so.total_amount || 0);
       const currentFulfilled = Number(so.fulfilled_amount || 0);
       const unfulfilled = roundMoney(totalAmount - currentFulfilled);
@@ -1089,11 +1177,8 @@ export class SalesEngine {
         throw new Error(`Sales order ${so.sales_order_number} is already fully fulfilled`);
       }
 
-      const fulfillAmt = deliveryDetails.fulfilledAmount ? Number(deliveryDetails.fulfilledAmount) : unfulfilled;
-      if (fulfillAmt <= 0) throw new Error('Fulfilled amount must be positive');
-      if (fulfillAmt > unfulfilled + 0.009) {
-        throw new Error(`Fulfillment amount (${fulfillAmt}) exceeds remaining unfulfilled balance (${unfulfilled})`);
-      }
+      const fulfillAmt = deliveryDetails.fulfilledAmount !== undefined ? Number(deliveryDetails.fulfilledAmount) : unfulfilled;
+      assertSalesOrderCanFulfill(so, fulfillAmt);
 
       const now = new Date().toISOString();
       const deliveryDate = deliveryDetails.deliveryDate || now.split('T')[0];
@@ -1122,8 +1207,8 @@ export class SalesEngine {
         ]
       );
 
-      const newFulfilled = roundMoney(currentFulfilled + fulfillAmt);
-      const newStatus = newFulfilled >= totalAmount - 0.009 ? 'FULFILLED' : 'PARTIALLY_FULFILLED';
+      const newFulfilled = Number(moneyToCents(currentFulfilled, 'Sales order fulfilled amount') + moneyToCents(fulfillAmt, 'Fulfilled amount')) / 100;
+      const newStatus = salesOrderStatusAfterInvoiceChange(so.status, so.total_amount, so.invoiced_amount, newFulfilled);
 
       await client.query(
         `UPDATE sales_orders
@@ -1155,9 +1240,13 @@ export class SalesEngine {
   public static async cancelSalesOrder(
     orgId: string,
     salesOrderId: string,
-    actorId: string = 'system',
-    reason: string = 'Cancelled by user'
+    actorId: string,
+    reason: string
   ): Promise<SalesOrderModel> {
+    const auditReason = typeof reason === 'string' ? reason.trim() : '';
+    if (auditReason.length < 3 || auditReason.length > 1000) {
+      throw new Error('A cancellation reason between 3 and 1000 characters is required for the audit trail');
+    }
     return db.transaction(async (client) => {
       const soRes = await client.query(
         `SELECT * FROM sales_orders WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
@@ -1166,16 +1255,38 @@ export class SalesEngine {
       if (soRes.rows.length === 0) throw new Error(`Sales Order ${salesOrderId} not found`);
       const so = soRes.rows[0];
 
-      if (so.status === 'CANCELLED') {
+      const currentStatus = normalizeSalesOrderStatus(so.status);
+      const linkedInvoices = await client.query(
+        `SELECT COUNT(*)::int AS count FROM invoices WHERE organization_id = $1 AND sales_order_id = $2 AND UPPER(COALESCE(status, '')) NOT IN ('VOID', 'VOIDED')`,
+        [orgId, salesOrderId]
+      );
+      const linkedChallans = await client.query(
+        `SELECT COUNT(*)::int AS count FROM delivery_challans WHERE organization_id = $1 AND sales_order_id = $2 AND UPPER(COALESCE(status, '')) NOT IN ('CANCELLED', 'CANCELED', 'VOID', 'VOIDED')`,
+        [orgId, salesOrderId]
+      );
+      const hasLinkedInvoices = Number(linkedInvoices.rows[0]?.count || 0) > 0;
+      const hasLinkedChallans = Number(linkedChallans.rows[0]?.count || 0) > 0;
+      const invoicedCents = moneyToCents(so.invoiced_amount, 'Sales order invoiced amount');
+      const fulfilledCents = moneyToCents(so.fulfilled_amount, 'Sales order fulfilled amount');
+      if (currentStatus === 'CANCELLED') {
+        if (invoicedCents !== 0n || fulfilledCents !== 0n || hasLinkedInvoices || hasLinkedChallans) {
+          throw new Error('Cannot cancel: cancelled sales order has active invoiced or fulfilled value; resolve linked documents before retrying');
+        }
         const existing = await this.getSalesOrder(orgId, salesOrderId);
         return existing!;
       }
+      if (currentStatus === 'CLOSED') {
+        throw new Error('Cannot cancel a closed sales order');
+      }
+      if (currentStatus === 'SHIPPED') {
+        throw new Error('Cannot cancel a legacy shipped sales order before reviewing delivery evidence');
+      }
 
-      if (Number(so.invoiced_amount || 0) > 0) {
+      if (hasLinkedInvoices || invoicedCents !== 0n) {
         throw new Error(`Cannot cancel sales order ${so.sales_order_number} with existing invoiced balance (₹${so.invoiced_amount}). Void linked invoices first.`);
       }
 
-      if (Number(so.fulfilled_amount || 0) > 0) {
+      if (hasLinkedChallans || fulfilledCents !== 0n) {
         throw new Error(`Cannot cancel a sales order with active deliveries (${so.sales_order_number} (₹${so.fulfilled_amount}). Cancel linked delivery challans first.`);
       }
 
@@ -1193,7 +1304,7 @@ export class SalesEngine {
           actorId,
           salesOrderId,
           JSON.stringify({ status: so.status }),
-          JSON.stringify({ status: 'CANCELLED', reason }),
+          JSON.stringify({ status: 'CANCELLED', reason: auditReason }),
         ]
       );
 
@@ -1209,7 +1320,8 @@ export class SalesEngine {
     orgId: string,
     data: Partial<InvoiceModel>,
     actorIdOrClient?: string | QueryClient,
-    maybeClient?: QueryClient
+    maybeClient?: QueryClient,
+    serverOptions?: { allowArchivedProjectId?: string; allowArchivedCustomerId?: string }
   ): Promise<InvoiceModel> {
     const effectiveClient = (typeof actorIdOrClient === 'object' && actorIdOrClient !== null && 'query' in actorIdOrClient)
       ? (actorIdOrClient as QueryClient)
@@ -1242,18 +1354,31 @@ export class SalesEngine {
     let resolvedCustomerName = '';
     let resolvedCustomerEmail = '';
     let resolvedCustomerSnapshot: any = null;
+    let resolvedSalesperson: any = null;
     let currentStatus = isPosted ? 'POSTED' : 'DRAFT';
 
     const persistInvoice = async (client: QueryClient) => {
+      let sourceSalesOrder: any = null;
+      if (data.salesOrderId) {
+        const soRes = await client.query(
+          `SELECT * FROM sales_orders WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+          [orgId, data.salesOrderId]
+        );
+        if (soRes.rows.length !== 1) throw new Error('Invoice sales order does not belong to this organization');
+        sourceSalesOrder = soRes.rows[0];
+        if (sourceSalesOrder.customer_id !== (data.customerId || (data as any).clientId)) throw new Error('Invoice customer does not match its source sales order');
+        assertSalesOrderCanAcceptInvoice(sourceSalesOrder, finalTotal);
+      }
       await SalesEngine.checkPeriodLock(orgId, issueDate, client);
       invNumber = invNumber || await DocumentNumberingEngine.getNextNumber(orgId, 'INVOICE', issueDate, undefined, client);
       const customerId = data.customerId || (data as any).clientId;
       if (!customerId) throw new Error('Invoice customer is required');
       let customer = await client.query(
-        `SELECT id, display_name AS name, legal_name, email, phone, gstin, pan, billing_address, place_of_supply
-           FROM customers WHERE organization_id = $1 AND id = $2`,
+        `SELECT id, display_name AS name, legal_name, email, phone, gstin, pan, billing_address, place_of_supply, active, salesperson_id
+           FROM customers WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
         [orgId, customerId]
       );
+      if (customer.rows.length > 0 && customer.rows[0].active === false && customerId !== serverOptions?.allowArchivedCustomerId) throw new Error('Archived customers cannot be assigned to new invoices');
       if (customer.rows.length === 0) {
         customer = await client.query(
           `SELECT id, name, company_name AS legal_name, email, phone, tax_id AS gstin, billing_address, currency, payment_terms, notes
@@ -1263,15 +1388,28 @@ export class SalesEngine {
         if (customer.rows.length > 0) {
           const cl = customer.rows[0];
           await client.query(
-            `INSERT INTO customers (id, organization_id, customer_id, display_name, legal_name, email, phone, currency, payment_terms, notes)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            `INSERT INTO customers (id, organization_id, customer_id, display_name, legal_name, email, phone, billing_address, gstin, currency, payment_terms, notes)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
              ON CONFLICT (id) DO NOTHING`,
-            [cl.id, orgId, cl.id, cl.name, cl.legal_name || cl.name, cl.email || '', cl.phone || '', (cl.currency || 'USD').slice(0, 3), cl.payment_terms || 'Net 30', cl.notes || null]
+            [cl.id, orgId, cl.id, cl.name, cl.legal_name || cl.name, cl.email || '', cl.phone || '', JSON.stringify(cl.billing_address || ''), cl.gstin || '', (cl.currency || 'USD').slice(0, 3), cl.payment_terms || 'Net 30', cl.notes || null]
           );
         }
       }
       if (customer.rows.length === 0) throw new Error('Invoice customer does not belong to this organization');
       resolvedCustomerName = customer.rows[0].name || data.customerName || 'Customer';
+      const requestedSalespersonId = data.salespersonId || customer.rows[0].salesperson_id || null;
+      if (requestedSalespersonId) {
+        const salesperson = await client.query(
+          'SELECT id, name, code, commission_rate, status FROM salespersons WHERE organization_id = $1 AND id = $2 FOR UPDATE',
+          [orgId, requestedSalespersonId]
+        );
+        if (salesperson.rows.length !== 1) throw new Error('Invoice salesperson does not belong to this organization');
+        if (String(salesperson.rows[0].status || 'ACTIVE').toUpperCase() !== 'ACTIVE') {
+          if (data.salespersonId) throw new Error('Inactive salespersons cannot be assigned to new invoices');
+        } else {
+          resolvedSalesperson = salesperson.rows[0];
+        }
+      }
       resolvedCustomerEmail = customer.rows[0].email || data.customerEmail || '';
       resolvedCustomerSnapshot = {
         customerId,
@@ -1285,8 +1423,9 @@ export class SalesEngine {
         placeOfSupply: customer.rows[0].place_of_supply || null,
       };
       if (data.projectId) {
-        const project = await client.query(`SELECT id FROM projects WHERE organization_id = $1 AND id = $2`, [orgId, data.projectId]);
+        const project = await client.query(`SELECT id, archived_at FROM projects WHERE organization_id = $1 AND id = $2 FOR UPDATE`, [orgId, data.projectId]);
         if (project.rows.length !== 1) throw new Error('Invoice project does not belong to this organization');
+        if (project.rows[0].archived_at && data.projectId !== serverOptions?.allowArchivedProjectId) throw new Error('Archived projects cannot be assigned to new invoices');
       }
       if (data.estimateId) {
         const estimate = await client.query(
@@ -1300,18 +1439,7 @@ export class SalesEngine {
           ? JSON.parse(estimate.rows[0].customer_snapshot)
           : estimate.rows[0].customer_snapshot || resolvedCustomerSnapshot;
       }
-      let sourceSalesOrder: any = null;
-      if (data.salesOrderId) {
-        const soRes = await client.query(
-          `SELECT * FROM sales_orders WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
-          [orgId, data.salesOrderId]
-        );
-        if (soRes.rows.length !== 1) throw new Error('Invoice sales order does not belong to this organization');
-        sourceSalesOrder = soRes.rows[0];
-        if (sourceSalesOrder.customer_id !== customerId) throw new Error('Invoice customer does not match its source sales order');
-        const remaining = roundMoney(Number(sourceSalesOrder.total_amount || 0) - Number(sourceSalesOrder.invoiced_amount || 0));
-        if (remaining <= 0 || finalTotal - remaining > 0.009) throw new Error('Invoice amount exceeds the uninvoiced sales order balance');
-      }
+
       const defaultRevenueId = await OrganizationProvisioningService.resolveSystemAccountId(client, orgId, 'SALES_REVENUE', ['Income', 'Revenue']);
 
       // Validate and resolve every line before the first journal/document write.
@@ -1452,8 +1580,8 @@ export class SalesEngine {
       }
 
       await client.query(
-        `INSERT INTO invoices (id, organization_id, invoice_number, sales_order_id, estimate_id, client_id, customer_id, client_name, client_email, project_id, issue_date, due_date, subtotal, tax_total, discount, round_off_amount, total_amount, paid_amount, balance_due, status, notes, line_items, customer_snapshot, is_gst_inclusive, journal_entry_id, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)`,
+        `INSERT INTO invoices (id, organization_id, invoice_number, sales_order_id, estimate_id, client_id, customer_id, client_name, client_email, project_id, issue_date, due_date, subtotal, tax_total, discount, round_off_amount, total_amount, paid_amount, balance_due, status, notes, line_items, customer_snapshot, is_gst_inclusive, journal_entry_id, created_at, salesperson_id, salesperson_name_snapshot, salesperson_code_snapshot, commission_rate_snapshot)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)`,
         [
           id,
           orgId,
@@ -1481,8 +1609,13 @@ export class SalesEngine {
           Boolean(data.isGstInclusive),
           journalEntryId || null,
           now,
+          resolvedSalesperson?.id || null,
+          resolvedSalesperson?.name || null,
+          resolvedSalesperson?.code || null,
+          resolvedSalesperson ? Number(resolvedSalesperson.commission_rate) : null,
         ]
       );
+
 
       // Save line items
       for (const { item, quantity, unitPrice, taxRate, lineAmount, verifiedItemId, lineAccountId } of validatedLines) {
@@ -1510,9 +1643,8 @@ export class SalesEngine {
         // Update Sales Order partial invoicing if linked
         if (data.salesOrderId && sourceSalesOrder) {
           const so = sourceSalesOrder;
-          const newInvoiced = Number(so.invoiced_amount || 0) + finalTotal;
-          const soTotal = Number(so.total_amount || 0);
-          const newSoStatus = newInvoiced >= (soTotal - 0.009) ? 'INVOICED' : 'PARTIALLY_INVOICED';
+          const newInvoiced = Number(moneyToCents(so.invoiced_amount, 'Sales order invoiced amount') + moneyToCents(finalTotal, 'Invoice total')) / 100;
+          const newSoStatus = salesOrderStatusAfterInvoiceChange(so.status, so.total_amount, newInvoiced, so.fulfilled_amount);
           await client.query(
             `UPDATE sales_orders SET invoiced_amount = $1, status = $2 WHERE organization_id = $3 AND id = $4`,
             [newInvoiced, newSoStatus, orgId, data.salesOrderId]
@@ -1569,6 +1701,7 @@ export class SalesEngine {
       lineItems: items,
       notes: data.notes || '',
       journalEntryId,
+      editVersion: '1',
     };
   }
 
@@ -1583,7 +1716,7 @@ export class SalesEngine {
       customerEmail?: string;
       clientEmail?: string;
       projectId?: string;
-      salespersonId?: string;
+      salespersonId?: string | null;
       issueDate?: string;
       dueDate?: string;
       lineItems?: any[];
@@ -1596,6 +1729,7 @@ export class SalesEngine {
       editReason?: string;
     },
     userId: string,
+    expectedVersion: string,
     transactionClient?: QueryClient
   ): Promise<InvoiceModel> {
     const execute = async (client: QueryClient) => {
@@ -1605,9 +1739,67 @@ export class SalesEngine {
       );
       if (invRes.rows.length === 0) throw new Error('INVOICE_NOT_FOUND: Invoice does not exist');
       const inv = invRes.rows[0];
+      const currentVersion = String(inv.edit_version ?? 1);
+      if (currentVersion !== expectedVersion) {
+        let currentItems: any[] = [];
+        try {
+          const parsedItems = typeof inv.line_items === 'string' ? JSON.parse(inv.line_items) : inv.line_items;
+          if (Array.isArray(parsedItems)) currentItems = parsedItems;
+        } catch {
+          currentItems = [];
+        }
+        const conflict = new Error('This invoice changed while you were editing it. Your draft is preserved.');
+        Object.assign(conflict, {
+          code: 'INVOICE_EDIT_CONFLICT',
+          currentState: {
+            invoiceId,
+            editVersion: currentVersion,
+            clientName: inv.client_name || '',
+            issueDate: inv.issue_date instanceof Date ? inv.issue_date.toISOString().slice(0, 10) : String(inv.issue_date || '').slice(0, 10),
+            dueDate: inv.due_date instanceof Date ? inv.due_date.toISOString().slice(0, 10) : String(inv.due_date || '').slice(0, 10),
+            totalAmount: Number(inv.total_amount || 0),
+            discount: Number(inv.discount || 0),
+            status: String(inv.status || ''),
+            notes: String(inv.notes || ''),
+            terms: String(inv.terms || ''),
+            projectId: inv.project_id || null,
+            salespersonId: inv.salesperson_id || null,
+            salespersonName: String(inv.salesperson_name_snapshot || ''),
+            lineItems: currentItems,
+          },
+        });
+        throw conflict;
+      }
 
+      const newSalespersonId = data.salespersonId !== undefined ? data.salespersonId : inv.salesperson_id;
+      let salespersonSnapshot = {
+        name: inv.salesperson_name_snapshot,
+        code: inv.salesperson_code_snapshot,
+        commissionRate: inv.commission_rate_snapshot,
+      };
+      if (String(newSalespersonId || '') !== String(inv.salesperson_id || '')) {
+        salespersonSnapshot = { name: null, code: null, commissionRate: null };
+        if (newSalespersonId) {
+          const salesperson = await client.query(
+            'SELECT id, name, code, commission_rate, status FROM salespersons WHERE organization_id = $1 AND id = $2 FOR UPDATE',
+            [orgId, newSalespersonId],
+          );
+          if (salesperson.rows.length !== 1) throw new Error('Invoice salesperson does not belong to this organization');
+          if (String(salesperson.rows[0].status || 'ACTIVE').toUpperCase() !== 'ACTIVE') {
+            throw new Error('Inactive salespersons cannot be assigned to invoices');
+          }
+          salespersonSnapshot = {
+            name: salesperson.rows[0].name,
+            code: salesperson.rows[0].code,
+            commissionRate: Number(salesperson.rows[0].commission_rate),
+          };
+        }
+      }
       if (['VOID', 'VOIDED'].includes(String(inv.status).toUpperCase())) {
         throw new Error('INVOICE_VOIDED: Voided invoices are immutable and cannot be edited');
+      }
+      if (inv.sales_order_id) {
+        throw new Error('ORDER_LINKED_INVOICE_IMMUTABLE: Order-linked invoices cannot be edited; void and recreate them through the sales-order workflow');
       }
 
       const originalIssueDate = inv.issue_date instanceof Date ? inv.issue_date.toISOString().slice(0, 10) : String(inv.issue_date).slice(0, 10);
@@ -1698,6 +1890,11 @@ export class SalesEngine {
       }
 
       const newProjectId = data.projectId !== undefined ? data.projectId : inv.project_id;
+      if (newProjectId && newProjectId !== inv.project_id) {
+        const project = await client.query(`SELECT id, archived_at FROM projects WHERE organization_id = $1 AND id = $2 FOR UPDATE`, [orgId, newProjectId]);
+        if (project.rows.length !== 1) throw new Error('Invoice project does not belong to this organization');
+        if (project.rows[0].archived_at) throw new Error('Archived projects cannot be assigned to an existing invoice');
+      }
       let currentJournalEntryId = inv.journal_entry_id;
       const isPostedState = ['POSTED', 'SENT', 'VIEWED', 'OVERDUE', 'PARTIALLY_PAID', 'PAID'].includes(String(inv.status).toUpperCase());
 
@@ -1816,17 +2013,19 @@ export class SalesEngine {
 
       const newNotes = data.notes !== undefined ? data.notes : inv.notes;
       const newTerms = data.terms !== undefined ? data.terms : inv.terms;
-      const newSalespersonId = data.salespersonId !== undefined ? data.salespersonId : inv.salesperson_id;
 
-      await client.query(
+
+      const invoiceUpdate = await client.query(
         `UPDATE invoices
             SET customer_id = $1, client_id = $1, client_name = $2, client_email = $3,
                 project_id = $4, salesperson_id = $5, issue_date = $6, due_date = $7,
+                salesperson_name_snapshot = $24, salesperson_code_snapshot = $25, commission_rate_snapshot = $26,
                 subtotal = $8, tax_total = $9, discount = $10, round_off_amount = $11,
                 total_amount = $12, balance_due = $13, notes = $14, terms = $15,
                 line_items = $16, customer_snapshot = $17, is_gst_inclusive = $18,
-                journal_entry_id = $19, edit_history = $20, status = $21
-          WHERE organization_id = $22 AND id = $23`,
+                journal_entry_id = $19, edit_history = $20, status = $21, edit_version = edit_version + 1
+          WHERE organization_id = $22 AND id = $23
+            AND edit_version = $27`,
         [
           customerId,
           resolvedCustomerName,
@@ -1851,9 +2050,18 @@ export class SalesEngine {
           updatedStatus,
           orgId,
           invoiceId,
+          salespersonSnapshot.name,
+          salespersonSnapshot.code,
+          salespersonSnapshot.commissionRate,
+          expectedVersion,
         ]
       );
 
+      if (invoiceUpdate.rowCount !== 1) {
+        const conflict = new Error('This invoice changed while you were editing it. Your draft is preserved.');
+        Object.assign(conflict, { code: 'INVOICE_EDIT_CONFLICT', currentState: { invoiceId, editVersion: currentVersion } });
+        throw conflict;
+      }
       await client.query(`DELETE FROM invoice_items WHERE organization_id = $1 AND invoice_id = $2`, [orgId, invoiceId]);
       for (const it of items) {
         const lineQty = Number(it.quantity ?? 1);
@@ -1916,6 +2124,7 @@ export class SalesEngine {
         notes: newNotes || '',
         paymentTerms: newTerms || '',
         journalEntryId: currentJournalEntryId,
+        editVersion: String(BigInt(expectedVersion) + 1n),
       };
     };
 
@@ -1930,15 +2139,26 @@ export class SalesEngine {
     transactionClient?: QueryClient
   ): Promise<InvoiceModel> {
     const execute = async (client: QueryClient) => {
+      const linkRes = await client.query(`SELECT sales_order_id FROM invoices WHERE organization_id = $1 AND id = $2`, [orgId, invoiceId]);
+      if (linkRes.rows.length !== 1) throw new Error('INVOICE_NOT_FOUND: Invoice does not exist');
+      const linkedSalesOrderId = linkRes.rows[0].sales_order_id || null;
+      let lockedSalesOrder: any = null;
+      if (linkedSalesOrderId) {
+        const orderRes = await client.query(`SELECT * FROM sales_orders WHERE organization_id = $1 AND id = $2 FOR UPDATE`, [orgId, linkedSalesOrderId]);
+        if (orderRes.rows.length !== 1) throw new Error('INVOICE_SALES_ORDER_NOT_FOUND: Invoice sales order does not exist');
+        lockedSalesOrder = orderRes.rows[0];
+      }
       const invRes = await client.query(
         `SELECT * FROM invoices WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
         [orgId, invoiceId]
       );
       if (invRes.rows.length === 0) throw new Error('INVOICE_NOT_FOUND: Invoice does not exist');
       const inv = invRes.rows[0];
+      if ((inv.sales_order_id || null) !== linkedSalesOrderId) throw new Error('INVOICE_SOURCE_CHANGED: Invoice source changed during posting');
       if (inv.status === 'POSTED' || inv.status === 'PAID' || inv.status === 'PARTIALLY_PAID') {
         throw new Error('INVOICE_ALREADY_POSTED: Invoice is already posted');
       }
+      if (linkedSalesOrderId) assertSalesOrderCanAcceptInvoice(lockedSalesOrder, inv.total_amount);
       if (inv.status !== 'SUBMITTED') {
         throw new Error(`INVOICE_NOT_SUBMITTED: Invoice has status '${inv.status}', expected 'SUBMITTED'`);
       }
@@ -1960,12 +2180,22 @@ export class SalesEngine {
     transactionClient?: QueryClient
   ): Promise<InvoiceModel> {
     const execute = async (client: QueryClient) => {
+      const linkRes = await client.query(`SELECT sales_order_id FROM invoices WHERE organization_id = $1 AND id = $2`, [orgId, invoiceId]);
+      if (linkRes.rows.length !== 1) throw new Error('INVOICE_NOT_FOUND: Invoice does not exist');
+      const linkedSalesOrderId = linkRes.rows[0].sales_order_id || null;
+      let lockedSalesOrder: any = null;
+      if (linkedSalesOrderId) {
+        const orderRes = await client.query(`SELECT * FROM sales_orders WHERE organization_id = $1 AND id = $2 FOR UPDATE`, [orgId, linkedSalesOrderId]);
+        if (orderRes.rows.length !== 1) throw new Error('INVOICE_SALES_ORDER_NOT_FOUND: Invoice sales order does not exist');
+        lockedSalesOrder = orderRes.rows[0];
+      }
       const invRes = await client.query(
         `SELECT * FROM invoices WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
         [orgId, invoiceId]
       );
       if (invRes.rows.length === 0) throw new Error('INVOICE_NOT_FOUND: Invoice does not exist');
       const inv = invRes.rows[0];
+      if ((inv.sales_order_id || null) !== linkedSalesOrderId) throw new Error('INVOICE_SOURCE_CHANGED: Invoice source changed during posting');
       const invStatus = String(inv.status).toUpperCase();
 
       if (['POSTED', 'PAID', 'PARTIALLY_PAID'].includes(invStatus)) {
@@ -2005,6 +2235,7 @@ export class SalesEngine {
       }
 
       const finalTotal = Number(inv.total_amount || 0);
+      if (linkedSalesOrderId) assertSalesOrderCanAcceptInvoice(lockedSalesOrder, finalTotal);
 
       if (invStatus === 'SUBMITTED') {
         await ApprovalWorkflowService.consumeApproval(orgId, 'INVOICE', invoiceId, client, inv);
@@ -2120,7 +2351,7 @@ export class SalesEngine {
     );
 
     await client.query(
-      `UPDATE invoices SET status = 'POSTED', journal_entry_id = $1 WHERE organization_id = $2 AND id = $3`,
+      `UPDATE invoices SET status = 'POSTED', journal_entry_id = $1, edit_version = edit_version + 1 WHERE organization_id = $2 AND id = $3`,
       [journalEntryId, orgId, invoiceId]
     );
 
@@ -2469,7 +2700,7 @@ export class SalesEngine {
       for (const item of lockedInvoices) {
         const updateRes = await client.query(
           `UPDATE invoices
-              SET paid_amount = $1, balance_due = $2, status = $3
+              SET paid_amount = $1, balance_due = $2, status = $3, edit_version = edit_version + 1
             WHERE organization_id = $4 AND id = $5
               AND balance_due >= $6 - 0.009`,
           [item.newPaid, item.newBal, item.newStatus, orgId, item.id, item.allocAmount]
@@ -2636,7 +2867,7 @@ export class SalesEngine {
       for (const item of lockedInvoices) {
         await client.query(
           `UPDATE invoices
-              SET paid_amount = $1, balance_due = $2, status = $3
+              SET paid_amount = $1, balance_due = $2, status = $3, edit_version = edit_version + 1
             WHERE organization_id = $4 AND id = $5
               AND balance_due >= $6 - 0.009`,
           [item.newPaid, item.newBal, item.newStatus, orgId, item.id, item.allocAmount]
@@ -2758,7 +2989,7 @@ export class SalesEngine {
       // Atomic invoice update
       const invUpdate = await client.query(
         `UPDATE invoices
-            SET paid_amount = $1, balance_due = $2, status = $3
+            SET paid_amount = $1, balance_due = $2, status = $3, edit_version = edit_version + 1
           WHERE organization_id = $4 AND id = $5
             AND balance_due >= $6 - 0.009`,
         [newInvPaid, newInvBal, newInvStatus, orgId, invoiceId, amount]
@@ -3054,7 +3285,7 @@ export class SalesEngine {
       const newPaid = roundMoney(Number(inv.paid_amount || 0) + applyAmt);
       const newBal = Math.max(0, roundMoney(Number(inv.total_amount) - newPaid - Number(inv.amount_credited || 0) - Number(inv.amount_written_off || 0)));
       await client.query(
-        `UPDATE invoices SET paid_amount = $1, balance_due = $2, status = $3 WHERE organization_id = $4 AND id = $5`,
+        `UPDATE invoices SET paid_amount = $1, balance_due = $2, status = $3, edit_version = edit_version + 1 WHERE organization_id = $4 AND id = $5`,
         [newPaid, newBal, newBal === 0 ? 'Paid' : 'Partially Paid', orgId, payload.invoiceId]
       );
 
@@ -3150,7 +3381,7 @@ export class SalesEngine {
       const restoredPaid = Math.max(0, roundMoney(Number(inv.paid_amount || 0) - applyAmt));
       const restoredBal = Math.max(0, roundMoney(Number(inv.total_amount) - restoredPaid - Number(inv.amount_credited || 0) - Number(inv.amount_written_off || 0)));
       await client.query(
-        `UPDATE invoices SET paid_amount = $1, balance_due = $2, status = $3 WHERE organization_id = $4 AND id = $5`,
+        `UPDATE invoices SET paid_amount = $1, balance_due = $2, status = $3, edit_version = edit_version + 1 WHERE organization_id = $4 AND id = $5`,
         [restoredPaid, restoredBal, restoredBal === Number(inv.total_amount) ? 'Unpaid' : (restoredBal === 0 ? 'Paid' : 'Partially Paid'), orgId, inv.id]
       );
     };
@@ -3346,7 +3577,7 @@ export class SalesEngine {
       const newBal = Math.max(0, Math.round((Number(inv.total_amount) - Number(inv.paid_amount || 0) - newCredited - Number(inv.amount_written_off || 0)) * 100) / 100);
 
       await client.query(
-        `UPDATE invoices SET amount_credited = $1, balance_due = $2, status = $3 WHERE organization_id = $4 AND id = $5`,
+        `UPDATE invoices SET amount_credited = $1, balance_due = $2, status = $3, edit_version = edit_version + 1 WHERE organization_id = $4 AND id = $5`,
         [newCredited, newBal, newBal === 0 ? 'Paid' : 'Partially Paid', orgId, invoiceId]
       );
 
@@ -3667,7 +3898,7 @@ export class SalesEngine {
       const newBal = Math.max(0, Math.round((Number(inv.total_amount) - Number(inv.paid_amount || 0) - Number(inv.amount_credited || 0) - newWrittenOff) * 100) / 100);
 
       await client.query(
-        `UPDATE invoices SET amount_written_off = $1, balance_due = $2, status = $3 WHERE organization_id = $4 AND id = $5`,
+        `UPDATE invoices SET amount_written_off = $1, balance_due = $2, status = $3, edit_version = edit_version + 1 WHERE organization_id = $4 AND id = $5`,
         [newWrittenOff, newBal, newBal === 0 ? 'WRITTEN_OFF' : inv.status, orgId, payload.invoiceId]
       );
 

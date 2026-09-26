@@ -10,7 +10,7 @@ signed record because they cannot be truthfully simulated by a unit test.
 | --- | --- | --- |
 | Type and build | `npm run lint && npm run build` | CI logs and artifact digest |
 | Regression suite | `npm test` | Test-file and test-count result |
-| Real PostgreSQL | `DATABASE_URL=<disposable-db> npm run test:postgres` | PostgreSQL version, migration output, RLS, deferred-balance trigger, and posting results |
+| Real PostgreSQL | `DATABASE_URL=<disposable-db> npm run test:postgres` | PostgreSQL 16, migrations, RLS, deferred balance enforcement, balanced posting, canonical invoice create/revision, stale edit-version rejection, audited void, linked reversal journal, and audit reason |
 | Browser workflows | `DATABASE_URL=<disposable-db> npm run test:e2e` | Playwright report, screenshots/traces on failure |
 
 `test:postgres` refuses to run without `DATABASE_URL` and refuses pg-mem. It

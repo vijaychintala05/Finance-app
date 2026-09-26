@@ -53,15 +53,24 @@ describe('Zoho Books Invoice Toolbar & Payment Actions', () => {
   let mockAddPaymentReceived: any;
   let mockUpdateInvoice: any;
   let mockDeleteInvoice: any;
+  let mockInvoiceRows: any[];
+  let mockVoidGuards: any[];
+  let mockVerifyInvoiceVoidStatus: any;
+  let mockBooksContext: any;
 
   beforeEach(() => {
     vi.restoreAllMocks();
     mockAddPaymentReceived = vi.fn().mockResolvedValue({ id: 'pay-1', paymentNumber: 'PAY-001' });
     mockUpdateInvoice = vi.fn().mockImplementation((id, updated) => Promise.resolve({ ...mockInvoice, ...updated }));
     mockDeleteInvoice = vi.fn().mockResolvedValue(undefined);
-
-    vi.spyOn(BooksContextModule, 'useBooks').mockReturnValue({
-      invoices: [mockInvoice] as any,
+    mockInvoiceRows = [mockInvoice];
+    mockVoidGuards = [];
+    mockVerifyInvoiceVoidStatus = vi.fn().mockResolvedValue({ status: 'void', requestId: 'req-verify-void' });
+    mockBooksContext = {
+      get invoices() { return mockInvoiceRows; },
+      get invoiceVoidGuards() { return mockVoidGuards; },
+      currentOrg: { id: 'org-1' },
+      verifyInvoiceVoidStatus: mockVerifyInvoiceVoidStatus,
       paymentsReceived: [],
       accounts: mockAccounts as any,
       refreshAccounts: vi.fn().mockResolvedValue(undefined),
@@ -75,7 +84,8 @@ describe('Zoho Books Invoice Toolbar & Payment Actions', () => {
       addPaymentReceived: mockAddPaymentReceived,
       updateInvoice: mockUpdateInvoice,
       deleteInvoice: mockDeleteInvoice,
-    } as any);
+    };
+    vi.spyOn(BooksContextModule, 'useBooks').mockImplementation(() => mockBooksContext);
   });
 
   afterEach(() => {
@@ -129,6 +139,44 @@ describe('Zoho Books Invoice Toolbar & Payment Actions', () => {
     });
   });
 
+  it('offers verification after reload restores a pending void guard without offering a retry first', async () => {
+    mockVoidGuards = [{
+      invoiceId: mockInvoice.id, organizationId: 'org-1', userId: 'user-1', status: 'pending', committed: false,
+      idempotencyKey: 'invoice-void-saved-key-123', reason: 'Duplicate customer invoice',
+      notice: { tone: 'warning', title: 'Invoice void in progress', message: 'Verify the saved request.' },
+    }];
+    render(<InvoicePreviewModal invoice={mockInvoice as any} onClose={() => {}} />);
+
+    expect(await screen.findByRole('button', { name: 'Verify status' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Retry exact void request' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Verify status' }));
+    await waitFor(() => expect(mockVerifyInvoiceVoidStatus).toHaveBeenCalledWith(mockInvoice.id));
+  });
+
+  it('closes an already-open payment dialog when an invoice void guard appears', async () => {
+    const { rerender } = render(<InvoicePreviewModal invoice={mockInvoice as any} onClose={() => {}} />);
+    fireEvent.click(screen.getByTitle('Record Customer Payment'));
+    await waitFor(() => expect(screen.getAllByText('Record Customer Payment').length).toBeGreaterThanOrEqual(1));
+
+    mockVoidGuards = [{ invoiceId: mockInvoice.id, organizationId: 'org-1', status: 'needs-verification', committed: false, notice: { tone: 'warning', title: 'Invoice void unresolved', message: 'Verify before continuing.' } }];
+    rerender(<InvoicePreviewModal invoice={mockInvoice as any} onClose={() => {}} />);
+    await waitFor(() => expect(screen.queryByText('Settle outstanding customer receivables into the general ledger.')).toBeNull());
+    expect(mockAddPaymentReceived).not.toHaveBeenCalled();
+  });
+
+  it('closes an already-open write-off dialog when an invoice void guard appears', async () => {
+    const recordWriteOff = vi.spyOn(invoiceApi, 'recordWriteOff').mockResolvedValue({ success: true });
+    const { rerender } = render(<InvoicePreviewModal invoice={mockInvoice as any} onClose={() => {}} />);
+    fireEvent.click(screen.getByTitle('More actions'));
+    fireEvent.click(screen.getByText('Write Off'));
+    expect(screen.getByText('Write Off Invoice Balance')).toBeDefined();
+
+    mockVoidGuards = [{ invoiceId: mockInvoice.id, organizationId: 'org-1', status: 'conflict', committed: true, reversalJournalId: 'journal-reversal', notice: { tone: 'error', title: 'Invoice void needs review', message: 'Verify before continuing.' } }];
+    rerender(<InvoicePreviewModal invoice={mockInvoice as any} onClose={() => {}} />);
+    await waitFor(() => expect(screen.queryByText('Write Off Invoice Balance')).toBeNull());
+    expect(recordWriteOff).not.toHaveBeenCalled();
+  });
+
   it('3. Reminders -> Expected Payment Date prompts and persists date to invoice', async () => {
     render(<InvoicePreviewModal invoice={mockInvoice as any} onClose={() => {}} />);
 
@@ -154,9 +202,22 @@ describe('Zoho Books Invoice Toolbar & Payment Actions', () => {
         'inv-test-101',
         expect.objectContaining({
           expectedPaymentDate: '2026-10-25',
-        })
+        }),
+        ''
       );
     });
+  });
+
+  it('refreshes delivery history after a reminder queued while History is already open', async () => {
+    const history = vi.spyOn(invoiceApi, 'getInvoiceEmailDeliveries').mockResolvedValue({ deliveries: [] });
+    const reminder = vi.spyOn(invoiceApi, 'sendInvoiceReminder').mockResolvedValue({ state: 'QUEUED', outboxId: 'outbox-1', invoiceNumber: 'INV-0099', recipientEmail: 'finance@acme.com', message: 'queued' });
+    render(<InvoicePreviewModal invoice={mockInvoice as any} onClose={() => {}} />);
+    fireEvent.click(screen.getByRole('tab', { name: /History & Audit Trail/i }));
+    await waitFor(() => expect(history).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole('button', { name: /Reminders/i }));
+    fireEvent.click(screen.getByText('Send Payment Reminder'));
+    await waitFor(() => expect(reminder).toHaveBeenCalled());
+    await waitFor(() => expect(history).toHaveBeenCalledTimes(2));
   });
 
   it('4. PDF/Print -> Delivery Slip toggles Delivery Challan mode (prices hidden, items retained)', async () => {
@@ -213,6 +274,40 @@ describe('Zoho Books Invoice Toolbar & Payment Actions', () => {
     });
   });
 
+  it('pauses invoice actions and verifies an uncertain void before reopening them', async () => {
+    const guard = {
+      invoiceId: mockInvoice.id, organizationId: 'org-1', status: 'needs-verification', committed: true,
+      requestId: 'req-void-stale', reversalJournalId: 'journal-reversal',
+      notice: { tone: 'warning', title: 'Invoice voided; refreshed state unavailable', message: 'Verify the authoritative invoice state.', requestId: 'req-void-stale' },
+    };
+    mockVoidGuards = [guard];
+    mockVerifyInvoiceVoidStatus.mockImplementationOnce(async () => {
+      mockInvoiceRows = [{ ...mockInvoice, status: 'Void', balanceDue: 0, reversalJournalId: 'journal-reversal' }];
+      mockVoidGuards = [];
+      return { status: 'void', requestId: 'req-verify-void' };
+    });
+    render(<InvoicePreviewModal invoice={mockInvoice as any} onClose={() => {}} onEdit={() => {}} />);
+
+    expect(await screen.findByRole('button', { name: 'Verify status' })).toBeTruthy();
+    expect(screen.queryByTitle('More actions')).toBeNull();
+    expect(screen.queryByTitle('Edit this invoice')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Verify status' }));
+
+    await waitFor(() => expect(mockVerifyInvoiceVoidStatus).toHaveBeenCalledWith(mockInvoice.id));
+    expect(await screen.findByText('Invoice void verified')).toBeTruthy();
+    expect(screen.getByText(/journal-reversal/)).toBeTruthy();
+    expect(screen.getAllByText('Void').length).toBeGreaterThanOrEqual(2);
+    fireEvent.click(screen.getByTitle('More actions'));
+    expect(screen.queryByText('Void Invoice')).toBeNull();
+  });
+
+  it('does not offer void again after authoritative invoice state is already Void', () => {
+    mockInvoiceRows = [{ ...mockInvoice, status: 'Void', balanceDue: 0 }];
+    render(<InvoicePreviewModal invoice={mockInvoice as any} onClose={() => {}} />);
+    fireEvent.click(screen.getByTitle('More actions'));
+    expect(screen.queryByText('Void Invoice')).toBeNull();
+  });
+
   it('6. voids through one reason-required in-app confirmation without browser dialogs', async () => {
     const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => undefined);
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
@@ -226,11 +321,12 @@ describe('Zoho Books Invoice Toolbar & Payment Actions', () => {
     expect(screen.getByText(/does not delete history/i)).toBeTruthy();
     expect(mockDeleteInvoice).not.toHaveBeenCalled();
 
+    mockDeleteInvoice.mockResolvedValue({ verificationStatus: 'void', reversalJournalId: 'journal-reversal', requestId: 'req-void' });
     fireEvent.change(screen.getByLabelText('Reason for voiding'), { target: { value: 'Duplicate customer invoice' } });
     fireEvent.click(screen.getByRole('button', { name: 'Void with reversal' }));
 
-    await waitFor(() => expect(mockDeleteInvoice).toHaveBeenCalledWith('inv-test-101', 'Duplicate customer invoice'));
-    expect(await screen.findByText(/original remains in history/i)).toBeTruthy();
+    await waitFor(() => expect(mockDeleteInvoice).toHaveBeenCalledWith('inv-test-101', 'Duplicate customer invoice', undefined));
+    expect(await screen.findByText(/matching audit evidence/i)).toBeTruthy();
     expect(alertSpy).not.toHaveBeenCalled();
     expect(confirmSpy).not.toHaveBeenCalled();
     expect(promptSpy).not.toHaveBeenCalled();

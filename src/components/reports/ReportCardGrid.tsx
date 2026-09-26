@@ -1,10 +1,11 @@
 import React from 'react';
 import { ChevronRight, Search, Star } from 'lucide-react';
-import { ReportCategory } from './reportTypes';
-import { ReportItem } from './reportTypes';
+import { ReportCategory, ReportItem, SidebarGroup } from './reportTypes';
 
 interface ReportCardGridProps {
-  activeGroup: string;
+  activeGroup: SidebarGroup;
+  categoriesList: ReportCategory[];
+  onSelectGroup: (group: SidebarGroup) => void;
   searchQuery: string;
   setSearchQuery: (val: string) => void;
   filteredReports: ReportItem[];
@@ -15,6 +16,8 @@ interface ReportCardGridProps {
 
 export const ReportCardGrid: React.FC<ReportCardGridProps> = ({
   activeGroup,
+  categoriesList,
+  onSelectGroup,
   searchQuery,
   setSearchQuery,
   filteredReports,
@@ -51,16 +54,30 @@ export const ReportCardGrid: React.FC<ReportCardGridProps> = ({
           </p>
         </div>
 
-        {/* Search Box */}
-        <div className="relative w-full sm:w-72">
-          <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400 pointer-events-none" />
-          <input
-            type="text"
-            placeholder="Search report name or keyword..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 pl-9 pr-4 py-2 rounded-xl text-xs font-medium focus:outline-hidden focus:ring-2 focus:ring-blue-500"
-          />
+        <div className="w-full min-w-0 space-y-2 sm:w-72">
+          <label className="w-full text-xs font-semibold text-slate-600 dark:text-slate-300 lg:hidden">
+            <span className="sr-only">Report section</span>
+            <select
+              aria-label="Report section"
+              value={activeGroup}
+              onChange={(event) => onSelectGroup(event.target.value as SidebarGroup)}
+              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-blue-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+            >
+              <option value="home">All Reports</option>
+              <option value="favorites">Favorites</option>
+              {categoriesList.map((category) => <option key={category} value={category}>{category}</option>)}
+            </select>
+          </label>
+          <div className="relative w-full">
+            <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400 pointer-events-none" />
+            <input
+              type="text"
+              placeholder="Search report name or keyword..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 pl-9 pr-4 py-2 rounded-xl text-xs font-medium focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
         </div>
       </div>
 
@@ -76,10 +93,25 @@ export const ReportCardGrid: React.FC<ReportCardGridProps> = ({
               <span className="font-mono text-[10px] text-slate-400">{reports.length}</span>
             </div>
             <div className="divide-y divide-slate-100 dark:divide-slate-800">
-              {reports.map((report) => <div key={report.id} role="button" tabIndex={0} onClick={() => onSelectReport(report.id)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') onSelectReport(report.id); }} className="group flex w-full cursor-pointer items-start gap-2 py-3 text-left">
-                <button type="button" title={report.isFavorite ? 'Remove from favorites' : 'Add to favorites'} onClick={(event) => onToggleFavorite(report.id, event)} className="mt-0.5 cursor-pointer text-slate-300 hover:text-amber-500"><Star className={`h-3.5 w-3.5 ${report.isFavorite ? 'fill-amber-500 text-amber-500' : ''}`} /></button>
-                <span className="min-w-0 flex-1"><span className="block text-xs font-bold text-slate-900 group-hover:text-blue-600 dark:text-white dark:group-hover:text-blue-400">{report.name}</span><span className="mt-0.5 line-clamp-2 block text-[10px] leading-relaxed text-slate-500 dark:text-slate-400">{report.description}</span></span>
-                <ChevronRight className="mt-1 h-3.5 w-3.5 shrink-0 text-slate-300 transition-transform group-hover:translate-x-0.5 group-hover:text-blue-600" />
+              {reports.map((report) => <div key={report.id} className="group flex w-full items-start gap-2 py-3 text-left">
+                <button
+                  type="button"
+                  aria-label={report.isFavorite ? `Remove ${report.name} from favorites` : `Add ${report.name} to favorites`}
+                  aria-pressed={Boolean(report.isFavorite)}
+                  onClick={(event) => onToggleFavorite(report.id, event)}
+                  className="mt-0.5 shrink-0 cursor-pointer rounded-sm text-slate-300 hover:text-amber-500 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-amber-500"
+                >
+                  <Star aria-hidden="true" className={`h-3.5 w-3.5 ${report.isFavorite ? 'fill-amber-500 text-amber-500' : ''}`} />
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Open ${report.name} report`}
+                  onClick={() => onSelectReport(report.id)}
+                  className="flex min-w-0 flex-1 cursor-pointer items-start gap-2 text-left focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-500"
+                >
+                  <span className="min-w-0 flex-1"><span className="block text-xs font-bold text-slate-900 group-hover:text-blue-600 dark:text-white dark:group-hover:text-blue-400">{report.name}</span><span className="mt-0.5 line-clamp-2 block text-[10px] leading-relaxed text-slate-500 dark:text-slate-400">{report.description}</span></span>
+                  <ChevronRight aria-hidden="true" className="mt-1 h-3.5 w-3.5 shrink-0 text-slate-300 transition-transform group-hover:translate-x-0.5 group-hover:text-blue-600" />
+                </button>
               </div>)}
             </div>
           </section>)

@@ -57,6 +57,7 @@ export const QuotationBuilder: React.FC<QuotationBuilderProps> = ({
   const [saving, setSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [editReason, setEditReason] = useState<string>('');
+  const [isDiscardDialogOpen, setIsDiscardDialogOpen] = useState(false);
 
   const initialData: Partial<QuotationBuilderData> | undefined = useMemo(() => initialQuotation
     ? ({
@@ -93,9 +94,10 @@ export const QuotationBuilder: React.FC<QuotationBuilderProps> = ({
   if (!isOpen) return null;
 
   const handleClose = () => {
+    if (saving) return;
     if (builder.isDirty) {
-      const confirmDiscard = window.confirm('You have unsaved changes in this quotation. Discard changes?');
-      if (!confirmDiscard) return;
+      setIsDiscardDialogOpen(true);
+      return;
     }
     onClose();
   };
@@ -271,6 +273,7 @@ export const QuotationBuilder: React.FC<QuotationBuilderProps> = ({
             projectId={builder.projectId}
             setProjectId={builder.setProjectId}
             projects={combinedProjects}
+            allowArchivedProject={Boolean(initialQuotation?.id)}
             onOpenQuickProject={handleOpenQuickProject}
             issueDate={builder.issueDate}
             setIssueDate={builder.setIssueDate}
@@ -388,6 +391,18 @@ export const QuotationBuilder: React.FC<QuotationBuilderProps> = ({
           />
         )}
 
+        {isDiscardDialogOpen && (
+          <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/60 p-4">
+            <div role="alertdialog" aria-modal="true" aria-labelledby="discard-quotation-title" aria-describedby="discard-quotation-description" className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-700 dark:bg-slate-900">
+              <h4 id="discard-quotation-title" className="text-sm font-bold text-slate-900 dark:text-white">Discard unsaved quotation changes?</h4>
+              <p id="discard-quotation-description" className="mt-2 text-xs text-slate-600 dark:text-slate-300">Your changes have not been saved. Discarding closes the builder and loses this draft.</p>
+              <div className="mt-5 flex justify-end gap-2">
+                <button type="button" onClick={() => setIsDiscardDialogOpen(false)} autoFocus className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 dark:border-slate-600 dark:text-slate-200">Keep editing</button>
+                <button type="button" onClick={onClose} className="rounded-lg bg-rose-600 px-3 py-2 text-xs font-semibold text-white">Discard quotation</button>
+              </div>
+            </div>
+          </div>
+        )}
         {/* Quick Add Project Modal */}
         {isQuickProjectOpen && (
           <QuickAddProjectModal

@@ -10,6 +10,7 @@ export type NavigationTab =
   | 'bank_reconciliation'
   | 'projects'
   | 'clients'
+  | 'items'
   | 'salespersons'
   | 'invoices'
   | 'estimates'
@@ -199,6 +200,7 @@ export interface Salesperson {
   region?: string;
   notes?: string;
   createdAt: string;
+  updatedAt?: string;
 }
 
 export interface Client {
@@ -310,6 +312,7 @@ export interface Project {
   endDate?: string;
   manager: string;
   createdAt: string;
+  archivedAt?: string | null;
 }
 
 export interface TimeEntry {
@@ -340,7 +343,7 @@ export interface InvoiceItem {
   timeEntryId?: string; // Optional linked billable time
 }
 
-export type InvoiceStatus = 'Draft' | 'Sent' | 'Partially Paid' | 'Paid' | 'Overdue' | 'Void';
+export type InvoiceStatus = 'Draft' | 'Submitted' | 'Sent' | 'Partially Paid' | 'Paid' | 'Overdue' | 'Void';
 
 export interface InvoiceEditHistory {
   id: string;
@@ -359,7 +362,7 @@ export interface Invoice {
   clientId: string;
   clientName: string;
   clientEmail: string;
-  salespersonId?: string;
+  salespersonId?: string | null;
   salespersonName?: string;
   projectId?: string;
   projectName?: string;
@@ -380,6 +383,8 @@ export interface Invoice {
   createdAt: string;
   editHistory?: InvoiceEditHistory[];
   journalEntryId?: string;
+  reversalJournalId?: string;
+  editVersion?: string;
   remindersCount?: number;
   expectedPaymentDate?: string;
   remindersPaused?: boolean;
@@ -949,7 +954,7 @@ export interface DeliveryChallan {
   dispatchDate: string;
   deliveryAddress: string;
   itemsSummary: string;
-  status: 'Delivered' | 'In Transit' | 'Draft';
+  status: 'Draft' | 'Issued' | 'In Transit' | 'Delivered';
 }
 
 export interface CreditNote {
@@ -977,7 +982,11 @@ export interface PaymentReceipt {
   amount: number;
   depositToAccountId?: string;
   notes?: string;
-  status?: 'ALLOCATED' | 'PARTIALLY_ALLOCATED' | 'REVERSED';
+  status?: 'ALLOCATED' | 'PARTIALLY_ALLOCATED' | 'UNALLOCATED' | 'REVERSED';
+  reversalJournalId?: string;
+  unallocatedAmount?: number;
+  unallocatedAmountBeforeReversal?: number | null;
+  allocations?: Array<{ invoiceId: string; invoiceNumber: string; amount: number }>;
 }
 
 export interface RecurringInvoiceProfile {
@@ -1223,6 +1232,7 @@ export type SearchCategory =
   | 'Vendor'
   | 'Vendor Bill'
   | 'Purchase Order'
+  | 'Expense'
   | 'Payment Received'
   | 'Payment Made'
   | 'Bank Transaction'

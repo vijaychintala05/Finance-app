@@ -34,6 +34,11 @@ describe('SaaS reliability hardening', () => {
     );
   });
 
+  it('rejects changing transaction isolation inside a nested transaction', async () => {
+    await expect(db.transaction(async () => db.transaction(async () => undefined, { isolationLevel: 'REPEATABLE READ' })))
+      .rejects.toThrow(/cannot be changed inside a nested transaction/i);
+  });
+
   it('creates every schema used by advertised planning and close read APIs', async () => {
     for (const table of [
       'accounting_period_closes',

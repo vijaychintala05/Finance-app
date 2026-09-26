@@ -1,4 +1,6 @@
 import { Request, Response } from 'express';
+import { db } from '../database/db';
+import { DocumentPdfService } from '../services/DocumentPdfService';
 import { AuthenticatedRequest } from '../middleware/organizationIsolation.middleware';
 import { ItemMasterService } from '../services/ItemMasterService';
 import { QuotationEngine } from '../sales/QuotationEngine';
@@ -15,6 +17,27 @@ export class Phase8Controller {
       const orgId = req.auth!.organizationId;
       const { id, revisionNumber } = req.params;
 
+      if (revisionNumber === undefined) {
+        const rendered = await DocumentPdfService.generatePdf(
+          db,
+          orgId,
+          'quotes',
+          id,
+          typeof req.query.templateId === 'string' ? req.query.templateId : undefined,
+        );
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Length', String(rendered.pdf.length));
+        const quotationResult = await db.query(
+          'SELECT estimate_number FROM estimates WHERE organization_id = $1 AND id = $2',
+          [orgId, id],
+        );
+        const rawNumber = String(quotationResult.rows[0]?.estimate_number || id);
+        const safeNumber = rawNumber.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/-+/g, '-').replace(/^[-_]+|[-_]+$/g, '');
+        const filename = `Quotation-${safeNumber || id}.pdf`;
+        res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+        res.send(rendered.pdf);
+        return;
+      }
       const revNum = revisionNumber !== undefined ? parseInt(revisionNumber, 10) : undefined;
       const renderModel = await QuotationRenderModelService.buildRenderModel(orgId, id, revNum);
       const pdfBuffer = await QuotationPdfService.generatePdf(renderModel);

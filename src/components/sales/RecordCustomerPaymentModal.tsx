@@ -19,20 +19,19 @@ export const RecordCustomerPaymentModal: React.FC<RecordCustomerPaymentModalProp
   clientId,
   onPaymentSuccess,
 }) => {
-  const { invoices, accounts, refreshAccounts, settings, addPaymentReceived } = useBooks();
+  const { invoices, accounts, refreshAccounts, settings, addPaymentReceived, currentOrg, invoiceVoidGuards = [] } = useBooks();
+  const guardedInvoiceIds = useMemo(() => new Set(invoiceVoidGuards.filter((guard) => guard.organizationId === currentOrg?.id).map((guard) => guard.invoiceId)), [invoiceVoidGuards, currentOrg?.id]);
 
   const clientInvoices = useMemo(() => {
     const list = invoices.filter(
       (inv) =>
         inv.balanceDue > 0 &&
-        !['Draft', 'Void'].includes(inv.status) &&
+        !['DRAFT', 'VOID', 'VOIDED'].includes(String(inv.status).toUpperCase()) &&
+        !guardedInvoiceIds.has(inv.id) &&
         (clientId ? inv.clientId === clientId : true)
     );
-    if (targetInvoice && !list.some((inv) => inv.id === targetInvoice.id)) {
-      return [targetInvoice, ...list];
-    }
     return list;
-  }, [invoices, clientId, targetInvoice]);
+  }, [invoices, clientId, guardedInvoiceIds]);
 
   const depositAccounts = useMemo(() => {
     return accounts.filter(
@@ -66,9 +65,15 @@ export const RecordCustomerPaymentModal: React.FC<RecordCustomerPaymentModalProp
   useEffect(() => {
     if (!isOpen) return;
 
-    if (targetInvoice) {
-      setSelectedInvoiceId(targetInvoice.id);
-      setAmount(targetInvoice.balanceDue.toFixed(2));
+    const currentTarget = targetInvoice ? clientInvoices.find((invoice) => invoice.id === targetInvoice.id) : undefined;
+    if (targetInvoice && !currentTarget) {
+      setError('This invoice is no longer eligible for payment. Refresh the invoice before continuing.');
+      onClose();
+      return;
+    }
+    if (currentTarget) {
+      setSelectedInvoiceId(currentTarget.id);
+      setAmount(currentTarget.balanceDue.toFixed(2));
     } else if (clientInvoices.length > 0) {
       setSelectedInvoiceId(clientInvoices[0].id);
       setAmount(clientInvoices[0].balanceDue.toFixed(2));
@@ -88,9 +93,15 @@ export const RecordCustomerPaymentModal: React.FC<RecordCustomerPaymentModalProp
     setIsSubmitting(false);
   }, [isOpen, targetInvoice, clientInvoices, depositAccounts]);
 
-  const activeInvoice = useMemo(() => {
-    return clientInvoices.find((inv) => inv.id === selectedInvoiceId) || targetInvoice;
-  }, [clientInvoices, selectedInvoiceId, targetInvoice]);
+  const activeInvoice = useMemo(() => clientInvoices.find((inv) => inv.id === selectedInvoiceId), [clientInvoices, selectedInvoiceId]);
+  const selectedInvoiceIsGuarded = Boolean(selectedInvoiceId && guardedInvoiceIds.has(selectedInvoiceId));
+
+  useEffect(() => {
+    if (isOpen && selectedInvoiceIsGuarded) {
+      setError('This invoice is paused while its audited void and reversal journal are verified.');
+      onClose();
+    }
+  }, [isOpen, selectedInvoiceIsGuarded, onClose]);
 
   const handleInvoiceChange = (invId: string) => {
     setSelectedInvoiceId(invId);
@@ -121,6 +132,11 @@ export const RecordCustomerPaymentModal: React.FC<RecordCustomerPaymentModalProp
       return;
     }
 
+    if (guardedInvoiceIds.has(activeInvoice.id)) {
+      setError('This invoice is paused while its audited void and reversal journal are verified.');
+      onClose();
+      return;
+    }
     setError('');
     setIsSubmitting(true);
     try {

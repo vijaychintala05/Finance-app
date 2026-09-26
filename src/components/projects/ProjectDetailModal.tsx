@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
+  Archive,
   ArrowLeft,
   BarChart3,
   Briefcase,
@@ -17,6 +18,7 @@ import {
   Mail,
   MapPin,
   Phone,
+  Pencil,
   Plus,
   Receipt,
   TrendingUp,
@@ -35,23 +37,33 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { Invoice, Project } from '../../types';
+import { Invoice, Project, TimeEntry } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate, getStatusBadgeStyle } from '../../utils/formatters';
 import { InvoicePreviewModal } from '../invoices/InvoicePreviewModal';
 import { InvoiceEditorModal } from '../invoices/InvoiceEditorModal';
 import { ExpenseModal } from '../expenses/ExpenseModal';
+import { OperationNoticeBanner } from '../common/OperationNoticeBanner';
+import { committedButStaleNotice, mutationExceptionNotice, type OperationNotice } from '../../utils/operationNotice';
 
 interface ProjectDetailModalProps {
   project: Project | null;
   onClose: () => void;
   onOpenLogTime: (projectId: string) => void;
+  onEdit?: () => void;
+  onArchive?: () => void;
+  isNewWorkBlocked?: boolean;
+  archiveNotice?: OperationNotice | null;
 }
 
 export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
   project,
   onClose,
   onOpenLogTime,
+  onEdit,
+  onArchive,
+  isNewWorkBlocked = false,
+  archiveNotice = null,
 }) => {
   const {
     settings,
@@ -63,6 +75,11 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
     projects,
     convertUnbilledTimeToInvoice,
     deleteTimeEntry,
+    timeOperationGuards,
+    beginTimeOperation,
+    completeTimeOperation,
+    holdTimeOperationGuard,
+    refreshTimeOperationStatus,
   } = useBooks();
 
   const [activeTab, setActiveTab] = useState<'overview' | 'time' | 'expenses' | 'invoices' | 'client' | 'pnl'>(
@@ -73,10 +90,39 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
   const [timeStatusFilter, setTimeStatusFilter] = useState('ALL');
 
   const [previewInvoice, setPreviewInvoice] = useState<Invoice | null>(null);
+  const [timeInvoiceNotice, setTimeInvoiceNotice] = useState<OperationNotice | null>(null);
+  const [timeInvoicePending, setTimeInvoicePending] = useState(false);
+  const [timeDeleteNotice, setTimeDeleteNotice] = useState<OperationNotice | null>(null);
+  const [timeDeleteTarget, setTimeDeleteTarget] = useState<TimeEntry | null>(null);
+  const [timeDeletePending, setTimeDeletePending] = useState(false);
+  const [verifyingTimeStatus, setVerifyingTimeStatus] = useState(false);
+  const [verificationNotice, setVerificationNotice] = useState<OperationNotice | null>(null);
   const [isCreateInvoiceOpen, setIsCreateInvoiceOpen] = useState(false);
   const [isRecordExpenseOpen, setIsRecordExpenseOpen] = useState(false);
 
+
   if (!project) return null;
+
+  const projectInvoiceGuard = timeOperationGuards.find((guard) => guard.key === `invoice:${project.id}`);
+  const projectDeleteGuards = timeOperationGuards.filter((guard) => guard.projectId === project.id && guard.key.startsWith('delete:'));
+  const handleVerifyTimeStatus = async () => {
+    if (verifyingTimeStatus) return;
+    setVerifyingTimeStatus(true);
+    const verified = await refreshTimeOperationStatus();
+    setVerifyingTimeStatus(false);
+    if (verified) {
+      setVerificationNotice(null);
+    } else {
+      setVerificationNotice({
+        tone: 'warning',
+        title: 'Time operation status is still unavailable',
+        message: 'The server did not return an authoritative time-log list. The guarded action remains disabled.',
+        recovery: 'Ask an administrator to restore time-log read access, then verify the status again.',
+      });
+    }
+  };
+
+  const projectArchived = Boolean(project.archivedAt) || isNewWorkBlocked;
 
   const summary = getProjectSummary(project.id);
   const prjTimesAll = timeEntries.filter((t) => t.projectId === project.id);
@@ -109,12 +155,69 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
   );
 
   const handleGenerateInvoice = async () => {
-    const newInv = await convertUnbilledTimeToInvoice(project.id, project.clientId);
-    if (newInv) {
-      setPreviewInvoice(newInv);
+    if (timeInvoicePending || (projectInvoiceGuard && projectInvoiceGuard.status !== 'resolved')) return;
+    setTimeInvoicePending(true);
+    setTimeInvoiceNotice(null);
+    const actionId = `invoice:${project.id}`;
+    beginTimeOperation(actionId, project.id);
+    try {
+      const result = await convertUnbilledTimeToInvoice(project.id, project.clientId);
+      setPreviewInvoice(result.data);
       setActiveTab('invoices');
-    } else {
-      alert('No unbilled billable hours found for this project.');
+      if (result.refreshFailed) {
+        holdTimeOperationGuard(actionId, project.id, committedButStaleNotice(`Invoice ${result.data.invoiceNumber} posted; project not refreshed`, 'The server posted the invoice, but the latest project data could not be verified.', result.requestId));
+      } else {
+        completeTimeOperation(actionId);
+        setTimeInvoiceNotice({ tone: 'success', title: `Invoice ${result.data.invoiceNumber} created`, message: 'The invoice was posted from the project’s unbilled time.', requestId: result.requestId });
+      }
+    } catch (error) {
+      const failure = mutationExceptionNotice(error, {
+        action: 'Unbilled time invoicing',
+        failureTitle: 'Invoice was not created',
+        uncertainTitle: 'Invoice outcome could not be confirmed',
+        uncertainRecovery: 'Reload the project’s time logs and invoice list before retrying; the invoice may already have posted.',
+      });
+      if (failure.tone === 'warning') holdTimeOperationGuard(actionId, project.id, failure);
+      else {
+        completeTimeOperation(actionId);
+        setTimeInvoiceNotice(failure);
+      }
+    } finally {
+      setTimeInvoicePending(false);
+    }
+  };
+
+  const handleDeleteTimeEntry = async () => {
+    if (!timeDeleteTarget || timeDeletePending) return;
+    const entry = timeDeleteTarget;
+    const actionId = `delete:${entry.id}`;
+    setTimeDeletePending(true);
+    setTimeDeleteNotice(null);
+    beginTimeOperation(actionId, entry.projectId);
+    try {
+      const result = await deleteTimeEntry(entry.id);
+      if (result.refreshFailed) {
+        holdTimeOperationGuard(actionId, entry.projectId, committedButStaleNotice('Time entry deleted; project not refreshed', 'The server confirmed deletion, but the latest time log could not be verified.', result.requestId));
+      } else {
+        completeTimeOperation(actionId);
+        setTimeDeleteNotice({ tone: 'success', title: 'Time entry deleted', message: `“${entry.taskName}” was removed from this project.`, requestId: result.requestId });
+      }
+      setTimeDeleteTarget(null);
+    } catch (error) {
+      const failure = mutationExceptionNotice(error, {
+        action: 'Time entry deletion',
+        failureTitle: 'Time entry was not deleted',
+        uncertainTitle: 'Time entry deletion could not be confirmed',
+        uncertainRecovery: 'Use Verify status below before taking any further action; the entry may already have been deleted.',
+      });
+      if (failure.tone === 'warning') holdTimeOperationGuard(actionId, entry.projectId, failure);
+      else {
+        completeTimeOperation(actionId);
+        setTimeDeleteNotice(failure);
+      }
+      setTimeDeleteTarget(null);
+    } finally {
+      setTimeDeletePending(false);
     }
   };
 
@@ -151,7 +254,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
       date: t.date,
       title: `Logged ${t.hours} hrs by ${t.staffName}`,
       subtitle: t.taskName,
-      amount: t.hours * t.hourlyRate,
+      valueLabel: `${t.hours} hours · ${t.isBillable ? 'Billable' : 'Non-billable'}${t.isBillable ? (t.isBilled ? ' · Invoiced' : ' · Unbilled') : ''}`,
       isBillable: t.isBillable,
     })),
     ...prjExpenses.map((e) => ({
@@ -160,7 +263,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
       date: e.date,
       title: `Expense: ${e.accountName}`,
       subtitle: e.vendorName || e.referenceNumber,
-      amount: e.amount,
+      valueLabel: formatCurrency(e.amount, settings.currencySymbol),
       isBillable: false,
     })),
     ...prjInvoices.map((i) => ({
@@ -169,7 +272,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
       date: i.issueDate,
       title: `Invoice ${i.invoiceNumber}`,
       subtitle: `Status: ${i.status}`,
-      amount: i.totalAmount,
+      valueLabel: formatCurrency(i.totalAmount, settings.currencySymbol),
       isBillable: true,
     })),
   ]
@@ -201,6 +304,11 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
             >
               {project.status}
             </span>
+            {project.archivedAt && (
+              <span className="text-xs px-2.5 py-0.5 rounded-full border border-slate-300 bg-slate-100 text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 font-bold">
+                Archived
+              </span>
+            )}
             <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">
               Client: <strong className="text-slate-700 dark:text-slate-300">{project.clientName}</strong>
             </span>
@@ -213,10 +321,21 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2 shrink-0 self-start sm:self-center">
+          {onEdit && (
+            <button type="button" onClick={onEdit} disabled={Boolean(project.archivedAt)} className="border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 px-3 py-2.5 rounded-xl text-xs font-bold flex items-center space-x-1.5 disabled:opacity-50" title="Edit project details">
+              <Pencil className="w-4 h-4" /><span>Edit</span>
+            </button>
+          )}
+          {onArchive && !project.archivedAt && (
+            <button type="button" onClick={onArchive} disabled={isNewWorkBlocked} className="border border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300 px-3 py-2.5 rounded-xl text-xs font-bold flex items-center space-x-1.5 disabled:opacity-50" title="Archive project">
+              <Archive className="w-4 h-4" /><span>Archive</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setIsCreateInvoiceOpen(true)}
-            className="bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white px-3.5 py-2.5 rounded-xl text-xs font-bold flex items-center space-x-1.5 cursor-pointer shadow-xs transition-all"
+            disabled={projectArchived}
+            className="bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white px-3.5 py-2.5 rounded-xl text-xs font-bold flex items-center space-x-1.5 cursor-pointer shadow-xs transition-all disabled:cursor-not-allowed disabled:opacity-50"
             title="Create a new prefilled invoice for this project"
           >
             <Plus className="w-4 h-4" />
@@ -226,7 +345,8 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
           <button
             type="button"
             onClick={() => setIsRecordExpenseOpen(true)}
-            className="bg-rose-600 hover:bg-rose-500 active:bg-rose-700 text-white px-3.5 py-2.5 rounded-xl text-xs font-bold flex items-center space-x-1.5 cursor-pointer shadow-xs transition-all"
+            disabled={projectArchived}
+            className="bg-rose-600 hover:bg-rose-500 active:bg-rose-700 text-white px-3.5 py-2.5 rounded-xl text-xs font-bold flex items-center space-x-1.5 cursor-pointer shadow-xs transition-all disabled:cursor-not-allowed disabled:opacity-50"
             title="Record an expense prefilled for this project"
           >
             <Receipt className="w-4 h-4" />
@@ -236,7 +356,8 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
           <button
             type="button"
             onClick={() => onOpenLogTime(project.id)}
-            className="bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white px-3.5 py-2.5 rounded-xl text-xs font-bold flex items-center space-x-1.5 cursor-pointer shadow-xs transition-all"
+            disabled={projectArchived}
+            className="bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white px-3.5 py-2.5 rounded-xl text-xs font-bold flex items-center space-x-1.5 cursor-pointer shadow-xs transition-all disabled:cursor-not-allowed disabled:opacity-50"
             title="Log staff hours for this project"
           >
             <Clock className="w-4 h-4" />
@@ -244,6 +365,23 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
           </button>
         </div>
       </div>
+
+      {archiveNotice && <OperationNoticeBanner notice={archiveNotice} />}
+      {timeInvoiceNotice && <OperationNoticeBanner notice={timeInvoiceNotice} />}
+      {projectInvoiceGuard && (
+        <div>
+          <OperationNoticeBanner notice={projectInvoiceGuard.notice} />
+          {projectInvoiceGuard.status === 'uncertain' && <button type="button" onClick={handleVerifyTimeStatus} disabled={verifyingTimeStatus} className="mt-2 rounded-lg border border-amber-300 px-3 py-1.5 text-xs font-semibold text-amber-800 disabled:opacity-50">{verifyingTimeStatus ? 'Checking status…' : 'Verify status'}</button>}
+        </div>
+      )}
+      {timeDeleteNotice && <OperationNoticeBanner notice={timeDeleteNotice} />}
+      {projectDeleteGuards.length > 0 && (
+        <div>
+          <OperationNoticeBanner notice={projectDeleteGuards[0].notice} />
+          <button type="button" onClick={handleVerifyTimeStatus} disabled={verifyingTimeStatus} className="mt-2 rounded-lg border border-amber-300 px-3 py-1.5 text-xs font-semibold text-amber-800 disabled:opacity-50">{verifyingTimeStatus ? 'Checking status…' : 'Verify status'}</button>
+        </div>
+      )}
+      {verificationNotice && <OperationNoticeBanner notice={verificationNotice} />}
 
       {/* Main Tab Dashboard Container */}
       <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs overflow-hidden">
@@ -395,6 +533,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
                   </div>
                   <button
                     onClick={handleGenerateInvoice}
+                    disabled={timeInvoicePending || Boolean(projectInvoiceGuard && projectInvoiceGuard.status !== 'resolved')}
                     className="bg-amber-600 hover:bg-amber-500 active:bg-amber-700 text-white font-semibold py-2 px-4 rounded-xl text-xs transition-colors shrink-0 cursor-pointer shadow-xs whitespace-nowrap"
                   >
                     Convert to Invoice Now &rarr;
@@ -567,7 +706,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
               </div>
 
               {/* Recent Activity Trail */}
-              <div className="p-4 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-3">
+              <div role="region" aria-label="Recent project activity" className="p-4 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-3">
                 <div className="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-2">
                   <h4 className="font-bold text-slate-800 dark:text-slate-200 text-xs flex items-center space-x-1.5">
                     <Activity className="w-4 h-4 text-emerald-500" />
@@ -593,7 +732,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
                         </div>
                         <div className="text-right shrink-0">
                           <span className="font-bold font-mono text-slate-900 dark:text-slate-100 block">
-                            {formatCurrency(act.amount, settings.currencySymbol)}
+                            {act.valueLabel}
                           </span>
                           <span className="text-[10px] text-slate-400">{formatDate(act.date)}</span>
                         </div>
@@ -619,7 +758,8 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
                 <button
                   type="button"
                   onClick={() => onOpenLogTime(project.id)}
-                  className="bg-blue-600 hover:bg-blue-500 text-white px-3.5 py-2 rounded-xl font-bold flex items-center space-x-1.5 cursor-pointer shadow-xs shrink-0 transition-all"
+                  disabled={projectArchived}
+                  className="bg-blue-600 hover:bg-blue-500 text-white px-3.5 py-2 rounded-xl font-bold flex items-center space-x-1.5 cursor-pointer shadow-xs shrink-0 transition-all disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Plus className="w-4 h-4" />
                   <span>Log Time Entry</span>
@@ -723,8 +863,10 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
                           </td>
                           <td className="p-2.5 text-center">
                             <button
-                              onClick={() => deleteTimeEntry(t.id)}
-                              className="text-rose-500 hover:underline cursor-pointer"
+                              onClick={() => setTimeDeleteTarget(t)}
+                              aria-label={`Delete time entry ${t.taskName}`}
+                              disabled={projectArchived || timeDeletePending || timeOperationGuards.some((guard) => guard.key === `delete:${t.id}`)}
+                              className="text-rose-500 hover:underline cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               Delete
                             </button>
@@ -752,7 +894,8 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
                 <button
                   type="button"
                   onClick={() => setIsRecordExpenseOpen(true)}
-                  className="bg-rose-600 hover:bg-rose-500 text-white px-3.5 py-2 rounded-xl font-bold flex items-center space-x-1.5 cursor-pointer shadow-xs shrink-0 transition-all"
+                  disabled={projectArchived}
+                  className="bg-rose-600 hover:bg-rose-500 text-white px-3.5 py-2 rounded-xl font-bold flex items-center space-x-1.5 cursor-pointer shadow-xs shrink-0 transition-all disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Plus className="w-4 h-4" />
                   <span>Record Expense</span>
@@ -766,7 +909,8 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
                   <button
                     type="button"
                     onClick={() => setIsRecordExpenseOpen(true)}
-                    className="text-rose-600 dark:text-rose-400 font-bold hover:underline"
+                    disabled={projectArchived}
+                    className="text-rose-600 dark:text-rose-400 font-bold hover:underline disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     + Record first project expense
                   </button>
@@ -827,7 +971,8 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
                   <button
                     type="button"
                     onClick={() => setIsCreateInvoiceOpen(true)}
-                    className="bg-emerald-600 hover:bg-emerald-500 text-white px-3.5 py-2 rounded-xl font-bold flex items-center space-x-1.5 cursor-pointer shadow-xs transition-all"
+                    disabled={projectArchived}
+                    className="bg-emerald-600 hover:bg-emerald-500 text-white px-3.5 py-2 rounded-xl font-bold flex items-center space-x-1.5 cursor-pointer shadow-xs transition-all disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <Plus className="w-4 h-4" />
                     <span>Create Custom Invoice</span>
@@ -835,6 +980,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
                   <button
                     type="button"
                     onClick={handleGenerateInvoice}
+                    disabled={timeInvoicePending || Boolean(projectInvoiceGuard && projectInvoiceGuard.status !== 'resolved')}
                     className="bg-blue-600 hover:bg-blue-500 text-white px-3.5 py-2 rounded-xl font-bold flex items-center space-x-1.5 cursor-pointer shadow-xs transition-all"
                   >
                     <Receipt className="w-4 h-4" />
@@ -851,7 +997,8 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
                     <button
                       type="button"
                       onClick={() => setIsCreateInvoiceOpen(true)}
-                      className="text-emerald-600 dark:text-emerald-400 font-bold hover:underline"
+                      disabled={projectArchived}
+                      className="text-emerald-600 dark:text-emerald-400 font-bold hover:underline disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       + Create custom invoice
                     </button>
@@ -859,6 +1006,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
                       <button
                         type="button"
                         onClick={handleGenerateInvoice}
+                        disabled={timeInvoicePending || Boolean(projectInvoiceGuard && projectInvoiceGuard.status !== 'resolved')}
                         className="text-blue-600 dark:text-blue-400 font-bold hover:underline"
                       >
                         + Convert unbilled time ({formatCurrency(summary.unbilledHoursAmount, settings.currencySymbol)})
@@ -1200,6 +1348,19 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
           setPreviewInvoice(newInv);
         }}
       />
+
+      {timeDeleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
+          <section role="alertdialog" aria-modal="true" aria-labelledby="project-time-delete-title" aria-describedby="project-time-delete-description" className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-700 dark:bg-slate-900">
+            <h3 id="project-time-delete-title" className="text-lg font-bold text-slate-900 dark:text-slate-100">Delete time entry?</h3>
+            <p id="project-time-delete-description" className="mt-2 text-sm text-slate-600 dark:text-slate-300">Delete “{timeDeleteTarget.taskName}” ({timeDeleteTarget.hours} hours) from this project? Billed time cannot be deleted.</p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={() => setTimeDeleteTarget(null)} disabled={timeDeletePending} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 disabled:opacity-50 dark:border-slate-600 dark:text-slate-200">Cancel</button>
+              <button type="button" onClick={handleDeleteTimeEntry} disabled={timeDeletePending} className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{timeDeletePending ? 'Deleting…' : 'Delete time entry'}</button>
+            </div>
+          </section>
+        </div>
+      )}
 
       <ExpenseModal
         isOpen={isRecordExpenseOpen}

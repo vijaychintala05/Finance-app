@@ -57,7 +57,8 @@ export class ExpensePostingService {
   private static async validateAndPrepareExpenseData(
     organizationId: string,
     input: ExpensePostingInput,
-    client: DbQueryClient
+    client: DbQueryClient,
+    retainedArchivedProjectId?: string | null
   ) {
     const isItemized = Boolean(input.isItemized && Array.isArray(input.items) && input.items.length > 0);
     let amount = Number(input.amount);
@@ -305,10 +306,11 @@ export class ExpensePostingService {
     let effectiveClientId = input.clientId || input.customerId || null;
     if (input.projectId) {
       const project = await client.query(
-        `SELECT client_id FROM projects WHERE organization_id = $1 AND id = $2 AND status <> 'Cancelled'`,
+        `SELECT client_id, archived_at FROM projects WHERE organization_id = $1 AND id = $2 AND status <> 'Cancelled' FOR UPDATE`,
         [organizationId, input.projectId]
       );
       if (project.rows.length !== 1) throw new Error('EXPENSE_PROJECT_INVALID: Project is unavailable in this organization');
+      if (project.rows[0].archived_at && input.projectId !== retainedArchivedProjectId) throw new Error('EXPENSE_PROJECT_ARCHIVED: Archived projects cannot be assigned to a new expense');
       if (effectiveClientId && project.rows[0].client_id && effectiveClientId !== project.rows[0].client_id) {
         throw new Error('EXPENSE_PROJECT_CUSTOMER_MISMATCH: Customer does not match the selected project');
       }
@@ -712,7 +714,7 @@ export class ExpensePostingService {
         receiptImages: data.receiptImages,
       };
 
-      const prepared = await this.validateAndPrepareExpenseData(organizationId, mergedInput, client);
+      const prepared = await this.validateAndPrepareExpenseData(organizationId, mergedInput, client, original.project_id || null);
 
       const hasFinancialChanges =
         Number(original.amount) !== prepared.amount ||

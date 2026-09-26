@@ -63,6 +63,10 @@ export const FINANCE_NAVIGATION_SECTIONS = Object.freeze([
     ],
   },
   {
+    id: 'items_section', label: 'Items & Services', icon: 'sales', defaultTab: 'items',
+    subItems: [{ id: 'items', label: 'Items & Services' }],
+  },
+  {
     id: 'sales_section', label: 'Sales', icon: 'sales', defaultTab: 'invoices',
     subItems: [
       { id: 'clients', label: 'Customers' },
@@ -121,10 +125,11 @@ export const FINANCE_NAVIGATION_SECTIONS = Object.freeze([
 ] as const satisfies readonly FinanceNavigationSection[]);
 
 export function resolveFinanceNavigation(
-  capabilities: readonly FinanceCapabilityAvailability[]
+  capabilities: readonly FinanceCapabilityAvailability[],
+  itemsVisible = false
 ): readonly ResolvedFinanceNavigationSection[] {
   const byKey = new Map(capabilities.map((capability) => [capability.key, capability]));
-  return FINANCE_NAVIGATION_SECTIONS.map((section) => ({
+  return FINANCE_NAVIGATION_SECTIONS.filter((section) => itemsVisible || section.id !== 'items_section').map((section) => ({
     ...section,
     subItems: section.subItems.map((item) => {
       const requiredCapability = getRequiredFinanceCapability(item.id);

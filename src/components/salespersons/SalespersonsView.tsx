@@ -18,16 +18,16 @@ import {
 } from 'lucide-react';
 import { useBooks } from '../../context/BooksContext';
 import { Salesperson } from '../../types';
-import { formatCurrency } from '../../utils/formatters';
 
 export const SalespersonsView: React.FC = () => {
-  const { salespersons, addSalesperson, updateSalesperson, deleteSalesperson, invoices, settings } =
+  const { salespersons, addSalesperson, updateSalesperson, deleteSalesperson, restoreSalesperson } =
     useBooks();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'All' | 'Active' | 'Inactive'>('All');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingPerson, setEditingPerson] = useState<Salesperson | null>(null);
+  const [deactivatingPerson, setDeactivatingPerson] = useState<Pick<Salesperson, 'id' | 'name'> | null>(null);
 
   // Form State
   const [formData, setFormData] = useState({
@@ -40,18 +40,6 @@ export const SalespersonsView: React.FC = () => {
     status: 'Active' as 'Active' | 'Inactive',
     notes: '',
   });
-
-  // Calculate salesperson stats from actual invoices
-  const getSalespersonStats = (salespersonName: string) => {
-    const matchedInvoices = invoices.filter(
-      (inv) =>
-        inv.salespersonName?.toLowerCase() === salespersonName.toLowerCase() ||
-        inv.notes?.toLowerCase().includes(salespersonName.toLowerCase())
-    );
-    const totalSales = matchedInvoices.reduce((sum, inv) => sum + inv.totalAmount, 0);
-    const invoiceCount = matchedInvoices.length;
-    return { totalSales, invoiceCount };
-  };
 
   const filteredSalespersons = salespersons.filter((sp) => {
     const matchesSearch =
@@ -68,23 +56,11 @@ export const SalespersonsView: React.FC = () => {
   // Summary Card Statistics
   const activeCount = salespersons.filter((s) => s.status === 'Active').length;
 
-  const overallStats = salespersons.reduce(
-    (acc, sp) => {
-      const stats = getSalespersonStats(sp.name);
-      const commission = (stats.totalSales * sp.commissionRate) / 100;
-      return {
-        totalRevenue: acc.totalRevenue + stats.totalSales,
-        totalCommission: acc.totalCommission + commission,
-      };
-    },
-    { totalRevenue: 0, totalCommission: 0 }
-  );
-
   const handleOpenCreateModal = () => {
     setEditingPerson(null);
     setFormData({
       name: '',
-      code: `SP-${String(salespersons.length + 1).padStart(3, '0')}`,
+      code: '',
       email: '',
       phone: '',
       commissionRate: 5,
@@ -110,25 +86,32 @@ export const SalespersonsView: React.FC = () => {
     setIsModalOpen(true);
   };
 
-  const handleSubmitForm = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!formData.name.trim()) return;
-
-    if (editingPerson) {
-      updateSalesperson(editingPerson.id, formData);
-      return;
-    } else {
-      if (!addSalesperson(formData)) return;
-    }
-
-    setIsModalOpen(false);
+  const handleSubmitForm = async (e: React.FormEvent) => {
+    e.preventDefault(); if (!formData.name.trim()) return;
+    setActionError(''); setIsSaving(true);
+    try {
+      const { status: _status, ...editable } = formData;
+      if (editingPerson) await updateSalesperson(editingPerson.id, editable); else await addSalesperson(editable);
+      setIsModalOpen(false);
+    } catch (error) { setActionError(error instanceof Error ? error.message : 'Salesperson could not be saved.'); }
+    finally { setIsSaving(false); }
   };
 
-  const handleDelete = (id: string, name: string) => {
-    if (confirm(`Are you sure you want to delete salesperson "${name}"?`)) {
-      deleteSalesperson(id);
-    }
+  const handleDelete = (id: string, name: string) => { setActionError(''); setDeactivatingPerson({ id, name }); };
+
+  const confirmDelete = async () => {
+    if (!deactivatingPerson) return;
+    setActionError(''); setIsSaving(true);
+    try { await deleteSalesperson(deactivatingPerson.id); setDeactivatingPerson(null); }
+    catch (error) { setActionError(error instanceof Error ? error.message : 'Salesperson could not be deactivated.'); }
+    finally { setIsSaving(false); }
   };
+  const handleRestore = async (id: string) => {
+    setActionError(''); try { await restoreSalesperson(id); } catch (error) { setActionError(error instanceof Error ? error.message : 'Salesperson could not be restored.'); }
+  };
+
+  const [actionError, setActionError] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
 
   return (
     <div className="min-h-screen bg-slate-50/70 dark:bg-slate-950 p-4 sm:p-6 space-y-6 max-w-[1600px] mx-auto">
@@ -144,7 +127,7 @@ export const SalespersonsView: React.FC = () => {
                 Sales Persons & Sales Representatives
               </h1>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                Manage sales reps, set commission rates, track revenue contribution & payout calculations
+                Manage salesperson records and assignment metadata
               </p>
             </div>
           </div>
@@ -182,37 +165,37 @@ export const SalespersonsView: React.FC = () => {
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 rounded-2xl shadow-xs">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-              Rep Revenue Generated
+              Attribution
             </span>
             <div className="p-2 bg-emerald-50 dark:bg-emerald-950 text-emerald-600 rounded-lg">
               <TrendingUp className="w-4 h-4" />
             </div>
           </div>
           <div className="text-2xl font-black text-slate-900 dark:text-slate-100 mt-2">
-            {formatCurrency(overallStats.totalRevenue, settings.currencySymbol)}
+            Invoice-linked
           </div>
-          <p className="text-[11px] font-medium text-slate-500 mt-1">Total across tagged sales invoices</p>
+          <p className="text-[11px] font-medium text-slate-500 mt-1">Revenue is available in invoice-based reports.</p>
         </div>
 
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 rounded-2xl shadow-xs">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-              Calculated Commission
+              Commission Policy
             </span>
             <div className="p-2 bg-purple-50 dark:bg-purple-950 text-purple-600 rounded-lg">
               <DollarSign className="w-4 h-4" />
             </div>
           </div>
           <div className="text-2xl font-black text-purple-600 dark:text-purple-400 mt-2">
-            {formatCurrency(overallStats.totalCommission, settings.currencySymbol)}
+            Metadata only
           </div>
-          <p className="text-[11px] font-medium text-slate-500 mt-1">Weighted commission earned</p>
+          <p className="text-[11px] font-medium text-slate-500 mt-1">No payout is calculated.</p>
         </div>
 
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 rounded-2xl shadow-xs">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-              Avg Commission Rate
+              Configured Rate
             </span>
             <div className="p-2 bg-amber-50 dark:bg-amber-950 text-amber-600 rounded-lg">
               <Percent className="w-4 h-4" />
@@ -226,7 +209,7 @@ export const SalespersonsView: React.FC = () => {
               : 0}
             %
           </div>
-          <p className="text-[11px] font-medium text-slate-500 mt-1">Standard contract commission</p>
+          <p className="text-[11px] font-medium text-slate-500 mt-1">Informational only; no payable is recorded.</p>
         </div>
       </div>
 
@@ -257,6 +240,8 @@ export const SalespersonsView: React.FC = () => {
         </div>
       </div>
 
+      {actionError && <div role='alert' className='rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800'>{actionError}</div>}
+
       {/* SALESPERSONS TABLE */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xs overflow-hidden">
         <div className="overflow-x-auto">
@@ -276,15 +261,12 @@ export const SalespersonsView: React.FC = () => {
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {filteredSalespersons.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="p-8 text-center text-slate-400 italic">
+                  <td colSpan={6} className="p-8 text-center text-slate-400 italic">
                     No salespersons found. Click "+ Add New Sales Person" to create one.
                   </td>
                 </tr>
               ) : (
                 filteredSalespersons.map((sp) => {
-                  const stats = getSalespersonStats(sp.name);
-                  const commission = (stats.totalSales * sp.commissionRate) / 100;
-
                   return (
                     <tr
                       key={sp.id}
@@ -332,16 +314,6 @@ export const SalespersonsView: React.FC = () => {
                         </span>
                       </td>
 
-                      <td className="p-4 text-right font-mono font-bold text-slate-900 dark:text-slate-100">
-                        {formatCurrency(stats.totalSales, settings.currencySymbol)}
-                        <div className="text-[10px] text-slate-400 font-normal">
-                          {stats.invoiceCount} invoices
-                        </div>
-                      </td>
-
-                      <td className="p-4 text-right font-mono font-bold text-emerald-600 dark:text-emerald-400">
-                        {formatCurrency(commission, settings.currencySymbol)}
-                      </td>
 
                       <td className="p-4 text-center">
                         <span
@@ -367,7 +339,7 @@ export const SalespersonsView: React.FC = () => {
                           <button
                             onClick={() => handleDelete(sp.id, sp.name)}
                             className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950 rounded-lg transition-colors cursor-pointer"
-                            title="Delete Sales Person"
+                            title="Deactivate Sales Person" aria-label={`Deactivate ${sp.name}`}
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
@@ -382,6 +354,20 @@ export const SalespersonsView: React.FC = () => {
         </div>
       </div>
 
+      {deactivatingPerson && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
+          <section role="alertdialog" aria-modal="true" aria-labelledby="salesperson-deactivate-title" aria-describedby="salesperson-deactivate-description" className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-700 dark:bg-slate-900">
+            <h2 id="salesperson-deactivate-title" className="text-base font-bold text-slate-900 dark:text-white">Deactivate salesperson?</h2>
+            <p className="mt-2 text-sm font-semibold text-slate-800 dark:text-slate-200">{deactivatingPerson.name}</p>
+            {actionError && <div role="alert" className="mt-4 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-200">{actionError}</div>}
+            <p id="salesperson-deactivate-description" className="mt-2 text-sm text-slate-600 dark:text-slate-300">Existing invoice attribution and history will be retained. Active customer assignments must be reassigned first.</p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" disabled={isSaving} onClick={() => setDeactivatingPerson(null)} className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 disabled:opacity-50 dark:border-slate-700 dark:text-slate-200">Cancel</button>
+              <button type="button" disabled={isSaving} onClick={() => void confirmDelete()} className="rounded-md bg-rose-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{isSaving ? 'Working…' : 'Deactivate salesperson'}</button>
+            </div>
+          </section>
+        </div>
+      )}
       {/* CREATE / EDIT SALESPERSON MODAL */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">

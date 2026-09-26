@@ -256,7 +256,7 @@ export class GoogleOAuthService {
     await db.query(
       `INSERT INTO security_events (id, user_id, event_type, ip_address, user_agent, metadata)
        VALUES ($1, $2, 'GOOGLE_LOGIN_SUCCESS', $3, $4, $5)`,
-      [newId('sec'), userId, metadata?.ipAddress || '127.0.0.1', metadata?.userAgent || 'unknown', JSON.stringify({ providerSubject, providerEmail: cleanEmail })]
+      [newId('sec'), userId, metadata?.ipAddress || null, metadata?.userAgent || 'unknown', JSON.stringify({ providerSubject, providerEmail: cleanEmail })]
     );
 
     return {

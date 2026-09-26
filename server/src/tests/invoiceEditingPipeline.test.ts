@@ -96,6 +96,7 @@ describe('Invoice Editing Pipeline Integration Suite', () => {
       .set('Authorization', `Bearer ${authToken}`)
       .set('X-Organization-ID', testOrgId)
       .send({
+        expectedVersion: '1',
         clientId: testClientId,
         issueDate: '2026-03-01',
         dueDate: '2026-04-15',
@@ -156,6 +157,7 @@ describe('Invoice Editing Pipeline Integration Suite', () => {
       .set('Authorization', `Bearer ${authToken}`)
       .set('X-Organization-ID', testOrgId)
       .send({
+        expectedVersion: '1',
         clientId: testClientId,
         issueDate: '2026-03-01',
         dueDate: '2026-03-31',
@@ -194,6 +196,7 @@ describe('Invoice Editing Pipeline Integration Suite', () => {
       .set('Authorization', `Bearer ${authToken}`)
       .set('X-Organization-ID', testOrgId)
       .send({
+        expectedVersion: '1',
         clientId: testClientId,
         issueDate: '2026-03-01',
         dueDate: '2026-03-31',
@@ -224,6 +227,7 @@ describe('Invoice Editing Pipeline Integration Suite', () => {
       .set('Authorization', `Bearer ${authToken}`)
       .set('X-Organization-ID', testOrgId)
       .send({
+        expectedVersion: '1',
         clientId: testClientId,
         issueDate: '2026-03-15',
         dueDate: '2026-03-10', // Before issue date!
@@ -232,5 +236,82 @@ describe('Invoice Editing Pipeline Integration Suite', () => {
 
     expect(editRes.status).toBe(422);
     expect(editRes.body.error).toContain('due date cannot precede issue date');
+  });
+
+  it('rejects a stale invoice edit without changing financial or audit state', async () => {
+    const createRes = await request(app)
+      .post('/api/v1/finance/invoices')
+      .set('Authorization', `Bearer ${authToken}`)
+      .set('X-Organization-ID', testOrgId)
+      .send({
+        clientId: testClientId,
+        issueDate: '2026-03-01',
+        dueDate: '2026-03-31',
+        items: [{ description: 'Conflict test', quantity: 1, unitPrice: 100, taxRate: 0 }],
+      });
+    expect(createRes.status).toBe(201);
+    const invoiceId = createRes.body.id;
+    expect(createRes.body.editVersion).toBe('1');
+
+    const firstEdit = await request(app)
+      .put(`/api/v1/finance/invoices/${invoiceId}`)
+      .set('Authorization', `Bearer ${authToken}`)
+      .set('X-Organization-ID', testOrgId)
+      .send({
+        expectedVersion: '1',
+        clientId: testClientId,
+        issueDate: '2026-03-01',
+        dueDate: '2026-04-01',
+        items: [{ description: 'Accepted edit', quantity: 2, unitPrice: 100, taxRate: 0 }],
+        editReason: 'Accepted version update',
+      });
+    expect(firstEdit.status).toBe(200);
+    expect(firstEdit.body.editVersion).toBe('2');
+
+    const tableNames = ['invoices', 'invoice_items', 'journal_entries', 'journal_lines', 'accounts', 'customers', 'audit_logs'];
+    const snapshot = async () => {
+      const state: Record<string, unknown> = {};
+      for (const table of tableNames) {
+        state[table] = (await db.query(`SELECT * FROM ${table} WHERE organization_id = $1 ORDER BY id`, [testOrgId])).rows;
+      }
+      return state;
+    };
+    const beforeStaleEdit = await snapshot();
+
+    const staleEdit = await request(app)
+      .put(`/api/v1/finance/invoices/${invoiceId}`)
+      .set('Authorization', `Bearer ${authToken}`)
+      .set('X-Organization-ID', testOrgId)
+      .send({
+        expectedVersion: '1',
+        clientId: testClientId,
+        issueDate: '2026-03-01',
+        dueDate: '2026-04-15',
+        items: [{ description: 'Stale draft', quantity: 9, unitPrice: 100, taxRate: 0 }],
+        editReason: 'Must not be applied',
+      });
+
+    expect(staleEdit.status).toBe(409);
+    expect(staleEdit.body.code).toBe('INVOICE_EDIT_CONFLICT');
+    expect(staleEdit.body.currentState.editVersion).toBe('2');
+    expect(await snapshot()).toEqual(beforeStaleEdit);
+  });
+
+  it('requires a valid invoice edit-version precondition', async () => {
+    const missing = await request(app)
+      .put('/api/v1/finance/invoices/does-not-matter')
+      .set('Authorization', `Bearer ${authToken}`)
+      .set('X-Organization-ID', testOrgId)
+      .send({ notes: 'draft' });
+    expect(missing.status).toBe(428);
+    expect(missing.body.code).toBe('INVOICE_EDIT_PRECONDITION_REQUIRED');
+
+    const malformed = await request(app)
+      .put('/api/v1/finance/invoices/does-not-matter')
+      .set('Authorization', `Bearer ${authToken}`)
+      .set('X-Organization-ID', testOrgId)
+      .send({ expectedVersion: '1.5', notes: 'draft' });
+    expect(malformed.status).toBe(400);
+    expect(malformed.body.code).toBe('INVALID_INVOICE_EDIT_VERSION');
   });
 });

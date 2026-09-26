@@ -1,4 +1,4 @@
-import type { DbQueryClient } from '../database/db';
+import type { DbQueryClient, TransactionIsolationLevel } from '../database/db';
 
 export const RECOVERY_FORMAT = 'firmbooks.point1-recovery' as const;
 export const RECOVERY_FORMAT_VERSION = 1 as const;
@@ -85,7 +85,10 @@ export interface RecoveryRepository {
 }
 
 export interface RecoveryTransactionManager {
-  transaction<T>(callback: (client: DbQueryClient) => Promise<T>): Promise<T>;
+  transaction<T>(
+    callback: (client: DbQueryClient) => Promise<T>,
+    options?: { organizationId?: string; isolationLevel?: TransactionIsolationLevel },
+  ): Promise<T>;
 }
 
 export interface RecoveryStager {

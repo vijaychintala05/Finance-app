@@ -32,6 +32,14 @@ export interface ManualJournalInput {
 }
 
 export class ManualJournalService {
+  private static async lockActiveProjects(tx: DbQueryClient, orgId: string, lines: ManualJournalLineInput[]): Promise<void> {
+    const projectIds = [...new Set(lines.map((line) => line.projectId).filter((id): id is string => Boolean(id)))].sort();
+    for (const projectId of projectIds) {
+      const project = await tx.query('SELECT id, archived_at FROM projects WHERE organization_id = $1 AND id = $2 FOR UPDATE', [orgId, projectId]);
+      if (project.rows.length !== 1) throw new Error('JOURNAL_PROJECT_INVALID: Project does not belong to this organization');
+      if (project.rows[0].archived_at) throw new Error('JOURNAL_PROJECT_ARCHIVED: Archived projects cannot be assigned to a new journal');
+    }
+  }
   private static RESTRICTED_CONTROL_SUBTYPES = [
     'Accounts Receivable',
     'Accounts Payable',
@@ -118,6 +126,7 @@ export class ManualJournalService {
     // If approval is required and no approved draft is supplied, persist as a Submitted draft and register approval request.
     if (requiresApproval && !input.draftId) {
       return db.transaction(async (tx) => {
+        await this.lockActiveProjects(tx, orgId, input.lines);
         const draftId = newId('jrn');
         const entryNumber = await DocumentNumberingEngine.getNextNumber(orgId, 'JOURNAL', input.date, undefined, tx);
 
@@ -173,6 +182,7 @@ export class ManualJournalService {
       }
 
       // If approval is not required, post directly via ServerPostingEngine
+      await this.lockActiveProjects(tx, orgId, input.lines);
       const entryNumber = await DocumentNumberingEngine.getNextNumber(orgId, 'JOURNAL', input.date, undefined, tx);
       const posting = await ServerPostingEngine.postEntry({
         organizationId: orgId,

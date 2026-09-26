@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   CheckCircle,
   CreditCard,
@@ -34,7 +34,21 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
   selectedEntityId,
   onSelectedEntityClosed,
 }) => {
-  const { invoices, settings } = useBooks();
+  const { invoices, settings, currentOrg, invoiceVoidGuards = [], invoiceCreateGuard, verifyInvoiceCreateOperationStatus, dismissInvoiceCreateGuard } = useBooks();  const previousOrganizationId = useRef(currentOrg?.id);
+  useEffect(() => {
+    if (previousOrganizationId.current === currentOrg?.id) return;
+    previousOrganizationId.current = currentOrg?.id;
+    setIsEditorOpen(false);
+    setEditingInvoice(null);
+    setClonedInvoice(null);
+    setPreviewInvoice(null);
+    setOpenOriginalJournalEntryId(undefined);
+    setPayingInvoice(null);
+    setDownloadingPdfId(null);
+    setNotice(null);
+  }, [currentOrg?.id]);
+  const guardedInvoiceIds = useMemo(() => new Set(invoiceVoidGuards.filter((guard) => guard.organizationId === currentOrg?.id).map((guard) => guard.invoiceId)), [invoiceVoidGuards, currentOrg?.id]);
+  const invoiceVoidIsGuarded = (invoiceId: string) => guardedInvoiceIds.has(invoiceId);
 
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
@@ -46,6 +60,16 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
   const [payingInvoice, setPayingInvoice] = useState<Invoice | null>(null);
   const [downloadingPdfId, setDownloadingPdfId] = useState<string | null>(null);
   const [notice, setNotice] = useState<OperationNotice | null>(null);
+  const [checkingInvoiceCreate, setCheckingInvoiceCreate] = useState(false);
+  const [openOriginalJournalEntryId, setOpenOriginalJournalEntryId] = useState<string | undefined>();
+  const receiptInvoice = invoiceCreateGuard?.invoiceId ? invoices.find((invoice) => invoice.id === invoiceCreateGuard.invoiceId) : undefined;
+  useEffect(() => {
+    if (editingInvoice && guardedInvoiceIds.has(editingInvoice.id)) {
+      setIsEditorOpen(false);
+      setEditingInvoice(null);
+    }
+    if (payingInvoice && guardedInvoiceIds.has(payingInvoice.id)) setPayingInvoice(null);
+  }, [editingInvoice?.id, payingInvoice?.id, guardedInvoiceIds]);
 
   const activePreviewInvoice = useMemo(() => {
     if (!previewInvoice) return null;
@@ -129,6 +153,23 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
       </div>
 
       {notice && <OperationNoticeBanner notice={notice} />}
+
+      {invoiceCreateGuard && <div className="space-y-2">
+        <OperationNoticeBanner notice={invoiceCreateGuard.notice} />
+        <div className="flex flex-wrap gap-2">
+          {invoiceCreateGuard.status === 'committed' && invoiceCreateGuard.invoiceStatus === 'POSTED' && invoiceCreateGuard.journalEntryId && <button type="button" disabled={!receiptInvoice} title={!receiptInvoice ? 'Invoice details will be available after the invoice list loads' : undefined} onClick={() => {
+            if (!receiptInvoice) return;
+            setOpenOriginalJournalEntryId(invoiceCreateGuard.journalEntryId);
+            setPreviewInvoice(receiptInvoice);
+          }} className="rounded-lg border border-purple-300 px-3 py-1.5 text-xs font-semibold text-purple-700 disabled:opacity-50">View original posting journal</button>}
+          {invoiceCreateGuard.status !== 'committed' && invoiceCreateGuard.status !== 'rejected' && <button type="button" disabled={checkingInvoiceCreate} onClick={async () => {
+            setCheckingInvoiceCreate(true);
+            try { await verifyInvoiceCreateOperationStatus(); } catch (error: any) { setNotice(mutationExceptionNotice(error, { action: 'Invoice status check', failureTitle: 'Invoice status could not be checked', uncertainTitle: 'Invoice status could not be checked', uncertainRecovery: 'Keep the saved invoice request and retry the status check later.' })); }
+            finally { setCheckingInvoiceCreate(false); }
+          }} className="rounded-lg border border-blue-300 px-3 py-1.5 text-xs font-semibold text-blue-700 disabled:opacity-50">{checkingInvoiceCreate ? 'Checking status…' : 'Check invoice status'}</button>}
+          {(invoiceCreateGuard.status === 'committed' || invoiceCreateGuard.status === 'rejected') && <button type="button" onClick={dismissInvoiceCreateGuard} className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700">Dismiss receipt</button>}
+        </div>
+      </div>}
 
       {/* KPI Summary Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -268,7 +309,7 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
               <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 pt-1 border-t border-slate-100 dark:border-slate-800">
                 <span>Issued: {formatDate(inv.issueDate)}</span>
                 <div className="flex items-center space-x-2">
-                  {inv.balanceDue > 0 && !['Draft', 'Void'].includes(inv.status) && (
+                  {inv.balanceDue > 0 && !['Draft', 'Void'].includes(inv.status) && !invoiceVoidIsGuarded(inv.id) && (
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -401,7 +442,7 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
                     </td>
 
                     <td className="p-3 pr-4 text-right space-x-1">
-                      {inv.balanceDue > 0 && !['Draft', 'Void'].includes(inv.status) && (
+                      {inv.balanceDue > 0 && !['Draft', 'Void'].includes(inv.status) && !invoiceVoidIsGuarded(inv.id) && (
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -413,7 +454,7 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
                           <CreditCard className="w-4 h-4" />
                         </button>
                       )}
-                      {inv.status !== 'Void' && (
+                      {inv.status !== 'Void' && !invoiceVoidIsGuarded(inv.id) && (
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -470,8 +511,10 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
       {activePreviewInvoice && (
         <InvoicePreviewModal
           invoice={activePreviewInvoice}
+          openOriginalJournalEntryId={openOriginalJournalEntryId}
           onClose={() => {
             setPreviewInvoice(null);
+            setOpenOriginalJournalEntryId(undefined);
             if (onSelectedEntityClosed) onSelectedEntityClosed();
           }}
           onEdit={(inv) => {

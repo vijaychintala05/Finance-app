@@ -17,13 +17,14 @@ export interface SavedReportView {
   };
 }
 
-export async function fetchSavedReportViews(): Promise<SavedReportView[]> {
-  const response = await apiClient.get<SavedReportView[]>('/finance/saved-reports');
+export async function fetchSavedReportViews(organizationId: string): Promise<SavedReportView[]> {
+  const response = await apiClient.get<SavedReportView[]>('/finance/saved-reports', organizationId);
   if (response.error || !response.data) throw new Error(response.error || 'Unable to load saved report views');
   return response.data;
 }
 
 export async function saveReportView(input: {
+  organizationId: string;
   name: string;
   reportId: string;
   fromDate: string;
@@ -41,6 +42,6 @@ export async function saveReportView(input: {
     reportType: input.reportId,
     visibility: input.visibility,
     config: { fromDate: input.fromDate, toDate: input.toDate, projectId: input.projectId, visibleColumns: input.visibleColumns, customerId: input.customerId, vendorId: input.vendorId, accountId: input.accountId, status: input.status },
-  });
+  }, input.organizationId);
   if (response.error) throw new Error(response.error);
 }

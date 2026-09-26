@@ -130,6 +130,8 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
 
   // Admin Management State
   const [customersList, setCustomersList] = useState<Array<{ id: string; name: string; email?: string }>>([]);
+  const [customersListLoaded, setCustomersListLoaded] = useState(false);
+  const [manualTokenEntryOpen, setManualTokenEntryOpen] = useState(false);
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>(initialCustomerId || '');
   const [tokenExpiryDays, setTokenExpiryDays] = useState<number>(30);
   const [generatedToken, setGeneratedToken] = useState<string | null>(null);
@@ -214,6 +216,8 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
         setSelectedCustomerId((current) => current || normalizedCustomers[0]?.id || '');
       } catch {
         // May be in external public context where internal auth isn't available
+      } finally {
+        setCustomersListLoaded(true);
       }
     };
     fetchCustomers();
@@ -603,22 +607,38 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
             <Lock className="w-12 h-12 text-slate-400 mx-auto mb-4" />
             <h2 className="text-lg font-bold text-slate-900 dark:text-white">Customer Portal Workspace</h2>
             <p className="text-sm text-slate-500 dark:text-slate-400 mt-2 mb-6">
-              Select a customer above and click <strong>Generate / Switch</strong> to preview this customer’s live portal view, or enter a portal token.
+              {customersList.length > 0
+                ? <>Select a customer above and click <strong>Generate / Switch</strong> to preview their live portal. Use an existing token only when you need to open a specific link manually.</>
+                : 'No customer is available for a guided preview. Open an existing customer portal link with its token below.'}
             </p>
-            <div className="flex flex-col sm:flex-row items-stretch gap-2 max-w-md mx-auto">
+            {customersList.length > 0 && (
+              <button
+                type="button"
+                aria-expanded={manualTokenEntryOpen}
+                aria-controls="manual-portal-token-entry"
+                onClick={() => setManualTokenEntryOpen((open) => !open)}
+                className="mb-4 cursor-pointer text-xs font-semibold text-indigo-700 hover:underline dark:text-indigo-300"
+              >
+                {manualTokenEntryOpen ? 'Hide manual token entry' : 'Enter an existing portal token'}
+              </button>
+            )}
+            <div id="manual-portal-token-entry" hidden={!(customersListLoaded && customersList.length === 0) && !manualTokenEntryOpen} className="mx-auto flex max-w-md flex-col items-stretch gap-2 sm:flex-row">
               <input
-                type="text"
+                type="password"
                 aria-label="Portal token"
-                placeholder="Enter Portal Token (e.g. prt_...)"
+                autoComplete="off"
+                placeholder="Paste an existing portal token"
                 value={activeToken}
                 onChange={(e) => setActiveToken(e.target.value)}
                 className="min-w-0 flex-1 px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100"
               />
               <button
-                onClick={() => fetchPortalContext(activeToken)}
-                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold shadow"
+                type="button"
+                onClick={() => fetchPortalContext(activeToken.trim())}
+                disabled={!activeToken.trim() || isLoading}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold shadow disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Access
+                {isLoading ? 'Opening…' : 'Access'}
               </button>
             </div>
           </div>

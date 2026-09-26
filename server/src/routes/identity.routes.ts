@@ -49,8 +49,8 @@ identityRouter.post('/sessions/:sessionId/revoke', authMiddleware, async (req: A
 identityRouter.post('/sessions/revoke-others', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const userId = req.user!.userId;
-    const currentSessionId = req.sessionId || '';
-    const count = await SessionService.revokeAllOtherSessions(userId, currentSessionId);
+    if (!req.sessionId) { res.status(401).json({ error: 'Current device session is unavailable; sign in again.' }); return; }
+    const count = await SessionService.revokeAllOtherSessions(userId, req.sessionId);
     res.json({ success: true, revokedCount: count });
   } catch (err: any) {
     res.status(500).json({ error: sanitizeError(err) });
@@ -163,7 +163,7 @@ identityRouter.post('/invitations/accept', async (req: AuthenticatedRequest, res
       return;
     }
     const metadata = {
-      ipAddress: req.ip || (req.headers['x-forwarded-for'] as string) || '127.0.0.1',
+      ipAddress: req.ip || (req.headers['x-forwarded-for'] as string) || undefined,
       userAgent: req.headers['user-agent'],
     };
     const result = await IdentityInviteService.acceptInvitation(token, password, fullName, metadata);
@@ -221,7 +221,7 @@ identityRouter.get('/mfa/status', authMiddleware, async (req: AuthenticatedReque
 identityRouter.post('/recovery/request', async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { email } = req.body;
-    const reqIp = req.ip || (req.headers['x-forwarded-for'] as string) || '127.0.0.1';
+    const reqIp = req.ip || (req.headers['x-forwarded-for'] as string) || undefined;
     const result = await PasswordRecoveryService.requestPasswordReset(email, reqIp);
     res.json(result);
   } catch (err: any) {
@@ -269,7 +269,7 @@ identityRouter.get('/google/callback', async (req: AuthenticatedRequest, res: Re
       return;
     }
     const metadata = {
-      ipAddress: req.ip || (req.headers['x-forwarded-for'] as string) || '127.0.0.1',
+      ipAddress: req.ip || (req.headers['x-forwarded-for'] as string) || undefined,
       userAgent: req.headers['user-agent'],
     };
 
@@ -280,7 +280,8 @@ identityRouter.get('/google/callback', async (req: AuthenticatedRequest, res: Re
       return;
     }
 
-    const token = JwtAuth.generateToken({ userId: authResult.userId, email: authResult.email });
+    if (!authResult.sessionId) { res.status(401).json({ error: 'Google sign-in session was not established' }); return; }
+    const token = JwtAuth.generateToken({ userId: authResult.userId, email: authResult.email, sid: authResult.sessionId });
     const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
     res.setHeader('Set-Cookie', `firmbooks_session=${token}; HttpOnly; SameSite=Strict; Path=/api; Max-Age=900${secure}`);
 

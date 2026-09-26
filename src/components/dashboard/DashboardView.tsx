@@ -2,6 +2,7 @@ import { CashBalanceWidget } from './widgets/CashBalanceWidget';
 import { CashFlowWidget } from './widgets/CashFlowWidget';
 import { TopExpensesWidget } from './widgets/TopExpensesWidget';
 import React, { useEffect, useMemo, useState } from 'react';
+import { isUncertainMutationOutcome } from '../../utils/operationNotice';
 import {
   AlertTriangle,
   Clock,
@@ -109,6 +110,19 @@ interface DashboardViewProps {
   onNavigate: (tab: NavigationTab, options?: { autoCreate?: boolean }) => void;
 }
 
+type SharedTimeEntryAttempt = { payload?: Record<string, any>; organizationId?: string; idempotencyKey?: string; status?: 'pending' | 'retryable' | 'verify_only'; source?: 'modal' | 'dashboard'; requestId?: string };
+const readSharedTimeEntryAttempt = (): SharedTimeEntryAttempt | null => {
+  try {
+    const value = sessionStorage.getItem('firmbooks_pending_time_entry_create');
+    return value ? JSON.parse(value) as SharedTimeEntryAttempt : null;
+  } catch { return null; }
+};
+const readSharedCommittedTimeEntryReceipt = (): { id: string; requestId?: string; organizationId: string } | null => {
+  try {
+    const value = sessionStorage.getItem('firmbooks_committed_time_entry_receipt');
+    return value ? JSON.parse(value) : null;
+  } catch { return null; }
+};
 const localIsoDate = () => new Date().toISOString().slice(0, 10);
 
 const viewLabels: Record<DashboardViewKey, string> = {
@@ -118,7 +132,7 @@ const viewLabels: Record<DashboardViewKey, string> = {
 };
 
 export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
-  const { settings, accounts, timeEntries, expenses, projects, addTimeEntry } = useBooks();
+  const { currentOrg, settings, accounts, timeEntries, expenses, projects, addTimeEntry, getTimeEntryCreateOperationStatus } = useBooks();
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [view, setView] = useState<DashboardViewKey>('overview');
   const [asOfDate, setAsOfDate] = useState(localIsoDate);
@@ -144,6 +158,38 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       if (saved) return JSON.parse(saved).projectId || '';
     } catch { }
     return '';
+  });
+  const [timerWorkDate, setTimerWorkDate] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem('firmbooks_dashboard_timer');
+      if (saved) return JSON.parse(saved).workDate || localIsoDate();
+    } catch { }
+    return localIsoDate();
+  });
+  const [timerOrganizationId, setTimerOrganizationId] = useState<string>(() => {
+    try { return JSON.parse(localStorage.getItem('firmbooks_dashboard_timer') || '{}').organizationId || readSharedTimeEntryAttempt()?.organizationId || readSharedCommittedTimeEntryReceipt()?.organizationId || ''; } catch { return readSharedTimeEntryAttempt()?.organizationId || readSharedCommittedTimeEntryReceipt()?.organizationId || ''; }
+  });
+  const [isTimerRetryBlocked, setIsTimerRetryBlocked] = useState<boolean>(() => {
+    try { const saved = JSON.parse(localStorage.getItem('firmbooks_dashboard_timer') || '{}'); return !!(saved.retryBlocked || saved.pendingAttempt || saved.saveUncertain || readSharedTimeEntryAttempt() || readSharedCommittedTimeEntryReceipt()); } catch { return false; }
+  });
+  const [isTimerSaveUncertain, setIsTimerSaveUncertain] = useState<boolean>(() => {
+    try { const saved = JSON.parse(localStorage.getItem('firmbooks_dashboard_timer') || '{}'); return !!(saved.saveUncertain || saved.pendingAttempt || readSharedTimeEntryAttempt() || readSharedCommittedTimeEntryReceipt()); } catch { return false; }
+  });
+  const [timerUncertainRequestId, setTimerUncertainRequestId] = useState<string | undefined>(() => {
+    try { return JSON.parse(localStorage.getItem('firmbooks_dashboard_timer') || '{}').requestId; } catch { return undefined; }
+  });
+  const [timerIdempotencyKey, setTimerIdempotencyKey] = useState<string | undefined>(() => {
+    try { return JSON.parse(localStorage.getItem('firmbooks_dashboard_timer') || '{}').idempotencyKey || readSharedTimeEntryAttempt()?.idempotencyKey; } catch { return readSharedTimeEntryAttempt()?.idempotencyKey; }
+  });
+  const [timerVerifyOnly, setTimerVerifyOnly] = useState<boolean>(() => {
+    try { const saved = JSON.parse(localStorage.getItem('firmbooks_dashboard_timer') || '{}'); return Boolean(saved.retryBlocked && !saved.pendingAttempt); } catch { return false; }
+  });
+  const [timerPendingPayload, setTimerPendingPayload] = useState<Parameters<typeof addTimeEntry>[0] | null>(() => {
+    try { return JSON.parse(localStorage.getItem('firmbooks_dashboard_timer') || '{}').pendingPayload || readSharedTimeEntryAttempt()?.payload as any || null; } catch { return readSharedTimeEntryAttempt()?.payload as any || null; }
+  });
+  const [isTimerAttemptPending, setIsTimerAttemptPending] = useState(false);
+  const [timerCommittedEntryId, setTimerCommittedEntryId] = useState<string | undefined>(() => {
+    try { return JSON.parse(localStorage.getItem('firmbooks_dashboard_timer') || '{}').committedEntryId || readSharedCommittedTimeEntryReceipt()?.id; } catch { return readSharedCommittedTimeEntryReceipt()?.id; }
   });
   const [timerTaskName, setTimerTaskName] = useState<string>(() => {
     try {
@@ -175,7 +221,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     return 0;
   });
   const [isSavingTimer, setIsSavingTimer] = useState(false);
-  const [timerFeedback, setTimerFeedback] = useState<string | null>(null);
+  const [timerFeedback, setTimerFeedback] = useState<{ tone: 'success' | 'warning' | 'error'; message: string } | null>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('firmbooks_dashboard_timer') || '{}');
+      const sharedAttempt = readSharedTimeEntryAttempt();
+      const committedReceipt = readSharedCommittedTimeEntryReceipt();
+      if (committedReceipt) return { tone: 'warning', message: `Time entry ${committedReceipt.id} was committed, but the timer could not confirm the refreshed list. Verify Time Logs before continuing. Request ID: ${committedReceipt.requestId || 'not provided'}` };
+      if (saved.saveUncertain || sharedAttempt) return { tone: 'error', message: `A prior time-entry save is still unverified. Check Time Logs before retrying. Request ID: ${saved.requestId || 'not provided'}` };
+    } catch { }
+    return null;
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -248,18 +303,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
   const liquidAccounts = dashboard?.commandCenter.insights.bankAccounts || [];
 
-  const cashInHandTotal = useMemo(() => {
-    const cashAccounts = (accounts || []).filter(a => (a.type || '').toLowerCase() === 'cash');
-    if (cashAccounts.length > 0) {
-      return cashAccounts.reduce((sum, a) => sum + (Number(a.currentBalance) || 0), 0);
-    }
-    const backendCash = liquidAccounts.filter(a => (a.name || '').toLowerCase().includes('cash'));
-    if (backendCash.length > 0) {
-      return backendCash.reduce((sum, a) => sum + (Number(a.balance) || 0), 0);
-    }
-    return 0;
-  }, [accounts, liquidAccounts]);
-
   useEffect(() => {
     let interval: any = null;
     if (isTimerRunning) {
@@ -275,49 +318,184 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
   // Sync timer state to localStorage
   useEffect(() => {
     try {
-      if (isTimerRunning || timerSeconds > 0) {
+      if (isTimerRunning || timerSeconds > 0 || timerPendingPayload || isTimerSaveUncertain) {
         localStorage.setItem('firmbooks_dashboard_timer', JSON.stringify({
           projectId: selectedTimerProjectId,
           taskName: timerTaskName,
           startTime: isTimerRunning ? Date.now() : null,
           elapsedSeconds: timerSeconds,
           isRunning: isTimerRunning,
+          workDate: timerWorkDate,
+          organizationId: timerOrganizationId || currentOrg?.id || '',
+          saveUncertain: isTimerSaveUncertain,
+          retryBlocked: isTimerRetryBlocked,
+          requestId: timerUncertainRequestId,
+          pendingPayload: timerPendingPayload,
+          pendingAttempt: isTimerAttemptPending,
+          committedEntryId: timerCommittedEntryId,
+          idempotencyKey: timerIdempotencyKey,
+          verifyOnly: timerVerifyOnly,
         }));
       } else {
         localStorage.removeItem('firmbooks_dashboard_timer');
       }
     } catch { }
-  }, [isTimerRunning, timerSeconds, selectedTimerProjectId, timerTaskName]);
+  }, [isTimerRunning, timerSeconds, selectedTimerProjectId, timerTaskName, timerWorkDate, timerOrganizationId, currentOrg?.id || '', isTimerSaveUncertain, isTimerRetryBlocked, timerUncertainRequestId, timerPendingPayload, isTimerAttemptPending, timerCommittedEntryId, timerIdempotencyKey, timerVerifyOnly, getTimeEntryCreateOperationStatus]);
 
-  const handleSaveTimerEntry = async () => {
-    if (timerSeconds <= 0) return;
-    setIsSavingTimer(true);
-    try {
-      const activeProject = (projects || []).find((p) => p.id === selectedTimerProjectId) || projects?.[0];
-      const hours = Math.max(0.01, Number((timerSeconds / 3600).toFixed(2)));
-      await addTimeEntry({
-        projectId: activeProject?.id || 'general',
-        projectName: activeProject?.name || 'General Operations',
-        clientName: activeProject?.clientName || 'Internal Client',
-        staffName: 'Current User',
-        taskName: timerTaskName || 'General Work',
-        date: localIsoDate(),
-        hours,
-        hourlyRate: activeProject?.hourlyRate ? Number(activeProject.hourlyRate) : 0,
-        isBillable: true,
-        isBilled: false,
-        description: `Logged from Dashboard Timer session: ${timerTaskName || 'General Work'}`,
-      });
-      setIsTimerRunning(false);
+  useEffect(() => {
+    const organizationId = timerOrganizationId || currentOrg?.id || '';
+    if (!organizationId || currentOrg?.id !== organizationId) return;
+    let cancelled = false;
+    const resolveGuard = (entryId: string, message: string) => {
       setTimerSeconds(0);
+      setTimerPendingPayload(null);
+      setTimerIdempotencyKey(undefined);
+      setTimerVerifyOnly(false);
+      setTimerCommittedEntryId(undefined);
+      setIsTimerAttemptPending(false);
+      setIsTimerSaveUncertain(false);
+      setIsTimerRetryBlocked(false);
+      setTimerUncertainRequestId(undefined);
+      setTimerIdempotencyKey(undefined);
+      setTimerVerifyOnly(false);
+      setTimerFeedback({ tone: 'success', message });
       try {
         localStorage.removeItem('firmbooks_dashboard_timer');
+        sessionStorage.removeItem('firmbooks_pending_time_entry_create');
+        sessionStorage.removeItem('firmbooks_committed_time_entry_receipt');
       } catch { }
-      setTimerFeedback(`Saved ${hours} hr(s) successfully!`);
-      setTimeout(() => setTimerFeedback(null), 3000);
+      return entryId;
+    };
+    if (timerCommittedEntryId) {
+      void apiClient.get<any[]>('/finance/time-entries', organizationId).then((response) => {
+        if (cancelled || response.error || !Array.isArray(response.data)) return;
+        const entry = response.data.find((row) => row.id === timerCommittedEntryId);
+        if (entry) resolveGuard(timerCommittedEntryId, `Time entry ${timerCommittedEntryId} is confirmed in Time Logs.`);
+      }).catch(() => undefined);
+    } else if (timerPendingPayload && isTimerRetryBlocked) {
+      const attempt = readSharedTimeEntryAttempt();
+      const operationKey = attempt?.idempotencyKey || timerIdempotencyKey;
+      const verifyOnly = attempt?.status === 'verify_only' || timerVerifyOnly;
+      if (operationKey) {
+        void getTimeEntryCreateOperationStatus(operationKey, organizationId).then((response) => {
+          if (!response) return;
+          if (cancelled) return;
+          if (!response.error && response.data?.state === 'COMPLETED' && response.data.responseStatus === 201 && response.data.entryId) {
+            resolveGuard(response.data.entryId, `Time entry ${response.data.entryId} is confirmed by the server operation receipt.`);
+            return;
+          }
+          if (!verifyOnly) setIsTimerRetryBlocked(false);
+        }).catch(() => {
+          if (!cancelled && !verifyOnly) setIsTimerRetryBlocked(false);
+        });
+      }
+    }
+    return () => { cancelled = true; };
+  }, [currentOrg?.id, timerOrganizationId, timerCommittedEntryId, timerPendingPayload, isTimerRetryBlocked, timerIdempotencyKey, timerVerifyOnly]);
+  const handleSaveTimerEntry = async () => {
+    if ((timerSeconds <= 0 && !timerPendingPayload) || isSavingTimer || isTimerRetryBlocked) return;
+    const isReplay = Boolean(isTimerSaveUncertain && timerPendingPayload);
+    const sharedAttempt = readSharedTimeEntryAttempt();
+    if (!isReplay && sharedAttempt) {
+      setIsTimerSaveUncertain(true);
+      setIsTimerRetryBlocked(true);
+      setTimerFeedback({ tone: 'error', message: 'Another time-entry save is unresolved. Verify Time Logs before creating or retrying an entry.' });
+      return;
+    }
+    const activeProject = isReplay ? undefined : (projects || []).find((p) => p.id === selectedTimerProjectId) || projects?.[0];
+    const payload = isReplay ? timerPendingPayload! : {
+      projectId: activeProject?.id || 'general',
+      projectName: activeProject?.name || 'General Operations',
+      clientName: activeProject?.clientName || 'Internal Client',
+      staffName: 'Current User',
+      taskName: timerTaskName || 'General Work',
+      date: timerWorkDate,
+      hours: Math.max(0.01, Number((timerSeconds / 3600).toFixed(2))),
+      hourlyRate: activeProject?.hourlyRate ? Number(activeProject.hourlyRate) : 0,
+      isBillable: true,
+      isBilled: false,
+      description: `Logged from Dashboard Timer session: ${timerTaskName || 'General Work'}`,
+    };
+    const requestOrganizationId = isReplay ? timerOrganizationId : timerOrganizationId || currentOrg?.id || '';
+    const idempotencyKey = isReplay ? (timerIdempotencyKey || sharedAttempt?.idempotencyKey) : apiClient.createIdempotencyKey();
+    if (!idempotencyKey) {
+      setIsSavingTimer(false);
+      setTimerFeedback({ tone: 'error', message: 'A safe request key could not be created. The timer was not submitted.' });
+      return;
+    }
+    setIsSavingTimer(true);
+    setIsTimerRunning(false);
+    setTimerOrganizationId(requestOrganizationId);
+    setTimerPendingPayload(payload);
+    setTimerIdempotencyKey(idempotencyKey);
+    setTimerVerifyOnly(false);
+    setIsTimerAttemptPending(true);
+    try {
+      sessionStorage.setItem('firmbooks_pending_time_entry_create', JSON.stringify({ payload, organizationId: requestOrganizationId, idempotencyKey, status: 'pending', source: 'dashboard' }));
+    } catch {
+      setIsTimerAttemptPending(false);
+      setIsTimerSaveUncertain(false);
+      setIsTimerRetryBlocked(false);
+      setTimerPendingPayload(null);
+      setTimerIdempotencyKey(undefined);
+      setIsSavingTimer(false);
+      setTimerFeedback({ tone: 'error', message: 'The safe save receipt could not be stored, so this time entry was not sent. Your elapsed time is preserved.' });
+      return;
+    }
+    try {
+      localStorage.setItem('firmbooks_dashboard_timer', JSON.stringify({
+        projectId: selectedTimerProjectId, taskName: timerTaskName, startTime: null, elapsedSeconds: timerSeconds,
+        isRunning: false, workDate: timerWorkDate, organizationId: requestOrganizationId,
+        saveUncertain: true, retryBlocked: true, pendingAttempt: true, pendingPayload: payload, idempotencyKey,
+      }));
+    } catch { }
+    try {
+      const result = await addTimeEntry(payload, requestOrganizationId, idempotencyKey);
+      setIsTimerRunning(false);
+      setTimerSeconds(0);
+      setTimerPendingPayload(null);
+      setTimerIdempotencyKey(undefined);
+      setTimerVerifyOnly(false);
+      setIsTimerAttemptPending(false);
+      setIsTimerSaveUncertain(false);
+      setIsTimerRetryBlocked(false);
+      setTimerUncertainRequestId(undefined);
+      setTimerCommittedEntryId(result.refreshFailed ? result.data.id : undefined);
+      setIsTimerSaveUncertain(result.refreshFailed);
+      setIsTimerRetryBlocked(result.refreshFailed);
+      setTimerUncertainRequestId(result.refreshFailed ? result.requestId : undefined);
+      try { localStorage.removeItem('firmbooks_dashboard_timer'); sessionStorage.removeItem('firmbooks_pending_time_entry_create'); } catch { }
+      if (result.refreshFailed) sessionStorage.setItem('firmbooks_committed_time_entry_receipt', JSON.stringify({ id: result.data.id, requestId: result.requestId, organizationId: requestOrganizationId }));
+      else sessionStorage.removeItem('firmbooks_committed_time_entry_receipt');
+      setTimerFeedback(result.refreshFailed
+        ? { tone: 'warning', message: `Time entry ${result.data.id} was saved, but the list could not be refreshed. Do not save it again; reload before continuing. Request ID: ${result.requestId || 'not provided'}` }
+        : { tone: 'success', message: `Saved ${payload.hours} hr(s) successfully.` });
+      if (!result.refreshFailed) setTimeout(() => setTimerFeedback(null), 3000);
       setReloadToken((prev) => prev + 1);
     } catch (err: any) {
-      alert(err.message || 'Failed to save time entry');
+      const response = err?.response;
+      const malformedSuccess = response?.status >= 200 && response?.status < 300;
+      const uncertain = malformedSuccess || Boolean(response && (response.retryable || response.status === 0 || isUncertainMutationOutcome(response)));
+      const retryBlocked = malformedSuccess;
+      const message = retryBlocked
+        ? 'The server returned success without an entry ID. Do not retry this entry; verify Time Logs first.'
+        : uncertain
+          ? 'We could not confirm whether this time entry was saved. The exact request is preserved; Check Time Logs before retrying.'
+          : `${err?.message || 'The time entry could not be saved.'} Your timer is preserved so you can correct the issue and try again.`;
+      const requestId = response?.requestId;
+      setIsTimerAttemptPending(false);
+      setIsTimerSaveUncertain(uncertain);
+      setIsTimerRetryBlocked(retryBlocked);
+      setTimerVerifyOnly(retryBlocked);
+      setTimerIdempotencyKey(uncertain ? idempotencyKey : undefined);
+      setTimerPendingPayload(uncertain ? payload : null);
+      setTimerCommittedEntryId(undefined);
+      setTimerUncertainRequestId(uncertain ? requestId : undefined);
+      try {
+        if (uncertain) sessionStorage.setItem('firmbooks_pending_time_entry_create', JSON.stringify({ payload, organizationId: requestOrganizationId, idempotencyKey, status: retryBlocked ? 'verify_only' : 'retryable', source: 'dashboard', requestId }));
+        else sessionStorage.removeItem('firmbooks_pending_time_entry_create');
+      } catch { }
+      setTimerFeedback({ tone: 'error', message: requestId ? `${message} Request ID: ${requestId}` : message });
     } finally {
       setIsSavingTimer(false);
     }
@@ -326,11 +504,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
   const handleResetTimer = () => {
     setIsTimerRunning(false);
     setTimerSeconds(0);
-    try {
-      localStorage.removeItem('firmbooks_dashboard_timer');
-    } catch { }
+    if (!(isTimerSaveUncertain || isTimerAttemptPending || timerPendingPayload)) {
+      setTimerWorkDate(localIsoDate());
+      setTimerOrganizationId(currentOrg?.id || '');
+      setIsTimerSaveUncertain(false);
+      setIsTimerRetryBlocked(false);
+      setTimerUncertainRequestId(undefined);
+      setTimerPendingPayload(null);
+      setTimerCommittedEntryId(undefined);
+      setTimerFeedback(null);
+      try { localStorage.removeItem('firmbooks_dashboard_timer'); } catch { }
+      return;
+    }
+    setTimerFeedback((feedback) => feedback || {
+      tone: 'error', message: 'A prior time-entry save is still unverified. Check Time Logs before starting or saving another entry.'
+    });
   };
-
   const formattedTimer = useMemo(() => {
     const hrs = Math.floor(timerSeconds / 3600);
     const mins = Math.floor((timerSeconds % 3600) / 60);
@@ -677,8 +866,36 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         <>
           {/* MOBILE VIEW (LIGHT MODE) - MATCHING USER SCREENSHOT */}
           <div className="block lg:hidden space-y-4" data-testid="mobile-dashboard-overview">
+            <section data-testid="mobile-dashboard-attention" aria-labelledby="mobile-dashboard-attention-heading" className="rounded-2xl border border-slate-200 bg-white p-3.5 shadow-xs dark:border-slate-800 dark:bg-slate-900">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <h2 id="mobile-dashboard-attention-heading" className="text-sm font-bold text-slate-900 dark:text-white">Needs attention</h2>
+                {attentionItems.length > 0 && <span className="rounded-full bg-rose-50 px-2 py-0.5 text-[11px] font-bold text-rose-700 dark:bg-rose-950/60 dark:text-rose-300">{attentionItems.length} {attentionItems.length === 1 ? 'action' : 'actions'}</span>}
+              </div>
+              {attentionItems.length === 0 ? (
+                <p className="text-xs text-emerald-700 dark:text-emerald-300">No actions due in available records · checked {formatDate(asOfDate)}</p>
+              ) : (
+                <>
+                  <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {attentionItems.slice(0, 3).map((item) => (
+                      <li key={item.id} className="flex items-center justify-between gap-3 py-2.5">
+                        <div className="min-w-0">
+                          <p className="truncate text-xs font-semibold text-slate-900 dark:text-slate-100">{item.label}</p>
+                          <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+                            {item.count} {item.count === 1 ? 'item' : 'items'}{item.amount !== null && item.amount !== undefined ? ` · ${money(item.amount)} total` : ''}
+                          </p>
+                        </div>
+                        <button type="button" aria-label={`Review ${item.label}`} onClick={() => onNavigate(item.destination)} className="shrink-0 rounded-lg border border-slate-200 px-2.5 py-1.5 text-[11px] font-semibold text-blue-700 hover:bg-blue-50 dark:border-slate-700 dark:text-blue-300 dark:hover:bg-slate-800">
+                          Review
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                  {attentionItems.length > 3 && <button type="button" onClick={() => onNavigate(attentionItems[0].destination)} className="mt-2 text-xs font-semibold text-blue-700 dark:text-blue-300">Open attention queue ({attentionItems.length})</button>}
+                </>
+              )}
+            </section>
             {/* 1. PRIMARY OVERVIEW CARDS */}
-            <div className="grid grid-cols-12 gap-2.5 sm:gap-3">
+            <div data-testid="mobile-dashboard-primary-metrics" className="grid grid-cols-12 gap-2.5 sm:gap-3">
               {/* Left Column: Royal Blue Card (Total Receivables + Total Payables) */}
               <div className="col-span-7 sm:col-span-8 rounded-2xl bg-gradient-to-br from-blue-700 via-blue-600 to-indigo-700 text-white p-3.5 sm:p-4 shadow-sm flex flex-col justify-between">
                 {/* Total Receivables */}
@@ -853,6 +1070,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                     <select
                       value={selectedTimerProjectId}
                       onChange={(e) => setSelectedTimerProjectId(e.target.value)}
+                      disabled={isTimerSaveUncertain}
                       className="w-full appearance-none rounded-xl bg-[#091522]/90 border border-white/15 px-3 py-1.5 text-xs text-white placeholder-slate-400 focus:outline-none focus:border-blue-400 cursor-pointer"
                     >
                       <option value="" className="bg-slate-900 text-white">Select Project (Optional)</option>
@@ -868,14 +1086,25 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                     type="text"
                     value={timerTaskName}
                     onChange={(e) => setTimerTaskName(e.target.value)}
+                    disabled={isTimerSaveUncertain}
                     placeholder="Task name or description"
                     className="w-full rounded-xl bg-[#091522]/90 border border-white/15 px-3 py-1.5 text-xs text-white placeholder-slate-400 focus:outline-none focus:border-blue-400"
                   />
                 </div>
-
                 {timerFeedback && (
-                  <div className="mt-2 text-center text-xs font-semibold text-emerald-400 bg-emerald-950/60 py-1 px-2 rounded-lg border border-emerald-800">
-                    {timerFeedback}
+                  <div
+                    role={timerFeedback.tone === 'error' ? 'alert' : 'status'}
+                    aria-live={timerFeedback.tone === 'error' ? 'assertive' : 'polite'}
+                    className={`mt-2 text-center text-xs font-semibold py-1 px-2 rounded-lg border ${timerFeedback.tone === 'error'
+                      ? 'text-rose-100 bg-rose-950/70 border-rose-800'
+                      : timerFeedback.tone === 'warning'
+                        ? 'text-amber-100 bg-amber-950/70 border-amber-800'
+                        : 'text-emerald-400 bg-emerald-950/60 border-emerald-800'}`}
+                  >
+                    {timerFeedback.message}
+                    {isTimerSaveUncertain && (
+                      <button type="button" onClick={() => onNavigate('time_logs')} className="ml-2 underline">Open Time Logs</button>
+                    )}
                   </div>
                 )}
 
@@ -883,11 +1112,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                   {timerSeconds > 0 ? (
                     <button
                       type="button"
-                      disabled={isSavingTimer}
+                      disabled={isSavingTimer || (isTimerSaveUncertain && isTimerRetryBlocked)}
                       onClick={handleSaveTimerEntry}
                       className="w-full py-2.5 px-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs shadow-xs border border-blue-400/30 transition-all active:scale-95 cursor-pointer text-center disabled:opacity-50"
                     >
-                      {isSavingTimer ? 'Saving...' : 'Save Entry'}
+                      {isSavingTimer ? 'Saving...' : isTimerRetryBlocked ? 'Verify in Time Logs' : isTimerSaveUncertain ? 'Retry Same Save' : 'Save Entry'}
                     </button>
                   ) : (
                     <button
@@ -901,7 +1130,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
                   <button
                     type="button"
-                    onClick={() => setIsTimerRunning((prev) => !prev)}
+                    disabled={isTimerSaveUncertain}
+                    onClick={() => {
+                      if (!isTimerRunning && timerSeconds === 0) {
+                        setTimerWorkDate(localIsoDate());
+                        setTimerOrganizationId(currentOrg?.id || '');
+                      }
+                      setIsTimerRunning((prev) => !prev);
+                    }}
                     className="w-full py-2.5 px-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-bold text-xs shadow-sm flex items-center justify-center gap-1.5 transition-all active:scale-95 cursor-pointer text-center"
                   >
                     {isTimerRunning ? (
@@ -923,6 +1159,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                     <button
                       type="button"
                       onClick={handleResetTimer}
+                      disabled={isTimerSaveUncertain && !isTimerRetryBlocked}
                       className="text-[11px] text-slate-400 hover:text-rose-400 transition-colors cursor-pointer"
                     >
                       Reset Timer
@@ -1016,43 +1253,29 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                 </div>
               </div>
 
-              {/* Bank Balance & Cash In Hand Cards */}
-              <div className="mt-3 grid grid-cols-2 gap-2.5">
-                {/* Bank Balance Card */}
-                <div
+              {/* Authoritative liquid cash and bank balance */}
+              <div className="mt-3 grid grid-cols-1 gap-2.5">
+                {/* Liquid Cash & Bank Card */}
+                <button
+                  type="button"
+                  aria-label="Open banking accounts"
                   onClick={() => onNavigate('banking')}
-                  className="rounded-2xl border border-slate-200/90 bg-white p-3.5 shadow-xs hover:border-blue-400 dark:border-slate-800 dark:bg-slate-900 cursor-pointer transition-all flex flex-col justify-between"
+                  className="rounded-2xl border border-slate-200/90 bg-white p-3.5 text-left shadow-xs hover:border-blue-400 dark:border-slate-800 dark:bg-slate-900 cursor-pointer transition-all flex flex-col justify-between"
                 >
                   <div className="w-8 h-8 rounded-xl bg-blue-50 text-blue-600 dark:bg-blue-950 dark:text-blue-400 flex items-center justify-center">
                     <Landmark className="w-4.5 h-4.5" />
                   </div>
                   <div className="mt-3">
                     <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 block">
-                      Bank Balance
+                      Liquid Cash &amp; Bank
                     </span>
                     <span className="font-financial text-sm sm:text-base font-black text-slate-900 dark:text-white mt-0.5 block truncate">
                       {money(dashboard.overview?.bankBalance ?? 0)}
                     </span>
+                    <span className="mt-1 text-[10px] text-slate-400">Posted ledger balance · As of {dashboard?.asOfDate || asOfDate}</span>
                   </div>
-                </div>
+                </button>
 
-                {/* Cash In Hand Card */}
-                <div
-                  onClick={() => onNavigate('banking')}
-                  className="rounded-2xl border border-slate-200/90 bg-white p-3.5 shadow-xs hover:border-emerald-400 dark:border-slate-800 dark:bg-slate-900 cursor-pointer transition-all flex flex-col justify-between"
-                >
-                  <div className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-600 dark:bg-emerald-950 dark:text-emerald-400 flex items-center justify-center">
-                    <Wallet className="w-4.5 h-4.5" />
-                  </div>
-                  <div className="mt-3">
-                    <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 block">
-                      Cash In Hand
-                    </span>
-                    <span className="font-financial text-sm sm:text-base font-black text-slate-900 dark:text-white mt-0.5 block truncate">
-                      {money(cashInHandTotal)}
-                    </span>
-                  </div>
-                </div>
               </div>
             </div>
           </div>

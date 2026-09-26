@@ -1,6 +1,9 @@
 import { Response } from 'express';
+import { createHash } from 'node:crypto';
+import { RbacService } from '../auth/RbacService';
 import { db, type DbQueryClient } from '../database/db';
 import { AuthenticatedRequest } from '../middleware/organizationIsolation.middleware';
+import { StaticMetadataCache } from '../cache/StaticMetadataCache';
 import { ServerPostingEngine } from '../accounting/postingEngine';
 import { AccountingService } from '../../../src/services/accountingService';
 import { SalesService } from '../../../src/services/salesService';
@@ -38,8 +41,8 @@ import { FinancialCommandService } from '../accounting/FinancialCommandService';
 import { toFinancialCommandError } from '../accounting/FinancialCommandError';
 import { ExpenseReceiptService } from '../services/ExpenseReceiptService';
 import { ExpensePdfService } from '../services/ExpensePdfService';
-import { InvoicePdfService } from '../services/InvoicePdfService';
 import { DocumentPdfService } from '../services/DocumentPdfService';
+import { DocumentPdfArtifactService } from '../services/DocumentPdfArtifactService';
 import { DocumentTemplateService } from '../services/DocumentTemplateService';
 import { GSTComplianceService } from '../services/GSTComplianceService';
 import { DrillDownService } from '../services/DrillDownService';
@@ -51,6 +54,7 @@ import { EmployeeReimbursementService } from '../services/EmployeeReimbursementS
 import { EmailOutboxService } from '../services/EmailOutboxService';
 import { VendorRecordsService } from '../purchases/VendorRecordsService';
 import { MfaService } from '../auth/MfaService';
+import { AccountUsageImpactService } from '../accounting/AccountUsageImpactService';
 
 function parseVendorJson(value: unknown, fallback: unknown): unknown {
   if (value === null || value === undefined || value === '') return fallback;
@@ -293,6 +297,25 @@ export class FinanceController {
     res.json(accounts);
   }
 
+  public static async getAccountUsageImpact(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const accountId = String(req.params.id || '').trim();
+    if (!accountId) {
+      res.status(400).json({ error: 'An account id is required' });
+      return;
+    }
+    try {
+      const impact = await AccountUsageImpactService.get(db, req.auth!.organizationId, accountId);
+      if (!impact) {
+        res.status(404).json({ error: 'Account does not exist in this organization' });
+        return;
+      }
+      res.json(impact);
+    } catch (_error) {
+      // Never return partial counts as an authoritative green light.
+      res.status(503).json({ error: 'Account reference coverage could not be verified. Archive or deletion safety is unknown.' });
+    }
+  }
+
   public static async getAccountingDefaults(req: AuthenticatedRequest, res: Response): Promise<void> {
     const result = await db.query(
       `SELECT d.system_role, a.*
@@ -350,7 +373,7 @@ export class FinanceController {
       res.json(mapping);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Accounting default could not be updated';
-      const statusCode = message.startsWith('ACCOUNT_NOT_FOUND') ? 404 : 400;
+      const statusCode = message.startsWith('ACCOUNT_NOT_FOUND') ? 404 : message.startsWith('ACCOUNT_USAGE_INCOMPLETE') ? 503 : 400;
       res.status(statusCode).json({ error: message.replace(/^[A-Z_]+: /, '') });
     }
   }
@@ -548,9 +571,22 @@ export class FinanceController {
 
         const nextStatus = status ?? existing.status;
         if (nextStatus === 'Archived') {
-          if (Number(existing.balance || 0) !== 0) throw new Error('ACCOUNT_ARCHIVE_BALANCE: A non-zero balance account cannot be archived');
-          const children = await client.query(`SELECT id FROM accounts WHERE organization_id = $1 AND parent_account_id = $2 AND status = 'Active' LIMIT 1 FOR UPDATE`, [orgId, accountId]);
-          if (children.rows.length > 0) throw new Error('ACCOUNT_ARCHIVE_CHILDREN: Reassign or archive active child accounts first');
+          let usageImpact;
+          try {
+            usageImpact = await AccountUsageImpactService.get(client, orgId, accountId);
+          } catch {
+            throw new Error('ACCOUNT_USAGE_INCOMPLETE: Account references could not be safely inventoried');
+          }
+          if (!usageImpact || !usageImpact.inventoryComplete) {
+            throw new Error('ACCOUNT_USAGE_INCOMPLETE: Account references could not be safely inventoried');
+          }
+          if (usageImpact.balance !== 0) throw new Error('ACCOUNT_ARCHIVE_BALANCE: A non-zero ledger balance account cannot be archived');
+          if (usageImpact.archiveBlockers.some((blocker) => /child accounts/i.test(blocker))) {
+            throw new Error('ACCOUNT_ARCHIVE_CHILDREN: Reassign or archive active child accounts first');
+          }
+          if (usageImpact.archiveBlockers.some((blocker) => /defaults/i.test(blocker))) {
+            throw new Error('ACCOUNT_ARCHIVE_DEFAULT: Reassign accounting, customer, vendor, and item defaults before archiving this account');
+          }
         }
 
         const activeChildren = await client.query(
@@ -611,14 +647,19 @@ export class FinanceController {
         if (account.is_system_account || account.is_locked) {
           throw new Error('ACCOUNT_DELETE_PROTECTED: System and locked accounts cannot be deleted');
         }
-        if (Number(account.balance || 0) !== 0) {
-          throw new Error('ACCOUNT_DELETE_BALANCE: An account with a non-zero balance cannot be deleted');
+        let usageImpact;
+        try {
+          usageImpact = await AccountUsageImpactService.get(client, orgId, accountId);
+        } catch {
+          throw new Error('ACCOUNT_USAGE_INCOMPLETE: Account references could not be safely inventoried');
         }
-
+        if (!usageImpact || !usageImpact.inventoryComplete) {
+          throw new Error('ACCOUNT_USAGE_INCOMPLETE: Account references could not be safely inventoried');
+        }
         // If linked to a bank account profile, verify that it has no statement imports or transactions
         // before cleaning up the bank profile cleanly.
         const bankProfileCheck = await client.query(
-          `SELECT id FROM bank_accounts WHERE organization_id = $1 AND ledger_account_id = $2`,
+          `SELECT id FROM bank_accounts WHERE organization_id = $1 AND ledger_account_id = $2 FOR UPDATE`,
           [orgId, accountId]
         );
         if (bankProfileCheck.rows.length > 0) {
@@ -640,31 +681,22 @@ export class FinanceController {
           await client.query(`DELETE FROM bank_accounts WHERE organization_id = $1 AND id = $2`, [orgId, bankAccId]);
         }
 
-        // A deleted account must not leave a financial or setup reference behind. Journal
-        // lines are the hard accounting boundary; the other checks keep defaults and drafts valid.
-        const usageChecks: Array<{ label: string; sql: string }> = [
-          { label: 'child account', sql: `SELECT 1 FROM accounts WHERE organization_id = $1 AND parent_account_id = $2 LIMIT 1` },
-          { label: 'accounting default', sql: `SELECT 1 FROM accounting_defaults WHERE organization_id = $1 AND account_id = $2 LIMIT 1` },
-          { label: 'bank rule', sql: `SELECT 1 FROM bank_reconciliation_rules WHERE organization_id = $1 AND suggested_account_id = $2 LIMIT 1` },
-          { label: 'invoice line', sql: `SELECT 1 FROM invoice_items WHERE organization_id = $1 AND account_id = $2 LIMIT 1` },
-          { label: 'customer payment', sql: `SELECT 1 FROM payments_received WHERE organization_id = $1 AND deposit_to_account_id = $2 LIMIT 1` },
-          { label: 'vendor payment', sql: `SELECT 1 FROM payments_made WHERE organization_id = $1 AND paid_from_account_id = $2 LIMIT 1` },
-          { label: 'expense', sql: `SELECT 1 FROM expenses WHERE organization_id = $1 AND (expense_account_id = $2 OR paid_from_account_id = $2) LIMIT 1` },
-          { label: 'journal entry', sql: `SELECT 1 FROM journal_lines jl LEFT JOIN journal_entries je ON je.id = jl.journal_entry_id WHERE jl.account_id = $2 AND COALESCE(jl.organization_id, je.organization_id) = $1 LIMIT 1` },
-          { label: 'customer default', sql: `SELECT 1 FROM customers WHERE organization_id = $1 AND default_sales_account_id = $2 LIMIT 1` },
-          { label: 'vendor default', sql: `SELECT 1 FROM vendors WHERE organization_id = $1 AND default_expense_account_id = $2 LIMIT 1` },
-          { label: 'customer refund', sql: `SELECT 1 FROM customer_refunds WHERE organization_id = $1 AND refund_account_id = $2 LIMIT 1` },
-          { label: 'receivable write-off', sql: `SELECT 1 FROM ar_write_offs WHERE organization_id = $1 AND write_off_account_id = $2 LIMIT 1` },
-          { label: 'payable write-off', sql: `SELECT 1 FROM ap_write_offs WHERE organization_id = $1 AND write_off_account_id = $2 LIMIT 1` },
-          { label: 'budget line', sql: `SELECT 1 FROM budget_lines WHERE organization_id = $1 AND account_id = $2 LIMIT 1` },
-          { label: 'fixed asset', sql: `SELECT 1 FROM fixed_assets WHERE organization_id = $1 AND ($2 IN (asset_account_id, accumulated_depreciation_account_id, depreciation_expense_account_id)) LIMIT 1` },
-          { label: 'item default', sql: `SELECT 1 FROM items WHERE organization_id = $1 AND ($2 IN (sales_account_id, purchase_account_id)) LIMIT 1` },
-        ];
-        for (const check of usageChecks) {
-          const reference = await client.query(check.sql, [orgId, accountId]);
-          if (reference.rows.length > 0) {
-            throw new Error(`ACCOUNT_DELETE_IN_USE: This account is used by a ${check.label}. Remove that reference or archive the account instead.`);
-          }
+        try {
+          usageImpact = await AccountUsageImpactService.get(client, orgId, accountId);
+        } catch {
+          throw new Error('ACCOUNT_USAGE_INCOMPLETE: Account references could not be safely inventoried');
+        }
+        if (!usageImpact || !usageImpact.inventoryComplete) {
+          throw new Error('ACCOUNT_USAGE_INCOMPLETE: Account references could not be safely inventoried');
+        }
+
+        // The same reviewed dependency registry powers the impact preview and deletion guard.
+        const referenced = usageImpact.references.find((reference) => reference.count > 0);
+        if (referenced) {
+          throw new Error(`ACCOUNT_DELETE_IN_USE: This account is used by ${referenced.label}. Remove that reference or archive the account instead.`);
+        }
+        if (usageImpact.balance !== 0) {
+          throw new Error('ACCOUNT_DELETE_BALANCE: An account with a non-zero ledger balance cannot be deleted');
         }
 
         const result = await client.query(
@@ -691,17 +723,131 @@ export class FinanceController {
       const message = error instanceof Error ? error.message : 'Account could not be deleted';
       const statusCode = message.startsWith('ACCOUNT_NOT_FOUND')
         ? 404
-        : message.startsWith('ACCOUNT_DELETE_IN_USE') || message.startsWith('ACCOUNT_DELETE_BALANCE')
-          ? 409
+        : message.startsWith('ACCOUNT_USAGE_INCOMPLETE')
+          ? 503
+          : message.startsWith('ACCOUNT_DELETE_IN_USE') || message.startsWith('ACCOUNT_DELETE_BALANCE')
+            ? 409
           : 400;
       res.status(statusCode).json({ error: message.replace(/^[A-Z_]+: /, '') });
     }
   }
 
   // --- CLIENTS ---
+  private static nextSalespersonUpdatedAt(current: Date | string): string {
+    return new Date(Math.max(Date.now(), new Date(current).getTime() + 1)).toISOString();
+  }
+
+  private static salespersonInput(body: any, partial = false): Record<string, any> | string {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return 'Salesperson data must be a JSON object';
+    const input: Record<string, any> = {};
+    for (const field of ['code', 'name', 'email', 'phone', 'commissionRate', 'region', 'notes']) {
+      if (body[field] !== undefined) input[field] = body[field];
+    }
+    if (!partial || input.name !== undefined) {
+      if (typeof input.name !== 'string' || !input.name.trim() || input.name.trim().length > 255) return 'Salesperson name is required and must be 255 characters or fewer';
+      input.name = input.name.trim();
+    }
+    if (!partial || input.code !== undefined) {
+      if (typeof input.code !== 'string' || !input.code.trim() || input.code.trim().length > 64) return 'Salesperson code is required and must be 64 characters or fewer';
+      input.code = input.code.trim();
+    }
+    if (input.email !== undefined) {
+      if (typeof input.email !== 'string' || input.email.length > 255 || (input.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.email.trim()))) return 'Salesperson email is invalid';
+      input.email = input.email.trim().toLowerCase();
+    }
+    if (input.phone !== undefined && (typeof input.phone !== 'string' || input.phone.length > 50)) return 'Salesperson phone must be 50 characters or fewer';
+    if (input.region !== undefined && (typeof input.region !== 'string' || input.region.length > 255)) return 'Salesperson region must be 255 characters or fewer';
+    if (input.notes !== undefined && (typeof input.notes !== 'string' || input.notes.length > 10000)) return 'Salesperson notes must be 10,000 characters or fewer';
+    if (input.commissionRate !== undefined || !partial) {
+      const rate = input.commissionRate;
+      if (!(typeof rate === 'number' || typeof rate === 'string') || !/^\d{1,3}(\.\d{1,2})?$/.test(String(rate)) || !Number.isFinite(Number(rate)) || Number(rate) < 0 || Number(rate) > 100) return 'Commission rate must be from 0 to 100 with at most two decimal places';
+      input.commissionRate = Number(rate);
+    }
+    return input;
+  }
+
+  public static async getSalespersons(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const result = await db.query('SELECT * FROM salespersons WHERE organization_id = $1 ORDER BY name ASC, id ASC', [req.auth!.organizationId]);
+    res.json(result.rows);
+  }
+
+  public static async createSalesperson(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const input = FinanceController.salespersonInput(req.body);
+    if (typeof input === 'string') { res.status(400).json({ error: input }); return; }
+    const id = newId('sp');
+    try {
+      const row = await db.transaction(async (client) => {
+        const duplicate = await client.query('SELECT id FROM salespersons WHERE organization_id = $1 AND LOWER(code) = LOWER($2) LIMIT 1', [req.auth!.organizationId, input.code]);
+        if (duplicate.rows.length) throw Object.assign(new Error('SALESPERSON_CODE_DUPLICATE'), { code: '23505' });
+        const inserted = await client.query(
+          'INSERT INTO salespersons (id, organization_id, code, name, email, phone, commission_rate, region, notes, status, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,CURRENT_TIMESTAMP) RETURNING *',
+          [id, req.auth!.organizationId, input.code, input.name, input.email || '', input.phone || '', input.commissionRate, input.region || '', input.notes || '', 'ACTIVE']
+        );
+        await FinanceController.logAudit(req.auth!.organizationId, req.auth!.userId, 'SALESPERSON_CREATED', 'Salesperson', id, inserted.rows[0], client, true);
+        return inserted.rows[0];
+      });
+      res.status(201).json(row);
+    } catch (error: any) {
+      if (error?.code === '23505') { res.status(409).json({ error: 'That salesperson code is already in use in this organization' }); return; }
+      throw error;
+    }
+  }
+
+  public static async updateSalesperson(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const input = FinanceController.salespersonInput(req.body, true);
+    if (typeof input === 'string') { res.status(400).json({ error: input }); return; }
+    if (Object.keys(input).length === 0 || typeof req.body.updatedAt !== 'string') { res.status(400).json({ error: 'At least one editable field and the last-read updatedAt value are required' }); return; }
+    const updatedAtMs = typeof req.body.updatedAt === 'string' ? Date.parse(req.body.updatedAt) : Number.NaN;
+    if (!Number.isFinite(updatedAtMs)) { res.status(400).json({ error: 'A valid last-read updatedAt timestamp is required' }); return; }
+    try {
+      const outcome = await db.transaction(async (client) => {
+        const selected = await client.query('SELECT * FROM salespersons WHERE organization_id = $1 AND id = $2 FOR UPDATE', [req.auth!.organizationId, req.params.id]);
+        if (selected.rows.length !== 1) throw Object.assign(new Error('SALESPERSON_NOT_FOUND'), { statusCode: 404 });
+        const before = selected.rows[0];
+        if (new Date(before.updated_at).getTime() !== updatedAtMs) throw Object.assign(new Error('SALESPERSON_STALE'), { statusCode: 409 });
+        if (input.code !== undefined) {
+          const duplicate = await client.query('SELECT id FROM salespersons WHERE organization_id = $1 AND LOWER(code) = LOWER($2) AND id <> $3 LIMIT 1', [req.auth!.organizationId, input.code, req.params.id]);
+          if (duplicate.rows.length) throw Object.assign(new Error('SALESPERSON_CODE_DUPLICATE'), { code: '23505' });
+        }
+        const columns: Record<string, string> = { code: 'code', name: 'name', email: 'email', phone: 'phone', commissionRate: 'commission_rate', region: 'region', notes: 'notes' };
+        const changes = Object.entries(input).filter(([key, value]) => {
+          const old = before[columns[key]];
+          return key === 'commissionRate' ? Number(old) !== value : String(old ?? '') !== String(value ?? '');
+        });
+        if (!changes.length) return { row: before, changed: false };
+        const assignments = changes.map(([key], index) => columns[key] + ' = $' + (index + 1));
+        const values = changes.map(([, value]) => value); values.push(FinanceController.nextSalespersonUpdatedAt(before.updated_at), req.auth!.organizationId, req.params.id);
+        const updated = await client.query('UPDATE salespersons SET ' + assignments.join(', ') + ', updated_at = $' + (values.length - 2) + ' WHERE organization_id = $' + (values.length - 1) + ' AND id = $' + values.length + ' RETURNING *', values);
+        await FinanceController.logAudit(req.auth!.organizationId, req.auth!.userId, 'SALESPERSON_UPDATED', 'Salesperson', req.params.id, { before, after: updated.rows[0] }, client, true);
+        return { row: updated.rows[0], changed: true };
+      }); res.json({ ...outcome.row, changed: outcome.changed });
+    } catch (error: any) {
+      if (error?.code === '23505') { res.status(409).json({ error: 'That salesperson code is already in use in this organization' }); return; }
+      if (error?.statusCode) { res.status(error.statusCode).json({ error: error.message === 'SALESPERSON_STALE' ? 'This salesperson changed since you opened it. Refresh and try again.' : 'Salesperson was not found' }); return; } throw error;
+    }
+  }
+  private static async setSalespersonStatus(req: AuthenticatedRequest, res: Response, status: 'ACTIVE' | 'INACTIVE'): Promise<void> {
+    try { const result = await db.transaction(async (client) => {
+      const selected = await client.query('SELECT * FROM salespersons WHERE organization_id = $1 AND id = $2 FOR UPDATE', [req.auth!.organizationId, req.params.id]);
+      if (!selected.rows.length) throw Object.assign(new Error('SALESPERSON_NOT_FOUND'), { statusCode: 404 });
+      const before = selected.rows[0], changed = before.status !== status;
+      if (changed && status === 'INACTIVE') { const refs = await client.query('SELECT id FROM customers WHERE organization_id = $1 AND salesperson_id = $2 AND active IS NOT FALSE LIMIT 1', [req.auth!.organizationId, req.params.id]); if (refs.rows.length) throw Object.assign(new Error('SALESPERSON_ASSIGNED'), { statusCode: 409 }); }
+      let updatedAt = before.updated_at;
+      if (changed) { const timestamp = FinanceController.nextSalespersonUpdatedAt(before.updated_at); const updated = await client.query('UPDATE salespersons SET status = $1, updated_at = $2 WHERE organization_id = $3 AND id = $4 RETURNING updated_at', [status, timestamp, req.auth!.organizationId, req.params.id]); updatedAt = updated.rows[0].updated_at; await FinanceController.logAudit(req.auth!.organizationId, req.auth!.userId, status === 'ACTIVE' ? 'SALESPERSON_RESTORED' : 'SALESPERSON_ARCHIVED', 'Salesperson', req.params.id, { beforeStatus: before.status, afterStatus: status }, client, true); }
+      return { id: before.id, active: status === 'ACTIVE', changed, updated_at: updatedAt };
+    }); res.json(result); } catch (error: any) { if (error?.statusCode) { res.status(error.statusCode).json({ error: error.message === 'SALESPERSON_ASSIGNED' ? 'Reassign active customers before deactivating this salesperson' : 'Salesperson was not found' }); return; } throw error; }
+  }
+  public static async archiveSalesperson(req: AuthenticatedRequest, res: Response): Promise<void> { await FinanceController.setSalespersonStatus(req, res, 'INACTIVE'); }
+  public static async restoreSalesperson(req: AuthenticatedRequest, res: Response): Promise<void> { await FinanceController.setSalespersonStatus(req, res, 'ACTIVE'); }
   public static async getClients(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
-    const result = await db.query('SELECT * FROM clients WHERE organization_id = $1 ORDER BY name ASC', [orgId]);
+    const result = await db.query(
+      `SELECT cl.* FROM clients cl
+        LEFT JOIN customers cu ON cu.organization_id = cl.organization_id AND cu.id = cl.id
+       WHERE cl.organization_id = $1 AND (cu.id IS NULL OR cu.active IS NOT FALSE)
+       ORDER BY cl.name ASC`,
+      [orgId]
+    );
     res.json(result.rows);
   }
 
@@ -754,10 +900,10 @@ export class FinanceController {
         [record.id, orgId, record.name, record.companyName, record.email, record.phone, record.billingAddress, record.taxId, record.currency, record.paymentTerms, record.notes]
       );
       await client.query(
-        `INSERT INTO customers (id, organization_id, customer_id, display_name, legal_name, email, phone, currency, payment_terms, notes)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        `INSERT INTO customers (id, organization_id, customer_id, display_name, legal_name, email, phone, billing_address, gstin, currency, payment_terms, notes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          ON CONFLICT (id) DO NOTHING`,
-        [record.id, orgId, record.id, record.name, record.companyName, record.email, record.phone, record.currency, record.paymentTerms, record.notes]
+        [record.id, orgId, record.id, record.name, record.companyName, record.email, record.phone, JSON.stringify(record.billingAddress), record.taxId, record.currency, record.paymentTerms, record.notes]
       );
       await client.query(`INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state) VALUES ($1, $2, $3, 'CLIENT_CREATED', 'Client', $4, $5)`, [newId('aud'), orgId, req.auth!.userId, cliId, JSON.stringify(record)]);
     });
@@ -1143,12 +1289,12 @@ export class FinanceController {
   public static async getProjects(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
     const result = await db.query('SELECT * FROM projects WHERE organization_id = $1 ORDER BY created_at DESC', [orgId]);
-    res.json(result.rows);
+    res.json(result.rows.map((row) => ({ ...row, start_date: FinanceController.projectDateValue(row.start_date) || null })));
   }
 
   public static async createProject(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
-    const { code, name, clientId, customerId, clientName, description, budgetType, totalBudget, hourlyRate, manager } = req.body;
+    const { code, name, clientId, customerId, clientName, description, budgetType, totalBudget, hourlyRate, manager, startDate } = req.body;
 
     if (!code || typeof code !== 'string' || !code.trim()) {
       res.status(400).json({ error: 'Project code is required' });
@@ -1178,13 +1324,21 @@ export class FinanceController {
 
     if (targetCustId && typeof targetCustId === 'string' && targetCustId.trim()) {
       const custRes = await db.query(
-        `SELECT id, display_name, legal_name FROM customers WHERE organization_id = $1 AND id = $2
-         UNION ALL
-         SELECT id, name AS display_name, company_name AS legal_name FROM clients WHERE organization_id = $1 AND id = $2
-         LIMIT 1`,
+        `SELECT id, display_name, legal_name, active FROM customers WHERE organization_id = $1 AND id = $2`,
         [orgId, targetCustId.trim()]
       );
+      if (custRes.rows.length > 0 && custRes.rows[0].active === false) {
+        res.status(400).json({ error: 'Archived customers cannot be assigned to new projects' });
+        return;
+      }
       if (custRes.rows.length === 0) {
+        const legacyClient = await db.query(
+          `SELECT id, name AS display_name, company_name AS legal_name FROM clients WHERE organization_id = $1 AND id = $2`,
+          [orgId, targetCustId.trim()]
+        );
+        if (legacyClient.rows.length > 0) {
+          resolvedClientName = legacyClient.rows[0].display_name || legacyClient.rows[0].legal_name || resolvedClientName;
+        } else {
         const otherOrgRes = await db.query(`SELECT organization_id FROM customers WHERE id = $1 UNION ALL SELECT organization_id FROM clients WHERE id = $1 LIMIT 1`, [targetCustId.trim()]);
         if (otherOrgRes.rows.length > 0) {
           res.status(400).json({ error: `Customer ${targetCustId} does not belong to organization ${orgId}` });
@@ -1192,9 +1346,12 @@ export class FinanceController {
         }
         res.status(400).json({ error: `Customer ${targetCustId} not found` });
         return;
+        }
+      } else {
+        resolvedClientName = custRes.rows[0].display_name || custRes.rows[0].legal_name || resolvedClientName;
       }
-      resolvedClientName = custRes.rows[0].display_name || custRes.rows[0].legal_name || resolvedClientName;
     }
+    if (startDate !== undefined && startDate !== '' && !isIsoCalendarDate(startDate)) { res.status(400).json({ error: 'Project start date must be a real YYYY-MM-DD date' }); return; }
 
     const parsedBudget = Number(totalBudget || 0);
     const parsedHourlyRate = Number(hourlyRate || 0);
@@ -1203,13 +1360,18 @@ export class FinanceController {
       return;
     }
     const prjId = newId('prj');
-    const record = { id: prjId, code: code.trim(), name: name.trim(), clientId: targetCustId || '', clientName: resolvedClientName, description: description || '', status: 'Active', budgetType: budgetType || 'Fixed Cost', totalBudget: parsedBudget, hourlyRate: parsedHourlyRate, manager: manager || '', createdAt: new Date().toISOString() };
+    const record = { id: prjId, code: code.trim(), name: name.trim(), clientId: targetCustId || '', clientName: resolvedClientName, description: description || '', status: 'Active', budgetType: budgetType || 'Fixed Cost', totalBudget: parsedBudget, hourlyRate: parsedHourlyRate, manager: manager || '', startDate: startDate || '', createdAt: new Date().toISOString() };
     try {
       await db.transaction(async (client) => {
+        if (targetCustId) {
+          const customer = await FinanceController.ensureCanonicalProjectCustomer(client, orgId, targetCustId.trim(), req.auth!.userId);
+          if (customer.active === false) throw new Error('Project customer must be an active customer in this organization');
+          record.clientName = customer.display_name || customer.legal_name || record.clientName;
+        }
         await client.query(
-          `INSERT INTO projects (id, organization_id, code, name, client_id, client_name, description, status, budget_type, total_budget, hourly_rate, manager)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-          [record.id, orgId, record.code, record.name, record.clientId || null, record.clientName, record.description, record.status, record.budgetType, record.totalBudget, record.hourlyRate, record.manager]
+          `INSERT INTO projects (id, organization_id, code, name, client_id, client_name, description, status, budget_type, total_budget, hourly_rate, manager, start_date)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+          [record.id, orgId, record.code, record.name, record.clientId || null, record.clientName, record.description, record.status, record.budgetType, record.totalBudget, record.hourlyRate, record.manager, record.startDate || null]
         );
         await client.query(`INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state) VALUES ($1, $2, $3, 'PROJECT_CREATED', 'Project', $4, $5)`, [newId('aud'), orgId, req.auth!.userId, prjId, JSON.stringify(record)]);
       });
@@ -1218,9 +1380,181 @@ export class FinanceController {
         res.status(409).json({ error: 'Project code already exists in this organization' });
         return;
       }
+      if (String(error?.message).includes('active customer')) {
+        res.status(400).json({ error: String(error.message) });
+        return;
+      }
       throw error;
     }
     res.status(201).json(record);
+  }
+
+  private static async ensureCanonicalProjectCustomer(client: any, orgId: string, customerId: string, userId: string): Promise<any> {
+    let customer = await client.query(
+      'SELECT id, display_name, legal_name, active FROM customers WHERE organization_id = $1 AND id = $2 FOR UPDATE',
+      [orgId, customerId]
+    );
+    if (customer.rows.length === 1) return customer.rows[0];
+    const legacy = await client.query(
+      'SELECT id, name, company_name, email, phone, billing_address, tax_id, currency, payment_terms, notes FROM clients WHERE organization_id = $1 AND id = $2 FOR UPDATE',
+      [orgId, customerId]
+    );
+    if (legacy.rows.length !== 1) throw new Error('PROJECT_CUSTOMER_INVALID');
+    const row = legacy.rows[0];
+    const promotion = await client.query(
+      `INSERT INTO customers (id, organization_id, customer_id, display_name, legal_name, email, phone, billing_address, gstin, currency, payment_terms, notes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) ON CONFLICT (id) DO NOTHING RETURNING id`,
+      [row.id, orgId, row.id, row.name, row.company_name || row.name, row.email, row.phone, JSON.stringify(row.billing_address || ''), row.tax_id, (row.currency || 'USD').slice(0, 3), row.payment_terms || 'Net 30', row.notes]
+    );
+    customer = await client.query(
+      'SELECT id, display_name, legal_name, active FROM customers WHERE organization_id = $1 AND id = $2 FOR UPDATE',
+      [orgId, customerId]
+    );
+    if (customer.rows.length !== 1) throw new Error('PROJECT_CUSTOMER_INVALID');
+    if (promotion.rows.length === 1) {
+      await client.query(
+        `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state, after_state)
+         VALUES ($1, $2, $3, 'CUSTOMER_CANONICALIZED_FROM_CLIENT', 'Customer', $4, $5, $6)`,
+        [newId('aud'), orgId, userId, customerId, JSON.stringify(row), JSON.stringify(customer.rows[0])]
+      );
+    }
+    return customer.rows[0];
+  }
+
+  private static async projectHasLinks(client: any, orgId: string, projectId: string): Promise<boolean> {
+    const linked = await client.query(
+      `SELECT EXISTS (
+         SELECT 1 FROM estimates WHERE organization_id = $1 AND project_id = $2
+         UNION ALL SELECT 1 FROM sales_orders WHERE organization_id = $1 AND project_id = $2
+         UNION ALL SELECT 1 FROM invoices WHERE organization_id = $1 AND project_id = $2
+         UNION ALL SELECT 1 FROM expenses WHERE organization_id = $1 AND project_id = $2
+         UNION ALL SELECT 1 FROM time_entries WHERE organization_id = $1 AND project_id = $2
+         UNION ALL SELECT 1 FROM journal_lines WHERE organization_id = $1 AND project_id = $2
+         UNION ALL SELECT 1 FROM employee_claim_items WHERE organization_id = $1 AND project_id = $2
+         UNION ALL SELECT 1 FROM budget_lines WHERE organization_id = $1 AND project_id = $2
+         UNION ALL SELECT 1 FROM fixed_assets WHERE organization_id = $1 AND project_id = $2
+       ) AS has_links`, [orgId, projectId]);
+    return Boolean(linked.rows[0]?.has_links);
+  }
+
+  private static projectApiRecord(row: any): any {
+    return {
+      id: row.id, organizationId: row.organization_id, code: row.code, name: row.name,
+      customerId: row.client_id || '', clientId: row.client_id || '', clientName: row.client_name || '',
+      description: row.description || '', status: row.status, budgetType: row.budget_type,
+      totalBudget: Number(row.total_budget || 0), hourlyRate: Number(row.hourly_rate || 0),
+      manager: row.manager || '', startDate: FinanceController.projectDateValue(row.start_date),
+      archivedAt: row.archived_at || null,
+    };
+  }
+
+  private static projectDateValue(value: unknown): string {
+    if (!value) return '';
+    if (value instanceof Date) {
+      const year = value.getFullYear();
+      const month = String(value.getMonth() + 1).padStart(2, '0');
+      const day = String(value.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    }
+    return String(value).slice(0, 10);
+  }
+
+  public static async updateProject(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const body = req.body || {};
+    const allowed = new Set(['code', 'name', 'customerId', 'clientId', 'description', 'status', 'budgetType', 'totalBudget', 'hourlyRate', 'manager', 'startDate']);
+    const unknown = Object.keys(body).filter((key) => !allowed.has(key));
+    if (unknown.length) { res.status(400).json({ error: `Unsupported project fields: ${unknown.join(', ')}` }); return; }
+    if (body.code !== undefined && (typeof body.code !== 'string' || !body.code.trim() || body.code.trim().length > 64)) { res.status(400).json({ error: 'Project code must be 1-64 characters' }); return; }
+    if (body.name !== undefined && (typeof body.name !== 'string' || !body.name.trim() || body.name.trim().length > 255)) { res.status(400).json({ error: 'Project name must be 1-255 characters' }); return; }
+    if (body.description !== undefined && (typeof body.description !== 'string' || body.description.length > 10000)) { res.status(400).json({ error: 'Project description is too long' }); return; }
+    if (body.manager !== undefined && (typeof body.manager !== 'string' || body.manager.length > 255)) { res.status(400).json({ error: 'Project manager is invalid' }); return; }
+    if (body.status !== undefined && !['Active', 'On Hold', 'Completed', 'Cancelled'].includes(body.status)) { res.status(400).json({ error: 'Project status is invalid' }); return; }
+    if (body.budgetType !== undefined && !['Fixed Cost', 'Time & Materials', 'Task Hours'].includes(body.budgetType)) { res.status(400).json({ error: 'Project budget type is invalid' }); return; }
+    for (const key of ['totalBudget', 'hourlyRate']) {
+      if (body[key] !== undefined) {
+        const amount = Number(body[key]);
+        if (!Number.isFinite(amount) || amount < 0 || !Number.isSafeInteger(Math.round(amount * 100)) || Math.abs(amount * 100 - Math.round(amount * 100)) > 1e-7) { res.status(400).json({ error: `${key} must be a safe non-negative two-decimal amount` }); return; }
+      }
+    }
+    if (body.startDate !== undefined && body.startDate !== null && body.startDate !== '' && !isIsoCalendarDate(body.startDate)) { res.status(400).json({ error: 'Project start date must be a real YYYY-MM-DD date' }); return; }
+    const requestedCustomerId = body.customerId !== undefined ? body.customerId : body.clientId;
+    if (requestedCustomerId !== undefined && requestedCustomerId !== null && requestedCustomerId !== '' && (typeof requestedCustomerId !== 'string' || requestedCustomerId.length > 64)) { res.status(400).json({ error: 'Project customer ID is invalid' }); return; }
+    try {
+      const result = await db.transaction(async (client) => {
+        const snapshot = await client.query('SELECT client_id FROM projects WHERE organization_id = $1 AND id = $2', [orgId, req.params.id]);
+        if (snapshot.rows.length !== 1) throw new Error('PROJECT_NOT_FOUND');
+        const snapshotCustomerId = snapshot.rows[0].client_id || null;
+        const targetCustomerId = requestedCustomerId === undefined ? snapshotCustomerId : (requestedCustomerId || null);
+        let reassignedCustomer: any = null;
+        if (requestedCustomerId !== undefined && targetCustomerId && targetCustomerId !== snapshotCustomerId) {
+          reassignedCustomer = await FinanceController.ensureCanonicalProjectCustomer(client, orgId, targetCustomerId, req.auth!.userId);
+          if (reassignedCustomer.active === false) throw new Error('PROJECT_CUSTOMER_ARCHIVED');
+        }
+        const selected = await client.query('SELECT * FROM projects WHERE organization_id = $1 AND id = $2 FOR UPDATE', [orgId, req.params.id]);
+        if (selected.rows.length !== 1) throw new Error('PROJECT_NOT_FOUND');
+        const current = selected.rows[0];
+        if (requestedCustomerId !== undefined && (current.client_id || null) !== snapshotCustomerId && targetCustomerId !== (current.client_id || null)) throw new Error('PROJECT_CUSTOMER_CHANGED');
+        if (current.archived_at) throw new Error('PROJECT_ARCHIVED');
+        const hasLinks = await FinanceController.projectHasLinks(client, orgId, current.id);
+        const nextCustomerId = requestedCustomerId === undefined ? current.client_id : (requestedCustomerId || null);
+        const nextCode = body.code === undefined ? current.code : body.code.trim();
+        if (hasLinks && (nextCustomerId || null) !== (current.client_id || null)) throw new Error('PROJECT_LINKED_FIELDS_FROZEN');
+        if (hasLinks && nextCode !== current.code) throw new Error('PROJECT_LINKED_FIELDS_FROZEN');
+        let nextClientName = current.client_name || '';
+        if (requestedCustomerId !== undefined && nextCustomerId && nextCustomerId !== current.client_id) {
+          if (!reassignedCustomer) throw new Error('PROJECT_CUSTOMER_INVALID');
+          nextClientName = reassignedCustomer.display_name || reassignedCustomer.legal_name || nextClientName || '';
+        } else if (requestedCustomerId !== undefined && !nextCustomerId) nextClientName = '';
+        const after = {
+          ...current, code: nextCode, name: body.name === undefined ? current.name : body.name.trim(), client_id: nextCustomerId,
+          client_name: nextClientName || '', description: body.description === undefined ? current.description : body.description,
+          status: body.status === undefined ? current.status : body.status,
+          budget_type: body.budgetType === undefined ? current.budget_type : body.budgetType,
+          total_budget: body.totalBudget === undefined ? current.total_budget : Number(body.totalBudget),
+          hourly_rate: body.hourlyRate === undefined ? current.hourly_rate : Number(body.hourlyRate),
+          manager: body.manager === undefined ? current.manager : body.manager,
+          start_date: body.startDate === undefined ? current.start_date : (body.startDate || null),
+        };
+        const changed = ['code', 'name', 'client_id', 'client_name', 'description', 'status', 'budget_type', 'total_budget', 'hourly_rate', 'manager']
+          .some((key) => String(current[key] ?? '') !== String(after[key] ?? ''))
+          || FinanceController.projectDateValue(current.start_date) !== FinanceController.projectDateValue(after.start_date);
+        if (!changed) return { row: current, changed: false };
+        const updated = await client.query(
+          `UPDATE projects SET code=$1, name=$2, client_id=$3, client_name=$4, description=$5, status=$6, budget_type=$7,
+             total_budget=$8, hourly_rate=$9, manager=$10, start_date=$11 WHERE organization_id=$12 AND id=$13 RETURNING *`,
+          [after.code, after.name, after.client_id, after.client_name, after.description, after.status, after.budget_type, after.total_budget, after.hourly_rate, after.manager, after.start_date, orgId, current.id]
+        );
+        await client.query(`INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state, after_state) VALUES ($1,$2,$3,'PROJECT_UPDATED','Project',$4,$5,$6)`, [newId('aud'), orgId, req.auth!.userId, current.id, JSON.stringify(current), JSON.stringify(updated.rows[0])]);
+        return { row: updated.rows[0], changed: true };
+      });
+      res.json({ ...FinanceController.projectApiRecord(result.row), changed: result.changed });
+    } catch (error: any) {
+      const message = String(error?.message || 'Project could not be updated');
+      if (message === 'PROJECT_NOT_FOUND') { res.status(404).json({ error: 'Project not found' }); return; }
+      if (message === 'PROJECT_ARCHIVED') { res.status(409).json({ error: 'Archived projects cannot be edited' }); return; }
+      if (message === 'PROJECT_CUSTOMER_CHANGED') { res.status(409).json({ error: 'Project customer changed concurrently; retry the update' }); return; }
+      if (message === 'PROJECT_LINKED_FIELDS_FROZEN') { res.status(409).json({ error: 'Project code and customer are frozen after the project has linked records' }); return; }
+      if (message.startsWith('PROJECT_CUSTOMER')) { res.status(400).json({ error: 'Project customer must be an active customer in this organization' }); return; }
+      if (error?.code === '23505') { res.status(409).json({ error: 'Project code already exists in this organization' }); return; }
+      throw error;
+    }
+  }
+
+  public static async archiveProject(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const result = await db.transaction(async (client) => {
+      const selected = await client.query('SELECT * FROM projects WHERE organization_id = $1 AND id = $2 FOR UPDATE', [orgId, req.params.id]);
+      if (selected.rows.length !== 1) return null;
+      const current = selected.rows[0];
+      if (current.archived_at) return { row: current, changed: false };
+      const updated = await client.query('UPDATE projects SET archived_at = CURRENT_TIMESTAMP, archived_by = $1 WHERE organization_id = $2 AND id = $3 AND archived_at IS NULL RETURNING *', [req.auth!.userId, orgId, current.id]);
+      if (updated.rows.length !== 1) return { row: current, changed: false };
+      await client.query(`INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state, after_state) VALUES ($1,$2,$3,'PROJECT_ARCHIVED','Project',$4,$5,$6)`, [newId('aud'), orgId, req.auth!.userId, current.id, JSON.stringify(current), JSON.stringify(updated.rows[0])]);
+      return { row: updated.rows[0], changed: true };
+    });
+    if (!result) { res.status(404).json({ error: 'Project not found' }); return; }
+    res.json({ id: result.row.id, archived: Boolean(result.row.archived_at), changed: result.changed, archivedAt: result.row.archived_at || null });
   }
 
   public static async getTimeEntries(req: AuthenticatedRequest, res: Response): Promise<void> {
@@ -1268,11 +1602,12 @@ export class FinanceController {
     try {
       const record = await db.transaction(async (client) => {
         const projectResult = await client.query(
-          `SELECT id, name, client_name FROM projects WHERE organization_id = $1 AND id = $2 AND status <> 'Cancelled'`,
+          `SELECT id, name, client_name, archived_at FROM projects WHERE organization_id = $1 AND id = $2 AND status <> 'Cancelled' FOR UPDATE`,
           [orgId, projectId]
         );
         if (projectResult.rows.length !== 1) throw new Error('Project does not belong to this organization or is cancelled');
         const project = projectResult.rows[0];
+        if (project.archived_at) throw new Error('Archived projects cannot receive new time entries');
         await client.query(
           `INSERT INTO time_entries (id, organization_id, project_id, project_name, client_name, staff_name, task_name, date, hours, hourly_rate, is_billable, is_billed, description)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, FALSE, $12)`,
@@ -1307,9 +1642,14 @@ export class FinanceController {
         };
         const validationError = FinanceController.validateTimeEntryInput(merged);
         if (validationError) throw new Error(validationError);
-        const projectResult = await client.query(`SELECT id, name, client_name FROM projects WHERE organization_id = $1 AND id = $2 AND status <> 'Cancelled'`, [orgId, merged.projectId]);
+        const projectResult = await client.query(`SELECT id, name, client_name, archived_at FROM projects WHERE organization_id = $1 AND id = $2 AND status <> 'Cancelled' FOR UPDATE`, [orgId, merged.projectId]);
         if (projectResult.rows.length !== 1) throw new Error('Project does not belong to this organization or is cancelled');
         const project = projectResult.rows[0];
+        const financialChanged = String(merged.projectId) !== String(existing.project_id) ||
+          String(merged.date).slice(0, 10) !== String(existing.date).slice(0, 10) ||
+          Number(merged.hours) !== Number(existing.hours) || Number(merged.hourlyRate) !== Number(existing.hourly_rate) ||
+          Boolean(merged.isBillable) !== Boolean(existing.is_billable);
+        if (project.archived_at && financialChanged) throw new Error('Archived project time cannot be reassigned or financially changed');
         await client.query(
           `UPDATE time_entries SET project_id = $1, project_name = $2, client_name = $3, staff_name = $4, task_name = $5, date = $6, hours = $7, hourly_rate = $8, is_billable = $9, description = $10
            WHERE organization_id = $11 AND id = $12`,
@@ -1396,10 +1736,16 @@ export class FinanceController {
     }
     try {
       const result = await db.transaction(async (client) => {
+        const identity = await client.query('SELECT client_id FROM projects WHERE organization_id = $1 AND id = $2', [orgId, req.params.id]);
+        const invoiceNumber = await DocumentNumberingEngine.getNextNumber(orgId, 'INVOICE', issueDate, undefined, client);
+        if (identity.rows.length !== 1) throw new Error('Project was not found in this organization');
+        if (!identity.rows[0].client_id) throw new Error('Project must have a verified customer before time can be invoiced');
+        await client.query('SELECT id FROM customers WHERE organization_id = $1 AND id = $2 FOR UPDATE', [orgId, identity.rows[0].client_id]);
         const projectResult = await client.query(`SELECT * FROM projects WHERE organization_id = $1 AND id = $2 FOR UPDATE`, [orgId, req.params.id]);
         if (projectResult.rows.length !== 1) throw new Error('Project was not found in this organization');
         const project = projectResult.rows[0];
         if (!project.client_id) throw new Error('Project must have a verified customer before time can be invoiced');
+        if (project.client_id !== identity.rows[0].client_id) throw new Error('Project customer changed while time was being invoiced; retry the operation');
         const entriesResult = await client.query(
           `SELECT * FROM time_entries WHERE organization_id = $1 AND project_id = $2 AND is_billable = TRUE AND is_billed = FALSE ORDER BY date, created_at FOR UPDATE`,
           [orgId, req.params.id]
@@ -1408,6 +1754,7 @@ export class FinanceController {
         const invoice = await SalesEngine.createAndPostInvoice(orgId, {
           customerId: project.client_id,
           customerName: project.client_name,
+          invoiceNumber,
           projectId: project.id,
           issueDate,
           dueDate,
@@ -1417,7 +1764,7 @@ export class FinanceController {
           })),
           notes: `Billable time for project ${project.code} — ${project.name}`,
           status: 'POSTED', createdBy: req.auth!.userId,
-        }, client);
+        }, client, undefined, { allowArchivedProjectId: project.archived_at ? project.id : undefined, allowArchivedCustomerId: project.client_id });
         for (const entry of entriesResult.rows) {
           await client.query(`UPDATE time_entries SET is_billed = TRUE, invoice_id = $1 WHERE organization_id = $2 AND id = $3 AND is_billed = FALSE`, [invoice.id, orgId, entry.id]);
         }
@@ -1490,8 +1837,10 @@ export class FinanceController {
       balanceDue: Number(invoice.balance_due),
       status: invoice.status,
       journalEntryId: invoice.journal_entry_id || undefined,
+      reversalJournalId: invoice.reversal_journal_id || undefined,
       notes: invoice.notes || '',
       createdAt: invoice.created_at,
+      editVersion: String(invoice.edit_version ?? 1),
     }));
     res.json(invoices);
   }
@@ -1553,6 +1902,8 @@ export class FinanceController {
           balanceDue: Number(inv.balance_due || 0),
           status: inv.status,
           journalEntryId: inv.journal_entry_id || undefined,
+          reversalJournalId: inv.reversal_journal_id || undefined,
+          editVersion: String(inv.edit_version ?? 1),
           lineItems,
           notes: inv.notes || '',
         },
@@ -1566,23 +1917,38 @@ export class FinanceController {
     try {
       const orgId = req.auth!.organizationId;
       const { id } = req.params;
-      const pdfBuffer = await InvoicePdfService.generateInvoicePdf(db, orgId, id);
-
-      const invNumRes = await db.query('SELECT invoice_number FROM invoices WHERE organization_id = $1 AND id = $2', [orgId, id]);
-      const invNum = invNumRes.rows[0]?.invoice_number || id;
-      const filename = `Invoice-${invNum}.pdf`;
-
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Length', String(pdfBuffer.length));
-      res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
-      res.send(pdfBuffer);
-    } catch (err: any) {
-      console.error('GENERATE_INVOICE_PDF_ERROR:', err);
-      if (err.message && err.message.includes('not found')) {
-        res.status(404).json({ error: err.message });
-      } else {
-        res.status(500).json({ error: err.message || 'Failed to generate invoice PDF' });
+      const source = await db.query('SELECT id FROM invoices WHERE organization_id = $1 AND id = $2', [orgId, id]);
+      if (!source.rows.length) {
+        res.status(404).json({ error: 'Invoice not found' });
+        return;
       }
+      const artifact = await DocumentPdfArtifactService.findLatestIssuedArtifact(db, {
+        organizationId: orgId,
+        category: 'invoices',
+        documentId: id,
+      });
+      if (!artifact || artifact.artifactState !== 'ISSUED' || !artifact.pdfBytes) {
+        const result = await DocumentPdfService.generatePdf(db, orgId, 'invoices', id, undefined, {
+          preview: false,
+          persistSnapshot: false,
+        });
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Length', String(result.pdf.length));
+        res.setHeader('Content-Disposition', `inline; filename="${result.filename}"`);
+        res.setHeader('X-Document-Pdf-Template', result.templateId);
+        res.send(result.pdf);
+        return;
+      }
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Length', String(artifact.pdfBytes.length));
+      res.setHeader('Content-Disposition', 'inline; filename="' + (artifact.filename || 'invoice.pdf').replaceAll('"', '') + '"');
+      res.setHeader('X-Document-Pdf-Artifact', artifact.id);
+      res.setHeader('X-Document-Pdf-Issuance', String(artifact.issuanceNumber));
+      res.setHeader('X-Document-Pdf-SHA256', artifact.pdfSha256 || '');
+      res.send(artifact.pdfBytes);
+    } catch (err: any) {
+      console.error('GET_ISSUED_INVOICE_PDF_ERROR:', err);
+      res.status(500).json({ error: err.message || 'Failed to retrieve issued invoice PDF' });
     }
   }
 
@@ -1607,6 +1973,7 @@ export class FinanceController {
         {
           fromDate: typeof req.query.fromDate === 'string' ? req.query.fromDate : undefined,
           toDate: typeof req.query.toDate === 'string' ? req.query.toDate : undefined,
+          preview: req.query.preview === 'true',
         }
       );
       res.setHeader('Content-Type', 'application/pdf');
@@ -1618,6 +1985,78 @@ export class FinanceController {
       const message = err?.message || 'Failed to generate document PDF';
       const status = /not found/i.test(message) ? 404 : /Unsupported/i.test(message) ? 400 : 500;
       res.status(status).json({ error: message });
+    }
+  }
+
+  public static async issueDocumentPdf(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const category = String(req.params.category || '');
+      if (!DocumentPdfService.isSupportedCategory(category)) {
+        res.status(400).json({ error: 'Unsupported document PDF category' });
+        return;
+      }
+      const idempotencyKey = req.header('idempotency-key') || '';
+      const artifact = await DocumentPdfService.issuePdf(
+        req.auth!.organizationId,
+        category,
+        req.params.id,
+        req.auth!.userId,
+        idempotencyKey,
+        typeof req.body?.templateId === 'string' ? req.body.templateId : undefined,
+        {
+          fromDate: typeof req.body?.fromDate === 'string' ? req.body.fromDate : undefined,
+          toDate: typeof req.body?.toDate === 'string' ? req.body.toDate : undefined,
+          reason: typeof req.body?.reason === 'string' ? req.body.reason : undefined,
+        },
+      );
+      if (!artifact.pdfBytes || artifact.artifactState !== 'ISSUED') {
+        res.status(500).json({ error: 'Issued PDF artifact is unavailable' });
+        return;
+      }
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Length', String(artifact.pdfBytes.length));
+      res.setHeader('Content-Disposition', 'inline; filename="' + (artifact.filename || 'document.pdf').replaceAll('"', '') + '"');
+      res.setHeader('X-Document-Pdf-Artifact', artifact.id);
+      res.setHeader('X-Document-Pdf-Issuance', String(artifact.issuanceNumber));
+      res.setHeader('X-Document-Pdf-SHA256', artifact.pdfSha256 || '');
+      res.send(artifact.pdfBytes);
+    } catch (err: any) {
+      const message = err?.message || 'Failed to issue document PDF';
+      const status = /conflict|already belongs|identity already exists|already used with different/i.test(message) ? 409
+        : /not found/i.test(message) ? 404
+          : /required|finalized|exceeds|unsupported|amounts? (are|must|is)|supported range/i.test(message) ? 400 : 500;
+      res.status(status).json({ error: message });
+    }
+  }
+
+  public static async getIssuedDocumentPdf(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const category = String(req.params.category || '');
+      if (!DocumentPdfService.isSupportedCategory(category)) {
+        res.status(400).json({ error: 'Unsupported document PDF category' });
+        return;
+      }
+      const artifact = await DocumentPdfArtifactService.findArtifactById(
+        db,
+        req.auth!.organizationId,
+        req.params.artifactId,
+      );
+      if (!artifact || artifact.category !== category) {
+        res.status(404).json({ error: 'Issued PDF artifact not found' });
+        return;
+      }
+      if (artifact.artifactState !== 'ISSUED' || !artifact.pdfBytes) {
+        res.status(410).json({ error: 'This historical snapshot contains metadata only; its original PDF bytes are unavailable' });
+        return;
+      }
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Length', String(artifact.pdfBytes.length));
+      res.setHeader('Content-Disposition', 'inline; filename="' + (artifact.filename || 'document.pdf').replaceAll('"', '') + '"');
+      res.setHeader('X-Document-Pdf-Issuance', String(artifact.issuanceNumber));
+      res.setHeader('X-Document-Pdf-SHA256', artifact.pdfSha256 || '');
+      res.send(artifact.pdfBytes);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Failed to retrieve issued document PDF' });
     }
   }
 
@@ -1649,6 +2088,29 @@ export class FinanceController {
     }
   }
 
+  public static async updateDocumentTemplateConfiguration(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const category = String(req.params.category || '');
+      if (!DocumentPdfService.isSupportedCategory(category)) {
+        res.status(400).json({ error: `Unsupported document PDF category: ${category}` });
+        return;
+      }
+      const configuration = req.body?.configuration;
+      if (!configuration || typeof configuration !== 'object' || Array.isArray(configuration)) {
+        res.status(400).json({ error: 'Template configuration must be an object' });
+        return;
+      }
+      const template = await DocumentTemplateService.updateConfiguration(
+        db, req.auth!.organizationId, category, String(req.params.templateId || ''), configuration, req.auth!.userId,
+      );
+      res.json({ category, template });
+    } catch (err: any) {
+      const message = err?.message || 'Failed to update document template configuration';
+      const status = /not found/i.test(message) ? 404 : /not available/i.test(message) ? 503 : 400;
+      res.status(status).json({ error: message });
+    }
+  }
+
   public static async setDocumentTemplateDefault(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const category = String(req.params.category || '');
@@ -1660,12 +2122,83 @@ export class FinanceController {
         db,
         req.auth!.organizationId,
         category,
-        String(req.params.templateId || '')
+        String(req.params.templateId || ''),
+        req.auth!.userId
       );
+      StaticMetadataCache.invalidate(req.auth!.organizationId, 'current_org_profile');
       res.json({ category, template });
     } catch (err: any) {
       const message = err?.message || 'Failed to set document template default';
       res.status(/not found/i.test(message) ? 404 : 400).json({ error: message });
+    }
+  }
+
+  public static async restoreDocumentTemplateDefault(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const category = String(req.params.category || '');
+      if (!DocumentPdfService.isSupportedCategory(category)) {
+        res.status(400).json({ error: `Unsupported document PDF category: ${category}` });
+        return;
+      }
+      const template = await DocumentTemplateService.restoreBuiltInDefault(
+        db,
+        req.auth!.organizationId,
+        category,
+        req.auth!.userId
+      );
+      StaticMetadataCache.invalidate(req.auth!.organizationId, 'current_org_profile');
+      res.json({ category, template });
+    } catch (err: any) {
+      const message = err?.message || 'Failed to restore document template default';
+      res.status(400).json({ error: message });
+    }
+  }
+
+  public static async getSamplePreviewPdf(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const category = String(req.params.category || '');
+      if (!DocumentPdfService.isSupportedCategory(category)) {
+        res.status(400).json({ error: `Unsupported document PDF category: ${category}` });
+        return;
+      }
+      const requestedTemplateId = typeof req.query.templateId === 'string' ? req.query.templateId : undefined;
+      const customConfig: Record<string, any> = {};
+      if (typeof req.query.paperSize === 'string') customConfig.paperSize = req.query.paperSize;
+      if (typeof req.query.orientation === 'string') customConfig.orientation = req.query.orientation;
+      if (typeof req.query.fontFamily === 'string') customConfig.fontFamily = req.query.fontFamily;
+      if (typeof req.query.primaryColor === 'string') {
+        if (!/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(req.query.primaryColor)) {
+          res.status(400).json({ error: 'Invalid primary brand color hex format' });
+          return;
+        }
+        customConfig.primaryColor = req.query.primaryColor;
+      }
+      if (typeof req.query.accentColor === 'string') {
+        if (!/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(req.query.accentColor)) {
+          res.status(400).json({ error: 'Invalid accent brand color hex format' });
+          return;
+        }
+        customConfig.accentColor = req.query.accentColor;
+      }
+      if (typeof req.query.templateTitle === 'string') customConfig.templateTitle = req.query.templateTitle;
+
+      const result = await DocumentPdfService.generateSamplePreviewPdf(
+        db,
+        req.auth!.organizationId,
+        category,
+        requestedTemplateId,
+        customConfig
+      );
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Length', String(result.pdf.length));
+      res.setHeader('Content-Disposition', `inline; filename="${result.filename}"`);
+      res.setHeader('X-Document-Pdf-Template', result.templateId);
+      res.setHeader('X-Document-Pdf-Sample-Preview', 'true');
+      res.send(result.pdf);
+    } catch (err: any) {
+      const message = err?.message || 'Failed to generate sample PDF preview';
+      res.status(400).json({ error: message });
     }
   }
 
@@ -1674,66 +2207,70 @@ export class FinanceController {
       const orgId = req.auth!.organizationId;
       const { id } = req.params;
       const { recipientEmail, subject, message } = req.body || {};
-
-      const invRes = await db.query('SELECT * FROM invoices WHERE organization_id = $1 AND id = $2', [orgId, id]);
-      if (invRes.rows.length === 0) {
-        res.status(404).json({ error: `Invoice ${id} not found` });
-        return;
-      }
-      let inv = invRes.rows[0];
-      const invStatus = String(inv.status).toUpperCase();
-
-      if (['VOID', 'VOIDED'].includes(invStatus)) {
-        res.status(400).json({ error: 'Cannot send a voided invoice' });
-        return;
-      }
-
-      if (invStatus === 'SUBMITTED') {
-        res.status(422).json({ error: 'Invoice is awaiting approval and cannot be sent until approved and posted' });
-        return;
-      }
-
-      const targetEmail = recipientEmail || inv.client_email;
-      if (!targetEmail) {
-        res.status(400).json({ error: 'Recipient email address is required' });
-        return;
-      }
-
-      if (invStatus === 'DRAFT') {
-        const posted = await SalesEngine.postInvoice(orgId, req.auth!.userId, id);
-        inv = {
-          ...inv,
-          status: posted.status,
-          balance_due: posted.balanceDue,
-          total_amount: posted.totalAmount,
-          invoice_number: posted.invoiceNumber,
-          due_date: posted.dueDate,
-          client_name: posted.customerName || inv.client_name,
-        };
-      }
-
-      await EmailOutboxService.enqueueEmail(
-        targetEmail,
-        'INVOICE_REMINDER',
-        {
-          invoiceNumber: inv.invoice_number,
-          customerName: inv.client_name,
-          amountDue: Number(inv.balance_due ?? inv.total_amount ?? 0),
-          dueDate: inv.due_date,
-          subject: subject || `Invoice ${inv.invoice_number}`,
-          customMessage: message || '',
-        },
-        orgId
-      );
-
-      res.json({
-        success: true,
-        message: `Invoice ${inv.invoice_number} successfully dispatched to ${targetEmail}`,
-      });
+      const queued = await db.transaction(async (client) => {
+        const initial = await client.query('SELECT status, sales_order_id FROM invoices WHERE organization_id = $1 AND id = $2', [orgId, id]);
+        if (!initial.rows.length) throw new Error('INVOICE_NOT_FOUND: Invoice does not exist');
+        let status = String(initial.rows[0].status || '').toUpperCase();
+        if (['VOID', 'VOIDED'].includes(status)) throw new Error('INVOICE_VOIDED: Cannot send a voided invoice');
+        if (status === 'SUBMITTED') throw new Error('INVOICE_APPROVAL_PENDING: Invoice is awaiting approval and cannot be sent until approved and posted');
+        if (status === 'DRAFT') {
+          const canCreate = await RbacService.hasPermissionAsync(orgId, req.auth!.role, 'invoices.create', true);
+          const canPost = await RbacService.hasPermissionAsync(orgId, req.auth!.role, 'accounting.post', true);
+          if (!canCreate && !canPost) throw new Error('INVOICE_POST_PERMISSION_REQUIRED: Posting a draft invoice requires invoice-create or accounting-post permission');
+          // postInvoice owns the canonical sales-order-before-invoice lock order.
+          await SalesEngine.postInvoice(orgId, req.auth!.userId, id, client);
+        }
+        const locked = await client.query('SELECT * FROM invoices WHERE organization_id = $1 AND id = $2 FOR UPDATE', [orgId, id]);
+        if (!locked.rows.length) throw new Error('INVOICE_NOT_FOUND: Invoice does not exist');
+        const invoice = locked.rows[0];
+        status = String(invoice.status || '').toUpperCase();
+        if (!['POSTED', 'OVERDUE', 'PARTIALLY_PAID', 'PAID'].includes(status)) throw new Error('INVOICE_INVALID_STATUS: Invoice is not in a sendable state');
+        const targetEmail = String(recipientEmail || invoice.client_email || '').trim().toLowerCase();
+        if (!targetEmail) throw new Error('RECIPIENT_REQUIRED: Recipient email address is required');
+        let artifact = await DocumentPdfArtifactService.findLatestIssuedArtifact(client, {
+          organizationId: orgId,
+          category: 'invoices',
+          documentId: id,
+        });
+        if (!artifact || !artifact.sourceRevisionRef || String(artifact.sourceRevisionRef) !== String(invoice.edit_version ?? '')) {
+          artifact = await DocumentPdfService.issuePdf(
+            orgId,
+            'invoices',
+            id,
+            req.auth!.userId,
+            newId('pdf-email'),
+            undefined,
+            { reason: 'Invoice email attachment' },
+            client,
+          );
+        }
+        if (artifact.artifactState !== 'ISSUED' || !artifact.pdfBytes || !artifact.pdfSha256) {
+          throw new Error('ISSUED_PDF_UNAVAILABLE: Invoice email requires a retained PDF artifact');
+        }
+        const outboxId = await EmailOutboxService.enqueueEmail(targetEmail, 'INVOICE_SEND', {
+          invoiceNumber: invoice.invoice_number,
+          customerName: invoice.client_name,
+          subject: String(subject || `Invoice ${invoice.invoice_number}`).replace(/[\r\n\x00-\x1f\x7f]/g, ' ').slice(0, 250),
+          customMessage: String(message || '').slice(0, 5000),
+        }, orgId, {
+          invoiceId: id,
+          invoiceEmailKind: 'SEND',
+          attachment: { filename: artifact.filename || 'invoice.pdf', contentType: 'application/pdf', content: artifact.pdfBytes },
+        }, client);
+        await FinanceController.logAudit(orgId, req.auth!.userId, 'INVOICE_EMAIL_QUEUED', 'Invoice', id, {
+          outboxId,
+          recipientEmail: targetEmail,
+          artifactId: artifact.id,
+          attachmentSha256: artifact.pdfSha256,
+        }, client, true);
+        return { outboxId, invoiceNumber: invoice.invoice_number, recipientEmail: targetEmail };
+      }, { organizationId: orgId });
+      res.status(202).json({ state: 'QUEUED', outboxId: queued.outboxId, invoiceNumber: queued.invoiceNumber, recipientEmail: queued.recipientEmail, message: 'Invoice email queued with its PDF attachment. Mail-server acceptance will appear in delivery history.' });
     } catch (err: any) {
       console.error('SEND_INVOICE_EMAIL_ERROR:', err);
-      const isApprovalError = err.message && err.message.includes('APPROVAL_REQUIRED');
-      res.status(isApprovalError ? 422 : 500).json({ error: err.message || 'Failed to send invoice email' });
+      const message = err?.message || 'Failed to queue invoice email';
+      const status = message.startsWith('INVOICE_NOT_FOUND') ? 404 : message.startsWith('INVOICE_APPROVAL_PENDING') ? 422 : message.startsWith('INVOICE_VOIDED') || message.startsWith('INVOICE_INVALID_STATUS') || message.startsWith('RECIPIENT_REQUIRED') ? 400 : message.startsWith('INVOICE_POST_PERMISSION_REQUIRED') ? 403 : message.startsWith('ISSUED_PDF_UNAVAILABLE') ? 409 : 500;
+      res.status(status).json({ error: message.replace(/^[A-Z_]+:\s*/, '') });
     }
   }
 
@@ -1742,33 +2279,44 @@ export class FinanceController {
       const orgId = req.auth!.organizationId;
       const { id } = req.params;
       const { recipientEmail } = req.body || {};
-
-      const invRes = await db.query('SELECT * FROM invoices WHERE organization_id = $1 AND id = $2', [orgId, id]);
-      if (invRes.rows.length === 0) {
-        res.status(404).json({ error: `Invoice ${id} not found` });
-        return;
-      }
-      const inv = invRes.rows[0];
-      const targetEmail = recipientEmail || inv.client_email;
-      if (!targetEmail) {
-        res.status(400).json({ error: 'Recipient email address is required for payment reminder' });
-        return;
-      }
-
-      await EmailOutboxService.enqueueInvoiceReminder(orgId, targetEmail, {
-        invoiceNumber: inv.invoice_number,
-        customerName: inv.client_name,
-        amountDue: Number(inv.balance_due ?? inv.total_amount ?? 0),
-        dueDate: inv.due_date,
-      });
-
-      res.json({
-        success: true,
-        message: `Payment reminder successfully scheduled for ${targetEmail}`,
-      });
+      const queued = await db.transaction(async (client) => {
+        const locked = await client.query('SELECT * FROM invoices WHERE organization_id = $1 AND id = $2 FOR UPDATE', [orgId, id]);
+        if (!locked.rows.length) throw new Error('INVOICE_NOT_FOUND: Invoice does not exist');
+        const invoice = locked.rows[0];
+        const status = String(invoice.status || '').toUpperCase();
+        if (!['POSTED', 'PARTIALLY_PAID'].includes(status)) throw new Error('INVOICE_INVALID_STATUS: Reminders require a posted invoice with an outstanding balance');
+        const amountDue = Number(invoice.balance_due || 0);
+        if (!Number.isFinite(amountDue) || amountDue <= 0) throw new Error('INVOICE_SETTLED: Invoice has no outstanding balance');
+        const targetEmail = String(recipientEmail || invoice.client_email || '').trim().toLowerCase();
+        if (!targetEmail) throw new Error('RECIPIENT_REQUIRED: Recipient email address is required for payment reminder');
+        const outboxId = await EmailOutboxService.enqueueEmail(targetEmail, 'INVOICE_REMINDER', {
+          invoiceNumber: invoice.invoice_number, customerName: invoice.client_name, amountDue,
+          dueDate: invoice.due_date, currency: invoice.currency || '₹',
+        }, orgId, { invoiceId: id, invoiceEmailKind: 'REMINDER' });
+        await FinanceController.logAudit(orgId, req.auth!.userId, 'INVOICE_REMINDER_QUEUED', 'Invoice', id, { outboxId, recipientEmail: targetEmail }, client, true);
+        return { outboxId, invoiceNumber: invoice.invoice_number, recipientEmail: targetEmail };
+      }, { organizationId: orgId });
+      res.status(202).json({ state: 'QUEUED', outboxId: queued.outboxId, invoiceNumber: queued.invoiceNumber, recipientEmail: queued.recipientEmail, message: 'Payment reminder queued. Mail-server acceptance will appear in delivery history.' });
     } catch (err: any) {
-      console.error('SEND_INVOICE_REMINDER_ERROR:', err);
-      res.status(500).json({ error: err.message || 'Failed to send invoice reminder' });
+      const message = err?.message || 'Failed to queue invoice reminder';
+      const status = message.startsWith('INVOICE_NOT_FOUND') ? 404 : message.startsWith('RECIPIENT_REQUIRED') || message.startsWith('INVOICE_SETTLED') || message.startsWith('INVOICE_INVALID_STATUS') ? 400 : 500;
+      res.status(status).json({ error: message.replace(/^[A-Z_]+:\s*/, '') });
+    }
+  }
+
+  public static async getInvoiceEmailDeliveries(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const orgId = req.auth!.organizationId;
+      const invoiceId = String(req.params.id);
+      const invoice = await db.query('SELECT id FROM invoices WHERE organization_id = $1 AND id = $2', [orgId, invoiceId]);
+      if (!invoice.rows.length) { res.status(404).json({ error: 'Invoice not found' }); return; }
+      const deliveries = await db.query(
+        `SELECT id, invoice_email_kind, recipient_email, delivery_status, retry_count, sent_at, created_at
+         FROM outbox_emails WHERE organization_id = $1 AND invoice_id = $2
+         ORDER BY created_at DESC LIMIT 100`, [orgId, invoiceId]);
+      res.json({ deliveries: deliveries.rows.map((row: any) => ({ id: row.id, kind: row.invoice_email_kind, recipientEmail: row.recipient_email, status: row.delivery_status, retryCount: Number(row.retry_count || 0), acceptedAt: row.sent_at, createdAt: row.created_at })) });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Failed to load invoice delivery history' });
     }
   }
 
@@ -1776,41 +2324,98 @@ export class FinanceController {
     try {
       const orgId = req.auth!.organizationId;
       const { id } = req.params;
-
-      const invRes = await db.query('SELECT * FROM invoices WHERE organization_id = $1 AND id = $2', [orgId, id]);
-      if (invRes.rows.length === 0) {
+      const invoiceResult = await db.query('SELECT * FROM invoices WHERE organization_id = $1 AND id = $2', [orgId, id]);
+      const invoice = invoiceResult.rows[0];
+      if (!invoice) {
         res.status(404).json({ error: `Invoice ${id} not found` });
         return;
       }
-      const inv = invRes.rows[0];
-      let journalEntryId = inv.journal_entry_id;
 
-      if (!journalEntryId && inv.invoice_number) {
-        const jeRes = await db.query(
-          'SELECT id FROM journal_entries WHERE organization_id = $1 AND reference = $2 LIMIT 1',
-          [orgId, inv.invoice_number]
-        );
-        if (jeRes.rows.length > 0) {
-          journalEntryId = jeRes.rows[0].id;
+      const hasExplicitJournalId = Object.prototype.hasOwnProperty.call(req.query, 'journalEntryId');
+      let journalEntryId = invoice.journal_entry_id;
+      if (hasExplicitJournalId) {
+        const requestedJournalId = typeof req.query.journalEntryId === 'string' ? req.query.journalEntryId.trim() : '';
+        if (!requestedJournalId) {
+          res.status(404).json({ error: 'Original invoice posting journal not found' });
+          return;
         }
+        const evidenceResult = await db.query(
+          `SELECT command.id AS command_id, command.command_type, command.status AS command_status, command.result,
+                  journal.id AS journal_id, journal.status AS journal_status
+             FROM financial_evidence_links link
+             JOIN financial_commands command
+               ON command.organization_id = link.organization_id AND command.id = link.command_id
+             JOIN journal_entries journal
+               ON journal.organization_id = link.organization_id AND journal.id = link.target_id
+            WHERE link.organization_id = $1 AND link.source_type = 'Invoice' AND link.source_id = $2
+              AND link.relation_type = 'POSTED_TO' AND link.target_type = 'JournalEntry' AND link.target_id = $3
+              AND command.command_type = 'invoice.post'`,
+          [orgId, invoice.id, requestedJournalId],
+        );
+        const evidence = evidenceResult.rows[0];
+        let commandResult: Record<string, any> | null = null;
+        try {
+          const parsed = typeof evidence?.result === 'string' ? JSON.parse(evidence.result) : evidence?.result;
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) commandResult = parsed;
+        } catch {
+          commandResult = null;
+        }
+        const validEvidence = evidence
+          && String(evidence.command_status).toUpperCase() === 'COMPLETED'
+          && String(evidence.journal_status).toUpperCase() === 'POSTED'
+          && evidence.journal_id === requestedJournalId
+          && commandResult?.id === invoice.id
+          && commandResult?.invoiceNumber === invoice.invoice_number
+          && commandResult?.journalEntryId === requestedJournalId;
+        if (!validEvidence) {
+          res.status(404).json({ error: 'Original invoice posting journal not found' });
+          return;
+        }
+        journalEntryId = requestedJournalId;
+      } else if (!journalEntryId && invoice.invoice_number) {
+        const journalResult = await db.query(
+          'SELECT id FROM journal_entries WHERE organization_id = $1 AND reference = $2 LIMIT 1',
+          [orgId, invoice.invoice_number],
+        );
+        if (journalResult.rows.length > 0) journalEntryId = journalResult.rows[0].id;
       }
 
       if (!journalEntryId) {
-        res.status(404).json({ error: `No accounting journal entry found for invoice ${inv.invoice_number}` });
+        res.status(404).json({ error: `No accounting journal entry found for invoice ${invoice.invoice_number}` });
         return;
       }
 
       const drillDown = await DrillDownService.getDrillDown(orgId, journalEntryId);
-      res.json(drillDown);
+      if (hasExplicitJournalId) {
+        if (drillDown.journalEntry.id !== journalEntryId) {
+          res.status(404).json({ error: 'Original invoice posting journal not found' });
+          return;
+        }
+        res.json({
+          ...drillDown,
+          sourceDocument: {
+            type: 'INVOICE',
+            id: invoice.id,
+            documentNumber: invoice.invoice_number,
+            date: String(invoice.issue_date || '').slice(0, 10),
+            partyId: invoice.customer_id || invoice.client_id,
+            partyName: invoice.client_name || 'Customer',
+            amount: Number(invoice.total_amount),
+            status: invoice.status,
+            details: { balanceDue: Number(invoice.balance_due), paidAmount: Number(invoice.paid_amount) },
+          },
+        });
+      } else {
+        res.json(drillDown);
+      }
     } catch (err: any) {
       console.error('GET_INVOICE_JOURNAL_ERROR:', err);
       res.status(500).json({ error: err.message || 'Failed to get invoice journal entry' });
     }
   }
-
   public static async createInvoice(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
-    const { clientId, clientName, clientEmail, projectId, issueDate, dueDate, items, discount, notes, expenseIds } = req.body;
+    const { clientId, clientName, clientEmail, projectId, salespersonId, issueDate, dueDate, items, discount, notes, expenseIds } = req.body;
 
     if (!clientId || !isIsoCalendarDate(issueDate) || !isIsoCalendarDate(dueDate) || dueDate < issueDate || !Array.isArray(items) || items.length === 0) {
       res.status(400).json({ error: 'A tenant client, valid issue/due dates, and at least one line item are required' });
@@ -1829,6 +2434,7 @@ export class FinanceController {
             customerName: clientName,
             customerEmail: clientEmail,
             projectId,
+            salespersonId,
             issueDate,
             dueDate,
             discount: Number(discount || 0),
@@ -1882,6 +2488,7 @@ export class FinanceController {
         status: invoice.status,
         journalEntryId: invoice.journalEntryId,
         commandId: command.commandId,
+        editVersion: String(invoice.editVersion ?? 1),
       });
     } catch (error: any) {
       const message = error?.message || 'Invoice could not be posted';
@@ -1904,6 +2511,17 @@ export class FinanceController {
       return;
     }
 
+    const expectedVersion = req.body?.expectedVersion;
+    if (expectedVersion === undefined || expectedVersion === null || expectedVersion === '') {
+      res.status(428).json({ code: 'INVOICE_EDIT_PRECONDITION_REQUIRED', error: 'Reload this invoice before editing so the current version can be verified.' });
+      return;
+    }
+    if (typeof expectedVersion !== 'string' || !/^[1-9][0-9]{0,18}$/.test(expectedVersion)
+      || BigInt(expectedVersion) > 9223372036854775807n) {
+      res.status(400).json({ code: 'INVALID_INVOICE_EDIT_VERSION', error: 'Invoice edit version must be a valid positive version token.' });
+      return;
+    }
+
     try {
       const invoice = await SalesEngine.updateInvoice(
         orgId,
@@ -1922,7 +2540,8 @@ export class FinanceController {
           terms,
           editReason,
         },
-        req.auth!.userId
+        req.auth!.userId,
+        expectedVersion
       );
 
       res.status(200).json({
@@ -1948,9 +2567,18 @@ export class FinanceController {
         notes: invoice.notes,
         terms: invoice.paymentTerms,
         journalEntryId: invoice.journalEntryId,
+        editVersion: invoice.editVersion,
       });
     } catch (error: any) {
+      if (error?.code === 'INVOICE_EDIT_CONFLICT') {
+        res.status(409).json({ code: 'INVOICE_EDIT_CONFLICT', error: error.message, currentState: error.currentState });
+        return;
+      }
       const message = error?.message || 'Invoice could not be updated';
+      if (message.includes('INVOICE_EDIT_PRECONDITION_REQUIRED')) {
+        res.status(428).json({ code: 'INVOICE_EDIT_PRECONDITION_REQUIRED', error: message });
+        return;
+      }
       if (message.includes('INVOICE_NOT_FOUND')) {
         res.status(404).json({ error: 'Invoice not found' });
         return;
@@ -1972,8 +2600,9 @@ export class FinanceController {
     const orgId = req.auth!.organizationId;
     const result = await db.query(
       `SELECT pr.id AS payment_id, pr.payment_number, pr.client_id, pr.client_name, pr.payment_date,
-              pr.payment_mode, pr.deposit_to_account_id, pr.reference, pr.notes, pr.amount, pr.unallocated_amount, pr.status,
-              allocation.invoice_id,
+              pr.payment_mode, pr.deposit_to_account_id, pr.reference, pr.notes, pr.amount, pr.unallocated_amount, pr.unallocated_amount_before_reversal, pr.status,
+              pr.reversal_journal_id,
+              allocation.invoice_id, allocation.amount AS allocation_amount,
               invoice.invoice_number
          FROM payments_received pr
          LEFT JOIN payment_received_allocations allocation
@@ -1981,7 +2610,7 @@ export class FinanceController {
          LEFT JOIN invoices invoice
            ON invoice.id = allocation.invoice_id AND invoice.organization_id = pr.organization_id
         WHERE pr.organization_id = $1
-        ORDER BY pr.payment_date DESC`,
+        ORDER BY pr.payment_date DESC, pr.id DESC, invoice.invoice_number ASC, allocation.invoice_id ASC`,
       [orgId]
     );
     const payments = new Map<string, any>();
@@ -1993,6 +2622,7 @@ export class FinanceController {
         clientName: row.client_name,
         invoiceId: row.invoice_id,
         invoiceNumbers: new Set<string>(),
+        allocations: [],
         paymentDate: row.payment_date,
         paymentMethod: row.payment_mode,
         depositToAccountId: row.deposit_to_account_id,
@@ -2000,9 +2630,14 @@ export class FinanceController {
         notes: row.notes || '',
         amount: Number(row.amount),
         unallocatedAmount: Number(row.unallocated_amount || 0),
+        unallocatedAmountBeforeReversal: row.unallocated_amount_before_reversal == null ? null : Number(row.unallocated_amount_before_reversal),
         status: row.status,
+        reversalJournalId: row.reversal_journal_id || undefined,
       };
-      if (row.invoice_number) existing.invoiceNumbers.add(row.invoice_number);
+      if (row.invoice_id) {
+        if (row.invoice_number) existing.invoiceNumbers.add(row.invoice_number);
+        existing.allocations.push({ invoiceId: row.invoice_id, invoiceNumber: row.invoice_number || '', amount: Number(row.allocation_amount || 0) });
+      }
       payments.set(row.payment_id, existing);
     }
     res.json(Array.from(payments.values()).map((payment) => ({
@@ -2890,6 +3525,271 @@ export class FinanceController {
     res.json(result.rows);
   }
 
+  private static async syncCustomerClientProjection(
+    client: any,
+    organizationId: string,
+    customer: any,
+    explicitFields: Set<string> = new Set()
+  ): Promise<{ changed: boolean; before: any | null; after: any; customer: any; canonicalRepaired: boolean; promotedFields: string[] }> {
+    const conflictingProjection = await client.query('SELECT * FROM clients WHERE id = $1 FOR UPDATE', [customer.id]);
+    if (conflictingProjection.rows.length > 0 && conflictingProjection.rows[0].organization_id !== organizationId) {
+      throw new Error('CUSTOMER_PROJECTION_INCONSISTENT: Customer compatibility record belongs to another organization');
+    }
+    const existingProjection = conflictingProjection.rows[0];
+    const isMissingMetadata = (value: unknown): boolean => value == null || value === '' ||
+      (Array.isArray(value) && value.length === 0) ||
+      (typeof value === 'object' && !Array.isArray(value) && Object.keys(value as Record<string, unknown>).length === 0);
+    const promotedFields: string[] = [];
+    const repairs: string[] = [];
+    const repairValues: unknown[] = [];
+    if (existingProjection && !explicitFields.has('billingAddress') && isMissingMetadata(customer.billing_address) && !isMissingMetadata(existingProjection.billing_address)) {
+      repairs.push(`billing_address = $${repairs.length + 1}`);
+      repairValues.push(JSON.stringify(existingProjection.billing_address));
+      promotedFields.push('billingAddress');
+    }
+    if (existingProjection && !explicitFields.has('gstin') && isMissingMetadata(customer.gstin) && !isMissingMetadata(existingProjection.tax_id)) {
+      repairs.push(`gstin = $${repairs.length + 1}`);
+      repairValues.push(existingProjection.tax_id);
+      promotedFields.push('gstin');
+    }
+    let canonicalRepaired = false;
+    if (repairs.length > 0) {
+      repairValues.push(organizationId, customer.id);
+      const repaired = await client.query(
+        `UPDATE customers SET ${repairs.join(', ')} WHERE organization_id = $${repairValues.length - 1} AND id = $${repairValues.length} RETURNING *`,
+        repairValues
+      );
+      customer = repaired.rows[0];
+      canonicalRepaired = true;
+    }
+    const chooseValue = (field: string, canonical: unknown, compatibility: unknown, fallback: unknown) =>
+      explicitFields.has(field) || !isMissingMetadata(canonical) ? (canonical ?? fallback) : (compatibility ?? fallback);
+    const selectedAddress = chooseValue('billingAddress', customer.billing_address, existingProjection?.billing_address, '');
+    const customerBillingAddress = isMissingMetadata(selectedAddress)
+      ? ''
+      : typeof selectedAddress === 'string' ? selectedAddress : JSON.stringify(selectedAddress);
+    const projection = {
+      name: customer.display_name,
+      company_name: chooseValue('legalName', customer.legal_name, existingProjection?.company_name, ''),
+      email: chooseValue('email', customer.email, existingProjection?.email, ''),
+      phone: chooseValue('phone', customer.phone, existingProjection?.phone, ''),
+      billing_address: customerBillingAddress,
+      tax_id: chooseValue('gstin', customer.gstin, existingProjection?.tax_id, ''),
+      currency: customer.currency,
+      payment_terms: chooseValue('paymentTerms', customer.payment_terms, existingProjection?.payment_terms, 'Net 30'),
+      notes: chooseValue('notes', customer.notes, existingProjection?.notes, ''),
+    };
+    await client.query(
+      `INSERT INTO clients (id, organization_id, name, company_name, email, phone, billing_address, tax_id, currency, payment_terms, notes, receivables_balance, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+       ON CONFLICT (id) DO UPDATE SET
+         organization_id = EXCLUDED.organization_id,
+         name = EXCLUDED.name,
+         company_name = EXCLUDED.company_name,
+         email = EXCLUDED.email,
+         phone = EXCLUDED.phone,
+         billing_address = EXCLUDED.billing_address,
+         tax_id = EXCLUDED.tax_id,
+         currency = EXCLUDED.currency,
+         payment_terms = EXCLUDED.payment_terms,
+         notes = EXCLUDED.notes
+       WHERE clients.organization_id = EXCLUDED.organization_id`,
+      [
+        customer.id, organizationId, projection.name, projection.company_name, projection.email, projection.phone,
+        projection.billing_address, projection.tax_id, projection.currency, projection.payment_terms, projection.notes,
+        customer.receivables_balance || 0, customer.created_at,
+      ]
+    );
+    const afterResult = await client.query('SELECT * FROM clients WHERE organization_id = $1 AND id = $2', [organizationId, customer.id]);
+    const after = afterResult.rows[0];
+    const changed = !existingProjection || [
+      'name', 'company_name', 'email', 'phone', 'billing_address', 'tax_id', 'currency', 'payment_terms', 'notes',
+    ].some((field) => (existingProjection?.[field] ?? '') !== (after?.[field] ?? ''));
+    return { changed, before: existingProjection || null, after, customer, canonicalRepaired, promotedFields };
+  }
+
+  private static async auditCustomerProjectionRepair(
+    client: any,
+    organizationId: string,
+    userId: string,
+    customerId: string,
+    projectionRepair: { changed: boolean; before: any | null; after: any }
+  ): Promise<void> {
+    if (!projectionRepair.changed) return;
+    await client.query(
+      `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state, after_state)
+       VALUES ($1, $2, $3, 'CUSTOMER_PROJECTION_REPAIRED', 'Customer', $4, $5, $6)`,
+      [newId('aud'), organizationId, userId, customerId,
+        projectionRepair.before ? JSON.stringify(projectionRepair.before) : null, JSON.stringify(projectionRepair.after)]
+    );
+  }
+
+  public static async updateCustomer(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : null;
+    const allowed = new Set([
+      'displayName', 'name', 'legalName', 'companyName', 'customerType', 'gstStatus', 'gstin', 'taxId', 'pan', 'billingAddress',
+      'shippingAddresses', 'placeOfSupply', 'primaryContact', 'additionalContacts', 'email', 'phone',
+      'paymentTerms', 'creditLimit', 'priceListId', 'taxPreferences', 'defaultSalesAccountId', 'salespersonId', 'notes', 'attachments',
+    ]);
+    if (!body || Object.keys(body).some((key) => !allowed.has(key))) {
+      res.status(400).json({ error: 'Customer updates may contain only editable customer metadata' });
+      return;
+    }
+    const metadata = { ...body };
+    if (metadata.displayName === undefined && typeof metadata.name === 'string') metadata.displayName = metadata.name;
+    if (metadata.legalName === undefined && metadata.companyName !== undefined) metadata.legalName = metadata.companyName;
+    if (metadata.gstin === undefined && metadata.taxId !== undefined) metadata.gstin = metadata.taxId;
+    delete metadata.name;
+    delete metadata.companyName;
+    delete metadata.taxId;
+    const boundedString = (key: string, max: number, required = false) => {
+      const value = metadata[key];
+      return value === undefined || (typeof value === 'string' && value.length <= max && (!required || Boolean(value.trim())));
+    };
+    if (
+      (metadata.displayName !== undefined && !boundedString('displayName', 255, true)) ||
+      !boundedString('legalName', 255) || !boundedString('gstin', 50) || !boundedString('pan', 50) ||
+      !boundedString('placeOfSupply', 100) || !boundedString('email', 255) || !boundedString('phone', 50) ||
+      !boundedString('paymentTerms', 50) || !boundedString('notes', 10000) ||
+      (metadata.customerType !== undefined && !['Business', 'Individual'].includes(metadata.customerType)) ||
+      (metadata.gstStatus !== undefined && !['Registered', 'Unregistered', 'Composition', 'SEZ'].includes(metadata.gstStatus)) ||
+      (metadata.email !== undefined && metadata.email !== '' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(metadata.email)) ||
+      (metadata.creditLimit !== undefined && (!Number.isFinite(Number(metadata.creditLimit)) || Number(metadata.creditLimit) < 0 || !Number.isSafeInteger(Math.round(Number(metadata.creditLimit) * 100)) || Math.abs(Number(metadata.creditLimit) * 100 - Math.round(Number(metadata.creditLimit) * 100)) > 1e-7)) ||
+      metadata.priceListId !== undefined ||
+      (metadata.defaultSalesAccountId !== undefined && metadata.defaultSalesAccountId !== null && typeof metadata.defaultSalesAccountId !== 'string') ||
+      (metadata.salespersonId !== undefined && metadata.salespersonId !== null && typeof metadata.salespersonId !== 'string')
+    ) {
+      res.status(400).json({ error: 'Customer metadata is invalid or exceeds the allowed length' });
+      return;
+    }
+    if (metadata.email) metadata.email = metadata.email.trim().toLowerCase();
+    if (metadata.displayName !== undefined) metadata.displayName = metadata.displayName.trim();
+    if (metadata.legalName !== undefined) metadata.legalName = metadata.legalName.trim();
+    if (metadata.phone !== undefined) metadata.phone = metadata.phone.trim();
+    if (metadata.paymentTerms !== undefined) metadata.paymentTerms = metadata.paymentTerms.trim();
+    if (metadata.notes !== undefined) metadata.notes = metadata.notes.trim();
+    const encodedMetadata = JSON.stringify({
+      billingAddress: metadata.billingAddress, shippingAddresses: metadata.shippingAddresses, primaryContact: metadata.primaryContact,
+      additionalContacts: metadata.additionalContacts, taxPreferences: metadata.taxPreferences, attachments: metadata.attachments,
+    });
+    if (Buffer.byteLength(encodedMetadata, 'utf8') > 100_000) {
+      res.status(400).json({ error: 'Customer metadata cannot exceed 100 KB' });
+      return;
+    }
+
+    const columnMap: Record<string, string> = {
+      displayName: 'display_name', legalName: 'legal_name', customerType: 'customer_type', gstStatus: 'gst_status',
+      gstin: 'gstin', pan: 'pan', billingAddress: 'billing_address', shippingAddresses: 'shipping_addresses',
+      placeOfSupply: 'place_of_supply', primaryContact: 'primary_contact', additionalContacts: 'additional_contacts',
+      email: 'email', phone: 'phone', paymentTerms: 'payment_terms', creditLimit: 'credit_limit',
+      taxPreferences: 'tax_preferences', defaultSalesAccountId: 'default_sales_account_id', salespersonId: 'salesperson_id',
+      notes: 'notes', attachments: 'attachments',
+    };
+    try {
+      const result = await db.transaction(async (client) => {
+        const currentResult = await client.query('SELECT * FROM customers WHERE organization_id = $1 AND id = $2 FOR UPDATE', [orgId, req.params.id]);
+        if (currentResult.rows.length !== 1) {
+          const legacy = await client.query('SELECT id FROM clients WHERE organization_id = $1 AND id = $2 FOR UPDATE', [orgId, req.params.id]);
+          if (legacy.rows.length) throw new Error('CUSTOMER_PROJECTION_INCONSISTENT: Customer metadata cannot be changed until its canonical record is restored');
+          throw new Error('CUSTOMER_NOT_FOUND: Customer not found');
+        }
+        const before = currentResult.rows[0];
+        if (before.active === false) throw new Error('CUSTOMER_ARCHIVED: Archived customers cannot be edited');
+        const accountId = metadata.defaultSalesAccountId;
+        if (accountId) {
+          const account = await client.query("SELECT id FROM accounts WHERE organization_id = $1 AND id = $2 AND status = 'Active' AND type = 'Income'", [orgId, accountId]);
+          if (account.rows.length !== 1) throw new Error('DEFAULT_SALES_ACCOUNT_INVALID: Default sales account must be an active income account in this organization');
+        }
+        if (metadata.salespersonId) {
+          const salesperson = await client.query('SELECT id, status FROM salespersons WHERE organization_id = $1 AND id = $2 FOR UPDATE', [orgId, metadata.salespersonId]);
+          if (salesperson.rows.length !== 1) throw new Error('SALESPERSON_INVALID: Customer salesperson does not belong to this organization');
+          if (String(salesperson.rows[0].status || 'ACTIVE').toUpperCase() !== 'ACTIVE') throw new Error('SALESPERSON_INACTIVE: Inactive salespersons cannot be assigned to customers');
+        }
+        const entries = Object.entries(metadata).filter(([key]) => columnMap[key]);
+        let changed = entries.some(([key, value]) => {
+          const column = columnMap[key];
+          const existing = before[column];
+          if (['billingAddress', 'shippingAddresses', 'primaryContact', 'additionalContacts', 'taxPreferences', 'attachments'].includes(key)) {
+            return JSON.stringify(existing ?? (key === 'shippingAddresses' || key === 'additionalContacts' || key === 'attachments' ? [] : {})) !== JSON.stringify(value ?? (key === 'shippingAddresses' || key === 'additionalContacts' || key === 'attachments' ? [] : {}));
+          }
+          if (key === 'creditLimit') return Number(existing || 0) !== Number(value);
+          return (existing ?? '') !== (value ?? '');
+        });
+        let customer = before;
+        if (changed) {
+          const params: unknown[] = [];
+          const assignments = entries.map(([key, rawValue]) => {
+            const value = ['billingAddress', 'shippingAddresses', 'primaryContact', 'additionalContacts', 'taxPreferences', 'attachments'].includes(key)
+              ? JSON.stringify(rawValue ?? (key === 'shippingAddresses' || key === 'additionalContacts' || key === 'attachments' ? [] : {}))
+              : rawValue;
+            params.push(value);
+            return `${columnMap[key]} = $${params.length}`;
+          });
+          params.push(orgId, req.params.id);
+          const updated = await client.query(`UPDATE customers SET ${assignments.join(', ')} WHERE organization_id = $${params.length - 1} AND id = $${params.length} RETURNING *`, params);
+          customer = updated.rows[0];
+        }
+        const projectionRepair = await FinanceController.syncCustomerClientProjection(
+          client, orgId, customer, new Set(entries.map(([key]) => key))
+        );
+        customer = projectionRepair.customer;
+        const canonicalEdited = changed;
+        changed = changed || projectionRepair.canonicalRepaired;
+        if (changed) {
+          await client.query(
+            `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state, after_state)
+             VALUES ($1, $2, $3, $4, 'Customer', $5, $6, $7)`,
+            [newId('aud'), orgId, req.auth!.userId, canonicalEdited ? 'CUSTOMER_UPDATED' : 'CUSTOMER_MASTER_RECONCILED', req.params.id,
+              JSON.stringify(before), JSON.stringify({ ...customer, promotedFields: projectionRepair.promotedFields })]
+          );
+        } else {
+          await FinanceController.auditCustomerProjectionRepair(client, orgId, req.auth!.userId, req.params.id, projectionRepair);
+        }
+        return { customer, changed, projectionRepaired: projectionRepair.changed };
+      }, { organizationId: orgId });
+      res.json({ ...result.customer, id: req.params.id, changed: result.changed, projectionRepaired: result.projectionRepaired });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Customer could not be updated';
+      const status = message.startsWith('CUSTOMER_NOT_FOUND') ? 404 : message.startsWith('CUSTOMER_ARCHIVED') || message.startsWith('CUSTOMER_PROJECTION_INCONSISTENT') ? 409 : 400;
+      res.status(status).json({ error: message.replace(/^[A-Z_]+: /, '') });
+    }
+  }
+
+  public static async archiveCustomer(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const orgId = req.auth!.organizationId;
+    try {
+      const result = await db.transaction(async (client) => {
+        const currentResult = await client.query('SELECT * FROM customers WHERE organization_id = $1 AND id = $2 FOR UPDATE', [orgId, req.params.id]);
+        if (currentResult.rows.length !== 1) {
+          const legacy = await client.query('SELECT id FROM clients WHERE organization_id = $1 AND id = $2 FOR UPDATE', [orgId, req.params.id]);
+          if (legacy.rows.length) throw new Error('CUSTOMER_PROJECTION_INCONSISTENT: Customer cannot be archived until its canonical record is restored');
+          throw new Error('CUSTOMER_NOT_FOUND: Customer not found');
+        }
+        const before = currentResult.rows[0];
+        if (before.active === false) return { customer: before, changed: false, projectionRepaired: false };
+        let customer = (await client.query('UPDATE customers SET active = FALSE WHERE organization_id = $1 AND id = $2 RETURNING *', [orgId, req.params.id])).rows[0];
+        const projectionRepair = await FinanceController.syncCustomerClientProjection(client, orgId, customer);
+        customer = projectionRepair.customer;
+        if (before.active !== false) {
+          await client.query(
+            `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state, after_state)
+             VALUES ($1, $2, $3, 'CUSTOMER_ARCHIVED', 'Customer', $4, $5, $6)`,
+            [newId('aud'), orgId, req.auth!.userId, req.params.id, JSON.stringify(before), JSON.stringify({ ...customer, promotedFields: projectionRepair.promotedFields })]
+          );
+        } else {
+          await FinanceController.auditCustomerProjectionRepair(client, orgId, req.auth!.userId, req.params.id, projectionRepair);
+        }
+        return { customer, changed: true, projectionRepaired: projectionRepair.changed };
+      }, { organizationId: orgId });
+      res.json({ id: req.params.id, archived: true, changed: result.changed, active: false, projectionRepaired: result.projectionRepaired });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Customer could not be archived';
+      const status = message.startsWith('CUSTOMER_NOT_FOUND') ? 404 : message.startsWith('CUSTOMER_PROJECTION_INCONSISTENT') ? 409 : 400;
+      res.status(status).json({ error: message.replace(/^[A-Z_]+: /, '') });
+    }
+  }
+
   public static async createCustomer(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
     const customer = await db.transaction(async (client) => {
@@ -2991,7 +3891,13 @@ export class FinanceController {
       res.status(201).json(invoice);
     } catch (error: any) {
       const message = error?.message || 'Sales order conversion failed';
-      res.status(message.includes('not found') ? 404 : message.includes('already fully invoiced') || message.includes('cannot be converted') ? 409 : 422).json({ error: message });
+      if (/not found/i.test(message)) { res.status(404).json({ error: message }); return; }
+      if (/already fully invoiced|cannot be converted|exceeds the uninvoiced|invoice amount must be greater than zero|invoice requires at least one line|invalid description|invalid amount|fractional cents|partial conversion of a GST-bearing sales order|caller-supplied line items cannot override|selected sales order invoice lines do not match|sales order counters are inconsistent|invoice customer does not match/i.test(message)) {
+        res.status(/cannot be converted|already fully invoiced|exceeds the uninvoiced|counters are inconsistent/i.test(message) ? 409 : 422).json({ error: message });
+        return;
+      }
+      console.error('Sales order invoice conversion failed:', error);
+      res.status(500).json({ error: 'Sales order conversion could not be confirmed; verify status before retrying' });
     }
   }
 
@@ -3007,19 +3913,35 @@ export class FinanceController {
       res.status(201).json(result);
     } catch (error: any) {
       const message = error?.message || 'Sales order fulfillment failed';
-      res.status(message.includes('not found') ? 404 : message.includes('already fully fulfilled') ? 409 : 422).json({ error: message });
+      if (/not found/i.test(message)) { res.status(404).json({ error: message }); return; }
+      if (/already fully fulfilled|cannot fulfill|cannot be fulfilled|exceeds the remaining|must be positive|fractional cents|inconsistent/i.test(message)) {
+        res.status(409).json({ error: message });
+        return;
+      }
+      console.error('Sales order fulfillment failed:', error);
+      res.status(500).json({ error: 'Sales order fulfillment could not be confirmed; verify status before retrying' });
     }
   }
 
   public static async cancelSalesOrder(req: AuthenticatedRequest, res: Response): Promise<void> {
     const orgId = req.auth!.organizationId;
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+    if (reason.length < 3 || reason.length > 1000) {
+      res.status(400).json({ error: 'A cancellation reason between 3 and 1000 characters is required' });
+      return;
+    }
     try {
-      const reason = req.body?.reason || 'Cancelled by user';
       const cancelled = await SalesEngine.cancelSalesOrder(orgId, req.params.id, req.auth!.userId, reason);
       res.json(cancelled);
     } catch (error: any) {
       const message = error?.message || 'Sales order cancellation failed';
-      res.status(message.includes('not found') ? 404 : message.includes('Cannot cancel') ? 409 : 422).json({ error: message });
+      if (/not found/i.test(message)) { res.status(404).json({ error: message }); return; }
+      if (/cannot cancel|cancelled sales order|cancellation reason|must be a valid amount/i.test(message)) {
+        res.status(/cancellation reason/i.test(message) ? 400 : 409).json({ error: message });
+        return;
+      }
+      console.error('Sales order cancellation failed:', error);
+      res.status(500).json({ error: 'Sales order cancellation could not be confirmed; verify status before retrying' });
     }
   }
 
@@ -3042,6 +3964,33 @@ export class FinanceController {
     }
 
     try {
+      if (req.body.salesOrderId) {
+        const order = await SalesEngine.getSalesOrder(orgId, String(req.body.salesOrderId));
+        if (!order) throw new Error('SALES_ORDER_NOT_FOUND: Sales order does not belong to this organization');
+        if (order.customerId !== customerId) throw new Error('SALES_ORDER_CUSTOMER_MISMATCH: Delivery challan customer must match the sales order');
+        const requestedStatus = String(req.body.status || 'ISSUED').trim().toUpperCase();
+        if (requestedStatus !== 'ISSUED') throw new Error('LINKED_CHALLAN_STATUS_INVALID: A sales-order delivery challan must be issued');
+        const fulfillment = await SalesEngine.fulfillSalesOrder(orgId, order.id, req.auth!.userId, {
+          deliveryDate,
+          reason: req.body.reason || 'Supply on Approval',
+          notes: req.body.notes || '',
+          transportDetails: req.body.transportDetails || {},
+          lineItems: req.body.lineItems || [],
+          fulfilledAmount: req.body.fulfilledAmount ?? req.body.totalAmount,
+        });
+        res.status(201).json({
+          ...req.body,
+          id: fulfillment.challanId,
+          challanNumber: fulfillment.challanNumber,
+          customerId: order.customerId,
+          customerName: order.customerName,
+          salesOrderId: order.id,
+          status: 'ISSUED',
+          fulfilledAmount: fulfillment.fulfilledAmount,
+          salesOrder: fulfillment.salesOrder,
+        });
+        return;
+      }
       const result = await db.transaction(async (client) => {
         const custRes = await client.query(
           `SELECT id, display_name AS name FROM customers WHERE organization_id = $1 AND id = $2
@@ -3052,29 +4001,8 @@ export class FinanceController {
           throw new Error('CUSTOMER_NOT_FOUND: Customer does not belong to this organization');
         }
         const resolvedCustomerName = custRes.rows[0].name || req.body.customerName || 'Customer';
-
-        if (req.body.salesOrderId) {
-          const soRes = await client.query(
-            `SELECT id, total_amount, fulfilled_amount, status FROM sales_orders WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
-            [orgId, req.body.salesOrderId]
-          );
-          if (soRes.rows.length === 0) {
-            throw new Error('SALES_ORDER_NOT_FOUND: Sales order does not belong to this organization');
-          }
-          const so = soRes.rows[0];
-          if (so.status === 'CANCELLED') {
-            throw new Error('Cannot create delivery challan for a cancelled sales order');
-          }
-          const totalAmount = Number(so.total_amount || 0);
-          const currentFulfilled = Number(so.fulfilled_amount || 0);
-          const challanAmount = Number(req.body.fulfilledAmount || req.body.totalAmount || (totalAmount - currentFulfilled));
-          const newFulfilled = Math.min(totalAmount, Math.round((currentFulfilled + challanAmount) * 100) / 100);
-          const newStatus = newFulfilled >= totalAmount - 0.009 ? 'FULFILLED' : 'PARTIALLY_FULFILLED';
-          await client.query(
-            `UPDATE sales_orders SET fulfilled_amount = $1, status = $2 WHERE organization_id = $3 AND id = $4`,
-            [newFulfilled, newStatus, orgId, req.body.salesOrderId]
-          );
-        }
+        const standaloneStatus = String(req.body.status || 'DRAFT').trim().toUpperCase();
+        if (!['DRAFT', 'ISSUED', 'DELIVERED', 'IN_TRANSIT'].includes(standaloneStatus)) throw new Error('CHALLAN_STATUS_INVALID: Standalone challan status is invalid');
 
         const id = newId('dc');
         const challanNum = await DocumentNumberingEngine.getNextNumber(orgId, 'DELIVERY_CHALLAN', deliveryDate, undefined, client);
@@ -3090,7 +4018,7 @@ export class FinanceController {
             resolvedCustomerName,
             req.body.salesOrderId || null,
             deliveryDate,
-            req.body.status || 'DRAFT',
+            standaloneStatus,
             req.body.reason || 'Supply on Approval',
             JSON.stringify(req.body.lineItems || []),
             JSON.stringify(req.body.transportDetails || {}),
@@ -3106,8 +4034,16 @@ export class FinanceController {
       res.status(201).json({ ...req.body, ...result });
     } catch (error: any) {
       const message = error?.message || 'Delivery challan could not be created';
-      const statusCode = message.startsWith('CUSTOMER_NOT_FOUND') || message.startsWith('SALES_ORDER_NOT_FOUND') ? 400 : 422;
-      res.status(statusCode).json({ error: message.replace(/^[A-Z_]+: /, '') });
+      if (message.startsWith('CUSTOMER_NOT_FOUND') || message.startsWith('SALES_ORDER_NOT_FOUND') || message.startsWith('SALES_ORDER_CUSTOMER_MISMATCH') || message.startsWith('LINKED_CHALLAN_STATUS_INVALID') || message.startsWith('CHALLAN_STATUS_INVALID')) {
+        res.status(400).json({ error: message.replace(/^[A-Z_]+: /, '') });
+        return;
+      }
+      if (/cannot be fulfilled|cannot fulfill a cancelled|exceeds the remaining|must be positive|no fractional cents|status .*cancelled|inconsistent/i.test(message)) {
+        res.status(409).json({ error: message });
+        return;
+      }
+      console.error('Delivery challan creation failed:', error);
+      res.status(500).json({ error: 'Delivery challan could not be created; verify status before retrying' });
     }
   }
 

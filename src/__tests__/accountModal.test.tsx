@@ -1,12 +1,25 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react';
+import { ApiRequestError, apiClient } from '../api/client';
 import { AccountModal, getNextAvailableAccountCode } from '../components/coa/AccountModal';
 import { Account } from '../types';
 
+beforeEach(() => {
+  vi.restoreAllMocks();
+  vi.clearAllMocks();
+  mockAccountActionGuards.length = 0;
+  accountsForModal = mockAccounts;
+  mockVerifyAccountActionStatus.mockResolvedValue('verified');
+  vi.spyOn(apiClient, 'get').mockImplementation(async (endpoint: string) => endpoint.includes('/usage-impact')
+    ? { data: { balance: 0, totalReferences: 0, references: [], accountingDefaults: [], archiveBlockers: [], deleteBlockers: [], inventoryComplete: true, unclassifiedAccountReferenceColumns: [] }, error: null, status: 200 } as any
+    : { data: null, error: null, status: 200 } as any);
+});
+
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
 });
 
 const mockAccounts: Account[] = [
@@ -42,16 +55,24 @@ const mockAccounts: Account[] = [
   },
 ];
 
+let accountsForModal: Account[] = mockAccounts;
 const mockAddAccount = vi.fn();
 const mockUpdateAccount = vi.fn();
 const mockDeleteAccount = vi.fn();
+const mockVerifyAccountActionStatus = vi.fn();
+const mockAccountActionGuards: any[] = [];
 
 vi.mock('../context/BooksContext', () => ({
   useBooks: () => ({
-    accounts: mockAccounts,
+    accounts: accountsForModal,
     addAccount: mockAddAccount,
     updateAccount: mockUpdateAccount,
     deleteAccount: mockDeleteAccount,
+    currentOrg: { id: 'org-1' },
+    currentUser: { userId: 'user-1' },
+    accountActionUserId: 'user-1',
+    accountActionGuards: mockAccountActionGuards,
+    verifyAccountActionStatus: mockVerifyAccountActionStatus,
   }),
 }));
 
@@ -135,27 +156,156 @@ describe('AccountModal', () => {
     expect(parentPicker.value).toBe('acc-1');
   });
 
-  it('shows Restore to Active button when viewing an archived account', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
-    const archivedAccount = mockAccounts.find((a) => a.id === 'acc-3')!;
-    render(<AccountModal isOpen onClose={vi.fn()} accountToEdit={archivedAccount} />);
-
-    expect(screen.getByRole('button', { name: /restore to active/i })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /^archive$/i })).toBeNull();
-
-    fireEvent.click(screen.getByRole('button', { name: /restore to active/i }));
-    // User confirmation via window.confirm
-    expect(mockUpdateAccount).toHaveBeenCalledWith('acc-3', { status: 'Active' });
-  });
-
-  it('offers deletion for a custom account and delegates the eligibility check to the server', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
-    const account = mockAccounts.find((candidate) => candidate.id === 'acc-3')!;
+  it('cancels an archive confirmation without sending a request', async () => {
+    const account = mockAccounts.find((candidate) => candidate.id === 'acc-1')!;
     render(<AccountModal isOpen onClose={vi.fn()} accountToEdit={account} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }));
+    await waitFor(() => expect((screen.getByRole('button', { name: /^archive$/i }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: /^archive$/i }));
+    expect(screen.getByRole('alertdialog', { name: 'Archive account?' })).toBeTruthy();
+    expect(screen.getByText('1010 · Petty Cash')).toBeTruthy();
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Cancel' }));
 
-    expect(mockDeleteAccount).toHaveBeenCalledWith('acc-3');
+    expect(mockUpdateAccount).not.toHaveBeenCalled();
+    expect(mockDeleteAccount).not.toHaveBeenCalled();
+  });
+
+  it('restores only after an accessible confirmation and sends one request', async () => {
+    const archivedAccount = mockAccounts.find((candidate) => candidate.id === 'acc-3')!;
+    const onClose = vi.fn();
+    mockUpdateAccount.mockResolvedValue({ data: archivedAccount, requestId: 'req-restore', refreshFailed: false });
+    render(<AccountModal isOpen onClose={onClose} accountToEdit={archivedAccount} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /restore to active/i }));
+    expect(screen.getByRole('alertdialog', { name: 'Restore account?' })).toBeTruthy();
+    expect(mockUpdateAccount).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Restore account' }));
+
+    await waitFor(() => expect(mockUpdateAccount).toHaveBeenCalledTimes(1));
+    expect(mockUpdateAccount).toHaveBeenCalledWith('acc-3', { status: 'Active' }, undefined);
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  });
+
+  it('deletes only after confirming the permanent consequence', async () => {
+    const account = mockAccounts.find((candidate) => candidate.id === 'acc-3')!;
+    mockDeleteAccount.mockResolvedValue({
+      data: { deleted: true, id: account.id },
+      requestId: 'req-delete',
+      refreshFailed: false,
+    });
+    render(<AccountModal isOpen onClose={vi.fn()} accountToEdit={account} />);
+
+    await waitFor(() => expect((screen.getByRole('button', { name: /^delete$/i }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }));
+    expect(screen.getByText(/permanently removes the account/i)).toBeTruthy();
+    expect(mockDeleteAccount).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete permanently' }));
+
+    await waitFor(() => expect(mockDeleteAccount).toHaveBeenCalledWith('acc-3', undefined));
+  });
+
+  it('keeps a deterministic rejection in the dialog and allows correction or cancellation', async () => {
+    const account = mockAccounts.find((candidate) => candidate.id === 'acc-1')!;
+    mockUpdateAccount.mockRejectedValue(new ApiRequestError({
+      data: null,
+      error: 'Account has dependent records.',
+      status: 409,
+      requestId: 'req-conflict',
+    }, 'Account could not be archived'));
+    render(<AccountModal isOpen onClose={vi.fn()} accountToEdit={account} />);
+
+    await waitFor(() => expect((screen.getByRole('button', { name: /^archive$/i }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: /^archive$/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Archive account' }));
+
+    expect(await screen.findByText('Account archive was not completed')).toBeTruthy();
+    expect(screen.getByRole('alertdialog', { name: 'Archive account?' })).toBeTruthy();
+    expect(screen.getByText('req-conflict')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Archive account' }).hasAttribute('disabled')).toBe(false);
+  });
+
+  it('blocks another request after an uncertain server outcome', async () => {
+    const account = mockAccounts.find((candidate) => candidate.id === 'acc-1')!;
+    mockAccountActionGuards.push({ organizationId: 'org-1', accountId: account.id, userId: 'user-1', action: 'archive', idempotencyKey: 'uncertain-key', payload: { status: 'Archived' } });
+    mockUpdateAccount.mockRejectedValue(new ApiRequestError({
+      data: null,
+      error: 'Service unavailable.',
+      status: 503,
+      requestId: 'req-uncertain',
+    }, 'Account could not be archived'));
+    render(<AccountModal isOpen onClose={vi.fn()} accountToEdit={account} />);
+
+    await waitFor(() => expect((screen.getByRole('button', { name: /^archive$/i }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: /^archive$/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Archive account' }));
+
+    expect(await screen.findByText('Account archive outcome could not be confirmed')).toBeTruthy();
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(screen.getByRole('button', { name: /^archive$/i }).hasAttribute('disabled')).toBe(false);
+    expect(screen.getByRole('button', { name: 'Save changes' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByText('req-uncertain')).toBeTruthy();
+  });
+
+  it('shows committed-but-stale feedback and blocks another account mutation', async () => {
+    const account = mockAccounts.find((candidate) => candidate.id === 'acc-1')!;
+    mockAccountActionGuards.push({ organizationId: 'org-1', accountId: account.id, userId: 'user-1', action: 'archive', idempotencyKey: 'stale-key', payload: { status: 'Archived' } });
+    mockUpdateAccount.mockResolvedValue({ data: account, requestId: 'req-stale', refreshFailed: true });
+    render(<AccountModal isOpen onClose={vi.fn()} accountToEdit={account} />);
+
+    await waitFor(() => expect((screen.getByRole('button', { name: /^archive$/i }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: /^archive$/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Archive account' }));
+
+    expect(await screen.findByText('Account archive committed; refresh failed')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^archive$/i }).hasAttribute('disabled')).toBe(false);
+    expect(screen.getByRole('button', { name: 'Save changes' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByText('req-stale')).toBeTruthy();
+  });
+
+
+  it('reopens a pending lifecycle action and retries with its original idempotency key', async () => {
+    const account = mockAccounts.find((candidate) => candidate.id === 'acc-1')!;
+    mockAccountActionGuards.push({
+      organizationId: 'org-1', accountId: account.id, userId: 'user-1', action: 'archive',
+      idempotencyKey: 'account-archive-key', payload: { status: 'Archived' },
+      requestId: 'req-archive-pending',
+    });
+    mockVerifyAccountActionStatus.mockResolvedValue('pending');
+    mockUpdateAccount.mockResolvedValue({ data: { ...account, status: 'Archived' }, requestId: 'req-archive-replay', refreshFailed: false });
+    const onClose = vi.fn();
+    render(<AccountModal isOpen onClose={onClose} accountToEdit={account} />);
+
+    await waitFor(() => expect(mockVerifyAccountActionStatus).toHaveBeenCalledWith(account.id, 'org-1'));
+    expect(screen.getByRole('button', { name: 'Verify status' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /^archive$/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Archive account' }));
+
+    await waitFor(() => expect(mockUpdateAccount).toHaveBeenCalledWith(account.id, { status: 'Archived' }, 'account-archive-key'));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+  it('verifies a pending account guard only once across parent rerenders', async () => {
+    const account = mockAccounts.find((candidate) => candidate.id === 'acc-1')!;
+    mockAccountActionGuards.push({ organizationId: 'org-1', accountId: account.id, userId: 'user-1', action: 'archive', idempotencyKey: 'pending-once-key', payload: { status: 'Archived' } });
+    mockVerifyAccountActionStatus.mockResolvedValue('pending');
+    const firstOnClose = vi.fn();
+    const view = render(<AccountModal isOpen onClose={firstOnClose} accountToEdit={account} />);
+    await waitFor(() => expect(mockVerifyAccountActionStatus).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText('Account action is still unresolved')).toBeTruthy();
+
+    view.rerender(<AccountModal isOpen onClose={() => undefined} accountToEdit={account} />);
+    await waitFor(() => expect(screen.getByText('Account action is still unresolved')).toBeTruthy());
+    expect(mockVerifyAccountActionStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a legacy guard without an owner blocked from verify and replay', async () => {
+    const account = mockAccounts.find((candidate) => candidate.id === 'acc-1')!;
+    mockAccountActionGuards.push({ organizationId: 'org-1', accountId: account.id, action: 'archive', idempotencyKey: 'legacy-key', payload: { status: 'Archived' } });
+    render(<AccountModal isOpen onClose={vi.fn()} accountToEdit={account} />);
+
+    expect(await screen.findByText('This older saved action has no recorded owner and is blocked pending manual server-audit reconciliation.')).toBeTruthy();
+    expect(mockVerifyAccountActionStatus).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Verify status' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: 'Review and retry saved action' }).hasAttribute('disabled')).toBe(true);
   });
 
   it('does not offer deletion for a system account', () => {
@@ -163,6 +313,71 @@ describe('AccountModal', () => {
     render(<AccountModal isOpen onClose={vi.fn()} accountToEdit={systemAccount} />);
 
     expect(screen.queryByRole('button', { name: /^delete$/i })).toBeNull();
+  });
+  it('keeps account creation open and blocks resubmission when the committed refresh fails', async () => {
+    const onClose = vi.fn();
+    mockAddAccount.mockResolvedValue({
+      data: { id: 'acc-created', code: '7000', name: 'New Account', type: 'Expense', subType: 'Office & Administrative', balance: 0 },
+      requestId: 'req-account-create',
+      refreshFailed: true,
+    });
+    render(<AccountModal isOpen onClose={onClose} />);
+    fireEvent.change(screen.getByLabelText(/account name/i), { target: { value: 'New Account' } });
+    fireEvent.change(screen.getByLabelText(/account code/i), { target: { value: '7000' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save account' }));
+
+    const receipt = await screen.findByRole('status');
+    expect(receipt.textContent).toContain('Account created; refresh could not verify it');
+    expect(receipt.textContent).toContain('req-account-create');
+    expect(onClose).not.toHaveBeenCalled();
+    expect((screen.getByRole('button', { name: 'Save account' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(mockAddAccount).toHaveBeenCalledTimes(1);
+  });
+  it('preserves a stale account receipt and blocks duplicate create through parent and account-list rerenders', async () => {
+    const onClose = vi.fn();
+    mockAddAccount.mockResolvedValue({
+      data: { id: 'acc-created', code: '7000', name: 'New Account', type: 'Expense', subType: 'Office & Administrative', balance: 0 },
+      requestId: 'req-account-create-rerender',
+      refreshFailed: true,
+    });
+    const { rerender } = render(<AccountModal isOpen onClose={onClose} />);
+    fireEvent.change(screen.getByLabelText(/account name/i), { target: { value: 'New Account' } });
+    fireEvent.change(screen.getByLabelText(/account code/i), { target: { value: '7000' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save account' }));
+    await screen.findByRole('status');
+
+    accountsForModal = [...mockAccounts, { id: 'acc-other', code: '8000', name: 'Other Account', type: 'Expense', subType: 'Office & Administrative', balance: 0 }];
+    rerender(<AccountModal isOpen onClose={() => undefined} />);
+
+    expect(screen.getByRole('status').textContent).toContain('req-account-create-rerender');
+    expect((screen.getByLabelText(/account name/i) as HTMLInputElement).value).toBe('New Account');
+    expect((screen.getByRole('button', { name: 'Save account' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(mockAddAccount).toHaveBeenCalledTimes(1);
+  });
+  it('closes once after the created account is verified in the refreshed list', async () => {
+    const onClose = vi.fn();
+    mockAddAccount.mockResolvedValue({
+      data: { id: 'acc-created', code: '7000', name: 'New Account', type: 'Expense', subType: 'Office & Administrative', balance: 0 },
+      requestId: 'req-account-create-ok',
+      refreshFailed: false,
+    });
+    render(<AccountModal isOpen onClose={onClose} />);
+    fireEvent.change(screen.getByLabelText(/account name/i), { target: { value: 'New Account' } });
+    fireEvent.change(screen.getByLabelText(/account code/i), { target: { value: '7000' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save account' }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  });
+
+  it('keeps a deterministic account rejection inline and permits correction', async () => {
+    mockAddAccount.mockRejectedValue(new ApiRequestError({ data: null, error: 'Code already exists', status: 409, errorCode: 'ACCOUNT_CODE_CONFLICT' }, 'Account could not be created'));
+    render(<AccountModal isOpen onClose={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText(/account name/i), { target: { value: 'New Account' } });
+    fireEvent.change(screen.getByLabelText(/account code/i), { target: { value: '7000' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save account' }));
+
+    expect((await screen.findByRole('alert')).textContent).toContain('Code already exists');
+    expect((screen.getByRole('button', { name: 'Save account' }) as HTMLButtonElement).disabled).toBe(false);
   });
   it('interactively updates the aside preview card when hovering over account types or filtering by category', () => {
     render(<AccountModal isOpen onClose={vi.fn()} />);

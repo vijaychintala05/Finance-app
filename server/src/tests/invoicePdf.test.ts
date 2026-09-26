@@ -155,7 +155,7 @@ describe('Invoice PDF Generation & Data Integrity Tests', () => {
     const invoiceId = invoice.id;
 
     // Fetch PDF
-    const pdfRes = await getPdfResponse(`/api/v1/finance/invoices/${invoiceId}/pdf`, authHeaderA);
+    const pdfRes = await getPdfResponse(`/api/v1/finance/documents/invoices/${invoiceId}/pdf?preview=true`, authHeaderA);
 
     expect(pdfRes.status).toBe(200);
     expect(pdfRes.headers['content-type']).toMatch(/application\/pdf/);
@@ -230,7 +230,7 @@ describe('Invoice PDF Generation & Data Integrity Tests', () => {
     expect(invRes.status).toBe(201);
     const invoiceId = (invRes.body.invoice || invRes.body).id;
 
-    const pdfRes = await getPdfResponse(`/api/v1/finance/invoices/${invoiceId}/pdf`, authHeaderA);
+    const pdfRes = await getPdfResponse(`/api/v1/finance/documents/invoices/${invoiceId}/pdf?preview=true`, authHeaderA);
     expect(pdfRes.status).toBe(200);
 
     const buffer = pdfRes.body instanceof Buffer ? pdfRes.body : Buffer.from(pdfRes.text || pdfRes.body);

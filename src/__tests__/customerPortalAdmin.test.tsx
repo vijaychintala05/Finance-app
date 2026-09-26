@@ -52,6 +52,34 @@ describe('CustomerPortalView admin customer loading', () => {
     expect(getMock).toHaveBeenCalledWith('/finance/clients');
   });
 
+  it('keeps manual token entry behind an accessible disclosure when customers are available', async () => {
+    render(<CustomerPortalView />);
+    await screen.findByRole('combobox', { name: 'Customer' });
+
+    const tokenPanel = () => document.getElementById('manual-portal-token-entry');
+    expect(tokenPanel()?.hidden).toBe(true);
+    const disclosure = screen.getByRole('button', { name: 'Enter an existing portal token' });
+    expect(disclosure.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(disclosure);
+    const tokenInput = screen.getByLabelText('Portal token');
+    expect(tokenPanel()?.hidden).toBe(false);
+    expect((tokenInput as HTMLInputElement).type).toBe('password');
+    expect(screen.getByRole('button', { name: 'Access' }).hasAttribute('disabled')).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide manual token entry' }));
+    expect(tokenPanel()?.hidden).toBe(true);
+  });
+
+  it('keeps manual token entry available when there are no customers to select', async () => {
+    getMock.mockResolvedValueOnce({ data: [], error: null, status: 200 });
+    render(<CustomerPortalView />);
+    const tokenInput = await screen.findByLabelText('Portal token');
+
+    expect((tokenInput as HTMLInputElement).type).toBe('password');
+    expect(document.getElementById('manual-portal-token-entry')?.hidden).toBe(false);
+    expect(screen.queryByRole('button', { name: 'Enter an existing portal token' })).toBeNull();
+  });
+
   it('keeps portal-link generation failures visible with recovery guidance', async () => {
     const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => undefined);
     postMock.mockResolvedValue({ data: null, error: 'Token service unavailable', status: 503 });

@@ -8,6 +8,7 @@ import {
   Clock,
   CreditCard,
   Download,
+  Eye,
   FileText,
   FolderKanban,
   ImagePlus,
@@ -21,12 +22,24 @@ import {
   User,
   X,
 } from 'lucide-react';
-import { Expense } from '../../types';
+import { Expense, ExpenseReceiptAttachment } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate } from '../../utils/formatters';
-import { apiClient } from '../../api/client';
+import { ApiRequestError, apiClient } from '../../api/client';
 import { compressReceiptImage, MAX_RECEIPT_IMAGES } from './receiptUpload';
 import { TransactionHistoryTab } from '../common/TransactionHistoryTab';
+import { OperationNoticeBanner } from '../common/OperationNoticeBanner';
+import { ImageLightboxModal } from '../common/ImageLightboxModal';
+import { committedButStaleNotice, mutationExceptionNotice, type OperationNotice } from '../../utils/operationNotice';
+
+async function requestExpenseVoucherPdf(id: string) {
+  const endpoint = `/finance/documents/expenses/${encodeURIComponent(id)}/pdf`;
+  const issued = await apiClient.postBlob(endpoint + '/issue', {});
+  if (issued.error && /only finalized documents/i.test(issued.error)) {
+    return apiClient.getBlob(endpoint + '?preview=true');
+  }
+  return issued;
+}
 
 interface ExpenseDetailsModalProps {
   isOpen: boolean;
@@ -40,6 +53,7 @@ interface VoucherPreviewProps {
   currencySymbol: string;
   journal?: { entryNumber: string; date: string; lines: Array<{ id: string; accountCode?: string; accountName: string; debit: number; credit: number }> };
   receiptUrls: Record<string, string>;
+  onPreviewReceipt?: (attachment: ExpenseReceiptAttachment) => void;
 }
 
 interface ExpenseEvidenceLink {
@@ -63,7 +77,7 @@ function evidenceDescription(link: ExpenseEvidenceLink): string {
   return `${link.relation_type.replaceAll('_', ' ').toLowerCase()} ${link.target_type.replace(/([a-z])([A-Z])/g, '$1 $2')}`;
 }
 
-const VoucherPreview: React.FC<VoucherPreviewProps> = ({ expense, currencySymbol, journal, receiptUrls }) => {
+const VoucherPreview: React.FC<VoucherPreviewProps> = ({ expense, currencySymbol, journal, receiptUrls, onPreviewReceipt }) => {
   const lines = journal?.lines || [
     { id: 'expense-debit', accountCode: '', accountName: expense.accountName || 'Expense account', debit: expense.amount, credit: 0 },
     { id: 'expense-credit', accountCode: '', accountName: expense.paidFromAccountName || 'Paid-through account', debit: 0, credit: expense.amount },
@@ -123,7 +137,33 @@ const VoucherPreview: React.FC<VoucherPreviewProps> = ({ expense, currencySymbol
         </div>
 
         {expense.description && <div className="mt-5 border-t border-slate-100 pt-4 dark:border-slate-800"><p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Memo</p><p className="mt-1 whitespace-pre-wrap text-sm text-slate-700 dark:text-slate-200">{expense.description}</p></div>}
-        {expense.receiptAttachments?.length ? <div className="mt-5 border-t border-slate-100 pt-4 dark:border-slate-800"><p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Attached evidence</p><div className="mt-3 flex flex-wrap gap-2">{expense.receiptAttachments.map((attachment) => <a key={attachment.id} href={receiptUrls[attachment.id]} target="_blank" rel="noreferrer" className="block h-16 w-16 overflow-hidden rounded-md border border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800">{receiptUrls[attachment.id] ? <img src={receiptUrls[attachment.id]} alt={attachment.fileName} className="h-full w-full object-cover" /> : <Paperclip className="m-5 h-5 w-5 text-slate-400" />}</a>)}</div></div> : null}
+        {expense.receiptAttachments?.length ? (
+          <div className="mt-5 border-t border-slate-100 pt-4 dark:border-slate-800">
+            <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Attached evidence</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {expense.receiptAttachments.map((attachment) => (
+                <button
+                  type="button"
+                  key={attachment.id}
+                  onClick={() => onPreviewReceipt?.(attachment)}
+                  className="group relative block h-16 w-16 overflow-hidden rounded-md border border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800 cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500 text-left"
+                  title={`View receipt: ${attachment.fileName}`}
+                >
+                  {receiptUrls[attachment.id] ? (
+                    <>
+                      <img src={receiptUrls[attachment.id]} alt={attachment.fileName} className="h-full w-full object-cover transition-transform duration-150 group-hover:scale-105" />
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+                        <Eye className="h-4 w-4 text-white" />
+                      </div>
+                    </>
+                  ) : (
+                    <Paperclip className="m-5 h-5 w-5 text-slate-400" />
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -139,6 +179,7 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
   const [currentExpense, setCurrentExpense] = useState<Expense | null>(expense);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
   const [receiptUrls, setReceiptUrls] = useState<Record<string, string>>({});
+  const [previewImage, setPreviewImage] = useState<{ url: string; fileName: string; byteSize?: number } | null>(null);
   const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
   const [isConvertingToInvoice, setIsConvertingToInvoice] = useState(false);
   const [showJournal, setShowJournal] = useState(false);
@@ -147,6 +188,11 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
   const [isReceiptDragActive, setIsReceiptDragActive] = useState(false);
   const [evidence, setEvidence] = useState<ExpenseEvidenceLink[]>([]);
   const [isEvidenceLoading, setIsEvidenceLoading] = useState(false);
+  const [notice, setNotice] = useState<OperationNotice | null>(null);
+  const [showConvertDialog, setShowConvertDialog] = useState(false);
+  const [showVoidDialog, setShowVoidDialog] = useState(false);
+  const [voidReason, setVoidReason] = useState('');
+  const [isVoiding, setIsVoiding] = useState(false);
   const receiptInputRef = useRef<HTMLInputElement>(null);
   const activeExpenseForReceipts = currentExpense || expense;
 
@@ -154,6 +200,10 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
     setCurrentExpense(expense);
     setShowJournal(false);
     setViewMode('details');
+    setNotice(null);
+    setShowConvertDialog(false);
+    setShowVoidDialog(false);
+    setVoidReason('');
   }, [expense]);
 
   useEffect(() => {
@@ -206,20 +256,32 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
     ? journalEntries.find((journal) => journal.id === activeExpense.journalEntryId)
     : undefined;
 
-  const handleConvertToInvoice = async () => {
+  const handleConvertToInvoice = async (event: React.FormEvent) => {
+    event.preventDefault();
     if (!activeExpense?.id) return;
-    const confirmMsg = `Convert expense #${activeExpense.referenceNumber} (${formatCurrency(activeExpense.amount, settings.currencySymbol)}) into a customer invoice for ${activeExpense.clientName || 'the customer'}?`;
-    if (!window.confirm(confirmMsg)) return;
-
     try {
       setIsConvertingToInvoice(true);
       setShowMoreMenu(false);
-      const res = await convertExpenseToInvoice(activeExpense.id);
+      setNotice(null);
+      const result = await convertExpenseToInvoice(activeExpense.id);
+      const res = result.data;
       if (res?.invoice) {
         const isBilled = Boolean(res.expense?.isBilled);
-        window.alert(isBilled
-          ? `Successfully created Invoice #${res.invoice.invoiceNumber || res.invoice.id} for this expense!`
-          : `Invoice #${res.invoice.invoiceNumber || res.invoice.id} was submitted for approval. This expense will be marked billed after the invoice is posted.`);
+        const invoiceNumber = res.invoice.invoiceNumber || res.invoice.id;
+        setNotice(result.refreshFailed
+          ? committedButStaleNotice(
+              'Expense conversion committed; refreshed state unavailable',
+              `Invoice ${invoiceNumber} was created or submitted, but the refreshed expense could not be loaded.`,
+              result.requestId
+            )
+          : {
+              tone: 'success',
+              title: isBilled ? 'Expense converted to invoice' : 'Invoice submitted for approval',
+              message: isBilled
+                ? `Invoice ${invoiceNumber} was created and this expense is now billed.`
+                : `Invoice ${invoiceNumber} was submitted for approval. The expense will be marked billed after posting.`,
+              requestId: result.requestId,
+            });
         setCurrentExpense((prev) => prev ? ({
           ...prev,
           isBilled,
@@ -227,8 +289,13 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
           customerInvoiceNumber: res.invoice.invoiceNumber,
         }) : null);
       }
-    } catch (err: any) {
-      window.alert('Failed to convert expense to invoice: ' + (err.message || 'Unknown error'));
+      setShowConvertDialog(false);
+    } catch (error) {
+      setNotice(mutationExceptionNotice(error, {
+        action: 'Expense conversion',
+        failureTitle: 'Expense was not converted',
+        uncertainTitle: 'Expense conversion outcome could not be confirmed',
+      }));
     } finally {
       setIsConvertingToInvoice(false);
     }
@@ -239,20 +306,20 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
     try {
       setIsDownloadingPdf(true);
       setShowMoreMenu(false);
-      const res = await apiClient.getBlob(`/finance/documents/expenses/${activeExpense.id}/pdf`);
-      if (res.data) {
-        const blob = new Blob([res.data], { type: 'application/pdf' });
-        const url = window.URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `ExpenseVoucher-${activeExpense.referenceNumber || activeExpense.id}.pdf`;
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        window.URL.revokeObjectURL(url);
-      }
-    } catch (err: any) {
-      window.alert('Failed to download expense voucher PDF: ' + (err.message || 'Unknown error'));
+      const res = await requestExpenseVoucherPdf(activeExpense.id);
+      if (!res.data) throw new ApiRequestError(res, 'Expense voucher PDF could not be generated');
+      const blob = new Blob([res.data], { type: 'application/pdf' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `ExpenseVoucher-${activeExpense.referenceNumber || activeExpense.id}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      setNotice({ tone: 'success', title: 'Expense voucher downloaded', message: `The certified voucher for ${activeExpense.referenceNumber} was prepared.`, requestId: res.requestId });
+    } catch (error) {
+      setNotice({ tone: 'error', title: 'Expense voucher was not downloaded', message: error instanceof Error ? error.message : 'The voucher could not be generated.', recovery: 'Try again. The expense record was not changed.' });
     } finally {
       setIsDownloadingPdf(false);
     }
@@ -264,19 +331,20 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
     try {
       setIsDownloadingPdf(true);
       setShowMoreMenu(false);
-      const response = await apiClient.getBlob(`/finance/documents/expenses/${activeExpense.id}/pdf`);
+      const response = await requestExpenseVoucherPdf(activeExpense.id);
       if (!response.data) throw new Error(response.error || 'Voucher PDF could not be generated');
       const url = URL.createObjectURL(new Blob([response.data], { type: 'application/pdf' }));
       if (printWindow) {
         printWindow.location.href = url;
         window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+        setNotice({ tone: 'success', title: 'Print-ready voucher opened', message: `The voucher for ${activeExpense.referenceNumber} opened in a new window.`, requestId: response.requestId });
       } else {
         URL.revokeObjectURL(url);
         throw new Error('Your browser blocked the print window. Allow pop-ups and try again.');
       }
-    } catch (error: any) {
+    } catch (error) {
       printWindow?.close();
-      window.alert('Failed to open print-ready voucher: ' + (error.message || 'Unknown error'));
+      setNotice({ tone: 'error', title: 'Print-ready voucher did not open', message: error instanceof Error ? error.message : 'The voucher could not be opened.', recovery: 'Allow pop-ups for this site, then try again. The expense was not changed.' });
     } finally {
       setIsDownloadingPdf(false);
     }
@@ -287,19 +355,27 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
     const currentCount = activeExpense.receiptAttachments?.length || 0;
     const selected = Array.from(files);
     if (currentCount + selected.length > MAX_RECEIPT_IMAGES) {
-      window.alert(`This expense can have up to ${MAX_RECEIPT_IMAGES} receipt images. ${MAX_RECEIPT_IMAGES - currentCount} slot(s) remain.`);
+      setNotice({ tone: 'error', title: 'Receipt limit reached', message: `This expense can have up to ${MAX_RECEIPT_IMAGES} receipt images. ${MAX_RECEIPT_IMAGES - currentCount} slot(s) remain.` });
       return;
     }
     try {
       setIsAttachingReceipts(true);
-      const attachments = await attachExpenseReceipts(activeExpense.id, await Promise.all(selected.map(compressReceiptImage)));
+      const result = await attachExpenseReceipts(activeExpense.id, await Promise.all(selected.map(compressReceiptImage)));
+      const attachments = result.data;
       setCurrentExpense((current) => current ? {
         ...current,
         receiptAttachments: [...(current.receiptAttachments || []), ...attachments],
         receiptFileName: current.receiptFileName || attachments[0]?.fileName,
       } : current);
-    } catch (error: any) {
-      window.alert('Receipt images could not be attached: ' + (error.message || 'Unknown error'));
+      setNotice(result.refreshFailed
+        ? committedButStaleNotice('Receipts attached; refreshed state unavailable', 'The receipt evidence was committed, but the refreshed expense could not be loaded.', result.requestId)
+        : { tone: 'success', title: 'Receipt evidence attached', message: `${attachments.length} receipt image${attachments.length === 1 ? '' : 's'} added to ${activeExpense.referenceNumber}.`, requestId: result.requestId });
+    } catch (error) {
+      setNotice(mutationExceptionNotice(error, {
+        action: 'Receipt attachment',
+        failureTitle: 'Receipt images were not attached',
+        uncertainTitle: 'Receipt attachment outcome could not be confirmed',
+      }));
     } finally {
       setIsAttachingReceipts(false);
       if (receiptInputRef.current) receiptInputRef.current.value = '';
@@ -312,9 +388,33 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
     void handleReceiptSelection(event.dataTransfer.files);
   };
 
+  const handleVoidExpense = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (isVoiding || voidReason.trim().length < 3) return;
+    try {
+      setIsVoiding(true);
+      setNotice(null);
+      const result = await deleteExpense(activeExpense.id, voidReason.trim());
+      setCurrentExpense((current) => current ? { ...current, status: 'VOIDED' } : current);
+      setShowVoidDialog(false);
+      setVoidReason('');
+      setNotice(result.refreshFailed
+        ? committedButStaleNotice('Expense voided; refreshed state unavailable', `${activeExpense.referenceNumber} and its reversal were committed, but the refreshed expense could not be loaded.`, result.requestId)
+        : { tone: 'success', title: 'Expense voided', message: `${activeExpense.referenceNumber} remains in history with its audited reversal.`, requestId: result.requestId });
+    } catch (error) {
+      setNotice(mutationExceptionNotice(error, {
+        action: 'Expense void',
+        failureTitle: 'Expense was not voided',
+        uncertainTitle: 'Expense void outcome could not be confirmed',
+      }));
+    } finally {
+      setIsVoiding(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 z-50 animate-fade-in overflow-y-auto">
-      <div className="bg-white dark:bg-slate-900 rounded-lg max-w-5xl w-full overflow-hidden shadow-2xl border border-slate-200 dark:border-slate-800 my-auto">
+      <div role="dialog" aria-modal="true" aria-labelledby="expense-details-title" className="bg-white dark:bg-slate-900 rounded-lg max-w-5xl w-full overflow-hidden shadow-2xl border border-slate-200 dark:border-slate-800 my-auto">
         {/* TOP BAR */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 sticky top-0 z-10">
           <div className="flex items-center space-x-3">
@@ -326,7 +426,7 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
               <ArrowLeft className="w-5 h-5" />
             </button>
             <div>
-              <h3 className="text-base font-bold text-slate-900 dark:text-slate-100">Expense details</h3>
+              <h3 id="expense-details-title" className="text-base font-bold text-slate-900 dark:text-slate-100">Expense details</h3>
               <p className="mt-0.5 text-[11px] font-mono text-slate-500 dark:text-slate-400">{activeExpense.referenceNumber}</p>
             </div>
           </div>
@@ -343,7 +443,10 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
             {activeExpense.isBillable && !activeExpense.isBilled && activeExpense.status !== 'VOIDED' && (
               <button
                 type="button"
-                onClick={handleConvertToInvoice}
+                onClick={() => {
+                  setNotice(null);
+                  setShowConvertDialog(true);
+                }}
                 disabled={isConvertingToInvoice}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 transition-colors shadow-xs disabled:opacity-50 cursor-pointer"
                 title="Convert this recoverable expense into a Customer Invoice"
@@ -378,6 +481,8 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
 
             <button
               onClick={() => setShowMoreMenu(!showMoreMenu)}
+              aria-label="More actions"
+              title="More actions"
               className="p-2 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 cursor-pointer transition-colors"
             >
               <MoreVertical className="w-4 h-4" />
@@ -387,7 +492,11 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
               <div className="absolute right-0 top-12 w-48 bg-white dark:bg-slate-800 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-700 py-2 z-20">
                 {activeExpense.isBillable && !activeExpense.isBilled && activeExpense.status !== 'VOIDED' && (
                   <button
-                    onClick={handleConvertToInvoice}
+                    onClick={() => {
+                      setShowMoreMenu(false);
+                      setNotice(null);
+                      setShowConvertDialog(true);
+                    }}
                     disabled={isConvertingToInvoice}
                     className="w-full text-left px-4 py-2 text-xs font-semibold text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950 flex items-center space-x-2"
                   >
@@ -426,9 +535,8 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
                   <button
                     onClick={() => {
                       setShowMoreMenu(false);
-                      if (confirm(`Void expense #${activeExpense.referenceNumber} by posting an audited reversal?`)) {
-                        void deleteExpense(activeExpense.id).then(onClose).catch((error) => window.alert(error.message));
-                      }
+                      setNotice(null);
+                      setShowVoidDialog(true);
                     }}
                     className="w-full text-left px-4 py-2 text-xs font-semibold text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950 flex items-center space-x-2"
                   >
@@ -441,6 +549,8 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
           </div>
         </div>
 
+        {notice && !showConvertDialog && !showVoidDialog && <div className="border-b border-slate-100 px-5 py-3 dark:border-slate-800"><OperationNoticeBanner notice={notice} /></div>}
+
         <div className="flex items-center justify-between gap-3 border-b border-slate-100 bg-slate-50/60 px-5 py-2.5 dark:border-slate-800 dark:bg-slate-900/60">
           <div role="tablist" aria-label="Expense display mode" className="inline-flex rounded-md border border-slate-200 bg-white p-0.5 dark:border-slate-700 dark:bg-slate-800">
             <button type="button" role="tab" aria-selected={viewMode === 'details'} onClick={() => setViewMode('details')} className={`rounded px-3 py-1.5 text-xs font-semibold transition-colors ${viewMode === 'details' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-700'}`}>Details</button>
@@ -451,7 +561,22 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
           <p className="hidden text-xs text-slate-500 sm:block">Evidence can be added without correcting the posted record.</p>
         </div>
 
-        {viewMode === 'voucher' && <div className="max-h-[80vh] overflow-y-auto bg-slate-50 p-5 dark:bg-slate-950"><VoucherPreview expense={activeExpense} currencySymbol={settings.currencySymbol} journal={postingJournal} receiptUrls={receiptUrls} /></div>}
+        {viewMode === 'voucher' && (
+          <div className="max-h-[80vh] overflow-y-auto bg-slate-50 p-5 dark:bg-slate-950">
+            <VoucherPreview
+              expense={activeExpense}
+              currencySymbol={settings.currencySymbol}
+              journal={postingJournal}
+              receiptUrls={receiptUrls}
+              onPreviewReceipt={(att) => {
+                const url = receiptUrls[att.id];
+                if (url) {
+                  setPreviewImage({ url, fileName: att.fileName, byteSize: att.byteSize });
+                }
+              }}
+            />
+          </div>
+        )}
 
         {viewMode === 'activity' && (
           <section role="tabpanel" aria-label="Expense activity" className="max-h-[80vh] overflow-y-auto p-5 sm:p-7">
@@ -689,10 +814,32 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
               {activeExpense.receiptAttachments && activeExpense.receiptAttachments.length > 0 && (
                 <div className="mb-3 grid grid-cols-3 gap-2">
                   {activeExpense.receiptAttachments.map((attachment) => (
-                    <a key={attachment.id} href={receiptUrls[attachment.id] || undefined} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-md border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800">
-                      {receiptUrls[attachment.id] ? <img src={receiptUrls[attachment.id]} alt={attachment.fileName} className="aspect-square w-full object-cover" /> : <div className="grid aspect-square place-items-center text-[10px] text-slate-400">Loading...</div>}
+                    <button
+                      type="button"
+                      key={attachment.id}
+                      onClick={() => {
+                        const url = receiptUrls[attachment.id];
+                        if (url) {
+                          setPreviewImage({ url, fileName: attachment.fileName, byteSize: attachment.byteSize });
+                        }
+                      }}
+                      className="group relative block w-full overflow-hidden rounded-md border border-slate-200 bg-white text-left transition-all hover:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-700 dark:bg-slate-800 dark:hover:border-blue-500 cursor-pointer"
+                      title={`View ${attachment.fileName}`}
+                    >
+                      {receiptUrls[attachment.id] ? (
+                        <div className="relative aspect-square w-full overflow-hidden bg-slate-100 dark:bg-slate-900">
+                          <img src={receiptUrls[attachment.id]} alt={attachment.fileName} className="aspect-square w-full object-cover transition-transform duration-150 group-hover:scale-105" />
+                          <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+                            <span className="flex items-center gap-1 rounded bg-black/75 px-2 py-0.5 text-[9px] font-medium text-white shadow-sm">
+                              <Eye className="h-3 w-3" /> View
+                            </span>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="grid aspect-square place-items-center text-[10px] text-slate-400">Loading...</div>
+                      )}
                       <span className="block truncate px-1.5 py-1 text-[9px] font-medium text-slate-600 dark:text-slate-300">{attachment.fileName}</span>
-                    </a>
+                    </button>
                   ))}
                 </div>
               )}
@@ -794,6 +941,59 @@ export const ExpenseDetailsModal: React.FC<ExpenseDetailsModalProps> = ({
           </div>
         </div>
       </div>
+
+      {showConvertDialog && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs">
+          <form role="dialog" aria-modal="true" aria-labelledby="convert-expense-title" onSubmit={handleConvertToInvoice} className="w-full max-w-md space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-100 pb-3 dark:border-slate-800">
+              <div>
+                <h3 id="convert-expense-title" className="text-sm font-bold text-slate-900 dark:text-white">Convert {activeExpense.referenceNumber} to an invoice?</h3>
+                <p className="mt-1 text-[11px] text-slate-500">Create a customer invoice for {formatCurrency(activeExpense.amount, settings.currencySymbol)} of recoverable cost.</p>
+              </div>
+              <button type="button" aria-label="Close conversion confirmation" disabled={isConvertingToInvoice} onClick={() => setShowConvertDialog(false)} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 disabled:opacity-50 dark:hover:bg-slate-800"><X className="h-4 w-4" /></button>
+            </div>
+            <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900 dark:border-blue-900/50 dark:bg-blue-950/40 dark:text-blue-200">
+              Customer: {activeExpense.clientName || 'Assigned customer'}. The expense is marked billed only after the invoice posts successfully.
+            </div>
+            {notice && <OperationNoticeBanner notice={notice} />}
+            <div className="flex justify-end gap-2">
+              <button type="button" disabled={isConvertingToInvoice} onClick={() => setShowConvertDialog(false)} className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold disabled:opacity-50 dark:border-slate-700">Keep unbilled</button>
+              <button type="submit" disabled={isConvertingToInvoice} className="rounded-xl bg-blue-600 px-4 py-2 text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-50">{isConvertingToInvoice ? 'Converting...' : 'Create customer invoice'}</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {showVoidDialog && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs">
+          <form role="dialog" aria-modal="true" aria-labelledby="void-expense-title" onSubmit={handleVoidExpense} className="w-full max-w-md space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-100 pb-3 dark:border-slate-800">
+              <div>
+                <h3 id="void-expense-title" className="text-sm font-bold text-slate-900 dark:text-white">Void expense {activeExpense.referenceNumber}?</h3>
+                <p className="mt-1 text-[11px] text-slate-500">This posts an audited reversal and keeps the original expense in history.</p>
+              </div>
+              <button type="button" aria-label="Close void expense confirmation" disabled={isVoiding} onClick={() => setShowVoidDialog(false)} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 disabled:opacity-50 dark:hover:bg-slate-800"><X className="h-4 w-4" /></button>
+            </div>
+            <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+              Reason for voiding
+              <textarea required minLength={3} rows={3} value={voidReason} onChange={(event) => setVoidReason(event.target.value)} placeholder="Explain the correction for the audit trail" className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900 focus:border-rose-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100" />
+            </label>
+            {notice && <OperationNoticeBanner notice={notice} />}
+            <div className="flex justify-end gap-2">
+              <button type="button" disabled={isVoiding} onClick={() => setShowVoidDialog(false)} className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold disabled:opacity-50 dark:border-slate-700">Keep expense</button>
+              <button type="submit" disabled={isVoiding || voidReason.trim().length < 3} className="rounded-xl bg-rose-600 px-4 py-2 text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-50">{isVoiding ? 'Posting reversal...' : 'Void with reversal'}</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      <ImageLightboxModal
+        isOpen={Boolean(previewImage)}
+        onClose={() => setPreviewImage(null)}
+        imageUrl={previewImage?.url || null}
+        title={previewImage?.fileName || 'Receipt Image'}
+        byteSize={previewImage?.byteSize}
+      />
     </div>
   );
 };

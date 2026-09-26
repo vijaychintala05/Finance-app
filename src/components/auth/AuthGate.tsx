@@ -18,11 +18,18 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     baseCurrency: '',
   });
 
-  if (auth.loading) {
+  if (auth.loading || (auth.sessionTransitioning && !auth.user)) {
     return <div className="min-h-screen grid place-items-center text-slate-600">Loading secure workspace…</div>;
   }
   if (auth.user) {
-    return <>{children}</>;
+    return (
+      <React.Fragment key={auth.user.id}>
+        {auth.sessionTransitioning && <div className="min-h-screen grid place-items-center text-slate-600">Loading secure workspace…</div>}
+        <div hidden={auth.sessionTransitioning} aria-hidden={auth.sessionTransitioning} inert={auth.sessionTransitioning}>
+          {children}
+        </div>
+      </React.Fragment>
+    );
   }
 
   const submit = async (event: FormEvent) => {

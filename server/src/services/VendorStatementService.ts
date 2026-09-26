@@ -1,4 +1,4 @@
-import { db } from '../database/db';
+import { db, type DbQueryClient } from '../database/db';
 import { StatementLine } from './CustomerStatementService';
 
 export interface VendorStatementResponse {
@@ -22,21 +22,24 @@ export class VendorStatementService {
     orgId: string,
     vendorId: string,
     fromDate: string,
-    toDate: string
+    toDate: string,
+    queryClient: DbQueryClient = db,
   ): Promise<VendorStatementResponse> {
     const [vRes, billsOpen, payOpen, vcOpen, woOpen, refOpen, bills, pays, vcs, writeOffs, refunds] = await Promise.all([
-      db.query(`SELECT id, name, company_name FROM vendors WHERE organization_id = $1 AND (id = $2 OR vendor_id = $2)`, [orgId, vendorId]),
-      db.query(`SELECT COALESCE(SUM(total_amount), 0) as total FROM bills WHERE organization_id = $1 AND vendor_id = $2 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED') AND bill_date < $3`, [orgId, vendorId, fromDate]),
-      db.query(`SELECT COALESCE(SUM(amount), 0) as total FROM payments_made WHERE organization_id = $1 AND vendor_id = $2 AND UPPER(status) NOT IN ('DRAFT', 'SUBMITTED', 'REVERSED', 'VOID', 'VOIDED') AND payment_date < $3`, [orgId, vendorId, fromDate]),
-      db.query(`SELECT COALESCE(SUM(total_amount), 0) as total FROM vendor_credits WHERE organization_id = $1 AND vendor_id = $2 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED', 'REVERSED') AND date < $3`, [orgId, vendorId, fromDate]),
-      db.query(`SELECT COALESCE(SUM(amount), 0) as total FROM ap_write_offs WHERE organization_id = $1 AND vendor_id = $2 AND write_off_date < $3`, [orgId, vendorId, fromDate]),
-      db.query(`SELECT COALESCE(SUM(amount), 0) as total FROM vendor_refunds WHERE organization_id = $1 AND vendor_id = $2 AND UPPER(COALESCE(status, 'POSTED')) = 'POSTED' AND reversed_at IS NULL AND refund_date < $3`, [orgId, vendorId, fromDate]),
-      db.query(`SELECT id, bill_number, bill_date as date, total_amount as amount, notes FROM bills WHERE organization_id = $1 AND vendor_id = $2 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED') AND bill_date >= $3 AND bill_date <= $4`, [orgId, vendorId, fromDate, toDate]),
-      db.query(`SELECT id, payment_number, payment_date as date, amount, reference FROM payments_made WHERE organization_id = $1 AND vendor_id = $2 AND UPPER(status) NOT IN ('DRAFT', 'SUBMITTED', 'REVERSED', 'VOID', 'VOIDED') AND payment_date >= $3 AND payment_date <= $4`, [orgId, vendorId, fromDate, toDate]),
-      db.query(`SELECT id, credit_number, date, total_amount as amount, reason FROM vendor_credits WHERE organization_id = $1 AND vendor_id = $2 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED', 'REVERSED') AND date >= $3 AND date <= $4`, [orgId, vendorId, fromDate, toDate]),
-      db.query(`SELECT id, bill_id, write_off_date as date, amount, reason FROM ap_write_offs WHERE organization_id = $1 AND vendor_id = $2 AND write_off_date >= $3 AND write_off_date <= $4`, [orgId, vendorId, fromDate, toDate]),
-      db.query(`SELECT id, refund_number, refund_date as date, amount, reference, notes FROM vendor_refunds WHERE organization_id = $1 AND vendor_id = $2 AND UPPER(COALESCE(status, 'POSTED')) = 'POSTED' AND reversed_at IS NULL AND refund_date >= $3 AND refund_date <= $4`, [orgId, vendorId, fromDate, toDate]),
+      queryClient.query(`SELECT id, name, company_name FROM vendors WHERE organization_id = $1 AND (id = $2 OR vendor_id = $2)`, [orgId, vendorId]),
+      queryClient.query(`SELECT COALESCE(SUM(total_amount), 0) as total FROM bills WHERE organization_id = $1 AND vendor_id = $2 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED') AND bill_date < $3`, [orgId, vendorId, fromDate]),
+      queryClient.query(`SELECT COALESCE(SUM(amount), 0) as total FROM payments_made WHERE organization_id = $1 AND vendor_id = $2 AND UPPER(status) NOT IN ('DRAFT', 'SUBMITTED', 'REVERSED', 'VOID', 'VOIDED') AND payment_date < $3`, [orgId, vendorId, fromDate]),
+      queryClient.query(`SELECT COALESCE(SUM(total_amount), 0) as total FROM vendor_credits WHERE organization_id = $1 AND vendor_id = $2 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED', 'REVERSED') AND date < $3`, [orgId, vendorId, fromDate]),
+      queryClient.query(`SELECT COALESCE(SUM(amount), 0) as total FROM ap_write_offs WHERE organization_id = $1 AND vendor_id = $2 AND write_off_date < $3`, [orgId, vendorId, fromDate]),
+      queryClient.query(`SELECT COALESCE(SUM(amount), 0) as total FROM vendor_refunds WHERE organization_id = $1 AND vendor_id = $2 AND UPPER(COALESCE(status, 'POSTED')) = 'POSTED' AND reversed_at IS NULL AND refund_date < $3`, [orgId, vendorId, fromDate]),
+      queryClient.query(`SELECT id, bill_number, bill_date as date, total_amount as amount, notes FROM bills WHERE organization_id = $1 AND vendor_id = $2 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED') AND bill_date >= $3 AND bill_date <= $4`, [orgId, vendorId, fromDate, toDate]),
+      queryClient.query(`SELECT id, payment_number, payment_date as date, amount, reference FROM payments_made WHERE organization_id = $1 AND vendor_id = $2 AND UPPER(status) NOT IN ('DRAFT', 'SUBMITTED', 'REVERSED', 'VOID', 'VOIDED') AND payment_date >= $3 AND payment_date <= $4`, [orgId, vendorId, fromDate, toDate]),
+      queryClient.query(`SELECT id, credit_number, date, total_amount as amount, reason FROM vendor_credits WHERE organization_id = $1 AND vendor_id = $2 AND UPPER(status) NOT IN ('VOID', 'VOIDED', 'DRAFT', 'SUBMITTED', 'REVERSED') AND date >= $3 AND date <= $4`, [orgId, vendorId, fromDate, toDate]),
+      queryClient.query(`SELECT id, bill_id, write_off_date as date, amount, reason FROM ap_write_offs WHERE organization_id = $1 AND vendor_id = $2 AND write_off_date >= $3 AND write_off_date <= $4`, [orgId, vendorId, fromDate, toDate]),
+      queryClient.query(`SELECT id, refund_number, refund_date as date, amount, reference, notes FROM vendor_refunds WHERE organization_id = $1 AND vendor_id = $2 AND UPPER(COALESCE(status, 'POSTED')) = 'POSTED' AND reversed_at IS NULL AND refund_date >= $3 AND refund_date <= $4`, [orgId, vendorId, fromDate, toDate]),
     ]);
+
+    if (!vRes.rows.length) throw new Error('Vendor not found');
 
     const vendorName = vRes.rows[0]?.name || vRes.rows[0]?.company_name || 'Vendor';
 

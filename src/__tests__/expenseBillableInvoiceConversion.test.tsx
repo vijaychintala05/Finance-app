@@ -74,22 +74,26 @@ const mockProjects: Project[] = [
 ];
 
 const mockAddExpense = vi.fn().mockResolvedValue(undefined);
-const mockDeleteExpense = vi.fn().mockResolvedValue(undefined);
-const mockAttachExpenseReceipts = vi.fn().mockResolvedValue([]);
+const mockDeleteExpense = vi.fn().mockResolvedValue({ data: { id: 'exp-1', status: 'VOIDED' }, requestId: 'req-exp-void', refreshFailed: false });
+const mockAttachExpenseReceipts = vi.fn().mockResolvedValue({ data: [], requestId: 'req-exp-receipt', refreshFailed: false });
 const mockConvertExpenseToInvoice = vi.fn().mockResolvedValue({
-  invoice: {
-    id: 'inv-999',
-    invoiceNumber: 'INV-2026-0999',
-    customerId: 'client-1',
-    totalAmount: 1200,
+  data: {
+    invoice: {
+      id: 'inv-999',
+      invoiceNumber: 'INV-2026-0999',
+      customerId: 'client-1',
+      totalAmount: 1200,
+    },
+    expense: {
+      id: 'exp-1',
+      isBillable: true,
+      isBilled: true,
+      invoiceId: 'inv-999',
+      invoiceNumber: 'INV-2026-0999',
+    },
   },
-  expense: {
-    id: 'exp-1',
-    isBillable: true,
-    isBilled: true,
-    invoiceId: 'inv-999',
-    invoiceNumber: 'INV-2026-0999',
-  },
+  requestId: 'req-exp-convert',
+  refreshFailed: false,
 });
 
 let mockExpenses: Expense[] = [];
@@ -115,6 +119,7 @@ vi.mock('../context/BooksContext', () => ({
 // Mock window.confirm and alert
 vi.stubGlobal('confirm', vi.fn(() => true));
 vi.stubGlobal('alert', vi.fn());
+vi.stubGlobal('prompt', vi.fn());
 
 describe('Zoho Books Billable Expense & Invoice Conversion UI', () => {
   beforeEach(() => {
@@ -207,8 +212,9 @@ describe('Zoho Books Billable Expense & Invoice Conversion UI', () => {
     const convertBtn = screen.getAllByRole('button', { name: /convert to invoice/i })[0];
     expect(convertBtn).toBeDefined();
 
-    // Click Convert to Invoice
     fireEvent.click(convertBtn);
+    expect(screen.getByRole('dialog', { name: 'Convert EXP-101 to an invoice?' })).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'Create customer invoice' }));
 
     await waitFor(() => {
       expect(mockConvertExpenseToInvoice).toHaveBeenCalledWith('exp-1');
@@ -278,9 +284,6 @@ describe('Zoho Books Billable Expense & Invoice Conversion UI', () => {
   });
 
   it('6. handles error gracefully when convertExpenseToInvoice rejects', async () => {
-    const alertMock = vi.fn();
-    vi.stubGlobal('alert', alertMock);
-
     mockConvertExpenseToInvoice.mockRejectedValueOnce(new Error('Server error: Customer credit limit reached'));
 
     const unbilledExpense: Expense = {
@@ -305,15 +308,37 @@ describe('Zoho Books Billable Expense & Invoice Conversion UI', () => {
 
     const convertBtn = screen.getAllByRole('button', { name: /convert to invoice/i })[0];
     fireEvent.click(convertBtn);
+    fireEvent.click(screen.getByRole('button', { name: 'Create customer invoice' }));
 
-    await waitFor(() => {
-      expect(alertMock).toHaveBeenCalledWith(
-        'Failed to convert expense to invoice: Server error: Customer credit limit reached'
-      );
-    });
+    expect(await screen.findByText('Expense conversion outcome could not be confirmed')).toBeDefined();
+    expect(screen.getByText('Server error: Customer credit limit reached')).toBeDefined();
   });
 
-  it('7. displays the balanced posting journal from an expense detail view', () => {
+  it('7. voids through one reason-required dialog without browser prompts', async () => {
+    const expense: Expense = {
+      id: 'exp-void', referenceNumber: 'EXP-VOID', accountId: 'acc-exp-1', accountName: 'Travel & Lodging',
+      paidFromAccountId: 'acc-bank-1', paidFromAccountName: 'HDFC Current Bank', amount: 500, taxAmount: 0,
+      date: '2026-08-16', description: 'Duplicate expense', isBillable: false, paymentStatus: 'Paid', createdAt: '2026-08-16T10:00:00Z',
+    };
+    render(<ExpenseDetailsModal isOpen={true} onClose={vi.fn()} expense={expense} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Void Expense' }));
+    expect(screen.getByRole('dialog', { name: 'Void expense EXP-VOID?' })).toBeDefined();
+    expect(mockDeleteExpense).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText('Reason for voiding'), { target: { value: 'Duplicate expense posting' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Void with reversal' }));
+
+    await waitFor(() => expect(mockDeleteExpense).toHaveBeenCalledWith('exp-void', 'Duplicate expense posting'));
+    expect(await screen.findByText('Expense voided')).toBeDefined();
+    expect(screen.getByText('req-exp-void')).toBeDefined();
+    expect(globalThis.alert).not.toHaveBeenCalled();
+    expect(globalThis.confirm).not.toHaveBeenCalled();
+    expect(globalThis.prompt).not.toHaveBeenCalled();
+  });
+
+  it('8. displays the balanced posting journal from an expense detail view', () => {
     mockJournalEntries = [{
       id: 'jrnl-exp-1',
       entryNumber: 'JRN-EXP-exp-09e19f15-909c-419c-b35c-e4eb20ba9605',

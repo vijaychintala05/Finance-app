@@ -24,11 +24,12 @@ import { NavigationTab } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 import { useOptionalAuth } from '../../context/AuthContext';
 
-import { GlobalSearchBar } from '../common/GlobalSearchBar';
+import { GlobalSearchBar, SearchResultNavigation } from '../common/GlobalSearchBar';
 
 interface HeaderProps {
   currentTab?: NavigationTab;
   onNavigate?: (tab: string, options?: { autoCreate?: boolean }) => void;
+  onSearchResult?: (result: SearchResultNavigation) => void;
   onOpenMobileMenu?: () => void;
   onOpenMobileNav?: () => void;
   onOpenQuickCreate?: () => void;
@@ -39,6 +40,7 @@ interface HeaderProps {
 export const Header: React.FC<HeaderProps> = ({
   currentTab = 'dashboard',
   onNavigate,
+  onSearchResult,
   onOpenMobileMenu,
   onOpenMobileNav,
   onOpenOrgSwitcher,
@@ -186,7 +188,7 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* Center: Global Search Bar (Desktop) */}
         <div className="hidden md:flex items-center flex-1 max-w-md mx-6">
-          <GlobalSearchBar onNavigate={(tab, opts) => onNavigate && onNavigate(tab, opts)} />
+          <GlobalSearchBar onNavigate={(tab, opts) => onNavigate && onNavigate(tab, opts)} onSearchResult={onSearchResult} />
         </div>
 
         {/* Right: Notification Bell, Mobile Search, Global + New Dropdown & Utilities */}
@@ -234,7 +236,7 @@ export const Header: React.FC<HeaderProps> = ({
 
           {/* Mobile Search Trigger */}
           <div className="md:hidden">
-            <GlobalSearchBar onNavigate={(tab, opts) => onNavigate && onNavigate(tab, opts)} isMobileTrigger={true} />
+            <GlobalSearchBar onNavigate={(tab, opts) => onNavigate && onNavigate(tab, opts)} onSearchResult={onSearchResult} isMobileTrigger={true} />
           </div>
 
           {/* Mobile Menu / Drawer Toggle */}

@@ -6,6 +6,7 @@ import { AuthenticatedRequest } from '../middleware/organizationIsolation.middle
 import { SessionSecurity } from '../auth/SessionSecurity';
 import { newId } from '../utils/ids';
 import { OrganizationProvisioningService } from '../services/OrganizationProvisioningService';
+import { seedAndMigrateOrganizationTemplates } from '../database/documentTemplateSchema';
 import { normalizeSupportedBaseCurrency } from '../utils/currency';
 import { IdentityInviteService } from '../auth/IdentityInviteService';
 import { MfaService } from '../auth/MfaService';
@@ -84,6 +85,7 @@ export class AuthController {
           'INSERT INTO organization_members (id, organization_id, user_id, role) VALUES ($1, $2, $3, $4)',
           [newId('mem'), orgId, userId, 'Owner']
         );
+        if (!db.isMemoryMode()) await seedAndMigrateOrganizationTemplates(client, orgId);
         await OrganizationProvisioningService.provisionDefaultChart(client, orgId);
         await client.query(
           `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state)
@@ -105,7 +107,7 @@ export class AuthController {
         userAgent: req.headers['user-agent'],
       });
 
-      const token = JwtAuth.generateToken({ userId, email });
+      const token = JwtAuth.generateToken({ userId, email, sid: session.sessionId });
       setAuthCookie(req, res, token);
 
       res.status(201).json({
@@ -167,6 +169,7 @@ export class AuthController {
             userId: user.id,
             email: user.email,
             purpose: 'mfa_login_challenge',
+            credentialProof: SessionSecurity.credentialProof(user.password_hash || ''),
           });
 
           res.status(200).json({
@@ -187,12 +190,20 @@ export class AuthController {
 
       await SessionSecurity.clearPersistentRateLimit(rateLimitKey);
 
-      const session = await SessionService.createSession(user.id, {
-        ipAddress: req.ip,
-        userAgent: req.headers['user-agent'],
+      const session = await db.transaction(async (client) => {
+        const current = await client.query(
+          `SELECT password_hash, status FROM users WHERE id = $1 FOR UPDATE`,
+          [user.id]
+        );
+        if (current.rowCount !== 1 || current.rows[0].status !== 'Active' || current.rows[0].password_hash !== user.password_hash) return null;
+        return SessionService.createSession(user.id, { ipAddress: req.ip, userAgent: req.headers['user-agent'] }, client);
       });
+      if (!session) {
+        res.status(401).json({ error: 'Credentials changed during sign-in. Please log in again.' });
+        return;
+      }
 
-      const token = JwtAuth.generateToken({ userId: user.id, email: user.email });
+      const token = JwtAuth.generateToken({ userId: user.id, email: user.email, sid: session.sessionId });
       setAuthCookie(req, res, token);
 
       const orgRes = await db.query(
@@ -235,14 +246,6 @@ export class AuthController {
       }
 
       const userId = decoded.userId;
-      if (!decoded.iat || await SessionSecurity.isTokenRevoked(userId, decoded.iat)) {
-        res.status(401).json({ error: 'Invalid or expired MFA login challenge ticket. Please log in again.' });
-        return;
-      }
-      if (await MfaService.isLoginTicketConsumed(userId, decoded.jti!)) {
-        res.status(401).json({ error: 'MFA login challenge already used. Please log in again.' });
-        return;
-      }
       const userRes = await db.query('SELECT * FROM users WHERE id = $1', [userId]);
       if (userRes.rows.length === 0 || userRes.rows[0].status !== 'Active') {
         res.status(401).json({ error: 'User account not found or inactive' });
@@ -250,23 +253,26 @@ export class AuthController {
       }
 
       const user = userRes.rows[0];
-      const challenge = await MfaService.verifyMfaChallenge(userId, mfaCode);
-      if (!challenge.success) {
-        res.status(401).json({ error: 'Invalid two-factor authentication code' });
-        return;
-      }
-
-      if (!await MfaService.consumeLoginTicket(userId, decoded.jti!)) {
-        res.status(401).json({ error: 'MFA login challenge already used. Please log in again.' });
-        return;
-      }
-
-      const session = await SessionService.createSession(user.id, {
-        ipAddress: req.ip,
-        userAgent: req.headers['user-agent'],
+      let invalidMfaCode = false;
+      const session = await db.transaction(async (client) => {
+        const current = await client.query(
+          `SELECT password_hash, status FROM users WHERE id = $1 FOR UPDATE`,
+          [userId]
+        );
+        if (current.rowCount !== 1 || current.rows[0].status !== 'Active') return null;
+        if (!decoded.iat || await SessionSecurity.isTokenRevoked(userId, decoded.iat)) return null;
+        if (decoded.credentialProof && !SessionSecurity.verifyCredentialProof(current.rows[0].password_hash || '', decoded.credentialProof)) return null;
+        const challenge = await MfaService.verifyMfaChallenge(userId, mfaCode);
+        if (!challenge.success) { invalidMfaCode = true; return null; }
+        if (await MfaService.isLoginTicketConsumed(userId, decoded.jti!)) return null;
+        if (!await MfaService.consumeLoginTicket(userId, decoded.jti!)) return null;
+        return SessionService.createSession(userId, { ipAddress: req.ip, userAgent: req.headers['user-agent'] }, client);
       });
-
-      const token = JwtAuth.generateToken({ userId: user.id, email: user.email });
+      if (!session) {
+        res.status(401).json({ error: invalidMfaCode ? 'Invalid two-factor authentication code' : 'MFA challenge expired or credentials changed. Please log in again.' });
+        return;
+      }
+      const token = JwtAuth.generateToken({ userId: user.id, email: user.email, sid: session.sessionId });
       setAuthCookie(req, res, token);
 
       const orgRes = await db.query(
@@ -325,9 +331,8 @@ export class AuthController {
   }
 
   public static async logout(req: AuthenticatedRequest, res: Response): Promise<void> {
-    if (req.user) {
-      await SessionSecurity.revokeAllUserTokens(req.user.userId);
-    }
+    if (!req.user || !req.sessionId) { res.status(401).json({ error: 'Unauthorized' }); return; }
+    await SessionService.revokeSession(req.sessionId, req.user.userId);
     res.setHeader('Set-Cookie', 'firmbooks_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0');
     res.json({ message: 'Logged out successfully' });
   }
@@ -337,7 +342,8 @@ export class AuthController {
       res.status(401).json({ error: 'Unauthorized' });
       return;
     }
-    const token = JwtAuth.generateToken({ userId: req.user.userId, email: req.user.email });
+    if (!req.sessionId) { res.status(401).json({ error: 'Unauthorized: Current device session is unavailable' }); return; }
+    const token = JwtAuth.generateToken({ userId: req.user.userId, email: req.user.email, sid: req.sessionId });
     setAuthCookie(req, res, token);
     res.json({ token, refreshed: true });
   }
@@ -367,8 +373,19 @@ export class AuthController {
       res.status(400).json({ error: error.message });
       return;
     }
-    await db.query('UPDATE users SET password_hash = $1 WHERE id = $2', [passHash, req.user.userId]);
-    await SessionSecurity.revokeAllUserTokens(req.user.userId);
+    const updated = await db.transaction(async (client) => {
+      const current = await client.query(`SELECT password_hash, status FROM users WHERE id = $1 FOR UPDATE`, [req.user!.userId]);
+      if (current.rowCount !== 1 || current.rows[0].status !== 'Active' || current.rows[0].password_hash !== currentHash) return false;
+      await client.query('UPDATE users SET password_hash = $1 WHERE id = $2', [passHash, req.user!.userId]);
+      await client.query('UPDATE user_identities SET password_hash = $1 WHERE user_id = $2', [passHash, req.user!.userId]);
+      await SessionService.revokeAllUserSessions(req.user!.userId);
+      await SessionSecurity.revokeAllUserTokens(req.user!.userId);
+      return true;
+    });
+    if (!updated) {
+      res.status(409).json({ error: 'Credentials changed during password update. Please try again.' });
+      return;
+    }
 
     res.json({ message: 'Password updated successfully' });
   }

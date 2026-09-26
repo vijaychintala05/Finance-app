@@ -10,10 +10,14 @@ vi.mock('../api/client', () => ({
   apiClient: {
     get: vi.fn(),
     post: vi.fn(),
+    createIdempotencyKey: vi.fn(() => 'dashboard-operation-key-123456'),
+    getTimeEntryCreateOperationStatus: vi.fn().mockResolvedValue({ data: { state: 'UNKNOWN' }, error: null, status: 200 }),
   },
 }));
 
-const mockAddTimeEntry = vi.fn().mockResolvedValue(true);
+const mockAccounts: any[] = [];
+const mockAddTimeEntry = vi.fn().mockResolvedValue({ data: { id: 'time-created' }, requestId: 'req-time-created', refreshFailed: false });
+const mockGetTimeEntryCreateOperationStatus = vi.fn().mockResolvedValue({ data: { state: 'UNKNOWN' }, error: null, status: 200 });
 
 const mockProjects = [
   {
@@ -34,6 +38,7 @@ const mockProjects = [
 
 vi.mock('../context/BooksContext', () => ({
   useBooks: () => ({
+    currentOrg: { id: 'org-dashboard' },
     settings: {
       currency: 'USD',
       currencySymbol: '$',
@@ -42,13 +47,14 @@ vi.mock('../context/BooksContext', () => ({
     invoices: [],
     expenses: [],
     bills: [],
-    accounts: [],
+    accounts: mockAccounts,
     clients: [],
     vendors: [],
     projects: mockProjects,
     journalEntries: [],
     timeEntries: [],
     addTimeEntry: mockAddTimeEntry,
+    getTimeEntryCreateOperationStatus: mockGetTimeEntryCreateOperationStatus,
   }),
   BooksProvider: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
@@ -58,6 +64,7 @@ describe('Dashboard Real Data Integration & Regression Suite', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockAccounts.splice(0, mockAccounts.length);
     localStorage.clear();
   });
 
@@ -151,6 +158,28 @@ describe('Dashboard Real Data Integration & Regression Suite', () => {
     expect(screen.getAllByText(/\$2,850\.00/i).length).toBeGreaterThanOrEqual(1);
   });
 
+  it('uses the server liquid cash and bank balance instead of client balances or account-name guesses', async () => {
+    mockAccounts.push(
+      { id: 'cash-client', type: 'Cash', name: 'Petty Cash', currentBalance: 99999 },
+      { id: 'asset-bank', type: 'Asset', subType: 'Bank', name: 'Cash Clearing Bank', currentBalance: 77777 },
+    );
+    vi.mocked(apiClient.get).mockResolvedValue({
+      data: { dashboard: baseDashboardFixture as any }, error: null, status: 200,
+    });
+
+    render(<DashboardView onNavigate={mockOnNavigate} />);
+    const mobile = within(await screen.findByTestId('mobile-dashboard-overview'));
+    expect(mobile.getByText('Liquid Cash & Bank')).toBeTruthy();
+    expect(mobile.getByText('Posted ledger balance · As of 2026-09-20')).toBeTruthy();
+    expect(mobile.getAllByText('$25,000.00').length).toBeGreaterThanOrEqual(1);
+    expect(mobile.queryByText('Cash In Hand')).toBeNull();
+    expect(mobile.queryByText('$99,999.00')).toBeNull();
+    expect(mobile.queryByText('$77,777.00')).toBeNull();
+    const openBanking = mobile.getByRole('button', { name: 'Open banking accounts' });
+    fireEvent.click(openBanking);
+    expect(mockOnNavigate).toHaveBeenCalledWith('banking');
+  });
+
   it('mobile cash flow calculates period mini metrics strictly for the selected month and prevents cross-year month collision', async () => {
     vi.mocked(apiClient.get).mockResolvedValue({
       data: { dashboard: baseDashboardFixture as any },
@@ -233,7 +262,9 @@ describe('Dashboard Real Data Integration & Regression Suite', () => {
         hourlyRate: 85,
         isBillable: true,
         isBilled: false,
-      })
+      }),
+      'org-dashboard',
+      'dashboard-operation-key-123456'
     );
 
     // Timer should be reset to 00:00:00 after save

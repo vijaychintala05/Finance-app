@@ -3,10 +3,11 @@ import { Edit3, FileText, History, Plus, Trash2, X, Sparkles, Receipt } from 'lu
 import { Invoice, InvoiceEditHistory, InvoiceItem, Estimate, Expense } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 import { formatCurrency } from '../../utils/formatters';
-import { apiClient } from '../../api/client';
+import { ApiRequestError, apiClient } from '../../api/client';
 import { QuickAddClientModal } from '../common/QuickAddClientModal';
 import { QuickAddProjectModal } from '../common/QuickAddProjectModal';
 import { UnbilledExpensesDrawer } from './UnbilledExpensesDrawer';
+import { OperationNoticeBanner } from '../common/OperationNoticeBanner';
 
 interface InvoiceEditorModalProps {
   isOpen: boolean;
@@ -33,7 +34,8 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
   initialEstimate,
   clonedInvoice,
 }) => {
-  const { clients, projects, accounts, refreshAccounts, settings, salespersons, addInvoice, updateInvoice, expenses = [] } = useBooks();
+  const { clients, projects, accounts, refreshAccounts, settings, salespersons, addInvoice, updateInvoice, expenses = [], currentOrg, invoiceVoidGuards = [], invoiceCreateGuard } = useBooks();
+  const editingInvoiceIsGuarded = Boolean(editingInvoice && invoiceVoidGuards.some((guard) => guard.organizationId === currentOrg?.id && guard.invoiceId === editingInvoice.id));
 
   const [isQuickClientOpen, setIsQuickClientOpen] = useState(false);
   const [isQuickProjectOpen, setIsQuickProjectOpen] = useState(false);
@@ -50,6 +52,8 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
   const [terms, setTerms] = useState('Net 30. Please remit payment via bank transfer.');
   const [editReason, setEditReason] = useState('');
   const [formError, setFormError] = useState('');
+  const [editConflict, setEditConflict] = useState<any | null>(null);
+  const [expectedEditVersion, setExpectedEditVersion] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
 
@@ -164,10 +168,12 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
               },
             ]
       );
-      setEditReason('');
+      setExpectedEditVersion(String(editingInvoice.editVersion || ''));
+      setEditConflict(null);
+            setEditReason('');
     } else if (initialEstimate) {
       setClientId(initialEstimate.clientId || clients[0]?.id || '');
-      setProjectId(initialEstimate.projectId || '');
+      setProjectId(projects.find((project) => project.id === initialEstimate.projectId)?.archivedAt ? '' : initialEstimate.projectId || '');
       setSalespersonId(initialEstimate.salespersonId || '');
       setIssueDate(new Date().toISOString().split('T')[0]);
       setDueDate(new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0]);
@@ -192,7 +198,7 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
       setEditReason('');
     } else if (clonedInvoice) {
       setClientId(clonedInvoice.clientId || clients[0]?.id || '');
-      setProjectId(clonedInvoice.projectId || '');
+      setProjectId(projects.find((project) => project.id === clonedInvoice.projectId)?.archivedAt ? '' : clonedInvoice.projectId || '');
       setSalespersonId(clonedInvoice.salespersonId || '');
       setIssueDate(new Date().toISOString().split('T')[0]);
       setDueDate(new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0]);
@@ -219,7 +225,7 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
       const targetProj = projects.find((p) => p.id === defaultProjectId);
       const resolvedClientId = initialClientId || defaultClientId || targetProj?.clientId || clients[0]?.id || '';
       setClientId(resolvedClientId);
-      setProjectId(defaultProjectId || '');
+      setProjectId(targetProj?.archivedAt ? '' : defaultProjectId || '');
       setSalespersonId('');
       setIssueDate(new Date().toISOString().split('T')[0]);
       setDueDate(new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0]);
@@ -316,6 +322,10 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSubmitting) return;
+    if (editingInvoiceIsGuarded) {
+      setFormError('This invoice is paused while its audited void and reversal journal are verified.');
+      return;
+    }
     if (!clientId) return;
 
     const selectedClient = clients.find((c) => c.id === clientId);
@@ -329,6 +339,10 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
     if (editingInvoice) {
       if (totalAmount < (editingInvoice.paidAmount || 0)) {
         setFormError(`Invoice total cannot be reduced below the amount already paid (${formatCurrency(editingInvoice.paidAmount, settings.currencySymbol)}).`);
+        return;
+      }
+      if (!expectedEditVersion) {
+        setFormError('This invoice has no verified edit version. Close and reopen it after the invoice list refreshes.');
         return;
       }
       if (editingInvoice.status !== 'Draft' && !editReason.trim()) {
@@ -368,7 +382,7 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
         clientEmail: selectedClient?.email || editingInvoice.clientEmail,
         projectId: projectId || undefined,
         projectName: selectedProject?.name || undefined,
-        salespersonId: salespersonId || undefined,
+        salespersonId: salespersonId || null,
         salespersonName: selectedSalesperson?.name || undefined,
         issueDate,
         dueDate,
@@ -386,7 +400,7 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
       };
 
       try {
-        const updatedInvoice = await updateInvoice(editingInvoice.id, updatedInvoicePayload as any);
+        const updatedInvoice = await updateInvoice(editingInvoice.id, updatedInvoicePayload as any, expectedEditVersion);
         setIsSubmitting(false);
         onClose();
         if (onInvoiceUpdated) {
@@ -394,13 +408,18 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
         }
       } catch (err: any) {
         setIsSubmitting(false);
-        setFormError(err?.message || 'Failed to update invoice');
+        if (err instanceof ApiRequestError && err.response.errorCode === 'INVOICE_EDIT_CONFLICT' && err.response.currentState) {
+          setEditConflict(err.response.currentState);
+          setFormError('This invoice changed elsewhere. Your draft is preserved; compare the current values below before choosing how to continue.');
+        } else {
+          setFormError(err?.message || 'Failed to update invoice');
+        }
       }
     } else {
       setIsSubmitting(true);
       setFormError('');
       try {
-        const newInvoice = await addInvoice({
+        const createReceipt = await addInvoice({
           clientId,
           clientName: clientDisplayName,
           clientEmail: selectedClient?.email || '',
@@ -425,7 +444,7 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
 
         onClose();
         if (onInvoiceCreated) {
-          onInvoiceCreated(newInvoice);
+          onInvoiceCreated(createReceipt.data);
         }
       } catch (error: any) {
         setFormError(error.message || 'Invoice could not be posted');
@@ -456,6 +475,42 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
 
         <form onSubmit={handleSubmit} className="flex flex-col flex-1 overflow-hidden min-h-0">
           <div className="p-5 overflow-y-auto flex-1 space-y-5 text-xs">
+            {editConflict && (
+              <section role="alert" className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-amber-950 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100 space-y-2">
+                <h4 className="font-bold">Invoice changed while you were editing</h4>
+                <p className="text-xs">
+                  Server version {editConflict.editVersion}: {editConflict.status} for {editConflict.clientName}. Issued {editConflict.issueDate}; due {editConflict.dueDate}; total {formatCurrency(Number(editConflict.totalAmount || 0), settings.currencySymbol)}; discount {formatCurrency(Number(editConflict.discount || 0), settings.currencySymbol)}.
+                  Your unsaved draft remains in the form below. Compare it with these current server values before choosing to apply it over this version.
+                </p>
+                <p className="text-[11px]">
+                  Current project: {editConflict.projectId || 'None'}; salesperson: {editConflict.salespersonName || 'Unassigned'}.
+                </p>
+                <p className="text-[11px]">Current notes: {editConflict.notes || 'None'}; terms: {editConflict.terms || 'None'}.</p>
+                <div className="text-[11px]">
+                  <span className="font-semibold">Current lines:</span>
+                  {(editConflict.lineItems || []).length ? (
+                    <ul className="list-disc pl-5">
+                      {(editConflict.lineItems || []).map((line: any, index: number) => (
+                        <li key={line.id || index}>
+                          {line.description || line.name || 'Line item'} — {Number(line.quantity || 0)} × {formatCurrency(Number(line.unitPrice ?? line.unit_price ?? 0), settings.currencySymbol)}; tax {Number(line.taxRate ?? line.tax_rate ?? 0)}%; line total {formatCurrency(Number(line.amount || 0), settings.currencySymbol)}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : ' No line details returned.'}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExpectedEditVersion(String(editConflict.editVersion));
+                    setEditConflict(null);
+                    setFormError('Your draft is preserved. Save again only if you want to apply it over the latest invoice version.');
+                  }}
+                  className="rounded-lg border border-amber-500 px-3 py-1.5 text-xs font-semibold"
+                >
+                  Keep my draft and rebase
+                </button>
+              </section>
+            )}
             {formError && (
             <div className="p-3 bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 rounded-xl text-xs font-semibold flex items-center justify-between">
               <span>{formError}</span>
@@ -464,6 +519,7 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
               </button>
             </div>
           )}
+          {invoiceCreateGuard && !editingInvoice && <OperationNoticeBanner notice={invoiceCreateGuard.notice} />}
           {/* Reason for edit block if editing */}
           {editingInvoice && (
             <div className="p-3.5 bg-amber-500/10 border border-amber-500/30 rounded-xl space-y-2">
@@ -555,7 +611,7 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
                 className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-2 text-slate-800 dark:text-slate-200"
               >
                 <option value="">-- No Project Link --</option>
-                {projects.map((p) => (
+                {projects.filter((p) => !p.archivedAt || p.id === editingInvoice?.projectId).map((p) => (
                   <option key={p.id} value={p.id}>
                     [{p.code}] {p.name}
                   </option>
@@ -915,7 +971,7 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
           </button>
           <button
             type="submit"
-            disabled={isSubmitting}
+            disabled={isSubmitting || Boolean(!editingInvoice && invoiceCreateGuard)}
             className={`px-5 py-2 text-white rounded-xl font-bold shadow-xs flex items-center space-x-1.5 cursor-pointer ${
               isSubmitting ? 'bg-blue-400 cursor-not-allowed opacity-75' : 'bg-blue-600 hover:bg-blue-500'
             }`}
@@ -932,6 +988,7 @@ export const InvoiceEditorModal: React.FC<InvoiceEditorModalProps> = ({
               </>
             )}
           </button>
+          {!editingInvoice && invoiceCreateGuard?.status === 'rejected' && <p className='w-full text-right text-xs text-amber-700'>Dismiss the saved invoice receipt on the invoices page before creating another invoice.</p>}
         </div>
       </form>
       </div>

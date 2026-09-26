@@ -198,6 +198,15 @@ export class MembershipLifecycleService {
     const now = this.now();
 
     return this.database.transaction(async (client) => {
+      const initialInvitation = await client.query(
+        'SELECT organization_id FROM organization_invitations WHERE token_hash = $1',
+        [tokenHash],
+      );
+      if (initialInvitation.rowCount !== 1) {
+        throw new AccessLifecycleError('INVITATION_NOT_FOUND', 'Invitation is invalid', 404);
+      }
+      const organizationId = initialInvitation.rows[0].organization_id;
+      await RbacService.lockOrganizationRoleMutations(client, organizationId);
       const invitationResult = await client.query<InvitationRow>(
         `SELECT id, organization_id, email, role, expires_at, accepted_at, accepted_by_user_id,
                 revoked_at, invited_by_user_id, created_at
@@ -210,6 +219,7 @@ export class MembershipLifecycleService {
         throw new AccessLifecycleError('INVITATION_NOT_FOUND', 'Invitation is invalid', 404);
       }
       const invitation = invitationResult.rows[0];
+      await RbacService.assertOrganizationRoleExists(client, invitation.organization_id, invitation.role);
       if (invitation.accepted_at || invitation.revoked_at) {
         throw new AccessLifecycleError('INVITATION_NOT_PENDING', 'Invitation is no longer pending', 409);
       }
@@ -287,6 +297,7 @@ export class MembershipLifecycleService {
     assertId(invitationId, 'Invitation ID');
     const now = this.now();
     return this.database.transaction(async (client) => {
+      await RbacService.lockOrganizationRoleMutations(client, actor.organizationId);
       await this.assertActiveActor(client, actor);
       const result = await client.query<InvitationRow>(
         `SELECT id, organization_id, email, role, expires_at, accepted_at, accepted_by_user_id,
@@ -368,6 +379,7 @@ export class MembershipLifecycleService {
     mutation: (client: DbQueryClient, membership: MembershipRow, now: string) => Promise<MembershipRow>,
   ): Promise<MembershipMutationResult> {
     return this.database.transaction(async (client) => {
+      await RbacService.lockOrganizationRoleMutations(client, actor.organizationId);
       await this.assertActiveActor(client, actor);
       const targetResult = await client.query<MembershipRow>(
         `SELECT id, organization_id, user_id, role, status, access_version, access_invalidated_at

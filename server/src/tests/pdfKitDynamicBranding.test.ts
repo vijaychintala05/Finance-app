@@ -113,7 +113,7 @@ describe('PDFKit Dynamic Organization Branding Tests', () => {
     const invoiceId = invRes.body.invoice?.id || invRes.body.id;
 
     // Download PDF
-    const pdfRes = await getPdfResponse(`/api/v1/finance/invoices/${invoiceId}/pdf`, authHeaders);
+    const pdfRes = await getPdfResponse(`/api/v1/finance/documents/invoices/${invoiceId}/pdf?preview=true`, authHeaders);
     expect(pdfRes.status).toBe(200);
     expect(pdfRes.headers['content-type']).toMatch(/application\/pdf/);
 

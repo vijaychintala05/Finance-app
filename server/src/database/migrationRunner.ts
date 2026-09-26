@@ -10,7 +10,7 @@ import { applyFinancialCommandSchema } from './financialCommandSchema';
 import { applyDocumentTemplateSchema } from './documentTemplateSchema';
 import type { DbQueryResult } from './db';
 
-export const CURRENT_SCHEMA_VERSION = '2026.09.12-v13-financial-command-evidence';
+export const CURRENT_SCHEMA_VERSION = '2026.09.25-v17-pdf-template-issued-artifact-recovery';
 
 export class MigrationRunner {
   public static async runMigrations(queryClient?: { query: (text: string, params?: any[]) => Promise<DbQueryResult> }): Promise<void> {
@@ -324,6 +324,15 @@ export class MigrationRunner {
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       )`,
 
+      `ALTER TABLE salespersons ADD COLUMN IF NOT EXISTS code VARCHAR(64)`,
+      `ALTER TABLE salespersons ADD COLUMN IF NOT EXISTS region VARCHAR(255)`,
+      `ALTER TABLE salespersons ADD COLUMN IF NOT EXISTS notes TEXT`,
+      `ALTER TABLE salespersons ADD COLUMN IF NOT EXISTS status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE'`,
+      `ALTER TABLE salespersons ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP`,
+      `UPDATE salespersons SET code = 'LEGACY-' || MD5(organization_id || ':' || id) WHERE NULLIF(BTRIM(code), '') IS NULL`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_salespersons_org_code_normalized
+        ON salespersons (organization_id, LOWER(BTRIM(code))) WHERE NULLIF(BTRIM(code), '') IS NOT NULL`,
+
       `CREATE TABLE IF NOT EXISTS projects (
         id VARCHAR(64) PRIMARY KEY,
         organization_id VARCHAR(64) NOT NULL,
@@ -337,6 +346,9 @@ export class MigrationRunner {
         total_budget NUMERIC(15, 2) DEFAULT 0.00,
         hourly_rate NUMERIC(15, 2) DEFAULT 0.00,
         manager VARCHAR(255),
+        start_date DATE,
+        archived_at TIMESTAMP WITH TIME ZONE,
+        archived_by VARCHAR(64),
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       )`,
 
@@ -401,6 +413,7 @@ export class MigrationRunner {
         status VARCHAR(30) DEFAULT 'Draft',
         notes TEXT,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        edit_version BIGINT NOT NULL DEFAULT 1,
         CONSTRAINT uk_org_invoice_number UNIQUE (organization_id, invoice_number)
       )`,
 
@@ -429,6 +442,7 @@ export class MigrationRunner {
         reference VARCHAR(255),
         notes TEXT,
         unallocated_amount NUMERIC(15, 2) DEFAULT 0.00,
+        unallocated_amount_before_reversal NUMERIC(15, 2),
         status VARCHAR(30) DEFAULT 'ALLOCATED',
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         CONSTRAINT uk_org_payment_num UNIQUE (organization_id, payment_number)
@@ -999,6 +1013,7 @@ export class MigrationRunner {
       `ALTER TABLE invoices ADD COLUMN IF NOT EXISTS amount_credited NUMERIC(15, 2) DEFAULT 0.00`,
       `ALTER TABLE invoices ADD COLUMN IF NOT EXISTS amount_written_off NUMERIC(15, 2) DEFAULT 0.00`,
       `ALTER TABLE invoices ADD COLUMN IF NOT EXISTS journal_entry_id VARCHAR(64)`,
+      `ALTER TABLE invoices ADD COLUMN IF NOT EXISTS edit_version BIGINT NOT NULL DEFAULT 1`,
       `ALTER TABLE period_locks ADD COLUMN IF NOT EXISTS year INT`,
       `ALTER TABLE period_locks ADD COLUMN IF NOT EXISTS month INT`,
       `ALTER TABLE period_locks ADD COLUMN IF NOT EXISTS period_name VARCHAR(50)`,
@@ -1017,6 +1032,7 @@ export class MigrationRunner {
       `CREATE INDEX IF NOT EXISTS idx_journal_lines_org_entry ON journal_lines (organization_id, journal_entry_id)`,
       `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS revision_number INT DEFAULT 0`,
       `ALTER TABLE payments_received ADD COLUMN IF NOT EXISTS unallocated_amount NUMERIC(15, 2) DEFAULT 0.00`,
+      `ALTER TABLE payments_received ADD COLUMN IF NOT EXISTS unallocated_amount_before_reversal NUMERIC(15, 2)`,
       `ALTER TABLE payments_received ADD COLUMN IF NOT EXISTS status VARCHAR(30) DEFAULT 'ALLOCATED'`,
       `ALTER TABLE payments_received ADD COLUMN IF NOT EXISTS journal_entry_id VARCHAR(64)`,
       `ALTER TABLE clients ADD COLUMN IF NOT EXISTS notes TEXT`,
@@ -1503,6 +1519,9 @@ export class MigrationRunner {
       `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS customer_response_notes TEXT`,
       `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS customer_snapshot JSONB`,
       `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS project_id VARCHAR(64)`,
+      `ALTER TABLE projects ADD COLUMN IF NOT EXISTS start_date DATE`,
+      `ALTER TABLE projects ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP WITH TIME ZONE`,
+      `ALTER TABLE projects ADD COLUMN IF NOT EXISTS archived_by VARCHAR(64)`,
       `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS template_snapshot JSONB`,
       `ALTER TABLE quotation_revisions ADD COLUMN IF NOT EXISTS template_snapshot JSONB`,
       `ALTER TABLE invoices ADD COLUMN IF NOT EXISTS customer_snapshot JSONB`,
@@ -1510,6 +1529,9 @@ export class MigrationRunner {
       `ALTER TABLE invoices ADD COLUMN IF NOT EXISTS terms TEXT`,
       `ALTER TABLE invoices ADD COLUMN IF NOT EXISTS edit_history JSONB`,
       `ALTER TABLE invoices ADD COLUMN IF NOT EXISTS salesperson_id VARCHAR(64)`,
+      `ALTER TABLE invoices ADD COLUMN IF NOT EXISTS salesperson_name_snapshot VARCHAR(255)`,
+      `ALTER TABLE invoices ADD COLUMN IF NOT EXISTS salesperson_code_snapshot VARCHAR(64)`,
+      `ALTER TABLE invoices ADD COLUMN IF NOT EXISTS commission_rate_snapshot NUMERIC(5, 2)`,
       `ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS round_off_amount NUMERIC(15, 2) DEFAULT 0.00`,
       `ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS is_gst_inclusive BOOLEAN DEFAULT FALSE`,
       `ALTER TABLE vendors ADD COLUMN IF NOT EXISTS tax_id VARCHAR(50)`,
@@ -2025,7 +2047,7 @@ export class MigrationRunner {
       `INSERT INTO schema_migrations (version, description)
        VALUES ($1, $2)
        ON CONFLICT (version) DO NOTHING`,
-      [CURRENT_SCHEMA_VERSION, 'FirmBooks v13 financial command receipts, evidence links, transactional outbox, and projection checkpoints']
+      [CURRENT_SCHEMA_VERSION, 'FirmBooks v17 versioned document templates and immutable PDF artifacts']
     );
 
     console.log('[Migration] All PostgreSQL tables initialized successfully.');

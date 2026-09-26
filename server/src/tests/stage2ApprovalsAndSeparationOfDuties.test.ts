@@ -451,7 +451,8 @@ describe('Stage 2: Repair Approvals & Separation of Duties', () => {
             { id: newId('item'), description: 'Consulting Services (Altered)', quantity: 2, unitPrice: 25000, amount: 50000 },
           ],
         } as any,
-        submitterId
+        submitterId,
+        '1'
       );
 
       // 4. Verify that updateInvoice automatically invalidated the active approval request
@@ -731,7 +732,7 @@ describe('Stage 2: Repair Approvals & Separation of Duties', () => {
       // Mutate invoice via SalesEngine.updateInvoice
       await SalesEngine.updateInvoice(orgId, inv.id, {
         notes: 'Updated invoice payment terms',
-      }, submitterId);
+      }, submitterId, '1');
 
       // Confirm approval request transitioned to REJECTED
       const reqAfter = await db.query('SELECT * FROM approval_requests WHERE id = $1', [reqId]);

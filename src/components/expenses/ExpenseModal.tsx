@@ -1,9 +1,11 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, Check, ChevronDown, ChevronRight, ImagePlus, Layers, Plus, Receipt, RefreshCw, Search, ShieldCheck, Trash2, X } from 'lucide-react';
+import { AlertTriangle, Check, ChevronDown, ChevronRight, Eye, ImagePlus, Layers, Plus, Receipt, RefreshCw, Search, ShieldCheck, Trash2, X } from 'lucide-react';
 import { useBooks } from '../../context/BooksContext';
 import { Account, Expense } from '../../types';
 import { AccountModal } from '../coa/AccountModal';
 import { QuickAddAccountModal } from '../common/QuickAddAccountModal';
+import { ImageLightboxModal } from '../common/ImageLightboxModal';
+import { apiClient } from '../../api/client';
 import { ProjectBillingDialog } from './ProjectBillingDialog';
 import { compressReceiptImage, MAX_RECEIPT_IMAGES } from './receiptUpload';
 
@@ -260,6 +262,8 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [receiptFiles, setReceiptFiles] = useState<File[]>([]);
   const [filePreviews, setFilePreviews] = useState<Array<{ file: File; url: string }>>([]);
+  const [existingReceiptUrls, setExistingReceiptUrls] = useState<Record<string, string>>({});
+  const [lightboxImage, setLightboxImage] = useState<{ url: string; fileName: string; byteSize?: number } | null>(null);
   const [isReceiptDragActive, setIsReceiptDragActive] = useState(false);
   const [isRefreshingAccounts, setIsRefreshingAccounts] = useState(false);
   const [isAddExpenseModalOpen, setIsAddExpenseModalOpen] = useState(false);
@@ -461,9 +465,9 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
 
   const availableProjects = useMemo(() => {
     return (projects || []).filter(
-      (p) => p.status !== 'Cancelled' && (!clientId || !p.clientId || p.clientId === clientId)
+      (p) => p.status !== 'Cancelled' && (!p.archivedAt || p.id === expenseToEdit?.projectId) && (!clientId || !p.clientId || p.clientId === clientId)
     );
-  }, [projects, clientId]);
+  }, [projects, clientId, expenseToEdit?.projectId]);
 
   useEffect(() => {
     const previews = receiptFiles.map((file) => ({
@@ -476,6 +480,34 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
       previews.forEach((p) => URL.revokeObjectURL(p.url));
     };
   }, [receiptFiles]);
+
+  useEffect(() => {
+    let active = true;
+    const urls: string[] = [];
+    const loadExistingReceipts = async () => {
+      if (!isOpen || !expenseToEdit?.id || !expenseToEdit.receiptAttachments?.length) {
+        setExistingReceiptUrls({});
+        return;
+      }
+      const loaded = await Promise.all(
+        expenseToEdit.receiptAttachments.map(async (attachment) => {
+          const response = await apiClient.getBlob(`/finance/expenses/${expenseToEdit.id}/receipts/${attachment.id}`);
+          if (!response.data) return null;
+          const url = URL.createObjectURL(response.data);
+          urls.push(url);
+          return [attachment.id, url] as const;
+        })
+      );
+      if (active) {
+        setExistingReceiptUrls(Object.fromEntries(loaded.filter((item): item is readonly [string, string] => Boolean(item))));
+      }
+    };
+    void loadExistingReceipts();
+    return () => {
+      active = false;
+      urls.forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, [isOpen, expenseToEdit?.id, expenseToEdit?.receiptAttachments]);
 
   const handleRefreshAccounts = async () => {
     if (!refreshAccounts) return;
@@ -575,9 +607,16 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
 
   const appendReceiptFiles = (incoming: File[]) => {
     if (incoming.length === 0) return;
-    const next = [...receiptFiles, ...incoming].slice(0, MAX_RECEIPT_IMAGES);
-    if (incoming.length + receiptFiles.length > MAX_RECEIPT_IMAGES) {
-      setError('Attach up to three receipt images.');
+    const existingCount = expenseToEdit?.receiptAttachments?.length || 0;
+    const allowed = Math.max(0, MAX_RECEIPT_IMAGES - existingCount);
+    if (allowed === 0) {
+      setError(`This expense already has ${existingCount} receipt image(s); a maximum of three is allowed.`);
+      return;
+    }
+    const next = [...receiptFiles, ...incoming].slice(0, allowed);
+    if (incoming.length + receiptFiles.length > allowed) {
+      const limit = allowed === 3 ? 'three' : String(allowed);
+      setError(`Attach up to ${limit} receipt image${allowed === 1 ? '' : 's'}.`);
     } else {
       setError('');
     }
@@ -1092,9 +1131,9 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
               >
                 <span className="text-sm font-medium text-slate-800 dark:text-white">Attachments</span>
                 <div className="flex items-center gap-1.5 text-sm font-medium text-slate-500">
-                  {filePreviews.length > 0 && (
+                  {((expenseToEdit?.receiptAttachments?.length || 0) + filePreviews.length) > 0 && (
                     <span className="text-xs font-semibold text-blue-600 bg-blue-50 dark:bg-blue-950 px-2 py-0.5 rounded-full">
-                      {filePreviews.length} {filePreviews.length === 1 ? 'file' : 'files'}
+                      {(expenseToEdit?.receiptAttachments?.length || 0) + filePreviews.length} {((expenseToEdit?.receiptAttachments?.length || 0) + filePreviews.length) === 1 ? 'file' : 'files'}
                     </span>
                   )}
                   <ChevronRight className="w-4 h-4 text-slate-400" />
@@ -1113,18 +1152,58 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
               </div>
 
               {/* Receipt Image Previews */}
-              {filePreviews.length > 0 && (
+              {((expenseToEdit?.receiptAttachments?.length || 0) > 0 || filePreviews.length > 0) && (
                 <div className="p-3.5 flex flex-wrap gap-2.5">
+                  {/* Saved attachments from backend */}
+                  {expenseToEdit?.receiptAttachments?.map((att) => (
+                    <div
+                      key={att.id}
+                      onClick={() => {
+                        const url = existingReceiptUrls[att.id];
+                        if (url) {
+                          setLightboxImage({ url, fileName: att.fileName, byteSize: att.byteSize });
+                        }
+                      }}
+                      className="group relative w-16 h-16 rounded-xl overflow-hidden border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800 cursor-pointer"
+                      title={`View saved receipt: ${att.fileName}`}
+                    >
+                      {existingReceiptUrls[att.id] ? (
+                        <>
+                          <img src={existingReceiptUrls[att.id]} alt={att.fileName} className="w-full h-full object-cover transition-transform group-hover:scale-105" />
+                          <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition-opacity group-hover:opacity-100">
+                            <Eye className="w-4 h-4 text-white" />
+                          </div>
+                        </>
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center text-[10px] text-slate-400">Loading</div>
+                      )}
+                      <span className="absolute bottom-0 inset-x-0 bg-emerald-600/90 text-[8px] font-bold text-white text-center py-0.5 leading-none">
+                        Saved
+                      </span>
+                    </div>
+                  ))}
+
+                  {/* Newly attached files */}
                   {filePreviews.map(({ file, url }, index) => (
-                    <div key={index} className="relative w-16 h-16 rounded-xl overflow-hidden border border-slate-200 dark:border-zinc-700">
-                      <img src={url} alt={file.name} className="w-full h-full object-cover" />
+                    <div
+                      key={index}
+                      onClick={() => setLightboxImage({ url, fileName: file.name, byteSize: file.size })}
+                      className="group relative w-16 h-16 rounded-xl overflow-hidden border border-blue-200 dark:border-blue-900 bg-blue-50/30 cursor-pointer"
+                      title={`Preview: ${file.name}`}
+                    >
+                      <img src={url} alt={file.name} className="w-full h-full object-cover transition-transform group-hover:scale-105" />
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition-opacity group-hover:opacity-100">
+                        <Eye className="w-4 h-4 text-white" />
+                      </div>
                       <button
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
                           setReceiptFiles((curr) => curr.filter((_, i) => i !== index));
                         }}
-                        className="absolute top-1 right-1 w-5 h-5 rounded-full bg-black/70 text-white flex items-center justify-center text-xs hover:bg-rose-600 transition-colors cursor-pointer"
+                        className="absolute top-1 right-1 w-5 h-5 rounded-full bg-black/70 text-white flex items-center justify-center text-xs hover:bg-rose-600 transition-colors cursor-pointer z-10"
+                        title="Remove image"
+                        aria-label="Remove image"
                       >
                         ×
                       </button>
@@ -1783,61 +1862,135 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                 </div>
 
                 <section className="order-none min-w-0 border border-slate-200 p-4 dark:border-slate-700 sm:p-5">
-                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">Receipt images (optional)</h3>
-                  <p className="mt-1 text-xs text-slate-500">Attach up to three JPG, PNG, or WebP receipt images.</p>
-                  <div
-                    className={`mt-4 flex min-h-72 flex-col items-center justify-center border-2 border-dashed px-5 py-8 text-center transition-colors ${isReceiptDragActive ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/30' : 'border-blue-200 bg-slate-50/50 dark:border-blue-900 dark:bg-slate-800/30'}`}
-                    onDragEnter={(event) => { event.preventDefault(); setIsReceiptDragActive(true); }}
-                    onDragOver={(event) => { event.preventDefault(); setIsReceiptDragActive(true); }}
-                    onDragLeave={() => setIsReceiptDragActive(false)}
-                    onDrop={(event) => {
-                      event.preventDefault();
-                      setIsReceiptDragActive(false);
-                      appendReceiptFiles(Array.from(event.dataTransfer.files || []));
-                    }}
-                  >
-                    <input
-                      ref={receiptInputRef}
-                      type="file"
-                      multiple
-                      accept="image/jpeg,image/png,image/webp"
-                      className="hidden"
-                      onChange={(event) => {
-                        appendReceiptFiles(Array.from(event.target.files || []));
-                        if (receiptInputRef.current) receiptInputRef.current.value = '';
-                      }}
-                    />
-                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300">
-                      <ImagePlus className="h-6 w-6" />
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-900 dark:text-white">Receipt images (optional)</h3>
+                      <p className="mt-1 text-xs text-slate-500">Attach up to three JPG, PNG, or WebP receipt images.</p>
                     </div>
-                    <p className="mt-3 text-sm font-semibold text-slate-800 dark:text-slate-100">Drop receipt images here</p>
-                    <p className="mt-1 text-xs text-slate-500">JPEG, PNG, or WebP up to 900 KB compressed.</p>
-                    <button
-                      type="button"
-                      onClick={() => receiptInputRef.current?.click()}
-                      className="mt-4 rounded-md border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 cursor-pointer"
-                    >
-                      Add images
-                    </button>
+                    <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                      {(expenseToEdit?.receiptAttachments?.length || 0) + filePreviews.length} / {MAX_RECEIPT_IMAGES}
+                    </span>
                   </div>
 
+                  {MAX_RECEIPT_IMAGES - ((expenseToEdit?.receiptAttachments?.length || 0) + filePreviews.length) > 0 && (
+                    <div
+                      className={`mt-4 flex min-h-64 flex-col items-center justify-center border-2 border-dashed px-5 py-8 text-center transition-colors ${isReceiptDragActive ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/30' : 'border-blue-200 bg-slate-50/50 dark:border-blue-900 dark:bg-slate-800/30'}`}
+                      onDragEnter={(event) => { event.preventDefault(); setIsReceiptDragActive(true); }}
+                      onDragOver={(event) => { event.preventDefault(); setIsReceiptDragActive(true); }}
+                      onDragLeave={() => setIsReceiptDragActive(false)}
+                      onDrop={(event) => {
+                        event.preventDefault();
+                        setIsReceiptDragActive(false);
+                        appendReceiptFiles(Array.from(event.dataTransfer.files || []));
+                      }}
+                    >
+                      <input
+                        ref={receiptInputRef}
+                        type="file"
+                        multiple
+                        accept="image/jpeg,image/png,image/webp"
+                        className="hidden"
+                        onChange={(event) => {
+                          appendReceiptFiles(Array.from(event.target.files || []));
+                          if (receiptInputRef.current) receiptInputRef.current.value = '';
+                        }}
+                      />
+                      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300">
+                        <ImagePlus className="h-6 w-6" />
+                      </div>
+                      <p className="mt-3 text-sm font-semibold text-slate-800 dark:text-slate-100">Drop receipt images here</p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        JPEG, PNG, or WebP. {MAX_RECEIPT_IMAGES - ((expenseToEdit?.receiptAttachments?.length || 0) + filePreviews.length)} slot{MAX_RECEIPT_IMAGES - ((expenseToEdit?.receiptAttachments?.length || 0) + filePreviews.length) === 1 ? '' : 's'} remaining.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => receiptInputRef.current?.click()}
+                        className="mt-4 rounded-md border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 cursor-pointer"
+                      >
+                        Add images
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Saved receipts from backend */}
+                  {expenseToEdit?.receiptAttachments && expenseToEdit.receiptAttachments.length > 0 && (
+                    <div className="mt-4 space-y-2">
+                      <h4 className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                        Saved attachments ({expenseToEdit.receiptAttachments.length})
+                      </h4>
+                      <ul className="space-y-2">
+                        {expenseToEdit.receiptAttachments.map((att) => (
+                          <li key={att.id} className="flex items-center justify-between rounded-md border border-slate-200 bg-slate-50/60 p-2 text-xs dark:border-slate-700 dark:bg-slate-800/40">
+                            <div
+                              onClick={() => {
+                                const url = existingReceiptUrls[att.id];
+                                if (url) {
+                                  setLightboxImage({ url, fileName: att.fileName, byteSize: att.byteSize });
+                                }
+                              }}
+                              className="group flex min-w-0 flex-1 items-center gap-2.5 cursor-pointer"
+                              title="Click to view full receipt"
+                            >
+                              {existingReceiptUrls[att.id] ? (
+                                <div className="relative h-10 w-10 shrink-0 overflow-hidden rounded border border-slate-200 bg-white dark:border-slate-700">
+                                  <img src={existingReceiptUrls[att.id]} alt={att.fileName} className="h-full w-full object-cover transition-transform group-hover:scale-105" />
+                                  <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition-opacity group-hover:opacity-100">
+                                    <Eye className="h-3.5 w-3.5 text-white" />
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="grid h-10 w-10 shrink-0 place-items-center rounded border border-slate-200 bg-white text-[10px] text-slate-400 dark:border-slate-700 dark:bg-slate-900">
+                                  ...
+                                </div>
+                              )}
+                              <div className="min-w-0">
+                                <p className="truncate font-medium text-slate-900 group-hover:text-blue-600 dark:text-white dark:group-hover:text-blue-400">
+                                  {att.fileName}
+                                </p>
+                                <p className="text-[11px] text-slate-400">
+                                  {att.byteSize ? (att.byteSize / 1024).toFixed(0) : '0'} KB • <span className="font-semibold text-emerald-600 dark:text-emerald-400">Saved</span>
+                                </p>
+                              </div>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {/* Newly attached files */}
                   {filePreviews.length > 0 && (
                     <div className="mt-4 space-y-2">
-                      <h4 className="text-xs font-semibold text-slate-700 dark:text-slate-300">Attached receipts ({filePreviews.length}/3)</h4>
+                      <h4 className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                        New attachments ({filePreviews.length})
+                      </h4>
                       <ul className="space-y-2">
                         {filePreviews.map(({ file, url }, index) => (
                           <li key={`${file.name}-${index}`} className="flex items-center justify-between rounded-md border border-slate-200 p-2 text-xs dark:border-slate-700">
-                            <div className="flex min-w-0 items-center gap-2">
-                              <img src={url} alt={file.name} className="h-10 w-10 shrink-0 rounded object-cover border border-slate-200 dark:border-slate-700" />
+                            <div
+                              onClick={() => setLightboxImage({ url, fileName: file.name, byteSize: file.size })}
+                              className="group flex min-w-0 flex-1 items-center gap-2.5 cursor-pointer"
+                              title="Click to preview receipt"
+                            >
+                              <div className="relative h-10 w-10 shrink-0 overflow-hidden rounded border border-slate-200 bg-white dark:border-slate-700">
+                                <img src={url} alt={file.name} className="h-full w-full object-cover transition-transform group-hover:scale-105" />
+                                <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition-opacity group-hover:opacity-100">
+                                  <Eye className="h-3.5 w-3.5 text-white" />
+                                </div>
+                              </div>
                               <div className="min-w-0">
-                                <p className="truncate font-medium text-slate-900 dark:text-white">{file.name}</p>
-                                <p className="text-[11px] text-slate-400">{(file.size / 1024).toFixed(0)} KB</p>
+                                <p className="truncate font-medium text-slate-900 group-hover:text-blue-600 dark:text-white dark:group-hover:text-blue-400">
+                                  {file.name}
+                                </p>
+                                <p className="text-[11px] text-slate-400">
+                                  {(file.size / 1024).toFixed(0)} KB • <span className="font-semibold text-blue-600 dark:text-blue-400">New</span>
+                                </p>
                               </div>
                             </div>
                             <button
                               type="button"
                               onClick={() => setReceiptFiles((current) => current.filter((_, itemIndex) => itemIndex !== index))}
-                              className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-rose-600 dark:hover:bg-slate-800 cursor-pointer"
+                              className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-rose-600 dark:hover:bg-slate-800 cursor-pointer ml-2"
                               aria-label={`Remove ${file.name}`}
                               title="Remove receipt"
                             >
@@ -2055,6 +2208,14 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
           isMobile={isMobile}
         />
       )}
+
+      <ImageLightboxModal
+        isOpen={Boolean(lightboxImage)}
+        onClose={() => setLightboxImage(null)}
+        imageUrl={lightboxImage?.url || null}
+        title={lightboxImage?.fileName || 'Receipt Image'}
+        byteSize={lightboxImage?.byteSize}
+      />
     </>
   );
 };

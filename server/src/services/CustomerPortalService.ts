@@ -65,36 +65,29 @@ export class CustomerPortalService {
       throw new Error('Organization ID and Customer ID are required');
     }
 
-    const custRes = await db.query(
-      `SELECT id, display_name as name, display_name FROM customers WHERE organization_id = $1 AND (id = $2 OR customer_id = $2)
-       UNION
-       SELECT id, name, company_name as display_name FROM clients WHERE organization_id = $1 AND id = $2`,
-      [orgId, customerId]
-    );
-
-    if (custRes.rows.length === 0) {
-      throw new Error('Customer does not exist in this organization');
-    }
-
     const rawToken = crypto.randomBytes(32).toString('hex');
     const tokenHash = CustomerPortalService.hashToken(rawToken);
     const id = newId('cpt');
     const expiresAt = new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000).toISOString();
     const tokenPlaceholder = `cpt_${tokenHash.slice(0, 32)}_${id}`;
 
-    try {
-      await db.query(
+    await db.transaction(async (client) => {
+      const canonical = await client.query(
+        `SELECT id, active FROM customers WHERE organization_id = $1 AND (id = $2 OR customer_id = $2) FOR UPDATE`,
+        [orgId, customerId]
+      );
+      if (canonical.rows.some((row: any) => row.active === false)) throw new Error('Archived customers cannot receive new portal tokens');
+      if (canonical.rows.length === 0) {
+        const legacy = await client.query('SELECT id FROM clients WHERE organization_id = $1 AND id = $2 FOR UPDATE', [orgId, customerId]);
+        if (legacy.rows.length === 0) throw new Error('Customer does not exist in this organization');
+      }
+
+      await client.query(
         `INSERT INTO customer_portal_tokens (id, organization_id, customer_id, token, token_hash, is_active, expires_at, created_at)
          VALUES ($1, $2, $3, $4, $5, TRUE, $6, CURRENT_TIMESTAMP)`,
         [id, orgId, customerId, tokenPlaceholder, tokenHash, expiresAt]
       );
-    } catch {
-      await db.query(
-        `INSERT INTO customer_portal_tokens (id, organization_id, customer_id, token, is_active, expires_at, created_at)
-         VALUES ($1, $2, $3, $4, TRUE, $5, CURRENT_TIMESTAMP)`,
-        [id, orgId, customerId, tokenHash, expiresAt]
-      );
-    }
+    }, { organizationId: orgId });
 
     return { token: rawToken, expiresAt };
   }

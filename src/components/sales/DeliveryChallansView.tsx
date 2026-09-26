@@ -1,7 +1,5 @@
 import React, { useState } from 'react';
 import {
-  CheckCircle,
-  Clock,
   Plus,
   Search,
   Truck,
@@ -10,13 +8,17 @@ import { useBooks } from '../../context/BooksContext';
 import { formatDate } from '../../utils/formatters';
 import { DeliveryChallan } from '../../types';
 import { DeliveryChallanDetailsModal } from './DeliveryChallanDetailsModal';
+import { OperationNoticeBanner } from '../common/OperationNoticeBanner';
+import { mutationExceptionNotice, type OperationNotice } from '../../utils/operationNotice';
 
 export const DeliveryChallansView: React.FC = () => {
-  const { deliveryChallans, addDeliveryChallan, updateDeliveryChallan, clients } = useBooks();
+  const { deliveryChallans, addDeliveryChallan, clients } = useBooks();
 
   const [search, setSearch] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [viewingChallan, setViewingChallan] = useState<DeliveryChallan | null>(null);
+  const [creatingChallan, setCreatingChallan] = useState(false);
+  const [createNotice, setCreateNotice] = useState<OperationNotice | null>(null);
 
   // Modal
   const [clientName, setClientName] = useState(clients[0]?.name || '');
@@ -30,23 +32,36 @@ export const DeliveryChallansView: React.FC = () => {
       c.itemsSummary.toLowerCase().includes(search.toLowerCase())
   );
 
-  const handleCreateChallan = (e: React.FormEvent) => {
+  const handleCreateChallan = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (creatingChallan || createNotice?.tone === 'warning') return;
     const targetClient = clientName || clients[0]?.name || 'Unassigned Customer';
-
-    const created = addDeliveryChallan({
-      challanNumber: `DC-2026-00${deliveryChallans.length + 1}`,
-      clientName: targetClient,
-      dispatchDate: new Date().toISOString().split('T')[0],
-      deliveryAddress: deliveryAddress || 'Main Commercial Premises',
-      itemsSummary: itemsSummary || 'Dispatched items batch',
-      status: 'In Transit',
-    });
-    if (!created) return;
-
-    setIsModalOpen(false);
-    setDeliveryAddress('');
-    setItemsSummary('');
+    setCreatingChallan(true);
+    setCreateNotice(null);
+    try {
+      const created = await addDeliveryChallan({
+        challanNumber: `DC-2026-00${deliveryChallans.length + 1}`,
+        clientName: targetClient,
+        dispatchDate: new Date().toISOString().split('T')[0],
+        deliveryAddress: deliveryAddress || 'Main Commercial Premises',
+        itemsSummary: itemsSummary || 'Dispatched items batch',
+        status: 'Draft',
+      });
+      if (!created) throw new Error('The server did not return a delivery challan receipt.');
+      setCreateNotice({ tone: 'success', title: 'Delivery challan created', message: `Delivery challan ${created.challanNumber} was created as ${created.status}.` });
+      setIsModalOpen(false);
+      setDeliveryAddress('');
+      setItemsSummary('');
+    } catch (error) {
+      setCreateNotice(mutationExceptionNotice(error, {
+        action: 'Delivery challan creation',
+        failureTitle: 'Delivery challan was not confirmed',
+        uncertainTitle: 'Delivery challan outcome could not be confirmed',
+        uncertainRecovery: 'Reload the page and check the challan list before submitting another challan.',
+      }));
+    } finally {
+      setCreatingChallan(false);
+    }
   };
 
   return (
@@ -59,12 +74,13 @@ export const DeliveryChallansView: React.FC = () => {
             <span>Delivery Challans & Dispatch Slips</span>
           </h2>
           <p className="text-xs text-slate-500 mt-1">
-            Issue goods dispatch notes, track physical delivery statuses, and maintain transport audit records
+            Create standalone draft dispatch records; linked delivery status is managed through sales-order fulfillment.
           </p>
         </div>
 
         <button
-          onClick={() => setIsModalOpen(true)}
+          onClick={() => { setCreateNotice(null); setIsModalOpen(true); }}
+          disabled={creatingChallan || createNotice?.tone === 'warning'}
           className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-2xs cursor-pointer transition-colors"
         >
           <Plus className="w-4 h-4" />
@@ -96,9 +112,9 @@ export const DeliveryChallansView: React.FC = () => {
                 <th className="p-3">Customer</th>
                 <th className="p-3">Dispatch Date</th>
                 <th className="p-3">Delivery Destination</th>
-                <th className="p-3">Dispatched Goods Summary</th>
+                <th className="p-3">Dispatch / Supply Reason</th>
                 <th className="p-3 text-center">Status</th>
-                <th className="p-3 text-right pr-4">Action</th>
+                <th className="p-3 text-right pr-4">Details</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -125,16 +141,10 @@ export const DeliveryChallansView: React.FC = () => {
                     </span>
                   </td>
                   <td className="p-3 text-right pr-4" onClick={(e) => e.stopPropagation()}>
-                    {dc.status !== 'Delivered' && (
-                      <button
-                        onClick={() => {
-                          updateDeliveryChallan(dc.id, { status: 'Delivered' });
-                        }}
-                        className="text-xs font-bold text-sky-600 hover:underline cursor-pointer"
-                      >
-                        Mark Delivered
-                      </button>
-                    )}
+                    <button type="button" onClick={() => setViewingChallan(dc)} aria-label={`View details for ${dc.challanNumber}`}
+                      className="text-xs font-bold text-sky-600 hover:underline cursor-pointer">
+                      View details
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -153,6 +163,7 @@ export const DeliveryChallansView: React.FC = () => {
             </h3>
 
             <form onSubmit={handleCreateChallan} className="space-y-3">
+              {createNotice && <OperationNoticeBanner notice={createNotice} />}
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">Customer / Consignee</label>
                 <select
@@ -181,7 +192,7 @@ export const DeliveryChallansView: React.FC = () => {
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Items / Packages Summary</label>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Dispatch / Supply Reason</label>
                 <textarea
                   rows={3}
                   placeholder="e.g. 5x Workstations, 2x Monitors..."
@@ -202,9 +213,10 @@ export const DeliveryChallansView: React.FC = () => {
                 </button>
                 <button
                   type="submit"
+                  disabled={creatingChallan || createNotice?.tone === 'warning'}
                   className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold shadow-2xs cursor-pointer transition-colors"
                 >
-                  Issue Challan
+                  {creatingChallan ? 'Creating…' : createNotice?.tone === 'warning' ? 'Cannot retry until verified' : 'Create Draft Challan'}
                 </button>
               </div>
             </form>
@@ -212,6 +224,7 @@ export const DeliveryChallansView: React.FC = () => {
         </div>
       )}
 
+      {createNotice && !isModalOpen && <OperationNoticeBanner notice={createNotice} />}
       <DeliveryChallanDetailsModal
         isOpen={!!viewingChallan}
         onClose={() => setViewingChallan(null)}

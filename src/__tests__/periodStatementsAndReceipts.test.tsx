@@ -580,6 +580,9 @@ describe('T5: Expense Receipts & Period Statements Unit Test Suite', () => {
       let delayCount = 0;
 
       vi.spyOn(apiClient, 'get').mockImplementation(async (url: string) => {
+        if (!url.includes('/finance/reports/vendor-statement/')) {
+          return { data: null, error: null, status: 200 } as any;
+        }
         delayCount++;
         const urlObj = new URL(`http://localhost${url}`);
         const fromDate = urlObj.searchParams.get('fromDate') || '';
@@ -677,7 +680,10 @@ describe('T5: Expense Receipts & Period Statements Unit Test Suite', () => {
     });
 
     it('6. Vendor statement fails closed on server error: displays error alert with retry button and does not show local calculation', async () => {
-      vi.spyOn(apiClient, 'get').mockRejectedValue(new Error('Vendor service unavailable'));
+      vi.spyOn(apiClient, 'get').mockImplementation(async (url: string) => {
+        if (url.includes('/finance/reports/vendor-statement/')) throw new Error('Vendor service unavailable');
+        return { data: null, error: null, status: 200 } as any;
+      });
 
       render(
         <VendorWorkspace

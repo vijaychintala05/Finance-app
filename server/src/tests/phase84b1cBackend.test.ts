@@ -3,6 +3,7 @@ import request from 'supertest';
 import app from '../index';
 import { MigrationRunner } from '../database/migrationRunner';
 import { db } from '../database/db';
+import { RbacService } from '../auth/RbacService';
 
 describe('Phase 8.4B.1C — Backend Customer Search, Isolation & RBAC Test Suite', () => {
   let salesToken: string;
@@ -11,6 +12,9 @@ describe('Phase 8.4B.1C — Backend Customer Search, Isolation & RBAC Test Suite
   let orgAToken: string;
   let orgBToken: string;
   let itemIdToTest: string;
+  let salesOrganizationId: string;
+  let purchaseOrganizationId: string;
+  let salesUserId: string;
 
   beforeAll(async () => {
     await MigrationRunner.runMigrations();
@@ -26,6 +30,8 @@ describe('Phase 8.4B.1C — Backend Customer Search, Isolation & RBAC Test Suite
       role: 'Sales',
     });
     salesToken = salesReg.body.token;
+    salesOrganizationId = salesReg.body.organizationId;
+    salesUserId = salesReg.body.user.id;
     await db.query(
       `UPDATE organization_members SET role = 'Sales' WHERE organization_id = $1 AND user_id = $2`,
       [salesReg.body.organizationId, salesReg.body.user.id]
@@ -40,6 +46,7 @@ describe('Phase 8.4B.1C — Backend Customer Search, Isolation & RBAC Test Suite
       role: 'Purchase',
     });
     purchaseToken = purchaseReg.body.token;
+    purchaseOrganizationId = purchaseReg.body.organizationId;
     await db.query(
       `UPDATE organization_members SET role = 'Purchase' WHERE organization_id = $1 AND user_id = $2`,
       [purchaseReg.body.organizationId, purchaseReg.body.user.id]
@@ -91,6 +98,20 @@ describe('Phase 8.4B.1C — Backend Customer Search, Isolation & RBAC Test Suite
     itemIdToTest = itemRes.body.item.id;
   });
 
+  it('exposes active organization item permissions using the route authorization rules', async () => {
+    const sales = await request(app)
+      .get('/api/v1/organizations/current/permissions')
+      .set('Authorization', `Bearer ${salesToken}`);
+    expect(sales.status).toBe(200);
+    expect(sales.headers['cache-control']).toBe('no-store');
+    expect(sales.body.actions).toEqual({ itemsView: true, itemsCreate: true, itemsEdit: true, itemsArchive: false });
+
+    const owner = await request(app)
+      .get('/api/v1/organizations/current/permissions')
+      .set('Authorization', `Bearer ${orgAToken}`);
+    expect(owner.status).toBe(200);
+    expect(owner.body.actions.itemsArchive).toBe(true);
+  });
   // --- 1. Customer Search & Organization Security Tests ---
   it('1. GET /finance/customers?search=Alpha filters results and isolates cross-org customers', async () => {
     // Org A creates "Alpha Customer" & "Beta Customer"
@@ -289,5 +310,129 @@ describe('Phase 8.4B.1C — Backend Customer Search, Isolation & RBAC Test Suite
       .delete(`/api/v1/items/${itemIdToTest}`)
       .set('Authorization', `Bearer ${viewerToken}`);
     expect(res.status).toBe(403);
+  });
+
+  it('fails closed for empty custom roles and replays archive writes only with current grants', async () => {
+    const suffix = Date.now();
+    const extraItem = await request(app)
+      .post('/api/v1/items')
+      .set('Authorization', `Bearer ${salesToken}`)
+      .set('x-organization-id', salesOrganizationId)
+      .send({ name: `Legacy Archive Item ${suffix}`, sku: `LEGACY-${suffix}` });
+    expect(extraItem.status).toBe(201);
+
+    const settingsItem = await request(app)
+      .post('/api/v1/items')
+      .set('Authorization', `Bearer ${salesToken}`)
+      .set('x-organization-id', salesOrganizationId)
+      .send({ name: `Settings Archive Item ${suffix}`, sku: `SETTINGS-${suffix}` });
+    expect(settingsItem.status).toBe(201);
+
+    const emptyRole = await RbacService.createCustomRole(salesOrganizationId, {
+      name: `No Grants ${suffix}`,
+      permissions: [],
+      userId: salesUserId,
+    });
+    await db.query('UPDATE organization_members SET role = $1 WHERE organization_id = $2 AND user_id = $3', [emptyRole.name, salesOrganizationId, salesUserId]);
+
+    const emptyManifest = await request(app)
+      .get('/api/v1/organizations/current/permissions')
+      .set('Authorization', `Bearer ${salesToken}`)
+      .set('x-organization-id', salesOrganizationId);
+    expect(emptyManifest.body.actions).toEqual({ itemsView: false, itemsCreate: false, itemsEdit: false, itemsArchive: false });
+    const crossTenantManifest = await request(app)
+      .get('/api/v1/organizations/current/permissions')
+      .set('Authorization', `Bearer ${salesToken}`)
+      .set('x-organization-id', purchaseOrganizationId);
+    expect(crossTenantManifest.status).toBe(403);
+    const emptyRoleRead = await request(app)
+      .get('/api/v1/items')
+      .set('Authorization', `Bearer ${salesToken}`)
+      .set('x-organization-id', salesOrganizationId);
+    expect(emptyRoleRead.status).toBe(403);
+    expect(await RbacService.getPermissionsForRoleAsync(salesOrganizationId, `Missing Role ${suffix}`, true)).toEqual([]);
+
+    const archiveRole = await RbacService.createCustomRole(salesOrganizationId, {
+      name: `Item Archivist ${suffix}`,
+      permissions: ['items.archive'],
+      userId: salesUserId,
+    });
+    await db.query('UPDATE organization_members SET role = $1 WHERE organization_id = $2 AND user_id = $3', [archiveRole.name, salesOrganizationId, salesUserId]);
+    const archivePermissions = await request(app)
+      .get('/api/v1/organizations/current/permissions')
+      .set('Authorization', `Bearer ${salesToken}`)
+      .set('x-organization-id', salesOrganizationId);
+    expect(archivePermissions.body.actions).toMatchObject({ itemsView: false, itemsArchive: true });
+
+    const itemId = extraItem.body.item.id;
+    const archiveKey = `custom-archive-${suffix}`;
+    const firstArchive = await request(app)
+      .delete(`/api/v1/items/${itemId}`)
+      .set('Authorization', `Bearer ${salesToken}`)
+      .set('x-organization-id', salesOrganizationId)
+      .set('Idempotency-Key', archiveKey);
+    expect(firstArchive.status).toBe(200);
+    const replayArchive = await request(app)
+      .delete(`/api/v1/items/${itemId}`)
+      .set('Authorization', `Bearer ${salesToken}`)
+      .set('x-organization-id', salesOrganizationId)
+      .set('Idempotency-Key', archiveKey);
+    expect(replayArchive.status).toBe(200);
+    expect(replayArchive.body).toEqual(firstArchive.body);
+    const archiveAudit = await db.query(
+      `SELECT COUNT(*)::int as count FROM audit_logs WHERE organization_id = $1 AND action = 'ITEM_ARCHIVED' AND entity_id = $2`,
+      [salesOrganizationId, itemId]
+    );
+    expect(archiveAudit.rows[0].count).toBe(1);
+
+    await db.query('UPDATE organization_members SET role = $1 WHERE organization_id = $2 AND user_id = $3', [emptyRole.name, salesOrganizationId, salesUserId]);
+    const revokedReplay = await request(app)
+      .delete(`/api/v1/items/${itemId}`)
+      .set('Authorization', `Bearer ${salesToken}`)
+      .set('x-organization-id', salesOrganizationId)
+      .set('Idempotency-Key', archiveKey);
+    expect(revokedReplay.status).toBe(403);
+
+    const legacyRole = await RbacService.createCustomRole(salesOrganizationId, {
+      name: `Legacy Item Admin ${suffix}`,
+      permissions: ['roles.manage'],
+      userId: salesUserId,
+    });
+    await db.query('UPDATE organization_members SET role = $1 WHERE organization_id = $2 AND user_id = $3', [legacyRole.name, salesOrganizationId, salesUserId]);
+    const legacyKey = `legacy-archive-${suffix}`;
+    const legacyArchive = await request(app)
+      .delete(`/api/v1/items/${itemIdToTest}`)
+      .set('Authorization', `Bearer ${salesToken}`)
+      .set('x-organization-id', salesOrganizationId)
+      .set('Idempotency-Key', legacyKey);
+    expect(legacyArchive.status).toBe(200);
+    const legacyReplay = await request(app)
+      .delete(`/api/v1/items/${itemIdToTest}`)
+      .set('Authorization', `Bearer ${salesToken}`)
+      .set('x-organization-id', salesOrganizationId)
+      .set('Idempotency-Key', legacyKey);
+    expect(legacyReplay.status).toBe(200);
+    expect(legacyReplay.body).toEqual(legacyArchive.body);
+    const settingsRole = await RbacService.createCustomRole(salesOrganizationId, {
+      name: `Settings User Admin ${suffix}`,
+      permissions: [],
+      userId: salesUserId,
+    });
+    await db.query('UPDATE organization_members SET role = $1 WHERE organization_id = $2 AND user_id = $3', [settingsRole.name, salesOrganizationId, salesUserId]);
+    await db.query('INSERT INTO role_permissions (role_id, permission_code) VALUES ($1, $2)', [settingsRole.id, 'settings.manage_users']);
+    const settingsKey = `settings-archive-${suffix}`;
+    const settingsArchive = await request(app)
+      .delete(`/api/v1/items/${settingsItem.body.item.id}`)
+      .set('Authorization', `Bearer ${salesToken}`)
+      .set('x-organization-id', salesOrganizationId)
+      .set('Idempotency-Key', settingsKey);
+    expect(settingsArchive.status).toBe(200);
+    const settingsReplay = await request(app)
+      .delete(`/api/v1/items/${settingsItem.body.item.id}`)
+      .set('Authorization', `Bearer ${salesToken}`)
+      .set('x-organization-id', salesOrganizationId)
+      .set('Idempotency-Key', settingsKey);
+    expect(settingsReplay.status).toBe(200);
+    expect(settingsReplay.body).toEqual(settingsArchive.body);
   });
 });

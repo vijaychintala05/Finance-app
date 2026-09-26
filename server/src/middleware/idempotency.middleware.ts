@@ -56,6 +56,13 @@ export async function idempotencyMiddleware(
     return;
   }
 
+  // PDF issue commands persist a binary response in their domain artifact store;
+  // the generic JSON response cache cannot safely capture or replay PDF bytes.
+  if (req.method === 'POST' && /^\/documents\/[^/]+\/[^/]+\/pdf\/issue$/.test(req.path)) {
+    next();
+    return;
+  }
+
   const key = req.header('idempotency-key');
   if (!key) {
     if (isProduction()) {
@@ -71,24 +78,33 @@ export async function idempotencyMiddleware(
     return;
   }
 
-  const organizationId = req.auth!.organizationId;
+  if (!req.auth?.organizationId || !req.auth.role) {
+    res.status(403).json({ error: 'Forbidden: Active organization role could not be verified' });
+    return;
+  }
+  const organizationId = req.auth.organizationId;
   const routePermissions = RoutePermissionRegistry.getRequiredPermissions(req.method, req.originalUrl || req.path);
 
   // 1. Authorize route permissions BEFORE checking idempotency store or executing
   if (routePermissions && routePermissions.length > 0 && req.auth) {
-    const userRole = req.auth.role || 'Viewer';
-    const userPerms = new Set(req.auth.permissions || []);
-    const hasPerm = routePermissions.some((p) => {
-      if (userPerms.has(p)) return true;
-      const mapped = RbacService.getPermissionsForRole(userRole);
-      return mapped.includes(p);
-    });
-    if (!hasPerm) {
+    if (!req.auth.role) {
+      res.status(403).json({ error: 'Forbidden: Active organization role could not be verified' });
+      return;
+    }
+    let permissionChecks: boolean[];
+    try {
+      permissionChecks = await Promise.all(
+        routePermissions.map((permission) => RbacService.hasPermissionAsync(organizationId, req.auth!.role, permission, true))
+      );
+    } catch {
+      res.status(503).json({ error: 'Authorization could not be verified. Retry the request.' });
+      return;
+    }
+    if (!permissionChecks.some(Boolean)) {
       res.status(403).json({ error: `Forbidden: Missing required permission [${routePermissions.join(', ')}]` });
       return;
     }
   }
-
   const requestHash = crypto
     .createHash('sha256')
     .update(JSON.stringify({ method: req.method, path: req.originalUrl, body: req.body ?? null }))
@@ -126,17 +142,17 @@ export async function idempotencyMiddleware(
         const requiredPerms: string[] = typeof record.required_permissions === 'string'
           ? JSON.parse(record.required_permissions)
           : record.required_permissions;
-        const userRole = req.auth?.role || 'Viewer';
-        const userPerms = new Set(req.auth?.permissions || []);
-        const stillAuthorized = requiredPerms.some((p) => {
-          if (userPerms.has(p)) return true;
-          const mapped = RbacService.getPermissionsForRole(userRole);
-          return mapped.includes(p);
-        });
+        const userRole = req.auth?.role;
+        if (!userRole) {
+          return { status: 403, body: { error: 'Forbidden: Active organization role could not be verified' } };
+        }
+        const permissionChecks = await Promise.all(
+          requiredPerms.map((permission) => RbacService.hasPermissionAsync(organizationId, userRole, permission, true))
+        );
+        const stillAuthorized = permissionChecks.some(Boolean);
         if (!stillAuthorized) {
           return { status: 403, body: { error: 'Forbidden: Insufficient permissions to replay request' } };
         }
-
         if (record.state === 'COMPLETED') {
           return {
             status: Number(record.response_status || 200),

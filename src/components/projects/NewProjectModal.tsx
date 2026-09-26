@@ -1,9 +1,11 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Plus, X } from 'lucide-react';
 import { ProjectBudgetType, ProjectStatus } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 import { QuickAddClientModal } from '../common/QuickAddClientModal';
 import { createBrowserId } from '../../utils/browserIds';
+import { OperationNoticeBanner } from '../common/OperationNoticeBanner';
+import { committedButStaleNotice, mutationExceptionNotice, type OperationNotice } from '../../utils/operationNotice';
 
 interface NewProjectModalProps {
   isOpen: boolean;
@@ -25,17 +27,31 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({ isOpen, onClos
   const [manager, setManager] = useState('');
 
   const [isQuickClientOpen, setIsQuickClientOpen] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [wasCommitted, setWasCommitted] = useState(false);
+  const [isSubmissionBlocked, setIsSubmissionBlocked] = useState(false);
+  const [notice, setNotice] = useState<OperationNotice | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setIsSubmitting(false);
+    setWasCommitted(false);
+    setIsSubmissionBlocked(false);
+    setNotice(null);
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name || !clientId) return;
+    if (!name.trim() || !clientId || isSubmitting || isSubmissionBlocked) return;
 
     const selectedClient = clients.find((c) => c.id === clientId);
 
     try {
-      await addProject({
+      setIsSubmitting(true);
+      setNotice(null);
+      const result = await addProject({
         code,
         name,
         clientId,
@@ -48,25 +64,34 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({ isOpen, onClos
         startDate,
         manager: manager || 'Project Manager',
       });
-      onClose();
-    } catch (error: any) {
-      window.alert(error.message || 'Project could not be created');
+      setWasCommitted(true);
+      setIsSubmissionBlocked(true);
+      setNotice(result.refreshFailed
+        ? committedButStaleNotice('Project created; project list refresh failed', 'The server created this project, but the latest project list could not be loaded.', result.requestId)
+        : { tone: 'success', title: 'Project created', message: `${result.data.name} was saved successfully.`, requestId: result.requestId });
+    } catch (error) {
+      const failure = mutationExceptionNotice(error, { action: 'Project creation' });
+      setNotice(failure);
+      if (failure.tone === 'warning') setIsSubmissionBlocked(true);
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 w-full max-w-lg overflow-hidden shadow-xl">
+      <div role="dialog" aria-modal="true" aria-labelledby="new-project-title" className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 w-full max-w-lg overflow-hidden shadow-xl">
         <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center">
-          <h3 className="font-bold text-slate-900 dark:text-slate-100 text-sm">
+          <h3 id="new-project-title" className="font-bold text-slate-900 dark:text-slate-100 text-sm">
             Create New Project
           </h3>
-          <button onClick={onClose} className="p-1 text-slate-400 hover:text-slate-600">
+          <button aria-label="Close project form" onClick={onClose} disabled={isSubmitting} className="p-1 text-slate-400 hover:text-slate-600">
             <X className="w-5 h-5" />
           </button>
         </div>
 
         <form onSubmit={handleSubmit} className="p-5 space-y-4 text-xs">
+          {notice && <OperationNoticeBanner notice={notice} />}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-slate-600 dark:text-slate-300 font-medium mb-1">
@@ -88,6 +113,7 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({ isOpen, onClos
                 <button
                   type="button"
                   onClick={() => setIsQuickClientOpen(true)}
+                  disabled={isSubmitting || isSubmissionBlocked}
                   className="text-emerald-600 dark:text-emerald-400 font-bold hover:underline text-[11px] flex items-center space-x-0.5 cursor-pointer"
                 >
                   <Plus className="w-3 h-3" />
@@ -221,15 +247,17 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({ isOpen, onClos
             <button
               type="button"
               onClick={onClose}
+              disabled={isSubmitting}
               className="px-4 py-2 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 font-medium"
             >
-              Cancel
+              {wasCommitted ? 'Close' : 'Cancel'}
             </button>
             <button
               type="submit"
+              disabled={isSubmitting || isSubmissionBlocked}
               className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-semibold shadow-sm cursor-pointer"
             >
-              Save Project
+              {isSubmitting ? 'Saving…' : wasCommitted ? 'Project saved' : isSubmissionBlocked ? 'Awaiting verification' : 'Save Project'}
             </button>
           </div>
         </form>

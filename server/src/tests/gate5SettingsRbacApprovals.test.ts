@@ -1,8 +1,10 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { db } from '../database/db';
 import { newId } from '../utils/ids';
 import { MasterFinanceFixture, MASTER_FIXTURE_CONSTANTS } from './fixtures/masterFinanceFixture';
 import { RbacService } from '../auth/RbacService';
+import { AuditTrailService } from '../security/AuditTrailService';
+import { RoutePermissionRegistry } from '../auth/RoutePermissionRegistry';
 import {
   PERMISSIONS_REGISTRY,
   SYSTEM_ROLE_PERMISSIONS,
@@ -233,6 +235,50 @@ describe('Gate 5B: Settings, Roles, Permissions & Approval Hardening Test Suite'
       ).resolves.toBeUndefined();
     });
 
+    it('serializes assignment against custom-role deletion without leaving a dangling membership', async () => {
+      const raceRole = await RbacService.createCustomRole(orgAId, {
+        name: 'Concurrent Assignment Role',
+        permissions: ['invoices.view'],
+        userId: ownerUserA,
+      });
+
+      const outcomes = await Promise.allSettled([
+        RbacService.assignUserRole(orgAId, salesUserA, raceRole.name, ownerUserA),
+        RbacService.deleteCustomRole(orgAId, raceRole.id, ownerUserA),
+      ]);
+      expect(outcomes.some((outcome) => outcome.status === 'fulfilled')).toBe(true);
+
+      const [roleRow, memberRow] = await Promise.all([
+        db.query('SELECT id FROM roles WHERE organization_id = $1 AND id = $2', [orgAId, raceRole.id]),
+        db.query('SELECT role FROM organization_members WHERE organization_id = $1 AND user_id = $2', [orgAId, salesUserA]),
+      ]);
+      if (roleRow.rows.length === 1) {
+        expect(memberRow.rows[0].role).toBe(raceRole.name);
+      } else {
+        expect(memberRow.rows[0].role).not.toBe(raceRole.name);
+      }
+    });
+
+    it('rolls role deletion back when its required audit append fails', async () => {
+      const auditedRole = await RbacService.createCustomRole(orgAId, {
+        name: 'Audit Failure Role',
+        permissions: ['invoices.view'],
+        userId: ownerUserA,
+      });
+      const auditFailure = vi.spyOn(AuditTrailService, 'logAction').mockRejectedValueOnce(new Error('audit unavailable'));
+      try {
+        await expect(RbacService.deleteCustomRole(orgAId, auditedRole.id, ownerUserA)).rejects.toThrow('audit unavailable');
+      } finally {
+        auditFailure.mockRestore();
+      }
+      const persisted = await db.query('SELECT id FROM roles WHERE organization_id = $1 AND id = $2', [orgAId, auditedRole.id]);
+      expect(persisted.rows).toHaveLength(1);
+    });
+
+    it('registers role delete permissions for idempotency replay', () => {
+      expect(RoutePermissionRegistry.getRequiredPermissions('DELETE', '/api/v1/security/roles/role-test'))
+        .toEqual(['roles.manage', 'settings.manage_users']);
+    });
     it('prevents demoting the sole Organization Owner', async () => {
       await expect(
         RbacService.assignUserRole(orgAId, ownerUserA, 'Accountant', ownerUserA)

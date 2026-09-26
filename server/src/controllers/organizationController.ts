@@ -4,11 +4,37 @@ import { AuthenticatedRequest } from '../middleware/organizationIsolation.middle
 import crypto from 'crypto';
 import { newId } from '../utils/ids';
 import { OrganizationProvisioningService } from '../services/OrganizationProvisioningService';
+import { seedAndMigrateOrganizationTemplates } from '../database/documentTemplateSchema';
 import { RbacService, UserRole } from '../auth/RbacService';
 import { normalizeSupportedBaseCurrency } from '../utils/currency';
 import { StaticMetadataCache } from '../cache/StaticMetadataCache';
 
 export class OrganizationController {
+  public static async getCurrentPermissions(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const organizationId = req.auth?.organizationId;
+    const role = req.auth?.role;
+    if (!organizationId || !role) {
+      res.status(401).json({ error: 'Unauthorized: No active organization context' });
+      return;
+    }
+
+    try {
+      const hasAny = async (codes: string[]) => (await Promise.all(
+        codes.map((code) => RbacService.hasPermissionAsync(organizationId, role, code))
+      )).some(Boolean);
+      const [itemsView, itemsCreate, itemsEdit, itemsArchive] = await Promise.all([
+        hasAny(['invoices.view', 'purchases.view']),
+        hasAny(['invoices.create', 'purchases.create']),
+        hasAny(['invoices.edit', 'purchases.edit']),
+        hasAny(['items.archive', 'roles.manage', 'settings.manage_users']),
+      ]);
+
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ organizationId, actions: { itemsView, itemsCreate, itemsEdit, itemsArchive } });
+    } catch {
+      res.status(503).json({ error: 'Authorization could not be verified. Retry the request.' });
+    }
+  }
   public static async getCurrent(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const orgId = req.organizationId || req.auth?.organizationId;
@@ -122,6 +148,11 @@ export class OrganizationController {
         return;
       }
 
+      if (Object.prototype.hasOwnProperty.call(req.body || {}, 'documentTemplates')) {
+        res.status(400).json({ error: 'Update PDF templates through the versioned document-template settings API' });
+        return;
+      }
+
       const {
         name,
         industry,
@@ -151,7 +182,6 @@ export class OrganizationController {
         bankAccountNumber,
         bankIfscSwift,
         branding,
-        documentTemplates,
       } = req.body || {};
 
       if (branding && typeof branding === 'object') {
@@ -283,7 +313,7 @@ export class OrganizationController {
             bankAccountNumber || null,
             bankIfscSwift || null,
             branding ? JSON.stringify(branding) : null,
-            documentTemplates ? JSON.stringify(documentTemplates) : null,
+            null,
           ]
         );
 
@@ -354,6 +384,7 @@ export class OrganizationController {
           'INSERT INTO organization_members (id, organization_id, user_id, role) VALUES ($1, $2, $3, $4)',
           [newId('mem'), orgId, req.user!.userId, 'Owner']
         );
+        if (!db.isMemoryMode()) await seedAndMigrateOrganizationTemplates(client, orgId);
         await OrganizationProvisioningService.provisionDefaultChart(client, orgId);
         await client.query(
           `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, after_state)

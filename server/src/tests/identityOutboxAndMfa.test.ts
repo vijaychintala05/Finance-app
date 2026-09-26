@@ -246,4 +246,52 @@ describe('Identity Invitations, Recovery, Outbox & OAuth Verification', () => {
       expect(check2.rows[0].sent_at).toBeDefined();
     });
   });
+
+    it('does not claim successful delivery when SMTP is not configured', async () => {
+      const originalHost = process.env.SMTP_HOST;
+      delete process.env.SMTP_HOST;
+      EmailOutboxService.setCustomSender(null);
+      try {
+        const emailId = await EmailOutboxService.enqueueEmail('nobody@example.com', 'SECURITY_ALERT', { event: 'TEST' }, 'org_test_1');
+        const result = await EmailOutboxService.processOutbox(10);
+        expect(result.failed).toBe(1);
+        const current = await db.query('SELECT delivery_status FROM outbox_emails WHERE id = $1', [emailId]);
+        expect(current.rows[0].delivery_status).toBe('RETRYING');
+      } finally {
+        if (originalHost === undefined) delete process.env.SMTP_HOST;
+        else process.env.SMTP_HOST = originalHost;
+      }
+    });
+
+    it('keeps reminder subjects free of CRLF and escapes invoice HTML', async () => {
+      const originalTransporter = (EmailOutboxService as any).transporter;
+      const sendMail = vi.fn().mockResolvedValue({ accepted: ['client@example.com'] });
+      (EmailOutboxService as any).transporter = { sendMail };
+      try {
+        const result = await (EmailOutboxService as any).defaultDispatch({
+          id: 'reminder-test', recipientEmail: 'client@example.com', templateType: 'INVOICE_REMINDER',
+          payload: { invoiceNumber: 'INV-1\r\nBcc:attacker@example.com', customerName: '<img src=x onerror=alert(1)>', amountDue: 10, dueDate: '2026-09-30' },
+        });
+        expect(result.success).toBe(true);
+        expect(sendMail.mock.calls[0][0].subject).not.toMatch(/[\r\n\x00-\x1f\x7f]/);
+        expect(sendMail.mock.calls[0][0].html).toContain('&lt;img');
+        expect(sendMail.mock.calls[0][0].html).not.toContain('<img');
+      } finally { (EmailOutboxService as any).transporter = originalTransporter; }
+    });
+
+    it('refuses to dispatch invoice PDFs whose immutable attachment digest changed', async () => {
+      const originalTransporter = (EmailOutboxService as any).transporter;
+      const sendMail = vi.fn().mockResolvedValue({ accepted: ['client@example.com'] });
+      (EmailOutboxService as any).transporter = { sendMail };
+      try {
+        const id = await EmailOutboxService.enqueueEmail('client@example.com', 'INVOICE_SEND', { invoiceNumber: 'INV-1', customerName: 'Client', subject: 'Invoice INV-1', customMessage: '' }, 'org_test_1', {
+          invoiceId: 'invoice-integrity-test', invoiceEmailKind: 'SEND', attachment: { filename: 'invoice.pdf', contentType: 'application/pdf', content: Buffer.from('%PDF-test') },
+        });
+        await db.query('UPDATE outbox_email_attachments SET sha256 = $1 WHERE outbox_email_id = $2', ['tampered-digest', id]);
+        const result = await (EmailOutboxService as any).defaultDispatch({ id, recipientEmail: 'client@example.com', templateType: 'INVOICE_SEND', payload: { invoiceNumber: 'INV-1', customerName: 'Client', subject: 'Invoice INV-1', customMessage: '' } });
+        expect(result).toMatchObject({ success: false, error: expect.stringContaining('INVOICE_ATTACHMENT_INTEGRITY') });
+        expect(sendMail).not.toHaveBeenCalled();
+      } finally { (EmailOutboxService as any).transporter = originalTransporter; }
+    });
+
 });

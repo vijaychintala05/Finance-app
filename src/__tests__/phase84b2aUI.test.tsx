@@ -7,6 +7,7 @@ import { EstimateDetailsModal, QuotationDetailsModal } from '../components/invoi
 import { quotationApi } from '../services/quotationApi';
 import { customerApi } from '../services/customerApi';
 import { BooksProvider } from '../context/BooksContext';
+import { ApiRequestError } from '../api/client';
 
 vi.mock('../services/customerApi', () => ({
   customerApi: {
@@ -504,6 +505,76 @@ describe('Phase 8.4B.2A & 2B — Production Quotation Details & Conversion Test 
     });
 
     expect(screen.getByText(/Quote Has Been Converted to Invoice/i)).toBeDefined();
+  });
+
+  it('disables estimate conversion actions while one conversion is pending', async () => {
+    let resolveConversion: (value: any) => void = () => {};
+    (quotationApi.convertQuotationToInvoice as any).mockReturnValueOnce(
+      new Promise((resolve) => { resolveConversion = resolve; })
+    );
+
+    render(
+      <BooksProvider>
+        <EstimatesView />
+      </BooksProvider>
+    );
+
+    const convertButton = await screen.findByRole('button', { name: /Convert to Invoice/i });
+    fireEvent.click(convertButton);
+    await waitFor(() => expect((convertButton as HTMLButtonElement).disabled).toBe(true));
+    expect(quotationApi.convertQuotationToInvoice).toHaveBeenCalledTimes(1);
+
+    await act(async () => resolveConversion({ id: 'inv-list-pending' }));
+  });
+
+  it('shows inline retry-safe feedback when estimate list conversion fails', async () => {
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
+    (quotationApi.convertQuotationToInvoice as any).mockRejectedValueOnce(new Error('Connection timed out'));
+
+    render(
+      <BooksProvider>
+        <EstimatesView />
+      </BooksProvider>
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /Convert to Invoice/i }));
+    expect(await screen.findByRole('alert')).toBeDefined();
+    expect(screen.getByText('Conversion outcome needs verification')).toBeDefined();
+    expect(screen.getByText(/Connection timed out/i)).toBeDefined();
+    expect(alertSpy).not.toHaveBeenCalled();
+
+    (quotationApi.listQuotations as any).mockResolvedValueOnce([]);
+    fireEvent.change(screen.getByPlaceholderText(/Search estimate #, client/i), { target: { value: 'no-match' } });
+    await waitFor(() => expect(screen.queryByText('EST-2026-0100')).toBeNull());
+    (quotationApi.convertQuotationToInvoice as any).mockResolvedValueOnce({ id: 'inv-list-1' });
+    fireEvent.click(screen.getByRole('button', { name: /Retry same conversion/i }));
+    await waitFor(() => expect(quotationApi.convertQuotationToInvoice).toHaveBeenCalledTimes(2));
+    expect(quotationApi.convertQuotationToInvoice).toHaveBeenLastCalledWith('q-100');
+    expect(alertSpy).not.toHaveBeenCalled();
+    alertSpy.mockRestore();
+  });
+
+  it('classifies structured conversion failures and retains server request IDs', async () => {
+    (quotationApi.convertQuotationToInvoice as any).mockRejectedValueOnce(new ApiRequestError({
+      data: null, error: 'Quotation is not accepted', status: 422, errorCode: 'VALIDATION_ERROR', requestId: 'req-convert-422'
+    }, 'Conversion failed'));
+
+    render(
+      <BooksProvider>
+        <EstimatesView />
+      </BooksProvider>
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /Convert to Invoice/i }));
+    expect(await screen.findByText('Estimate conversion was not completed')).toBeDefined();
+    expect(screen.getByText(/Request ID: req-convert-422/i)).toBeDefined();
+
+    (quotationApi.convertQuotationToInvoice as any).mockRejectedValueOnce(new ApiRequestError({
+      data: null, error: 'Service unavailable', status: 503, errorCode: 'SERVER_ERROR', requestId: 'req-convert-503'
+    }, 'Conversion failed'));
+    fireEvent.click(screen.getByRole('button', { name: /Retry same conversion/i }));
+    expect(await screen.findByText('Conversion outcome needs verification')).toBeDefined();
+    expect(screen.getByText(/Request ID: req-convert-503/i)).toBeDefined();
   });
 
   // 25. No Delete Quote action in production details modal

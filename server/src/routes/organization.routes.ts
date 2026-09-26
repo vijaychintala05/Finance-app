@@ -6,6 +6,7 @@ import { protectAsyncRoutes } from './asyncRouter';
 const router = Router();
 
 router.get('/current', OrganizationController.getCurrent);
+router.get('/current/permissions', OrganizationController.getCurrentPermissions);
 router.patch('/current', OrganizationController.updateCurrent);
 router.post('/', OrganizationController.create);
 router.get('/', OrganizationController.listMyOrganizations);

@@ -13,6 +13,7 @@ interface VendorsViewProps {
   onModalClosed?: () => void;
   selectedEntityId?: string;
   onSelectedEntityClosed?: () => void;
+  onNavigateToPurchaseOrder?: (purchaseOrderId: string) => void;
 }
 
 type VendorStatusFilter = 'all' | 'active' | 'inactive';
@@ -111,6 +112,7 @@ export const VendorsView: React.FC<VendorsViewProps> = ({
   onModalClosed,
   selectedEntityId,
   onSelectedEntityClosed,
+  onNavigateToPurchaseOrder,
 }) => {
   const {
     vendors, settings, accounts, addVendor, updateVendor, archiveVendor, restoreVendor,
@@ -234,6 +236,18 @@ export const VendorsView: React.FC<VendorsViewProps> = ({
     setDraft((current) => ({ ...current, [key]: value }));
   };
 
+  const normalizedGstin = draft.gstin.trim().toUpperCase();
+  const normalizedPan = draft.pan.trim().toUpperCase();
+  const normalizedEmail = draft.email.trim().toLowerCase();
+  const identifierForVendor = (vendor: Vendor): 'GSTIN' | 'PAN' | 'email' | null => {
+    if (normalizedGstin && [vendor.gstin, vendor.taxId].some((value) => value?.trim().toUpperCase() === normalizedGstin)) return 'GSTIN';
+    if (normalizedPan && vendor.pan?.trim().toUpperCase() === normalizedPan) return 'PAN';
+    if (normalizedEmail && [vendor.email, vendor.primaryContact?.email].some((value) => value?.trim().toLowerCase() === normalizedEmail)) return 'email';
+    return null;
+  };
+  const duplicateVendor = vendors.find((vendor) => vendor.id !== selectedVendor?.id && identifierForVendor(vendor) !== null);
+  const duplicateIdentifier = duplicateVendor ? identifierForVendor(duplicateVendor) : null;
+
   const setAddressField = (kind: 'billingAddress' | 'shippingAddress', field: keyof AddressFields, value: string) => {
     setDraft((current) => ({ ...current, [kind]: { ...current[kind], [field]: value } }));
   };
@@ -347,7 +361,11 @@ export const VendorsView: React.FC<VendorsViewProps> = ({
               <button type="button" onClick={closeModal} className="rounded-full p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="Close"><X className="h-5 w-5" /></button>
             </div>
             <div className="flex-1 space-y-6 overflow-y-auto px-4 py-5 sm:px-6">
-              {error && <p role="alert" className="rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-950/40 dark:text-rose-300">{error}</p>}
+              {error && <p role="alert" className="rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-950/40 dark:text-rose-300">{error}</p>}              {duplicateVendor && duplicateIdentifier && (
+                <p role="status" aria-live="polite" className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">
+                  Possible duplicate vendor: {duplicateVendor.name} has the same {duplicateIdentifier}. Review the existing vendor record before saving. You can still save if this is intentional.
+                </p>
+              )}
               <section>
                 <h3 className="mb-3 text-sm font-bold text-slate-900 dark:text-white">Identity</h3>
                 <div className="grid gap-3 sm:grid-cols-2">
@@ -443,6 +461,7 @@ export const VendorsView: React.FC<VendorsViewProps> = ({
             vendor={liveVendor}
             onBack={() => { setViewingVendor(null); onSelectedEntityClosed?.(); }}
             onEdit={openEdit}
+            onNavigateToPurchaseOrder={onNavigateToPurchaseOrder}
             onVendorStatusChanged={() => setViewingVendor(null)}
           />
         </div>

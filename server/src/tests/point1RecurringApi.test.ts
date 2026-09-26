@@ -74,11 +74,12 @@ describe('Point-1 recurring transaction API', () => {
     )).rows[0];
     expect(occurrence.status).toBe('SUCCEEDED');
     const invoice = (await db.query(
-      'SELECT source_occurrence_key, total_amount FROM invoices WHERE organization_id = $1 AND id = $2',
+      'SELECT source_occurrence_key, total_amount, edit_version FROM invoices WHERE organization_id = $1 AND id = $2',
       [registration.body.organizationId, occurrence.document_id]
     )).rows[0];
     expect(invoice.source_occurrence_key).toBe(occurrence.occurrence_key);
     expect(Number(invoice.total_amount)).toBe(125);
+    expect(String(invoice.edit_version)).toBe('2');
 
     await db.query(
       `UPDATE recurring_transaction_occurrences

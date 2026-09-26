@@ -9,11 +9,17 @@ import { OrganizationSwitcherModal } from './components/organization/Organizatio
 import { CapabilityUnavailable } from './components/common/CapabilityUnavailable';
 import { useFinanceCapabilities } from './capabilities/useFinanceCapabilities';
 import { getRequiredFinanceCapability } from './capabilities/financeCapabilityRegistry';
+import { buildFinanceHash, parseFinanceLocation, type FinanceHashRoute } from './navigation/financeRoute';
 import { DevModeBanner } from './components/layout/DevModeBanner';
+import { useBooks } from './context/BooksContext';
+import { useOptionalAuth } from './context/AuthContext';
+import { useItemPermissions } from './permissions/useItemPermissions';
+import type { NavigationTab } from './types';
 
 const lazyNamed = <T extends React.ComponentType<any>>(loader: () => Promise<any>, name: string) =>
   React.lazy(async () => ({ default: (await loader())[name] as T }));
 
+const MasterItemsView = lazyNamed(() => import('./components/items/MasterItemsView'), 'MasterItemsView');
 const DashboardView = lazyNamed(() => import('./components/dashboard/DashboardView'), 'DashboardView');
 const BankingView = lazyNamed(() => import('./components/banking/BankingView'), 'BankingView');
 const ProjectsView = lazyNamed(() => import('./components/projects/ProjectsView'), 'ProjectsView');
@@ -45,34 +51,24 @@ const DocumentInboxView = lazyNamed(() => import('./components/inbox/DocumentInb
 const CustomerPortalView = lazyNamed(() => import('./components/portal/CustomerPortalView'), 'CustomerPortalView');
 const DataMigrationModal = lazyNamed(() => import('./components/migration/DataMigrationModal'), 'DataMigrationModal');
 
-const parseHashRoute = (): { tab: string; entityId?: string } => {
+const parseHashRoute = (): FinanceHashRoute => {
   if (typeof window === 'undefined') return { tab: 'dashboard' };
-  const searchParams = new URLSearchParams(window.location.search);
-  if (searchParams.has('portal_token')) {
-    return { tab: 'customer_portal' };
-  }
-
-  const rawHash = window.location.hash.replace(/^#\/?/, '').trim();
-  if (!rawHash) return { tab: 'dashboard' };
-  const [routePart, queryPart] = rawHash.split('?');
-  const tab = routePart.trim() || 'dashboard';
-  let entityId: string | undefined = undefined;
-  if (queryPart) {
-    const params = new URLSearchParams(queryPart);
-    entityId = params.get('id') || undefined;
-    if (params.has('portal_token') || tab === 'customer_portal') {
-      return { tab: 'customer_portal', entityId };
-    }
-  }
-  return { tab, entityId };
+  return parseFinanceLocation(window.location.hash, window.location.search);
 };
 
 function MainAppLayout() {
   const financeCapabilities = useFinanceCapabilities();
+  const { currentOrg } = useBooks();
+  const auth = useOptionalAuth();
+  const itemPermissions = useItemPermissions(currentOrg.id, Boolean(auth?.user && !auth.loading));
+  const canViewItems = itemPermissions.organizationId === currentOrg.id && itemPermissions.actions.itemsView;
   const [activeTab, setActiveTab] = useState(() => parseHashRoute().tab);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [isOrgWizardOpen, setIsOrgWizardOpen] = useState(false);
   const [isOrgSwitcherOpen, setIsOrgSwitcherOpen] = useState(false);
+  const [searchOriginOrgId, setSearchOriginOrgId] = useState<string | null>(null);
+  const [searchNavigationError, setSearchNavigationError] = useState<string | null>(null);
+  const routeOrgIdRef = React.useRef(currentOrg.id);
 
   // Quick Create Modal Flags
   const [autoOpenClientModal, setAutoOpenClientModal] = useState(false);
@@ -92,6 +88,16 @@ function MainAppLayout() {
   const [selectedEntityId, setSelectedEntityId] = useState<string | undefined>(() => parseHashRoute().entityId);
 
   React.useEffect(() => {
+    if (routeOrgIdRef.current === currentOrg.id) return;
+    routeOrgIdRef.current = currentOrg.id;
+    setSearchOriginOrgId(null);
+    setSearchNavigationError(null);
+    setSelectedEntityId(undefined);
+    const route = parseHashRoute();
+    if (route.entityId || route.back) window.history.replaceState(null, '', buildFinanceHash({ ...route, entityId: undefined, back: undefined }));
+  }, [currentOrg.id]);
+
+  React.useEffect(() => {
     const handleHashChange = () => {
       const { tab, entityId } = parseHashRoute();
       setActiveTab(tab);
@@ -106,6 +112,20 @@ function MainAppLayout() {
     };
   }, []);
 
+  const activeRoute = parseHashRoute();
+  const closeSelectedEntity = () => {
+    setSelectedEntityId(undefined);
+    if (typeof window === 'undefined' || !activeRoute.entityId) return;
+    window.history.replaceState(null, '', buildFinanceHash({ ...activeRoute, entityId: undefined }));
+  };
+  const returnToOrigin = () => {
+    const origin = activeRoute.back;
+    if (!origin || (searchOriginOrgId && searchOriginOrgId !== currentOrg.id)) return;
+    const hash = buildFinanceHash(origin);
+    setActiveTab(origin.tab);
+    setSelectedEntityId(origin.entityId);
+    window.history.pushState(null, '', hash);
+  };
   const handleNavigate = (tab: string, options?: { autoCreate?: boolean; entityId?: string }) => {
     setSelectedEntityId(options?.entityId);
 
@@ -124,13 +144,30 @@ function MainAppLayout() {
     if ((tab === 'journals' || tab === 'accounting') && options?.autoCreate) setAutoOpenJournalModal(true);
 
     if (typeof window !== 'undefined') {
-      const targetHash = `#/${tab}${options?.entityId ? `?id=${encodeURIComponent(options.entityId)}` : ''}`;
+      const targetHash = buildFinanceHash({ tab: tab as NavigationTab, entityId: options?.entityId });
       if (window.location.hash !== targetHash) {
         window.history.pushState(null, '', targetHash);
       }
     }
 
     setActiveTab(tab);
+  };
+
+  const handleSearchResult = (result: { tab: NavigationTab; entityId: string; organizationId: string }) => {
+    if (result.organizationId !== currentOrg.id || !result.entityId || result.entityId.length > 200) return;
+    const origin = activeRoute.tab === 'customer_portal' || routeOrgIdRef.current !== currentOrg.id || (activeRoute.tab === 'reports' && !activeRoute.report) ? undefined : { tab: activeRoute.tab, entityId: activeRoute.entityId, report: activeRoute.report };
+    setSearchNavigationError(null);
+    let targetHash: string;
+    try {
+      targetHash = buildFinanceHash({ tab: result.tab, entityId: result.entityId, ...(origin ? { back: origin } : {}) });
+    } catch {
+      setSearchNavigationError('This result cannot be opened with the current return context.');
+      return;
+    }
+    setSearchOriginOrgId(origin ? currentOrg.id : null);
+    setSelectedEntityId(result.entityId);
+    setActiveTab(result.tab);
+    if (typeof window !== 'undefined' && window.location.hash !== targetHash) window.history.pushState(null, '', targetHash);
   };
 
   const renderActiveView = () => {
@@ -145,8 +182,10 @@ function MainAppLayout() {
     }
 
     switch (activeTab) {
-      case 'dashboard':
-        return <DashboardView onNavigate={handleNavigate} />;
+      case 'items':
+        if (itemPermissions.loading) return <div role="status" className="p-8 text-sm text-slate-500">Checking item catalog access…</div>;
+        if (!canViewItems) return <div role="alert" className="m-8 rounded-xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900">{itemPermissions.error || 'You do not have permission to view Items & Services in this organization.'}</div>;
+        return <MasterItemsView permissions={itemPermissions.actions} />;
       case 'projects_overview':
       case 'projects':
         return <ProjectsView />;
@@ -155,7 +194,7 @@ function MainAppLayout() {
         return (
           <BankingView
             selectedEntityId={selectedEntityId}
-            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
+            onSelectedEntityClosed={closeSelectedEntity}
           />
         );
       case 'bank_reconciliation':
@@ -164,7 +203,7 @@ function MainAppLayout() {
           <BankingView
             autoOpenReconcile={true}
             selectedEntityId={selectedEntityId}
-            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
+            onSelectedEntityClosed={closeSelectedEntity}
           />
         );
 
@@ -177,7 +216,7 @@ function MainAppLayout() {
             autoOpenCreateModal={autoOpenClientModal}
             onModalClosed={() => setAutoOpenClientModal(false)}
             selectedEntityId={selectedEntityId}
-            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
+            onSelectedEntityClosed={closeSelectedEntity}
           />
         );
       case 'estimates':
@@ -186,7 +225,7 @@ function MainAppLayout() {
             autoOpenCreateModal={autoOpenEstimateModal}
             onModalClosed={() => setAutoOpenEstimateModal(false)}
             selectedEntityId={selectedEntityId}
-            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
+            onSelectedEntityClosed={closeSelectedEntity}
           />
         );
       case 'sales_orders':
@@ -195,7 +234,7 @@ function MainAppLayout() {
             autoOpenCreateModal={autoOpenSalesOrderModal}
             onModalClosed={() => setAutoOpenSalesOrderModal(false)}
             selectedEntityId={selectedEntityId}
-            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
+            onSelectedEntityClosed={closeSelectedEntity}
           />
         );
       case 'invoices':
@@ -204,7 +243,7 @@ function MainAppLayout() {
             autoOpenCreateModal={autoOpenInvoiceModal}
             onModalClosed={() => setAutoOpenInvoiceModal(false)}
             selectedEntityId={selectedEntityId}
-            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
+            onSelectedEntityClosed={closeSelectedEntity}
           />
         );
       case 'recurring_invoices':
@@ -217,7 +256,7 @@ function MainAppLayout() {
             autoOpenCreateModal={autoOpenPaymentReceivedModal}
             onModalClosed={() => setAutoOpenPaymentReceivedModal(false)}
             selectedEntityId={selectedEntityId}
-            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
+            onSelectedEntityClosed={closeSelectedEntity}
           />
         );
       case 'credit_notes':
@@ -234,7 +273,8 @@ function MainAppLayout() {
             autoOpenCreateModal={autoOpenVendorModal}
             onModalClosed={() => setAutoOpenVendorModal(false)}
             selectedEntityId={selectedEntityId}
-            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
+            onSelectedEntityClosed={closeSelectedEntity}
+            onNavigateToPurchaseOrder={(purchaseOrderId) => handleNavigate('purchase_orders', { entityId: purchaseOrderId })}
           />
         );
       case 'expenses':
@@ -244,7 +284,7 @@ function MainAppLayout() {
             onModalClosed={() => setAutoOpenExpenseModal(false)}
             onExit={() => setActiveTab('dashboard')}
             selectedEntityId={selectedEntityId}
-            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
+            onSelectedEntityClosed={closeSelectedEntity}
           />
         );
       case 'recurring_expenses':
@@ -255,7 +295,7 @@ function MainAppLayout() {
             autoOpenCreateModal={autoOpenPurchaseOrderModal}
             onModalClosed={() => setAutoOpenPurchaseOrderModal(false)}
             selectedEntityId={selectedEntityId}
-            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
+            onSelectedEntityClosed={closeSelectedEntity}
           />
         );
       case 'bills':
@@ -264,15 +304,15 @@ function MainAppLayout() {
             autoOpenCreateModal={autoOpenBillModal}
             onModalClosed={() => setAutoOpenBillModal(false)}
             selectedEntityId={selectedEntityId}
-            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
+            onSelectedEntityClosed={closeSelectedEntity}
           />
         );
       case 'recurring_bills':
         return <RecurringTransactionsView kind="BILL" />;
       case 'payments_made':
-        return <SettlementWorkspace side="payable" initialResource="payments" autoOpenCreateModal={autoOpenPaymentMadeModal} onModalClosed={() => setAutoOpenPaymentMadeModal(false)} selectedEntityId={selectedEntityId} onSelectedEntityClosed={() => setSelectedEntityId(undefined)} />;
+        return <SettlementWorkspace side="payable" initialResource="payments" autoOpenCreateModal={autoOpenPaymentMadeModal} onModalClosed={() => setAutoOpenPaymentMadeModal(false)} selectedEntityId={selectedEntityId} onSelectedEntityClosed={closeSelectedEntity} />;
       case 'vendor_credits':
-        return <SettlementWorkspace side="payable" initialResource="credits" autoOpenCreateModal={autoOpenVendorCreditModal} onModalClosed={() => setAutoOpenVendorCreditModal(false)} selectedEntityId={selectedEntityId} onSelectedEntityClosed={() => setSelectedEntityId(undefined)} />;
+        return <SettlementWorkspace side="payable" initialResource="credits" autoOpenCreateModal={autoOpenVendorCreditModal} onModalClosed={() => setAutoOpenVendorCreditModal(false)} selectedEntityId={selectedEntityId} onSelectedEntityClosed={closeSelectedEntity} />;
 
       // Accounting Sub-Tabs
       case 'accounting_overview':
@@ -285,7 +325,7 @@ function MainAppLayout() {
             onJournalModalClosed={() => setAutoOpenJournalModal(false)}
             onSubTabChange={(st) => setActiveTab(st)}
             selectedEntityId={selectedEntityId}
-            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
+            onSelectedEntityClosed={closeSelectedEntity}
           />
         );
       case 'bulk_updates':
@@ -296,7 +336,7 @@ function MainAppLayout() {
             initialSubTab="coa"
             onSubTabChange={(st) => setActiveTab(st)}
             selectedEntityId={selectedEntityId}
-            onSelectedEntityClosed={() => setSelectedEntityId(undefined)}
+            onSelectedEntityClosed={closeSelectedEntity}
           />
         );
       case 'transaction_locking':
@@ -310,7 +350,7 @@ function MainAppLayout() {
 
       // Reports
       case 'reports':
-        return <ReportsView />;
+        return <ReportsView initialRoute={parseHashRoute()} />;
 
       // Settings
       case 'settings_overview':
@@ -344,6 +384,7 @@ function MainAppLayout() {
         activeTab={activeTab}
         setActiveTab={(tab) => handleNavigate(tab)}
         capabilities={financeCapabilities.capabilities}
+        itemsVisible={canViewItems}
         onOpenQuickCreate={() => handleNavigate('invoices', { autoCreate: true })}
         onOpenOrgSwitcher={() => setIsOrgSwitcherOpen(true)}
         onOpenOrgWizard={() => setIsOrgWizardOpen(true)}
@@ -354,6 +395,7 @@ function MainAppLayout() {
         activeTab={activeTab}
         setActiveTab={(tab) => handleNavigate(tab)}
         capabilities={financeCapabilities.capabilities}
+        itemsVisible={canViewItems}
         onOpenQuickCreate={() => handleNavigate('invoices', { autoCreate: true })}
         isOpen={mobileNavOpen}
         onClose={() => setMobileNavOpen(false)}
@@ -364,12 +406,15 @@ function MainAppLayout() {
         <Header
           currentTab={activeTab as any}
           onNavigate={handleNavigate}
+          onSearchResult={handleSearchResult}
           onOpenMobileNav={() => setMobileNavOpen(true)}
           onOpenOrgSwitcher={() => setIsOrgSwitcherOpen(true)}
           onOpenOrgWizard={() => setIsOrgWizardOpen(true)}
         />
 
         <main className="flex-1 overflow-y-auto p-0 pb-24 lg:pb-6 focus:outline-none">
+          {searchNavigationError && <div role="alert" className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">{searchNavigationError}</div>}
+          {activeRoute.back && (!searchOriginOrgId || searchOriginOrgId === currentOrg.id) && <div className="sticky top-0 z-30 border-b border-blue-200 bg-blue-50 px-4 py-2 dark:border-blue-900 dark:bg-blue-950/50"><button type="button" onClick={returnToOrigin} className="cursor-pointer text-xs font-bold text-blue-700 hover:underline dark:text-blue-300">← Back to {activeRoute.back.tab === 'reports' ? 'originating report' : activeRoute.back.tab.replaceAll('_', ' ')}</button></div>}
           <Suspense fallback={<div className="p-8 text-sm text-slate-500">Loading workspace…</div>}>
             {renderActiveView()}
           </Suspense>

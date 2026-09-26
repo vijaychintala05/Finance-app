@@ -6,7 +6,6 @@ on:
       - master
       - main
       - nas-deploy
-      - "codex/**"
     tags:
       - "v*.*.*"
   workflow_dispatch:

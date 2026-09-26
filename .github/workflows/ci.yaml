@@ -8,6 +8,7 @@ on:
       - nas-deploy
       - "feature/**"
       - "release/**"
+      - "codex/**"
   pull_request:
     branches:
       - main

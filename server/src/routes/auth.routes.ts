@@ -5,8 +5,13 @@ import { protectAsyncRoutes } from './asyncRouter';
 import { persistentRateLimit } from '../middleware/rateLimit.middleware';
 
 const router = Router();
-const isIsolatedTestDatabase = process.env.NODE_ENV === 'test' || process.env.DATABASE_MODE === 'memory' || process.env.USE_PG_MEM === 'true';
-const registrationLimitPerHour = isIsolatedTestDatabase ? 1000 : 20;
+const isIsolatedTestDatabase =
+  process.env.NODE_ENV === 'test' ||
+  process.env.DATABASE_MODE === 'memory' ||
+  process.env.USE_PG_MEM === 'true' ||
+  process.env.ALLOW_PUBLIC_SIGNUP === 'true';
+const registrationLimitPerHour =
+  Number(process.env.REGISTRATION_LIMIT_PER_HOUR) || (isIsolatedTestDatabase ? 1000 : 20);
 
 // Keep a production IP-wide ceiling to contain automated tenant creation. The
 // elevated test-only ceiling lets the integration suite provision isolated

@@ -8,19 +8,20 @@ async function parsePdf(buffer: Buffer): Promise<{ numpages: number; text: strin
   const mod = require('pdf-parse');
   const PDFClass = mod.PDFParse || mod.default || mod;
 
-  const uint8 = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  const uint8 = Uint8Array.from(buffer);
   let text = '';
   let numpages = 1;
 
+  let instance: any;
   try {
-    const instance = new PDFClass(uint8);
+    instance = new PDFClass(uint8);
     if (typeof instance.getText === 'function') {
       const res = await instance.getText();
       text = typeof res === 'string' ? res : (res?.text || '');
       numpages = res?.numpages || res?.numPages || instance.doc?.numPages || 1;
     }
-  } catch (err: any) {
-    console.log('[DEBUG parsePdf uint8 err]:', err);
+  } finally {
+    await instance?.destroy?.();
   }
 
   return { numpages, text };
@@ -126,6 +127,110 @@ describe('Expense Payment Voucher PDF Generation & Security Tests', () => {
     expect(parsed.text).toContain('Enterprise Server Hosting');
     expect(parsed.text).toContain('Amount in Words:');
     expect(parsed.text).toContain('USD Fifteen Thousand Only');
+    expect(parsed.text.match(/Page 1 of/g)).toHaveLength(1);
+  });
+
+  it.skipIf(!process.env.DATABASE_URL)('uses saved versioned expense template settings for the legacy voucher renderer', async () => {
+    const expRes = await request(app).post('/api/v1/finance/expenses').set(authHeaderA).send({
+      expenseAccountId: expenseAccountIdA, paidFromAccountId: bankAccountIdA,
+      date: '2026-08-11', amount: 125, description: 'Template configuration regression',
+    });
+    expect(expRes.status).toBe(201);
+
+    const templates = await request(app).get('/api/v1/finance/documents/expenses/templates').set(authHeaderA);
+    expect(templates.status).toBe(200);
+    const selectVariant = await request(app)
+      .patch('/api/v1/finance/documents/expenses/templates/petty-cash/default')
+      .set(authHeaderA)
+      .send({});
+    expect(selectVariant.status).toBe(200);
+    const pettyCashTemplateId = selectVariant.body.template.id;
+    const update = await request(app)
+      .patch(`/api/v1/finance/documents/expenses/templates/${pettyCashTemplateId}/configuration`)
+      .set(authHeaderA)
+      .send({ configuration: {
+        templateTitle: 'CUSTOM EXPENSE CONFIGURATION', headerLayout: 'centered',
+        paperSize: 'A5', orientation: 'landscape', fontFamily: 'Courier',
+        showAmountInWords: false, showExpenseCategory: false,
+      } });
+    expect(update.status).toBe(200);
+
+    const pdfRes = await getPdfResponse(`/api/v1/finance/expenses/${expRes.body.id}/pdf`, authHeaderA);
+    expect(pdfRes.status).toBe(200);
+    const pdfBuffer = pdfRes.body as Buffer;
+    const parsed = await parsePdf(pdfBuffer);
+    expect(parsed.text).toContain('CUSTOM EXPENSE CONFIGURATION');
+    expect(parsed.text).toContain('EXPENSE PAYMENT VOUCHER');
+    expect(parsed.text).toContain('PETTY CASH VOUCHER');
+    expect(parsed.text).toContain('Template configuration regression');
+    expect(pdfBuffer.toString('latin1')).toMatch(/\/MediaBox\s*\[\s*0\s+0\s+595\.28\s+419\.53\s*\]/);
+    expect(parsed.numpages).toBe(1);
+    expect(parsed.text).toContain('DISBURSEMENT & BENEFICIARY DETAILS');
+    expect(parsed.text).not.toContain('CASH DISBURSEMENT');
+    expect(parsed.text).not.toContain('CASH RECIPIENT');
+    expect(parsed.text).toContain('Claimant: Not specified');
+    expect(parsed.text).not.toContain('Amount in Words:');
+    expect(pdfBuffer.toString('latin1')).toContain('/Courier');
+    expect(parsed.text.match(/Page 1 of 1/g)).toHaveLength(1);
+    expect(parsed.text).toContain('Posting total:');
+    expect(parsed.text).not.toContain('Recoverable cost:');
+  });
+
+  it.skipIf(!process.env.DATABASE_URL)('keeps long voucher rows and one footer per page when A5 content continues', async () => {
+    const longDescription = `${'Long allocation memo preserved across the voucher layout. '.repeat(40)} LONG_MEMO_END`;
+    const expRes = await request(app).post('/api/v1/finance/expenses').set(authHeaderA).send({
+      expenseAccountId: expenseAccountIdA,
+      paidFromAccountId: bankAccountIdA,
+      date: '2026-08-11',
+      amount: 425,
+      description: longDescription,
+    });
+    expect(expRes.status).toBe(201);
+
+    const templates = await request(app).get('/api/v1/finance/documents/expenses/templates').set(authHeaderA);
+    expect(templates.status).toBe(200);
+    const reimbursement = templates.body.templates.find((candidate: any) => candidate.modelId === 'reimbursement');
+    expect(reimbursement).toBeDefined();
+    const template = await request(app)
+      .patch(`/api/v1/finance/documents/expenses/templates/${reimbursement.id}/default`)
+      .set(authHeaderA)
+      .send({});
+    expect(template.status).toBe(200);
+    const configured = await request(app)
+      .patch(`/api/v1/finance/documents/expenses/templates/${template.body.template.id}/configuration`)
+      .set(authHeaderA)
+      .send({ configuration: { paperSize: 'A5', orientation: 'landscape', showAmountInWords: true } });
+    expect(configured.status).toBe(200);
+
+    const pdfRes = await getPdfResponse(`/api/v1/finance/expenses/${expRes.body.id}/pdf`, authHeaderA);
+    expect(pdfRes.status).toBe(200);
+    const parsed = await parsePdf(pdfRes.body as Buffer);
+    expect(parsed.numpages).toBeGreaterThan(1);
+    expect(parsed.text).toContain('LONG_MEMO_END');
+    for (let page = 1; page <= parsed.numpages; page++) {
+      expect(parsed.text.match(new RegExp(`Page ${page} of ${parsed.numpages}`, 'g'))).toHaveLength(1);
+    }
+  });
+
+  it('serves exact issued expense PDF bytes from the legacy voucher URL', async () => {
+    const suffix = Date.now().toString(36);
+    const expRes = await request(app).post('/api/v1/finance/expenses').set(authHeaderA).send({
+      expenseNumber: `EXP-ISSUED-${suffix}`, expenseAccountId: expenseAccountIdA,
+      paidFromAccountId: bankAccountIdA, date: '2026-08-11', amount: 275,
+      description: 'Issued artifact byte retention',
+    });
+    expect(expRes.status).toBe(201);
+    const issued = await request(app)
+      .post(`/api/v1/finance/documents/expenses/${expRes.body.id}/pdf/issue`)
+      .set({ ...authHeaderA, 'Idempotency-Key': `expense-issued-${suffix}` })
+      .send({});
+    expect(issued.status).toBe(200);
+
+    await db.query(`UPDATE expenses SET description = 'Changed after issue' WHERE organization_id = $1 AND id = $2`, [orgIdA, expRes.body.id]);
+    const legacy = await getPdfResponse(`/api/v1/finance/expenses/${expRes.body.id}/pdf`, authHeaderA);
+    expect(legacy.status).toBe(200);
+    expect(legacy.headers['x-document-pdf-artifact']).toBe(issued.headers['x-document-pdf-artifact']);
+    expect(legacy.body).toEqual(issued.body);
   });
 
   it('2. Compiles attached receipt images into multi-page Annexure dossier', async () => {

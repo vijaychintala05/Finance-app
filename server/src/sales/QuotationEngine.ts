@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { db } from '../database/db';
 import { DocumentNumberingEngine } from '../services/DocumentNumberingEngine';
 import { ItemMasterService } from '../services/ItemMasterService';
+import { DocumentTemplateService } from '../services/DocumentTemplateService';
 import { SalesEngine, EstimateModel, SalesOrderModel, InvoiceModel } from './SalesEngine';
 import { newId } from '../utils/ids';
 
@@ -525,6 +526,7 @@ export class QuotationEngine {
       },
       templateSnapshot
     );
+    fullSnapshot.documentTemplateSnapshot = await DocumentTemplateService.resolve(client, orgId, 'quotes');
 
     // Initial Revision 0 snapshot
     await client.query(
@@ -671,7 +673,7 @@ export class QuotationEngine {
     const targetTemplateId = newData.templateId !== undefined ? newData.templateId : q.template_id;
 
     const isFinalized = ['SENT', 'ACCEPTED', 'DECLINED', 'REVISION_REQUESTED', 'CONVERTED'].includes(targetStatus.toUpperCase());
-    let frozenTemplateSnapshot: any = q.template_snapshot;
+    let frozenTemplateSnapshot: any = targetTemplateId === q.template_id ? q.template_snapshot : null;
     if (typeof frozenTemplateSnapshot === 'string') {
       try { frozenTemplateSnapshot = JSON.parse(frozenTemplateSnapshot); } catch { frozenTemplateSnapshot = null; }
     }
@@ -762,6 +764,7 @@ export class QuotationEngine {
       },
       frozenTemplateSnapshot
     );
+    fullSnapshot.documentTemplateSnapshot = await DocumentTemplateService.resolve(client, orgId, 'quotes');
 
     await client.query(
       `INSERT INTO quotation_revisions (id, organization_id, quotation_id, revision_number, revision_data, total_amount, status, change_summary, created_by, created_at, template_snapshot)
@@ -1341,6 +1344,7 @@ export class QuotationEngine {
       );
       if (updated.rows.length !== 1) throw new Error('Quotation response could not be recorded');
       const fullSnapshot = this.buildQuotationSnapshot(updated.rows[0], frozenTmpl);
+      fullSnapshot.documentTemplateSnapshot = await DocumentTemplateService.resolve(client, q.organization_id, 'quotes');
       await client.query(
         `INSERT INTO quotation_revisions (id, organization_id, quotation_id, revision_number, revision_data, total_amount, status, change_summary, created_by, created_at, template_snapshot)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,

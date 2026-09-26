@@ -81,6 +81,18 @@ describe('Company Branding & PDF Templates Studio Tests', () => {
     mockOrganizationState.invoiceTitle = 'TAX INVOICE';
     mockOrganizationState.invoiceDefault = 'standard';
     (apiClient.get as any).mockImplementation((url: string) => {
+      if (url === '/finance/documents/quotes/templates') {
+        return Promise.resolve({ status: 200, data: {
+          defaultTemplateId: 'saved-proposal', defaultModelId: 'proposal',
+          templates: [{ id: 'saved-proposal', modelId: 'proposal', configuration: { templateTitle: mockOrganizationState.quoteTitle } }],
+        } });
+      }
+      if (url === '/finance/documents/credit-notes/templates') {
+        return Promise.resolve({ status: 200, data: {
+          defaultTemplateId: 'saved-statutory', defaultModelId: 'statutory',
+          templates: [{ id: 'saved-statutory', modelId: 'statutory', configuration: { showReturnReason: mockOrganizationState.creditReasonVisible } }],
+        } });
+      }
       if (url === '/organizations/current') {
         return Promise.resolve({
           status: 200,
@@ -401,7 +413,7 @@ describe('Company Branding & PDF Templates Studio Tests', () => {
     render(<PdfTemplatesSettings />);
     fireEvent.click(await screen.findByRole('button', { name: /Credit Notes/i }));
 
-    expect(screen.queryByText('Quality rejection / return')).toBeNull();
+    await waitFor(() => expect(screen.queryAllByText('Quality rejection / return')).toHaveLength(0));
     fireEvent.click(await screen.findByRole('button', { name: 'Preview Standard Credit Note' }));
     const preview = await screen.findByRole('dialog', { name: 'Full Preview: Standard Credit Note' });
     expect(within(preview).getByText('Layout sample only')).toBeDefined();
@@ -497,8 +509,13 @@ describe('Company Branding & PDF Templates Studio Tests', () => {
   });
 
   it('flags a known misleading built-in saved title while keeping that title visible', async () => {
-    mockOrganizationState.invoiceTitle = 'COMMERCIAL EXPORT INVOICE';
-    mockOrganizationState.invoiceDefault = 'export';
+    const existingGet = (apiClient.get as any).getMockImplementation();
+    (apiClient.get as any).mockImplementation((url: string, organizationId?: string) => {
+      if (url === '/finance/documents/invoices/templates') return Promise.resolve({ status: 200, data: {
+        defaultModelId: 'export', templates: [{ id: 'saved-export', modelId: 'export', configuration: { templateTitle: 'COMMERCIAL EXPORT INVOICE' } }],
+      } });
+      return existingGet(url, organizationId);
+    });
     render(<PdfTemplatesSettings />);
     fireEvent.click(await screen.findByRole('button', { name: /Invoices/i }));
     const invoiceCard = (await screen.findByRole('button', { name: 'Preview Alternate Ledger Invoice' })).closest('article') as HTMLElement;
@@ -605,12 +622,9 @@ describe('Company Branding & PDF Templates Studio Tests', () => {
         undefined,
         'org-test-101',
       );
-      expect(mockUpdateSettings).toHaveBeenCalledWith(
-        expect.objectContaining({
-          documentTemplates: expect.any(Object),
-        })
-      );
+      expect(apiClient.get).toHaveBeenCalledWith('/finance/documents/quotes/templates', 'org-test-101');
     });
+    expect(mockUpdateSettings).not.toHaveBeenCalled();
   });
 
   it('8. Opening "Configure PDF Options" allows customizing Document Title and saves in real-time', async () => {
@@ -714,7 +728,7 @@ describe('Company Branding & PDF Templates Studio Tests', () => {
     expect(screen.getByText('FORMAL ESTIMATE')).toBeDefined();
   });
 
-  it('8b. Reload hydrates the editor from the selected template version configuration', async () => {
+  it('hydrates default selection and editor configuration from the assigned template, not the stale profile default', async () => {
     (apiClient.get as any).mockImplementation((url: string) => {
       if (url === '/organizations/current') {
         return Promise.resolve({ status: 200, data: { profile: { documentTemplates: {
@@ -722,8 +736,9 @@ describe('Company Branding & PDF Templates Studio Tests', () => {
         } } } });
       }
       if (url === '/finance/documents/quotes/templates') {
-        return Promise.resolve({ status: 200, data: { templates: [
+        return Promise.resolve({ status: 200, data: { defaultTemplateId: 'registry-template-1', defaultModelId: 'commercial', templates: [
           { id: 'registry-template-1', modelId: 'commercial', configuration: { templateTitle: 'SAVED VERSION TITLE' } },
+          { id: 'registry-template-2', modelId: 'proposal', configuration: { templateTitle: 'OTHER VERSION TITLE' } },
         ] } });
       }
       return Promise.resolve({ status: 200, data: {} });
@@ -731,11 +746,13 @@ describe('Company Branding & PDF Templates Studio Tests', () => {
 
     render(<PdfTemplatesSettings />);
     await waitFor(() => expect(apiClient.get).toHaveBeenCalledWith('/finance/documents/quotes/templates', 'org-test-101'));
+    expect(screen.getByRole('button', { name: /Quotes/i }).textContent).toContain('Ledger');
     fireEvent.click(screen.getByRole('button', { name: 'Customize Ledger Quote' }));
 
     await waitFor(() => {
       expect((screen.getByLabelText('Document Title') as HTMLInputElement).value).toBe('SAVED VERSION TITLE');
     });
+    expect(mockUpdateSettings).not.toHaveBeenCalled();
   });
 
   it('8c. Discards late template responses and keeps a draft scoped to its organization', async () => {

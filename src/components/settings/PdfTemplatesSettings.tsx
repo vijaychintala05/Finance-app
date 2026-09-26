@@ -520,6 +520,7 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
   const [optionsOrganizationId, setOptionsOrganizationId] = useState<string | null>(null);
   const [savingOptions, setSavingOptions] = useState(false);
   const [templateModelsByCategory, setTemplateModelsByCategory] = useState<Record<string, Array<{ id: string; modelId?: string; configuration?: DocumentTemplateConfig }>>>({});
+  const [defaultTemplateByCategory, setDefaultTemplateByCategory] = useState<Record<string, { templateId?: string; modelId?: string }>>({});
 
   // Full-Screen Preview Modal
   const [fullPreviewTemplate, setFullPreviewTemplate] = useState<CategoryTemplateItem | null>(null);
@@ -543,10 +544,14 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
 
   const categoryTemplates = CATEGORY_TEMPLATES[activeCategory] || CATEGORY_TEMPLATES.quotes;
 
-  // Document templates map from settings
+  // Keep profile settings only as a compatibility mirror after successful saves.
   const docTemplatesMap: Record<string, DocumentTemplateConfig> = settings.documentTemplates || {};
+  const assignedTemplate = (templateModelsByCategory[activeCategory] || []).find((template) =>
+    template.id === defaultTemplateByCategory[activeCategory]?.templateId
+      || template.modelId === defaultTemplateByCategory[activeCategory]?.modelId,
+  );
   const currentCategoryConfig: DocumentTemplateConfig =
-    docTemplatesMap[activeCategory] || {
+    assignedTemplate?.configuration || {
       defaultTemplate: categoryTemplates[0]?.id || 'standard',
       templateTitle: activeCategoryDef.defaultTitle,
       exportFileNamePattern: `%{${activeCategoryDef.singular.replace(/\s+/g, '')}Number}_%{PartyName}`,
@@ -570,13 +575,13 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
         'Thank you for your business. For questions, please reach out to our accounts team.',
     };
 
-  const activeDefaultTemplateId =
-    currentCategoryConfig.defaultTemplate || categoryTemplates[0]?.id || 'standard';
+  const assignment = defaultTemplateByCategory[activeCategory];
+  const activeDefaultTemplateId = assignment?.modelId || assignment?.templateId || categoryTemplates[0]?.id || 'standard';
 
   const loadTemplateModels = useCallback(async (category: DocumentTemplateCategory) => {
     const organizationId = currentOrg.id;
     const generation = organizationGenerationRef.current;
-    const result = await apiClient.get<{ templates?: Array<{ id: string; modelId?: string; configuration?: DocumentTemplateConfig }> }>(
+    const result = await apiClient.get<{ templates?: Array<{ id: string; modelId?: string; configuration?: DocumentTemplateConfig }>; defaultTemplateId?: string | null; defaultModelId?: string | null }>(
       `/finance/documents/${category}/templates`,
       organizationId,
     );
@@ -584,6 +589,16 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
     const templates = result.data?.templates || [];
     if (activeOrganizationIdRef.current === organizationId && organizationGenerationRef.current === generation) {
       setTemplateModelsByCategory((current) => ({ ...current, [category]: templates }));
+      setDefaultTemplateByCategory((current) => ({
+        ...current,
+        [category]: {
+          templateId: result.data?.defaultTemplateId || undefined,
+          modelId: result.data?.defaultModelId
+            || templates.find((template) => template.id === result.data?.defaultTemplateId)?.modelId
+            || result.data?.defaultTemplateId
+            || undefined,
+        },
+      }));
     }
     return templates;
   }, [currentOrg.id]);
@@ -598,6 +613,7 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
 
   useEffect(() => {
     setTemplateModelsByCategory({});
+    setDefaultTemplateByCategory({});
     setOptionsDraft({});
     setOptionsOrganizationId(null);
     setSelectedTemplateForCustomizing(null);
@@ -618,36 +634,6 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
     setOpeningLivePdf(false);
     setOpeningSamplePdf(false);
     setLoading(true);
-  }, [currentOrg.id]);
-  // Load authoritative document templates from the active organization.
-  useEffect(() => {
-    let mounted = true;
-    const organizationId = currentOrg.id;
-    const generation = organizationGenerationRef.current;
-    const isCurrent = () => mounted
-      && activeOrganizationIdRef.current === organizationId
-      && organizationGenerationRef.current === generation;
-    const fetchOrgProfile = async () => {
-      setLoading(true);
-      try {
-        const res = await apiClient.get<any>('/organizations/current', organizationId);
-        if (!isCurrent()) return;
-        const prof = res.data?.profile;
-        if (prof) {
-          let dt = prof.documentTemplates;
-          if (typeof dt === 'string') {
-            try { dt = JSON.parse(dt); } catch { dt = {}; }
-          }
-          if (dt && typeof dt === 'object') updateSettings({ documentTemplates: dt });
-        }
-      } catch (err: any) {
-        if (isCurrent()) console.error('Failed to load document templates:', err);
-      } finally {
-        if (isCurrent()) setLoading(false);
-      }
-    };
-    void fetchOrgProfile();
-    return () => { mounted = false; };
   }, [currentOrg.id]);
 
   const showToast = (msg: string) => {
@@ -751,15 +737,6 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
       const res = await apiClient.post<any>(`/finance/documents/${category}/templates/restore-default`, undefined, organizationId);
       if (!isActiveOrganizationRequest(organizationId, generation)) return;
       if (res.error) throw new Error(res.error);
-      const profRes = await apiClient.get<any>('/organizations/current', organizationId);
-      if (!isActiveOrganizationRequest(organizationId, generation)) return;
-      if (profRes.data?.profile?.documentTemplates) {
-        let dt = profRes.data.profile.documentTemplates;
-        if (typeof dt === 'string') {
-          try { dt = JSON.parse(dt); } catch { dt = {}; }
-        }
-        updateSettings({ documentTemplates: dt });
-      }
       setOptionsDraft({});
       setIsOptionsOpen(false);
       setFullPreviewTemplate(null);
@@ -789,9 +766,8 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
       const serverRes = await apiClient.patch<any>(`/finance/documents/${category}/templates/${encodeURIComponent(templateId)}/default`, undefined, organizationId);
       if (!isActiveOrganizationRequest(organizationId, generation)) return;
       if (serverRes.error) throw new Error(serverRes.error);
-      const updatedCategoryConfig: DocumentTemplateConfig = { ...currentCategoryConfig, defaultTemplate: templateId };
-      const updatedAllTemplates: Record<string, DocumentTemplateConfig> = { ...docTemplatesMap, [category]: updatedCategoryConfig };
-      updateSettings({ documentTemplates: updatedAllTemplates });
+      await loadTemplateModels(category);
+      if (!isActiveOrganizationRequest(organizationId, generation)) return;
       await refreshOrganizations();
       if (!isActiveOrganizationRequest(organizationId, generation)) return;
       const styleDef = categoryTemplates.find((t) => isTemplateMatching(templateId, t.id));
@@ -821,7 +797,7 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
     }
     if (!isActiveOrganizationRequest(organizationId, generation)) return;
     const selectedModel = models.find((model) => model.modelId === selectedTemplateId || model.id === selectedTemplateId);
-    const selectedTemplateConfig = selectedModel?.configuration || currentCategoryConfig;
+    const selectedTemplateConfig = selectedModel?.configuration || {};
     setOptionsOrganizationId(organizationId);
     setSelectedTemplateForCustomizing(selectedTemplateId);
     setOptionsActiveTab(tab);
@@ -1017,7 +993,7 @@ export const PdfTemplatesSettings: React.FC<PdfTemplatesSettingsProps> = ({
             {visibleCategories.map((cat) => {
               const isActive = activeCategory === cat.id;
               const catTemplates = CATEGORY_TEMPLATES[cat.id] || [];
-              const catDefaultId = docTemplatesMap[cat.id]?.defaultTemplate || catTemplates[0]?.id;
+              const catDefaultId = defaultTemplateByCategory[cat.id]?.modelId || defaultTemplateByCategory[cat.id]?.templateId || catTemplates[0]?.id;
               const defaultStyle = catTemplates.find((t) => isTemplateMatching(catDefaultId, t.id)) || catTemplates[0];
 
               return (

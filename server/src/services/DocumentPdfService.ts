@@ -8,6 +8,7 @@ import { VendorStatementService } from './VendorStatementService';
 import { DocumentTemplateService, type DocumentTemplateRecord } from './DocumentTemplateService';
 import { AuditTrailService } from '../security/AuditTrailService';
 import { DocumentPdfArtifactConflictError, DocumentPdfArtifactService, type DocumentPdfArtifact } from './DocumentPdfArtifactService';
+import type { QuotationRenderDTO } from '../sales/QuotationRenderModelService';
 
 /**
  * The document PDF catalogue is deliberately owned by the server.  A browser
@@ -232,6 +233,80 @@ export class DocumentPdfService {
     const fallbackFilename = category === 'invoices' ? 'Invoice-' + (sanitize(model.number).replace(/[^A-Za-z0-9_-]+/g, '-') || documentId) + '.pdf' : (sanitize(model.title).replace(/[^A-Za-z0-9]+/g, '-') + '-' + (sanitize(model.number).replace(/[^A-Za-z0-9_-]+/g, '-') || documentId) + '.pdf');
     const filename = this.buildFilename(model, fallbackFilename);
     return { pdf, filename, templateId: model.templateId };
+  }
+
+  public static async generateQuotationRevisionPdf(
+    quotation: QuotationRenderDTO,
+    template: DocumentTemplateRecord,
+  ): Promise<Buffer> {
+    if (template.category !== 'quotes' || !template.modelId || !template.configuration) {
+      throw new Error('Quotation revision has an invalid frozen document template');
+    }
+    const config = { ...template.configuration };
+    const address = quotation.customerSnapshot.billingAddress;
+    const partyDetails = [
+      quotation.customerSnapshot.email,
+      quotation.customerSnapshot.phone,
+      quotation.customerSnapshot.gstin ? `GSTIN: ${quotation.customerSnapshot.gstin}` : '',
+      address && [address.street, address.city, address.state, address.pincode, address.country].filter(Boolean).join(', '),
+    ].filter((value): value is string => Boolean(value));
+    const model: RenderModel = {
+      category: 'quotes',
+      templateId: template.modelId,
+      title: sanitize(config.templateTitle || 'COMMERCIAL QUOTATION'),
+      number: sanitize(quotation.document.quotationNumber),
+      status: sanitize(quotation.document.status).toUpperCase(),
+      date: isoDate(quotation.document.issueDate),
+      dueDate: config.showExpiryDate === false ? undefined : isoDate(quotation.document.expiryDate),
+      partyLabel: 'CUSTOMER',
+      partyName: sanitize(quotation.customerSnapshot.displayName),
+      partyDetails: partyDetails.map(sanitize),
+      organization: {
+        legal_name: quotation.organization.legalName,
+        trade_name: quotation.organization.tradeName,
+        logo_url: quotation.organization.logoUrl,
+        address_line1: quotation.organization.address,
+        gstin: quotation.organization.gstin,
+        email: quotation.organization.email,
+        phone: quotation.organization.phone,
+        website: quotation.organization.website,
+        base_currency: quotation.document.currency,
+      },
+      source: {
+        id: quotation.document.quotationId,
+        status: quotation.document.status,
+        subtotal: quotation.totals.subtotal,
+        tax_total: quotation.totals.taxTotal,
+        discount: quotation.totals.overallDiscount,
+        total_amount: quotation.totals.grandTotal,
+        expiry_date: quotation.document.expiryDate,
+        notes: quotation.document.notes,
+        terms: quotation.document.terms,
+        is_gst_inclusive: quotation.document.isGstInclusive,
+        taxable_amount: quotation.totals.taxableAmount,
+        gst_breakdown: quotation.totals.gstBreakdown,
+        round_off_amount: quotation.totals.roundOffAmount,
+        quotation_revision: true,
+      },
+      templateConfig: config,
+      lines: quotation.lineItems.map((line) => ({
+        description: sanitize([line.name, line.description].filter(Boolean).join(' - ')),
+        hsnSac: line.hsnSac,
+        quantity: line.quantity,
+        rate: line.rate,
+        amount: line.totalAmount,
+      })),
+      subtotal: quotation.totals.subtotal,
+      tax: quotation.totals.taxTotal,
+      discount: quotation.totals.overallDiscount,
+      total: quotation.totals.grandTotal,
+      notes: config.showScopeOfWork === false ? '' : sanitize(
+        [quotation.document.notes, quotation.document.terms].filter(Boolean).join('\n'),
+      ),
+      journalLines: [],
+      versionedTemplate: template,
+    };
+    return this.render(model);
   }
 
   public static async issuePdf(
@@ -1370,9 +1445,10 @@ export class DocumentPdfService {
             if (model.templateId === 'commercial') return {
               heading: 'COMMERCIAL OFFER',
               facts: [
-                ...(model.source.sample || number(model.source.subtotal) > 0 ? [['Subtotal', amount(model.subtotal)] as [string, string]] : []),
-                ...(model.source.sample || number(model.source.tax_total ?? model.source.tax_amount) > 0 ? [['Tax', amount(model.tax)] as [string, string]] : []),
+                ...(model.source.sample || number(model.source.subtotal) > 0 ? [[model.source.quotation_revision && model.source.is_gst_inclusive ? 'Subtotal (tax inclusive)' : 'Subtotal', amount(model.subtotal)] as [string, string]] : []),
+                ...(model.templateConfig.showTaxBreakdown !== false && (model.source.sample || number(model.source.tax_total ?? model.source.tax_amount) > 0) ? [[model.source.quotation_revision && model.source.is_gst_inclusive ? 'Tax included' : 'Tax', amount(model.tax)] as [string, string]] : []),
                 ...(model.source.sample || number(model.source.discount) > 0 ? [['Discount', amount(model.discount)] as [string, string]] : []),
+                ...(model.source.quotation_revision && number(model.source.round_off_amount) ? [['Round-off', amount(number(model.source.round_off_amount))] as [string, string]] : []),
                 ['Offer total', amount(model.total)],
               ],
             };
@@ -1381,9 +1457,10 @@ export class DocumentPdfService {
               facts: [
                 ['Quote number', model.number],
                 ...(model.templateConfig.showExpiryDate === false ? [] : [['Valid through', model.dueDate || 'Not specified'] as [string, string]]),
-                ...(model.source.sample || number(model.source.subtotal) > 0 ? [['Subtotal', amount(model.subtotal)] as [string, string]] : []),
-                ...(model.source.sample || number(model.source.tax_total ?? model.source.tax_amount) > 0 ? [['Tax', amount(model.tax)] as [string, string]] : []),
+                ...(model.source.sample || number(model.source.subtotal) > 0 ? [[model.source.quotation_revision && model.source.is_gst_inclusive ? 'Subtotal (tax inclusive)' : 'Subtotal', amount(model.subtotal)] as [string, string]] : []),
+                ...(model.templateConfig.showTaxBreakdown !== false && (model.source.sample || number(model.source.tax_total ?? model.source.tax_amount) > 0) ? [[model.source.quotation_revision && model.source.is_gst_inclusive ? 'Tax included' : 'Tax', amount(model.tax)] as [string, string]] : []),
                 ...(model.source.sample || number(model.source.discount) > 0 ? [['Discount', amount(model.discount)] as [string, string]] : []),
+                ...(model.source.quotation_revision && number(model.source.round_off_amount) ? [['Round-off', amount(number(model.source.round_off_amount))] as [string, string]] : []),
                 ['Offer total', amount(model.total)],
               ],
             };
@@ -1913,9 +1990,10 @@ export class DocumentPdfService {
             || (model.category === 'invoices' && model.templateId === 'ledger-invoice'))) {
           const showBalanceDue = Boolean(model.balance) && !(model.category === 'vendor-credits' && model.templateConfig.showPayablesLedger === false);
           const rows: Array<[string, number]> = [
-            ...((model.category !== 'bills' || number(model.source.subtotal) > 0 || number(model.source.amount) > 0) ? [['Subtotal', model.subtotal] as [string, number]] : []),
-            ...(model.tax && model.templateConfig.showTaxBreakdown !== false ? [[model.category === 'expenses' && model.source.is_rcm ? 'RCM tax (not paid to vendor)' : 'Tax', model.tax] as [string, number]] : []),
+            ...((model.category !== 'bills' || number(model.source.subtotal) > 0 || number(model.source.amount) > 0) ? [[model.source.quotation_revision && model.source.is_gst_inclusive ? 'Subtotal (tax inclusive)' : 'Subtotal', model.subtotal] as [string, number]] : []),
+            ...(model.tax && model.templateConfig.showTaxBreakdown !== false ? [[model.source.quotation_revision && model.source.is_gst_inclusive ? 'Tax included' : model.category === 'expenses' && model.source.is_rcm ? 'RCM tax (not paid to vendor)' : 'Tax', model.tax] as [string, number]] : []),
             ...(model.discount && model.templateConfig.showDiscount !== false ? [['Discount', -model.discount] as [string, number]] : []),
+            ...(model.source.quotation_revision && number(model.source.round_off_amount) ? [['Round-off', number(model.source.round_off_amount)] as [string, number]] : []),
             [model.category === 'invoices' ? 'Total Amount:' : 'Total', model.total],
             ...(model.category === 'expenses' && number(model.source.tds_amount) > 0 && model.templateConfig.showTdsDeduction !== false ? [[model.source.tds_section ? `TDS Withheld (${sanitize(model.source.tds_section)})` : 'TDS Withheld', -number(model.source.tds_amount)] as [string, number]] : []),
             ...(model.category === 'expenses' && number(model.source.tds_amount) > 0 && model.templateConfig.showTdsDeduction !== false ? [['Net Paid', model.netPaid ?? model.total - number(model.source.tds_amount)] as [string, number]] : []),
@@ -1947,7 +2025,13 @@ export class DocumentPdfService {
             y += 36;
           }
           doc.font(italicFont).fontSize(7.5).fillColor('#64748b');
-          if (model.templateConfig.showAmountInWords !== false) text(`Amount in words: ${amountToWords(model.total, sanitize(model.organization.base_currency || 'INR'))}`, 40, y, pageWidth * 0.6);
+          if (model.templateConfig.showAmountInWords !== false) {
+            const words = `Amount in words: ${amountToWords(model.total, sanitize(model.organization.base_currency || 'INR'))}`;
+            const wordsHeight = doc.heightOfString(words, { width: pageWidth * 0.6 });
+            ensure(wordsHeight + 10);
+            text(words, 40, y, pageWidth * 0.6);
+            y += wordsHeight + 10;
+          }
         } else if (model.category.includes('statement')) {
           if (!isStatementOverview) {
             doc.rect(totalX - 10, y, totalsBlockWidth + 10, 28).fill(primary);
@@ -1958,7 +2042,7 @@ export class DocumentPdfService {
           }
 
 
-        } else if (model.templateConfig.showDebitCreditTotals !== false) {
+        } else if (model.category === 'journals' && model.templateConfig.showDebitCreditTotals !== false) {
           // Journals
           const debits = model.journalLines.reduce((sum, line) => sum + number(line.debit), 0);
           const credits = model.journalLines.reduce((sum, line) => sum + number(line.credit), 0);
@@ -2033,6 +2117,25 @@ export class DocumentPdfService {
         }
 
         // --- 7. NOTES & TERMS ---
+        if (model.source.quotation_revision && model.templateConfig.showTaxBreakdown !== false) {
+          const breakdown = model.source.gst_breakdown;
+          const taxFacts: Array<[string, number]> = [
+            ['Taxable amount', number(model.source.taxable_amount)],
+            ...(breakdown ? (breakdown.isInterState
+              ? [['IGST', number(breakdown.igstTotal)] as [string, number]]
+              : [['CGST', number(breakdown.cgstTotal)], ['SGST', number(breakdown.sgstTotal)]] as Array<[string, number]>) : []),
+          ];
+          ensure(22 + taxFacts.length * 16);
+          doc.font(boldFont).fontSize(8).fillColor(accentInk);
+          text(model.source.is_gst_inclusive ? 'GST BREAKDOWN - INCLUDED IN PRICE' : 'GST BREAKDOWN', 40, y, pageWidth);
+          y += 18;
+          for (const [label, value] of taxFacts) {
+            doc.font(fontChoice).fontSize(8).fillColor('#475569');
+            text(`${label}: ${amount(value)}`, 40, y, pageWidth);
+            y += 16;
+          }
+          y += 8;
+        }
         const notesAreHiddenDebitReason = model.category === 'vendor-credits'
           && model.templateConfig.showDebitReason === false
           && !model.source.notes

@@ -39,6 +39,7 @@ test('PDF template gallery displays server sample sheets', async ({ page }, test
   await page.getByRole('button', { name: 'Preview Standard Quote' }).click();
   const fullPage = page.getByRole('img', { name: 'Standard Quote rendered page 1' });
   await expect(fullPage).toBeVisible({ timeout: 30_000 });
+  await fullPage.screenshot({ path: testInfo.outputPath('pdf-full-preview-standard-quote.png') });
   expect(await fullPage.evaluate((canvas: HTMLCanvasElement) => {
     const context = canvas.getContext('2d');
     if (!context) return 0;
@@ -99,6 +100,7 @@ test('every registered PDF model exposes a readable server-rendered template car
         return painted;
       });
       expect(inkPixels, `${category} model ${index + 1} card should show visible PDF content`).toBeGreaterThan(100);
+      await canvas.screenshot({ path: testInfo.outputPath(`pdf-${category.toLowerCase().replaceAll(' ', '-')}-${index + 1}.png`) });
       renderedModels += 1;
     }
   }

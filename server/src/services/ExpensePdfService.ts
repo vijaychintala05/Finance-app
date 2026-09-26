@@ -1,6 +1,7 @@
 import PDFDocument from 'pdfkit';
 import { type DbQueryClient } from '../database/db';
 import { amountToWords } from '../utils/numberToWords';
+import { DocumentTemplateService } from './DocumentTemplateService';
 
 export class ExpensePdfService {
   /**
@@ -53,6 +54,26 @@ export class ExpensePdfService {
 
     // 3. Organization Base Currency
     const currencySymbol = org.base_currency || 'USD';
+
+    // Legacy downloads still honor the organization's versioned expense template.
+    const template = await DocumentTemplateService.resolve(client, organizationId, 'expenses');
+    const templateConfig = template?.configuration || {};
+    const primaryColor = /^#[0-9a-fA-F]{6}$/.test(templateConfig.primaryColor || '')
+      ? templateConfig.primaryColor : '#0284c7';
+    const accentColor = /^#[0-9a-fA-F]{6}$/.test(templateConfig.accentColor || '')
+      ? templateConfig.accentColor : '#0f172a';
+    const fontFamily = ['Helvetica', 'Courier', 'Times-Roman'].includes(templateConfig.fontFamily)
+      ? templateConfig.fontFamily : 'Helvetica';
+    const boldFont = fontFamily === 'Times-Roman' ? 'Times-Bold' : `${fontFamily}-Bold`;
+    const italicFont = fontFamily === 'Times-Roman' ? 'Times-Italic' : `${fontFamily}-Oblique`;
+    const variant = template?.modelId || 'reimbursement';
+    const variantLabel = variant === 'petty-cash' ? 'PETTY CASH VOUCHER'
+      : variant === 'project-billable' ? 'PROJECT COST RECOVERY' : 'EXPENSE VOUCHER';
+    const paperSize = ['A3', 'A4', 'A5', 'Letter', 'Legal'].includes(String(templateConfig.paperSize || template?.paperSize))
+      ? String(templateConfig.paperSize || template?.paperSize) : 'A4';
+    const orientation = ['portrait', 'landscape'].includes(String(templateConfig.orientation || template?.orientation))
+      ? String(templateConfig.orientation || template?.orientation) as 'portrait' | 'landscape' : 'portrait';
+    const show = (key: string) => templateConfig[key] !== false;
 
     // 4. Fetch Accounts involved (including any itemized lines)
     const itemsList: Array<{ id?: string; accountId: string; description?: string; amount: number }> =
@@ -108,7 +129,6 @@ export class ExpensePdfService {
     );
     const receipts = receiptsRes.rows;
 
-    const primaryColor = '#0284c7'; // Professional slate-cyan
     const amount = Number(exp.amount || 0);
     const taxAmount = Number(exp.tax_amount || 0);
     const totalAmount = postedLines.length
@@ -119,90 +139,180 @@ export class ExpensePdfService {
 
     return new Promise((resolve, reject) => {
       try {
-        const doc = new PDFDocument({ margin: 40, size: 'A4', bufferPages: true });
+        const doc = new PDFDocument({ margins: { top: 32, bottom: 0, left: 32, right: 32 }, size: paperSize, layout: orientation, bufferPages: true });
         const buffers: Buffer[] = [];
 
         doc.on('data', (chunk) => buffers.push(chunk));
         doc.on('end', () => resolve(Buffer.concat(buffers)));
         doc.on('error', (err) => reject(err));
 
+        const margin = 32;
+        const pageWidth = () => doc.page.width;
+        const pageHeight = () => doc.page.height;
+        const contentWidth = () => pageWidth() - margin * 2;
+        const fontRegular = fontFamily;
+        const fontBold = boldFont;
+        const rightEdge = () => pageWidth() - margin;
+        const contentBottom = () => pageHeight() - 48;
+        const topRule = () => doc.rect(margin, 26, contentWidth(), 3).fill(primaryColor);
+
         // --- PAGE 1: EXPENSE PAYMENT VOUCHER ---
-        // Top Brand Accent Line
-        doc.rect(40, 35, 515, 3).fill(primaryColor);
+        topRule();
 
         // Header Title & Voucher Number
-        doc.fontSize(18).font('Helvetica-Bold').fillColor(primaryColor).text('EXPENSE PAYMENT VOUCHER', 40, 46, { width: 320 });
-        doc.fontSize(11).font('Helvetica-Bold').fillColor('#0f172a').text(voucherNumber, 340, 48, { width: 215, align: 'right' });
+        const headerCentered = templateConfig.headerLayout === 'centered';
+        const headingWidth = contentWidth();
+        let headerY = 38;
+        const headerText = (value: string, size: number, font: string, color: string) => {
+          doc.fontSize(size).font(font).fillColor(color);
+          const height = doc.heightOfString(value, { width: headingWidth });
+          doc.text(value, margin, headerY, { width: headingWidth, align: headerCentered ? 'center' : 'left' });
+          headerY += height + 4;
+        };
+        headerText('EXPENSE PAYMENT VOUCHER', 18, fontBold, primaryColor);
+        headerText(variantLabel, 7.5, fontBold, accentColor);
+        if (templateConfig.templateTitle && templateConfig.templateTitle !== 'EXPENSE VOUCHER') {
+          headerText(templateConfig.templateTitle, 8, fontRegular, accentColor);
+        }
+        doc.fontSize(11).font(fontBold).fillColor(accentColor);
+        const referenceHeight = doc.heightOfString(voucherNumber, { width: contentWidth() * 0.7 });
+        doc.text(voucherNumber, margin, headerY, { width: contentWidth() * 0.7 });
 
         // Status Badge
         const statusText = (exp.status || 'POSTED').toUpperCase();
-        doc.roundedRect(475, 64, 80, 16, 3).fillAndStroke('#f1f5f9', '#cbd5e1');
-        doc.fontSize(7.5).font('Helvetica-Bold').fillColor('#0369a1').text(statusText, 475, 68, { width: 80, align: 'center' });
+        const badgeWidth = Math.min(88, contentWidth() * 0.22);
+        const badgeHeight = Math.max(16, doc.fontSize(7.5).font(fontBold).heightOfString(statusText, { width: badgeWidth }) + 8);
+        doc.roundedRect(rightEdge() - badgeWidth, headerY, badgeWidth, badgeHeight, 3).fillAndStroke('#f1f5f9', '#cbd5e1');
+        doc.fontSize(7.5).font(fontBold).fillColor('#0369a1').text(statusText, rightEdge() - badgeWidth, headerY + 4, { width: badgeWidth, align: 'center' });
 
-        let curY = 88;
+        let curY = headerY + Math.max(referenceHeight, badgeHeight) + 8;
 
         // Organization Info (Left)
-        doc.fontSize(11).font('Helvetica-Bold').fillColor('#0f172a').text(org.name || 'Organization', 40, curY, { width: 270 });
-        curY += 14;
+        const colWidth = contentWidth() * 0.49;
+        const organizationStartY = curY;
+        doc.fontSize(11).font(fontBold).fillColor('#0f172a').text(org.name || 'Organization', margin, curY, { width: colWidth });
+        curY += doc.heightOfString(org.name || 'Organization', { width: colWidth }) + 2;
 
         const orgAddress = [org.address, org.city, org.state, org.country, org.zip_code].filter(Boolean).join(', ');
         if (orgAddress) {
-          doc.fontSize(8.5).font('Helvetica').fillColor('#475569').text(orgAddress, 40, curY, { width: 270 });
-          curY += doc.heightOfString(orgAddress, { width: 270 }) + 2;
+          doc.fontSize(8.5).font(fontRegular).fillColor('#475569').text(orgAddress, margin, curY, { width: colWidth });
+          curY += doc.heightOfString(orgAddress, { width: colWidth }) + 2;
         }
         if (org.tax_id || org.gstin) {
-          doc.fontSize(8.5).font('Helvetica').fillColor('#475569').text(`GSTIN / Tax ID: ${org.tax_id || org.gstin}`, 40, curY, { width: 270 });
-          curY += 12;
+          doc.fontSize(8.5).font(fontRegular).fillColor('#475569').text(`GSTIN / Tax ID: ${org.tax_id || org.gstin}`, margin, curY, { width: colWidth });
+          curY += doc.heightOfString(`GSTIN / Tax ID: ${org.tax_id || org.gstin}`, { width: colWidth }) + 2;
         }
 
         // Voucher Metadata (Right)
-        let rightY = 88;
-        doc.fontSize(8.5).font('Helvetica').fillColor('#334155');
-        doc.text(`Voucher Date: ${exp.date || new Date().toISOString().split('T')[0]}`, 320, rightY, { width: 235, align: 'right' });
-        rightY += 13;
-        doc.text(`Payment Method: ${exp.payment_method || 'Bank / Cash'}`, 320, rightY, { width: 235, align: 'right' });
-        rightY += 13;
+        let rightY = organizationStartY;
+        doc.fontSize(8.5).font(fontRegular).fillColor('#334155');
+        const rightX = margin + contentWidth() - colWidth;
+        doc.text(`Voucher Date: ${exp.date || new Date().toISOString().split('T')[0]}`, rightX, rightY, { width: colWidth, align: 'right' });
+        rightY += doc.heightOfString(`Voucher Date: ${exp.date || new Date().toISOString().split('T')[0]}`, { width: colWidth }) + 2;
+        doc.text(`Payment Method: ${exp.payment_method || 'Bank / Cash'}`, rightX, rightY, { width: colWidth, align: 'right' });
+        rightY += doc.heightOfString(`Payment Method: ${exp.payment_method || 'Bank / Cash'}`, { width: colWidth }) + 2;
         if (exp.vendor_invoice_number) {
-          doc.text(`Vendor ref: ${exp.vendor_invoice_number}`, 320, rightY, { width: 235, align: 'right' });
-          rightY += 13;
+          doc.text(`Vendor ref: ${exp.vendor_invoice_number}`, rightX, rightY, { width: colWidth, align: 'right' });
+          rightY += doc.heightOfString(`Vendor ref: ${exp.vendor_invoice_number}`, { width: colWidth }) + 2;
         }
         if (exp.project_id) {
-          doc.text(`Project Ref: ${exp.project_id}`, 320, rightY, { width: 235, align: 'right' });
-          rightY += 13;
+          doc.text(`Project Ref: ${exp.project_id}`, rightX, rightY, { width: colWidth, align: 'right' });
+          rightY += doc.heightOfString(`Project Ref: ${exp.project_id}`, { width: colWidth }) + 2;
         }
 
         curY = Math.max(curY, rightY + 8);
 
         // Divider
-        doc.moveTo(40, curY).lineTo(555, curY).strokeColor('#e2e8f0').lineWidth(0.5).stroke();
-        curY += 10;
+        doc.moveTo(margin, curY).lineTo(rightEdge(), curY).strokeColor('#e2e8f0').lineWidth(0.5).stroke();
+        curY += 5;
 
         // --- DISBURSEMENT & BENEFICIARY CARD ---
-        const cardY = curY;
-        doc.roundedRect(40, cardY, 515, 60, 4).fillAndStroke('#f8fafc', '#e2e8f0');
-        doc.fontSize(8).font('Helvetica-Bold').fillColor(primaryColor).text('DISBURSEMENT & BENEFICIARY DETAILS', 50, cardY + 7);
+        let cardY = curY;
+        const payee = exp.vendor_name || 'Not specified';
+        const payeeWidth = contentWidth() * 0.42;
+        const payeeHeight = doc.fontSize(9).font(fontBold).heightOfString(payee, { width: payeeWidth });
+        const categoryOffset = 34 + payeeHeight + 3;
+        const categoryHeight = show('showExpenseCategory')
+          ? doc.fontSize(7).font(fontRegular).heightOfString(`Category: ${expenseAccountName}`, { width: contentWidth() * 0.42 })
+          : 0;
+        const recoveryOffset = categoryOffset + categoryHeight + 3;
+        const recoveryText = `RECOVERY ${exp.is_billable ? 'BILLABLE' : 'NON-BILLABLE'}  |  Client charge: ${this.formatAmount(Number(exp.selling_price || 0), currencySymbol)}`;
+        const recoveryHeight = variant === 'project-billable' ? doc.fontSize(7).font(fontBold).heightOfString(recoveryText, { width: contentWidth() * 0.46 }) : 0;
+        const fundingHeight = doc.fontSize(8.5).font(fontRegular).heightOfString(paidFromAccountName, { width: contentWidth() * 0.45 });
+        const claimantOffset = 34 + fundingHeight + 3;
+        const claimantText = 'Claimant: Not specified';
+        const claimantHeight = show('showClaimantName') ? doc.fontSize(7).font(fontRegular).heightOfString(claimantText, { width: contentWidth() * 0.45 }) : 0;
+        const cardHeight = Math.max(
+          60,
+          34 + payeeHeight + 5,
+          claimantOffset + claimantHeight + 5,
+          show('showExpenseCategory') ? categoryOffset + categoryHeight + 5 : 0,
+          variant === 'project-billable' ? recoveryOffset + recoveryHeight + 5 : 0,
+        );
+        if (cardY + cardHeight > contentBottom()) {
+          doc.addPage();
+          topRule();
+          cardY = 40;
+        }
+        doc.roundedRect(margin, cardY, contentWidth(), cardHeight, 4).fillAndStroke('#f8fafc', '#e2e8f0');
+        doc.fontSize(8).font(fontBold).fillColor(primaryColor).text('DISBURSEMENT & BENEFICIARY DETAILS', margin + 10, cardY + 7);
 
         // Left Column: Payee / Vendor
-        doc.fontSize(7.5).font('Helvetica-Bold').fillColor('#64748b').text('PAID TO / VENDOR:', 50, cardY + 22);
-        doc.fontSize(9).font('Helvetica-Bold').fillColor('#0f172a').text(exp.vendor_name || 'Direct Expense / Petty Cash', 50, cardY + 34, { width: 220 });
+        doc.fontSize(7.5).font(fontBold).fillColor('#64748b').text('PAID TO / VENDOR:', margin + 10, cardY + 22);
+        doc.fontSize(9).font(fontBold).fillColor('#0f172a').text(payee, margin + 10, cardY + 34, { width: payeeWidth });
 
         // Right Column: Disbursed From & Classification
-        doc.fontSize(7.5).font('Helvetica-Bold').fillColor('#64748b').text('DISBURSED FROM ACCOUNT:', 300, cardY + 22);
-        doc.fontSize(8.5).font('Helvetica').fillColor('#334155').text(paidFromAccountName, 300, cardY + 34, { width: 240 });
+        const classificationX = margin + contentWidth() * 0.52;
+        doc.fontSize(7.5).font(fontBold).fillColor('#64748b').text('DISBURSED FROM ACCOUNT:', classificationX, cardY + 22);
+        doc.fontSize(8.5).font(fontRegular).fillColor('#334155').text(paidFromAccountName, classificationX, cardY + 34, { width: contentWidth() * 0.45 });
+        if (show('showClaimantName')) doc.fontSize(7).font(fontRegular).fillColor('#64748b').text(claimantText, classificationX, cardY + claimantOffset, { width: contentWidth() * 0.45 });
+        if (variant === 'project-billable') {
+          doc.fontSize(7).font(fontBold).fillColor(primaryColor).text(recoveryText, margin + 10, cardY + recoveryOffset, { width: contentWidth() * 0.46 });
+        }
+        if (show('showExpenseCategory')) doc.fontSize(7).font(fontRegular).fillColor('#64748b').text(`Category: ${expenseAccountName}`, margin + 10, cardY + categoryOffset, { width: contentWidth() * 0.42 });
 
-        curY = cardY + 68;
+        curY = cardY + cardHeight + 2;
 
         // --- ACCOUNTING ALLOCATION TABLE ---
-        const tableHeaderY = curY;
-        doc.roundedRect(40, tableHeaderY, 515, 20, 3).fill(primaryColor);
-        doc.fillColor('#ffffff').fontSize(8.5).font('Helvetica-Bold');
-        doc.text('#', 46, tableHeaderY + 6, { width: 20 });
-        doc.text('ACCOUNT / CATEGORY', 70, tableHeaderY + 6, { width: 170 });
-        doc.text('MEMO / DESCRIPTION', 245, tableHeaderY + 6, { width: 160 });
-        doc.text('DEBIT', 410, tableHeaderY + 6, { width: 65, align: 'right' });
-        doc.text('CREDIT', 485, tableHeaderY + 6, { width: 65, align: 'right' });
-
-        curY = tableHeaderY + 24;
+        const showAllocation = show('showAccountAllocation') && show('showDoubleEntry');
+        const tableWidth = contentWidth();
+        const indexX = margin + 5;
+        const accountX = margin + 28;
+        const accountWidth = tableWidth * 0.34;
+        const memoX = accountX + accountWidth + 5;
+        const memoWidth = tableWidth * 0.29;
+        const debitX = memoX + memoWidth;
+        const moneyWidth = (rightEdge() - debitX) / 2;
+        const tableStartY = curY;
+        const drawTableHeader = () => {
+          const y = curY;
+          doc.roundedRect(margin, y, tableWidth, 20, 3).fill(primaryColor);
+          doc.fillColor('#ffffff').fontSize(8).font(fontBold);
+          doc.text('#', indexX, y + 6, { width: 20 });
+          doc.text('ACCOUNT / CATEGORY', accountX, y + 6, { width: accountWidth });
+          doc.text('MEMO / DESCRIPTION', memoX, y + 6, { width: memoWidth });
+          doc.text('DEBIT', debitX, y + 6, { width: moneyWidth - 3, align: 'right' });
+          doc.text('CREDIT', debitX + moneyWidth, y + 6, { width: moneyWidth - 3, align: 'right' });
+          curY = y + 21;
+        };
+        const splitCellText = (value: string, width: number, size: number, font: string, maxHeight: number) => {
+          const wordsToPlace = value.split(/\s+/).filter(Boolean);
+          const pages: string[] = [];
+          let part = '';
+          for (const word of wordsToPlace) {
+            const candidate = part ? `${part} ${word}` : word;
+            if (part && doc.fontSize(size).font(font).heightOfString(candidate, { width }) > maxHeight) {
+              pages.push(part);
+              part = word;
+            } else {
+              part = candidate;
+            }
+          }
+          if (part || pages.length === 0) pages.push(part);
+          return pages;
+        };
+        if (showAllocation) {
+        drawTableHeader();
 
         const voucherLines = postedLines.length ? postedLines : [
           { id: 'expense', accountName: expenseAccountName, description: exp.description || 'Expense distribution', debit: amount, credit: 0 },
@@ -210,77 +320,161 @@ export class ExpensePdfService {
         ];
         for (let index = 0; index < voucherLines.length; index++) {
           const line = voucherLines[index];
-          doc.fontSize(8.5).font('Helvetica').fillColor('#475569').text(String(index + 1), 46, curY);
-          doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#0f172a').text(line.accountName, 70, curY, { width: 170 });
-          doc.fontSize(8).font('Helvetica').fillColor('#475569').text(line.description, 245, curY, { width: 160 });
-          doc.fontSize(8.5).font('Helvetica').fillColor('#0f172a').text(line.debit ? this.formatAmount(line.debit, currencySymbol) : '-', 410, curY, { width: 65, align: 'right' });
-          doc.text(line.credit ? this.formatAmount(line.credit, currencySymbol) : '-', 485, curY, { width: 65, align: 'right' });
-          curY += 22;
-          doc.moveTo(40, curY - 2).lineTo(555, curY - 2).strokeColor('#e2e8f0').lineWidth(0.5).stroke();
+          const accountHeight = doc.fontSize(8).font(fontBold).heightOfString(line.accountName, { width: accountWidth });
+          const memoHeight = doc.fontSize(7.5).font(fontRegular).heightOfString(line.description, { width: memoWidth });
+          const rowHeight = Math.max(14, accountHeight, memoHeight) + 4;
+          const maxRowTextHeight = contentBottom() - 40 - 21 - 4;
+          if (Math.max(accountHeight, memoHeight) > maxRowTextHeight) {
+            const accountParts = splitCellText(line.accountName, accountWidth, 8, fontBold, maxRowTextHeight);
+            const memoParts = splitCellText(line.description, memoWidth, 7.5, fontRegular, maxRowTextHeight);
+            const partCount = Math.max(accountParts.length, memoParts.length);
+            for (let part = 0; part < partCount; part++) {
+              const accountPart = accountParts[part] || '';
+              const memoPart = memoParts[part] || '';
+              const partHeight = Math.max(
+                accountPart ? doc.fontSize(8).font(fontBold).heightOfString(accountPart, { width: accountWidth }) : 0,
+                memoPart ? doc.fontSize(7.5).font(fontRegular).heightOfString(memoPart, { width: memoWidth }) : 0,
+                14,
+              ) + 4;
+              if (curY + partHeight > contentBottom()) {
+                doc.addPage();
+                topRule();
+                curY = 40;
+                drawTableHeader();
+              }
+              if (part === 0) {
+                doc.fontSize(8).font(fontRegular).fillColor('#475569').text(String(index + 1), indexX, curY);
+                doc.fontSize(8).font(fontRegular).fillColor('#0f172a').text(line.debit ? this.formatAmount(line.debit, currencySymbol) : '-', debitX, curY, { width: moneyWidth - 3, align: 'right' });
+                doc.text(line.credit ? this.formatAmount(line.credit, currencySymbol) : '-', debitX + moneyWidth, curY, { width: moneyWidth - 3, align: 'right' });
+              }
+              if (accountPart) doc.fontSize(8).font(fontBold).fillColor('#0f172a').text(accountPart, accountX, curY, { width: accountWidth });
+              if (memoPart) doc.fontSize(7.5).font(fontRegular).fillColor('#475569').text(memoPart, memoX, curY, { width: memoWidth });
+              curY += partHeight;
+              doc.moveTo(margin, curY - 2).lineTo(rightEdge(), curY - 2).strokeColor('#e2e8f0').lineWidth(0.5).stroke();
+            }
+            continue;
+          }
+          if (curY + rowHeight > contentBottom()) {
+            doc.addPage();
+            topRule();
+            curY = 40;
+            drawTableHeader();
+          }
+          doc.fontSize(8).font(fontRegular).fillColor('#475569').text(String(index + 1), indexX, curY);
+          doc.fontSize(8).font(fontBold).fillColor('#0f172a').text(line.accountName, accountX, curY, { width: accountWidth });
+          doc.fontSize(7.5).font(fontRegular).fillColor('#475569').text(line.description, memoX, curY, { width: memoWidth });
+          doc.fontSize(8).font(fontRegular).fillColor('#0f172a').text(line.debit ? this.formatAmount(line.debit, currencySymbol) : '-', debitX, curY, { width: moneyWidth - 3, align: 'right' });
+          doc.text(line.credit ? this.formatAmount(line.credit, currencySymbol) : '-', debitX + moneyWidth, curY, { width: moneyWidth - 3, align: 'right' });
+          curY += rowHeight;
+          doc.moveTo(margin, curY - 2).lineTo(rightEdge(), curY - 2).strokeColor('#e2e8f0').lineWidth(0.5).stroke();
         }
-        doc.moveTo(40, curY - 2).lineTo(555, curY - 2).strokeColor('#cbd5e1').lineWidth(0.75).stroke();
+        doc.moveTo(margin, curY - 2).lineTo(rightEdge(), curY - 2).strokeColor('#cbd5e1').lineWidth(0.75).stroke();
+        } else {
+          curY = tableStartY;
+        }
+
+        // Keep totals, amount in words, and both audit boxes together.
+        const measuredWordsHeight = show('showAmountInWords')
+          ? doc.fontSize(8.5).font(fontBold).heightOfString(words, { width: contentWidth() - 20 }) + 24
+          : 0;
+        const wordBoxHeight = show('showAmountInWords') ? Math.max(34, measuredWordsHeight) : 0;
+        const totalsWidth = contentWidth() * 0.48;
+        const expenseTotalText = `Expense amount: ${this.formatAmount(amount, currencySymbol)}`;
+        const postingTotalText = `Posting total: ${this.formatAmount(totalAmount, currencySymbol)}`;
+        const expenseTotalHeight = doc.fontSize(9).font(fontBold).heightOfString(expenseTotalText, { width: totalsWidth });
+        const postingTotalHeight = doc.fontSize(10).font(fontBold).heightOfString(postingTotalText, { width: totalsWidth });
+        const halfWidth = (contentWidth() - 12) / 2;
+        const auditTextWidth = halfWidth - 16;
+        const recorder = exp.created_by || 'Not specified';
+        const recordedDate = `Date: ${exp.date || new Date().toISOString().split('T')[0]}`;
+        const postingReference = `Expense reference: ${voucherNumber}`;
+        const reimbursement = show('showReimbursementStatus') ? `Reimbursement: ${exp.reimbursement_status || 'Not specified'}` : 'Posting details omitted';
+        const recorderHeight = doc.fontSize(8.5).font(fontRegular).heightOfString(recorder, { width: auditTextWidth });
+        const referenceHeightInAudit = doc.heightOfString(postingReference, { width: auditTextWidth });
+        const recordedDateHeight = doc.fontSize(7.5).font(fontRegular).heightOfString(recordedDate, { width: auditTextWidth });
+        const reimbursementHeight = doc.heightOfString(reimbursement, { width: auditTextWidth });
+        const auditMinimum = template?.layoutFamily === 'compact' && paperSize === 'A5' && orientation === 'landscape' ? 60 : 65;
+        const auditHeight = Math.max(auditMinimum, 22 + recorderHeight + 4 + recordedDateHeight + 8, 22 + referenceHeightInAudit + 4 + reimbursementHeight + 8);
+        const trailingHeight = 6 + expenseTotalHeight + 3 + postingTotalHeight + 8 + wordBoxHeight + (show('showAmountInWords') ? 12 : 0) + auditHeight;
+        if (curY + trailingHeight > contentBottom()) {
+          doc.addPage();
+          topRule();
+          curY = 40;
+        }
 
         // Totals Box
         curY += 6;
-        doc.fontSize(9).font('Helvetica-Bold').fillColor('#475569');
-        doc.text(`Expense amount: ${this.formatAmount(amount, currencySymbol)}`, 320, curY, { width: 235, align: 'right' });
-        curY += 14;
-        doc.fontSize(10).font('Helvetica-Bold').fillColor('#0f172a');
-        doc.text(`Balanced posting: ${this.formatAmount(totalAmount, currencySymbol)}`, 320, curY, { width: 235, align: 'right' });
+        doc.fontSize(9).font(fontBold).fillColor('#475569');
+        doc.text(expenseTotalText, rightEdge() - totalsWidth, curY, { width: totalsWidth, align: 'right' });
+        curY += expenseTotalHeight + 3;
+        doc.fontSize(10).font(fontBold).fillColor('#0f172a');
+        doc.text(postingTotalText, rightEdge() - totalsWidth, curY, { width: totalsWidth, align: 'right' });
 
         // Amount in Words Box
-        curY += 18;
-        doc.roundedRect(40, curY, 515, 34, 4).fillAndStroke('#f8fafc', '#e2e8f0');
-        doc.fontSize(7.5).font('Helvetica-Bold').fillColor('#64748b').text('Amount in Words:', 50, curY + 6);
-        doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#0f172a').text(words, 50, curY + 18, { width: 495 });
+        curY += postingTotalHeight + 8;
+        if (show('showAmountInWords')) {
+        doc.roundedRect(margin, curY, contentWidth(), wordBoxHeight, 4).fillAndStroke('#f8fafc', '#e2e8f0');
+        doc.fontSize(7.5).font(fontBold).fillColor('#64748b').text('Amount in Words:', margin + 10, curY + 6);
+        doc.fontSize(8.5).font(fontBold).fillColor('#0f172a').text(words, margin + 10, curY + 18, { width: contentWidth() - 20 });
+        }
 
-        curY += 46;
+        if (show('showAmountInWords')) curY += wordBoxHeight + 12;
 
         // Audit and approval are separate workflows. Do not claim approval if none exists.
-        doc.roundedRect(40, curY, 245, 65, 3).strokeColor('#e2e8f0').stroke();
-        doc.fontSize(7.5).font('Helvetica-Bold').fillColor('#64748b').text('RECORDED DOCUMENT', 48, curY + 8);
-        doc.fontSize(8.5).font('Helvetica').fillColor('#334155').text(exp.created_by || 'System User', 48, curY + 22);
-        doc.fontSize(7.5).font('Helvetica').fillColor('#94a3b8').text(`Date: ${exp.date || new Date().toISOString().split('T')[0]}`, 48, curY + 46);
+        doc.roundedRect(margin, curY, halfWidth, auditHeight, 3).strokeColor('#e2e8f0').stroke();
+        doc.fontSize(7.5).font(fontBold).fillColor('#64748b').text('RECORDED DOCUMENT', margin + 8, curY + 8);
+        doc.fontSize(8.5).font(fontRegular).fillColor('#334155').text(recorder, margin + 8, curY + 22, { width: auditTextWidth });
+        doc.fontSize(7.5).font(fontRegular).fillColor('#94a3b8').text(recordedDate, margin + 8, curY + 22 + recorderHeight + 4, { width: auditTextWidth });
 
-        doc.roundedRect(310, curY, 245, 65, 3).strokeColor('#e2e8f0').stroke();
-        doc.fontSize(7.5).font('Helvetica-Bold').fillColor('#64748b').text('POSTING TRACE', 318, curY + 8);
-        doc.fontSize(8.5).font('Helvetica').fillColor('#334155').text(`Expense reference: ${voucherNumber}`, 318, curY + 22);
-        doc.fontSize(7.5).font('Helvetica').fillColor('#94a3b8').text('See the journal lines above for the complete audit trail.', 318, curY + 46, { width: 225 });
+        doc.roundedRect(margin + halfWidth + 12, curY, halfWidth, auditHeight, 3).strokeColor('#e2e8f0').stroke();
+        doc.fontSize(7.5).font(fontBold).fillColor('#64748b').text('POSTING TRACE', margin + halfWidth + 20, curY + 8);
+        doc.fontSize(8.5).font(fontRegular).fillColor('#334155').text(postingReference, margin + halfWidth + 20, curY + 22, { width: auditTextWidth });
+        doc.fontSize(7.5).font(fontRegular).fillColor('#94a3b8').text(reimbursement, margin + halfWidth + 20, curY + 22 + referenceHeightInAudit + 4, { width: auditTextWidth });
 
         // --- PAGE 2+: RECEIPT ATTACHMENTS DOSSIER ---
-        if (receipts.length > 0) {
+        if (receipts.length > 0 && show('showReceiptsAttached')) {
           doc.addPage();
-          doc.rect(40, 35, 515, 3).fill(primaryColor);
-          doc.fontSize(14).font('Helvetica-Bold').fillColor(primaryColor).text('ANNEXURE: ATTACHED DIGITAL RECEIPTS', 40, 48, { width: 515 });
-          doc.fontSize(8.5).font('Helvetica').fillColor('#64748b').text(`Supporting documentation dossier for Voucher #${voucherNumber} (${receipts.length} attachment${receipts.length === 1 ? '' : 's'})`, 40, 68);
-
-          let receiptY = 90;
+          topRule();
+          const annexureTitle = 'ANNEXURE: ATTACHED DIGITAL RECEIPTS';
+          doc.fontSize(14).font(fontBold).fillColor(primaryColor).text(annexureTitle, margin, 40, { width: contentWidth() });
+          const captionY = 40 + doc.heightOfString(annexureTitle, { width: contentWidth() }) + 5;
+          const caption = `Supporting documentation dossier for Voucher #${voucherNumber} (${receipts.length} attachment${receipts.length === 1 ? '' : 's'})`;
+          doc.fontSize(8.5).font(fontRegular).fillColor('#64748b').text(caption, margin, captionY, { width: contentWidth() });
+          let receiptY = captionY + doc.heightOfString(caption, { width: contentWidth() }) + 8;
 
           for (let i = 0; i < receipts.length; i++) {
             const r = receipts[i];
-            if (receiptY > 620) {
+            const imageHeight = Math.min(260, (pageHeight() - 110) * 0.42);
+            const receiptTitle = `Receipt ${i + 1}: ${r.file_name}`;
+            const receiptType = `${r.mime_type} | ${Math.round(r.byte_size / 1024)} KB`;
+            const receiptHeaderHeight = Math.max(25,
+              doc.fontSize(8.5).font(fontBold).heightOfString(receiptTitle, { width: contentWidth() * 0.65 }) + 14,
+              doc.fontSize(7.5).font(fontRegular).heightOfString(receiptType, { width: contentWidth() * 0.32 }) + 16,
+            );
+            if (receiptY + receiptHeaderHeight + 7 + imageHeight > pageHeight() - 48) {
               doc.addPage();
-              receiptY = 50;
+              topRule();
+              receiptY = 40;
             }
 
             // Receipt Box
-            doc.roundedRect(40, receiptY, 515, 25, 3).fillAndStroke('#f1f5f9', '#cbd5e1');
-            doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#0f172a').text(`Receipt ${i + 1}: ${r.file_name}`, 50, receiptY + 7);
-            doc.fontSize(7.5).font('Helvetica').fillColor('#64748b').text(`${r.mime_type} | ${Math.round(r.byte_size / 1024)} KB`, 380, receiptY + 8, { width: 165, align: 'right' });
+            doc.roundedRect(margin, receiptY, contentWidth(), receiptHeaderHeight, 3).fillAndStroke('#f1f5f9', '#cbd5e1');
+            doc.fontSize(8.5).font(fontBold).fillColor('#0f172a').text(receiptTitle, margin + 10, receiptY + 7, { width: contentWidth() * 0.65 });
+            doc.fontSize(7.5).font(fontRegular).fillColor('#64748b').text(receiptType, margin + contentWidth() * 0.66, receiptY + 8, { width: contentWidth() * 0.32, align: 'right' });
 
-            receiptY += 32;
+            receiptY += receiptHeaderHeight + 7;
 
             if (r.content_base64) {
               try {
                 const imgBuf = Buffer.from(r.content_base64, 'base64');
-                doc.image(imgBuf, 40, receiptY, {
-                  fit: [515, 260],
+                doc.image(imgBuf, margin, receiptY, {
+                  fit: [contentWidth(), imageHeight],
                   align: 'center',
                   valign: 'center',
                 });
-                receiptY += 275;
+                receiptY += imageHeight + 15;
               } catch {
-                doc.fontSize(8).font('Helvetica-Oblique').fillColor('#94a3b8').text('[Receipt image preview could not be rendered]', 50, receiptY + 10);
+                doc.fontSize(8).font(italicFont).fillColor('#94a3b8').text('[Receipt image preview could not be rendered]', margin + 10, receiptY + 10);
                 receiptY += 30;
               }
             } else {
@@ -293,11 +487,11 @@ export class ExpensePdfService {
         const pageRange = doc.bufferedPageRange();
         for (let i = 0; i < pageRange.count; i++) {
           doc.switchToPage(i);
-          doc.fontSize(7).font('Helvetica').fillColor('#94a3b8').text(
+          doc.fontSize(7).font(fontRegular).fillColor('#94a3b8').text(
             `FirmBooks | Expense payment voucher | Page ${i + 1} of ${pageRange.count}`,
-            40,
-            800,
-            { align: 'center', width: 515 }
+            margin,
+            pageHeight() - 42,
+            { align: 'center', width: contentWidth() }
           );
         }
 

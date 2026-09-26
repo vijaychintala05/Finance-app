@@ -5,24 +5,26 @@ import { db } from '../database/db';
 import { MigrationRunner } from '../database/migrationRunner';
 import { QuotationRenderModelService } from '../sales/QuotationRenderModelService';
 import { QuotationEngine } from '../sales/QuotationEngine';
+import { DocumentPdfService } from '../services/DocumentPdfService';
+import { RbacService } from '../auth/RbacService';
 
 async function parsePdf(buffer: Buffer): Promise<{ numpages: number; text: string }> {
   const mod = require('pdf-parse');
   const PDFClass = mod.PDFParse || mod.default || mod;
 
-  const uint8 = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  const uint8 = Uint8Array.from(buffer);
   let text = '';
   let numpages = 1;
 
+  const instance = new PDFClass(uint8);
   try {
-    const instance = new PDFClass(uint8);
     if (typeof instance.getText === 'function') {
       const res = await instance.getText();
       text = typeof res === 'string' ? res : (res?.text || '');
       numpages = res?.numpages || res?.numPages || instance.doc?.numPages || 1;
     }
-  } catch (err: any) {
-    console.log('[DEBUG parsePdf uint8 err]:', err);
+  } finally {
+    await instance.destroy?.();
   }
 
   return { numpages, text };
@@ -44,6 +46,7 @@ describe('Phase 8.5A.1 — PDF Correctness, Historical Revision Snapshot & Templ
   let tokenA: string;
   let authHeaderA: { Authorization: string };
   let orgIdA: string;
+  let userIdA: string;
 
   let tokenB: string;
   let authHeaderB: { Authorization: string };
@@ -67,6 +70,7 @@ describe('Phase 8.5A.1 — PDF Correctness, Historical Revision Snapshot & Templ
     tokenA = regResA.body.token;
     authHeaderA = { Authorization: `Bearer ${tokenA}` };
     orgIdA = regResA.body.organizationId;
+    userIdA = regResA.body.user.id;
 
     const timestampB = Date.now() + Math.floor(Math.random() * 10000);
     const regResB = await request(app).post('/api/v1/auth/register').send({
@@ -125,9 +129,114 @@ describe('Phase 8.5A.1 — PDF Correctness, Historical Revision Snapshot & Templ
     expect(parsedPdf.numpages).toBeGreaterThanOrEqual(1);
     expect(parsedPdf.text).toContain(q.estimateNumber || q.quotationNumber || 'QT-');
     expect(parsedPdf.text).toContain('Apex Global Enterprises');
+    expect(pdfRes.headers['x-quotation-pdf-source']).toBe('legacy-render');
+  });
+
+  it('serves exact issued PDF bytes from the legacy quotation URL', async () => {
+    const qRes = await request(app)
+      .post('/api/v1/quotations')
+      .set(authHeaderA)
+      .send({
+        customerId: customerIdA,
+        status: 'SENT',
+        items: [{ name: 'Issued quotation artifact', quantity: 1, rate: 12500 }],
+      });
+    expect(qRes.status).toBe(201);
+    const qId = qRes.body.quotation.id;
+    const artifact = await DocumentPdfService.issuePdf(
+      orgIdA, 'quotes', qId, userIdA, `quotation-issued-bytes-${Date.now()}`,
+    );
+
+    const response = await getPdfResponse(`/api/v1/quotations/${qId}/pdf`, authHeaderA);
+    expect(response.status).toBe(200);
+    expect(response.headers['x-quotation-pdf-source']).toBe('issued-artifact');
+    expect(response.headers['x-document-pdf-artifact']).toBe(artifact.id);
+    expect(response.headers['x-document-pdf-issuance']).toBe(String(artifact.issuanceNumber));
+    expect(response.headers['x-document-pdf-sha256']).toBe(artifact.pdfSha256);
+    expect(response.body).toEqual(artifact.pdfBytes);
+    const override = await request(app).get(`/api/v1/quotations/${qId}/pdf?templateId=not-a-real-template`).set(authHeaderA);
+    expect(override.status).toBe(409);
+  });
+
+  it('requires estimates permission for current and historical quotation PDFs', async () => {
+    const created = await request(app).post('/api/v1/quotations').set(authHeaderA).send({
+      customerId: customerIdA,
+      items: [{ name: 'Restricted PDF fixture', quantity: 1, rate: 100 }],
+    });
+    expect(created.status).toBe(201);
+    const quotationId = created.body.quotation.id;
+    const roleId = `pdf-role-${userIdA}`;
+    const roleName = `PDF Reader ${userIdA.slice(-12)}`;
+    await db.query(
+      'INSERT INTO roles (id, organization_id, name, description, is_system_role) VALUES ($1, $2, $3, $4, FALSE)',
+      [roleId, orgIdA, roleName, 'PDF permission boundary fixture'],
+    );
+    await db.query('INSERT INTO role_permissions (role_id, permission_code) VALUES ($1, $2)', [roleId, 'invoices.view']);
+    await db.query('UPDATE organization_members SET role = $1 WHERE organization_id = $2 AND user_id = $3', [roleName, orgIdA, userIdA]);
+    const urls = [
+      `/api/v1/quotations/${quotationId}/pdf`,
+      `/api/v1/quotations/${quotationId}/revisions/0/pdf`,
+    ];
+    for (const url of urls) {
+      expect((await request(app).get(url).set(authHeaderA)).status).toBe(403);
+    }
+    await db.query('DELETE FROM role_permissions WHERE role_id = $1', [roleId]);
+    await db.query('INSERT INTO role_permissions (role_id, permission_code) VALUES ($1, $2)', [roleId, 'estimates.view']);
+    await RbacService.getPermissionsForRoleAsync(orgIdA, roleName, true);
+    for (const url of urls) {
+      expect((await getPdfResponse(url, authHeaderA)).status).toBe(200);
+    }
   });
 
   // 2. Historical Revision PDF Schema (quotation_id, revision_data) & API status codes
+  it('preserves commercial revision fields and honors hidden scope and expiry controls', async () => {
+    const qRes = await request(app).post('/api/v1/quotations').set(authHeaderA).send({
+      customerId: customerIdA, status: 'SENT',
+      items: [{ name: 'Revision tax fixture', quantity: 1, rate: 118, taxRate: 18 }],
+    });
+    expect(qRes.status).toBe(201);
+    const dto = await QuotationRenderModelService.buildRenderModel(orgIdA, qRes.body.quotation.id, 0);
+    dto.document.notes = 'Historical delivery scope';
+    dto.lineItems[0].description = 'Distinct historical item description';
+    dto.document.terms = 'Historical commercial terms';
+    dto.document.expiryDate = '2031-12-29';
+    dto.document.isGstInclusive = true;
+    dto.totals.subtotal = 118;
+    dto.totals.taxableAmount = 100;
+    dto.totals.taxTotal = 18;
+    dto.totals.roundOffAmount = 0.25;
+    dto.totals.grandTotal = 118.25;
+    dto.totals.gstBreakdown = { isInterState: false, cgstTotal: 9, sgstTotal: 9, igstTotal: 0, taxableAmount: 100 };
+    const template = {
+      id: 'revision-template', organizationId: orgIdA, category: 'quotes', modelId: 'proposal', name: 'Revision fixture',
+      paperSize: 'A4', orientation: 'portrait', layoutFamily: 'standard', isActive: true, isSystem: true,
+      configuration: { templateTitle: 'FROZEN REVISION TITLE' },
+    };
+    for (const modelId of ['proposal', 'commercial', 'compact']) {
+      const variant = { ...template, modelId };
+      const visible = await parsePdf(await DocumentPdfService.generateQuotationRevisionPdf(dto, variant));
+      expect(visible.text).toContain('Historical commercial terms');
+      expect(visible.text).toContain('Historical delivery scope');
+      expect(visible.text).toContain('Revision tax fixture');
+      expect(visible.text).toContain('Distinct historical item description');
+      expect(visible.text).not.toContain('TOTAL DEBITS');
+      expect(visible.text).not.toContain('TOTAL CREDITS');
+      expect(visible.text).toContain('Tax included');
+      expect(visible.text).toContain('Taxable amount');
+      expect(visible.text).toContain('CGST');
+      expect(visible.text).toContain('SGST');
+      expect(visible.text).toContain('Round-off');
+      const hidden = await parsePdf(await DocumentPdfService.generateQuotationRevisionPdf(dto, {
+        ...variant, configuration: { ...template.configuration, showScopeOfWork: false, showExpiryDate: false, showTaxBreakdown: false },
+      }));
+      expect(hidden.text).not.toContain('Historical commercial terms');
+      expect(hidden.text).not.toContain('Historical delivery scope');
+      expect(hidden.text).not.toContain('2031-12-29');
+      expect(hidden.text).not.toContain('GST BREAKDOWN');
+      expect(hidden.text).not.toContain('Tax included');
+    }
+  });
+
   it('2. Historical revision PDF queries quotation_id & revision_data cleanly with correct 404 error codes', async () => {
     const qRes = await request(app)
       .post('/api/v1/quotations')
@@ -206,6 +315,79 @@ describe('Phase 8.5A.1 — PDF Correctness, Historical Revision Snapshot & Templ
     // 4. Render DTO for historical quote -> verifies frozen BLUE primaryColor (#2563eb) is preserved!
     const renderDto = await QuotationRenderModelService.buildRenderModel(orgIdA, qId);
     expect(renderDto.template.primaryColor).toBe('#2563eb');
+  });
+
+  it('freezes the newly selected template on a revision without changing prior revision output', async () => {
+    const originalTemplate = await request(app)
+      .post('/api/v1/quotations/templates')
+      .set(authHeaderA)
+      .send({ name: 'Original Revision Template', primaryColor: '#2563eb' });
+    const qRes = await request(app)
+      .post('/api/v1/quotations')
+      .set(authHeaderA)
+      .send({
+        customerId: customerIdA,
+        templateId: originalTemplate.body.template.id,
+        status: 'SENT',
+        items: [{ name: 'Snapshot template line', quantity: 1, rate: 1000 }],
+      });
+    const qId = qRes.body.quotation.id;
+    const nextTemplate = await request(app)
+      .post('/api/v1/quotations/templates')
+      .set(authHeaderA)
+      .send({ name: 'New Revision Template', primaryColor: '#dc2626' });
+
+    const revision = await request(app)
+      .put(`/api/v1/quotations/${qId}`)
+      .set(authHeaderA)
+      .send({ templateId: nextTemplate.body.template.id });
+    expect(revision.status).toBe(200);
+
+    await request(app)
+      .post('/api/v1/quotations/templates')
+      .set(authHeaderA)
+      .send({ id: nextTemplate.body.template.id, name: 'Changed After Revision', primaryColor: '#16a34a' });
+
+    const prior = await QuotationRenderModelService.buildRenderModel(orgIdA, qId, 0);
+    const revised = await QuotationRenderModelService.buildRenderModel(orgIdA, qId, 1);
+    expect(prior.template.primaryColor).toBe('#2563eb');
+    expect(revised.template.primaryColor).toBe('#dc2626');
+
+    const historicalPdf = await getPdfResponse(`/api/v1/quotations/${qId}/revisions/1/pdf`, authHeaderA);
+    expect(historicalPdf.status).toBe(200);
+    expect(historicalPdf.headers['x-quotation-pdf-source']).toBe('versioned-template');
+    expect(historicalPdf.headers['x-document-pdf-template']).toBeTruthy();
+    expect((await parsePdf(historicalPdf.body)).text).toContain('Snapshot template line');
+
+    const revisions = await QuotationEngine.getQuotationRevisions(orgIdA, qId);
+    expect(revisions[0].revisionData.documentTemplateSnapshot.category).toBe('quotes');
+    expect(revisions[0].revisionData.documentTemplateSnapshot.modelId).toBeTruthy();
+  });
+
+  // Registry version writes use PostgreSQL row locks unavailable in pg-mem.
+  it.skipIf(!process.env.DATABASE_URL)('preserves the historical registry configuration after its version and default change', async () => {
+    const configurationUrl = '/api/v1/finance/documents/quotes/templates/proposal/configuration';
+    const configured = await request(app).patch(configurationUrl).set(authHeaderA)
+      .send({ configuration: { templateTitle: 'FROZEN REGISTRY TITLE' } });
+    expect(configured.status).toBe(200);
+    const created = await request(app).post('/api/v1/quotations').set(authHeaderA).send({
+      customerId: customerIdA,
+      items: [{ name: 'Registry snapshot fixture', quantity: 1, rate: 100 }],
+    });
+    expect(created.status).toBe(201);
+    const changed = await request(app).patch(configurationUrl).set(authHeaderA)
+      .send({ configuration: { templateTitle: 'CURRENT REGISTRY TITLE' } });
+    expect(changed.status).toBe(200);
+    const changedDefault = await request(app)
+      .patch('/api/v1/finance/documents/quotes/templates/commercial/default')
+      .set(authHeaderA).send({});
+    expect(changedDefault.status).toBe(200);
+    const historical = await getPdfResponse(`/api/v1/quotations/${created.body.quotation.id}/revisions/0/pdf`, authHeaderA);
+    expect(historical.status).toBe(200);
+    const text = (await parsePdf(historical.body)).text;
+    expect(text).toContain('FROZEN REGISTRY TITLE');
+    expect(text).not.toContain('CURRENT REGISTRY TITLE');
+    expect(text).not.toContain('COMMERCIAL OFFER');
   });
 
   // 4. Complete Public Response Revision Snapshot

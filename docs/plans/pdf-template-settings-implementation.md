@@ -4,6 +4,16 @@ Status: In progress. Source inventory and first renderer/settings improvements a
 
 ## Current Progress
 
+### September 26 Validation
+
+- Draft review PR #2 is open on `codex/release-qualification`; production `main` and `nas-deploy` have not been promoted. External production qualification records remain pending.
+- Ordinary and legacy quotation/expense downloads now prefer retained issued PDF bytes. Explicit ordinary/quotation template overrides cannot replace issued evidence. New quotation revisions snapshot a registry template and use the shared renderer; legacy snapshots retain their historical renderer.
+- CI identified detached ArrayBuffer failures in PDF settings tests. Parser inputs now use owned Uint8Array copies, preserving the original PDF buffer for later assertions.
+- First-page gallery samples were visually inspected for all 14 categories, including all three credit-note variants. This exposed an amount-in-words/notes-heading overlap in the shared renderer; measured spacing and a five-category baseline-position regression now cover the fix. Full-size long-document, tax-heavy, branding, and all-variant manual inspection remains incomplete.
+- The settings default and fallback configuration now hydrate from registry assignments/records, with tests mocking that endpoint rather than treating profile JSON as authoritative.
+- Latest focused checks: PDF settings acceptance 64/64; quotation historical/permission tests 12/12 on PostgreSQL, including actual registry version/default freezing; settings UI 33/33; template security, branding, registry, artifact and invoice checks 30/30. Final desktop/mobile gallery checks pass 4/4; TypeScript, production build and production dependency audit pass. All three quote models preserve revision tax-inclusive labels, round-off, and distinct item names/descriptions while excluding journal totals and honoring hidden tax/scope/expiry controls. Expense PostgreSQL tests pass 8/8; renderer geometry passes 13/13 across three fonts, both A5 orientations and header modes, wrapped words/audit/annexure fields, and a PostgreSQL-date compact fixture. The PostgreSQL qualification gate passes 7/7. Sol returned PASS for the current integrated implementation; the frozen full-unit run remains pending. Persisted quotation numeric edge cases and the broader manual visual matrix remain incomplete, so this is not full-goal completion or a release qualification claim.
+- Manually inspected full-size disposable-database expense renders: the compact A5 voucher fits one page, six-page long allocation output retains both complete journal memos and repeated headers, and attached receipt images render within their annexure. Header-only introductory space on oversized allocations is a remaining packing improvement, not lost posting evidence. Generated visual evidence remains outside Git.
+
 - Confirmed the server-owned catalog contains 14 categories and 44 built-in template variants.
 - Settings are organized by category with server-rendered sample and live PDF preview actions.
 - Customer and vendor statement variants now distinguish detailed ledger, activity summary, and compact overview output. Sample previews no longer invent aging buckets, and the UI no longer offers inert aging-bucket controls.
@@ -15,6 +25,8 @@ Status: In progress. Source inventory and first renderer/settings improvements a
 - Earlier focused PDF/settings/email and Windows gate-contract suites passed across five files. Coverage includes all 44 catalog IDs/defaults, six live statement variants, missing/cross-tenant statement parties, explicit preview watermarking, ordinary download behavior, unissued invoice fallback, stale issued-PDF refresh, and outbox/audit rollback. In the current environment, the frontend build passed; the full `npm run build` did not complete because `scripts/build-server.mjs` hit a sandbox access error while resolving `server.ts`.
 - Real PostgreSQL qualification ran on PostgreSQL 16.15 against a password-protected disposable temp cluster: all 5 tests passed. The Windows runner now launches the local Vitest CLI through Node instead of spawning `npx.cmd`.
 - Remaining: audit and implement meaningful output for the other template variants; wire or remove every unsupported setting/claim; visually verify PDFs and responsive settings UX; broaden release qualification as the renderer changes. Do not treat this progress note as completion.
+
+The legacy expense-voucher URL retains a separate PDFKit renderer because it appends uploaded receipt images as an evidence annexure, which the shared document renderer does not support. Issued requests return the retained artifact bytes. Unissued vouchers now resolve versioned paper size, orientation, typography, variant and visibility controls, with measured accounting rows and explicit continuation pages. Compact A5 and oversized-memo PostgreSQL fixtures pass. Full customization parity and all edge-case geometry remain subject to independent review and visual verification; these results do not complete the entire goal.
 
 ## Active completion design
 

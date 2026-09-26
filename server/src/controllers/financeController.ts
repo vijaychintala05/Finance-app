@@ -1964,6 +1964,27 @@ export class FinanceController {
         res.status(400).json({ error: `Unsupported document PDF category: ${category}` });
         return;
       }
+      if (req.query.preview !== 'true') {
+        const artifact = await DocumentPdfArtifactService.findLatestIssuedArtifact(db, {
+          organizationId: req.auth!.organizationId,
+          category,
+          documentId: req.params.id,
+        });
+        if (artifact) {
+          if (req.query.templateId) {
+            res.status(409).json({ error: 'An issued PDF cannot be rendered with a different template; use preview to inspect changes' });
+            return;
+          }
+          res.setHeader('Content-Type', 'application/pdf');
+          res.setHeader('Content-Length', String(artifact.pdfBytes!.length));
+          res.setHeader('Content-Disposition', 'inline; filename="' + (artifact.filename || 'document.pdf').replaceAll('"', '') + '"');
+          res.setHeader('X-Document-Pdf-Artifact', artifact.id);
+          res.setHeader('X-Document-Pdf-Issuance', String(artifact.issuanceNumber));
+          res.setHeader('X-Document-Pdf-SHA256', artifact.pdfSha256 || '');
+          res.send(artifact.pdfBytes);
+          return;
+        }
+      }
       const result = await DocumentPdfService.generatePdf(
         db,
         req.auth!.organizationId,
@@ -2082,7 +2103,12 @@ export class FinanceController {
         return;
       }
       const templates = await DocumentTemplateService.list(db, req.auth!.organizationId, category);
-      res.json({ category, templates, templateIds: DocumentPdfService.getTemplateIds(category) });
+      const defaultTemplate = await DocumentTemplateService.resolve(db, req.auth!.organizationId, category);
+      res.json({
+        category, templates, templateIds: DocumentPdfService.getTemplateIds(category),
+        defaultTemplateId: defaultTemplate?.id || null,
+        defaultModelId: defaultTemplate?.modelId || null,
+      });
     } catch (err: any) {
       res.status(500).json({ error: err?.message || 'Failed to list document templates' });
     }
@@ -2856,6 +2882,21 @@ export class FinanceController {
 
   public static async getExpensePdf(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
+      const artifact = await DocumentPdfArtifactService.findLatestIssuedArtifact(db, {
+        organizationId: req.auth!.organizationId,
+        category: 'expenses',
+        documentId: req.params.id,
+      });
+      if (artifact) {
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Length', String(artifact.pdfBytes!.length));
+        res.setHeader('Content-Disposition', 'inline; filename="' + (artifact.filename || 'expense.pdf').replaceAll('"', '') + '"');
+        res.setHeader('X-Document-Pdf-Artifact', artifact.id);
+        res.setHeader('X-Document-Pdf-Issuance', String(artifact.issuanceNumber));
+        res.setHeader('X-Document-Pdf-SHA256', artifact.pdfSha256 || '');
+        res.send(artifact.pdfBytes);
+        return;
+      }
       const pdfBuffer = await ExpensePdfService.generateExpensePdf(
         db,
         req.auth!.organizationId,

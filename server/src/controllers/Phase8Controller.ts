@@ -9,6 +9,8 @@ import { GlobalSearchService } from '../services/GlobalSearchService';
 import { DashboardSummaryService } from '../services/DashboardSummaryService';
 import { QuotationRenderModelService } from '../sales/QuotationRenderModelService';
 import { QuotationPdfService } from '../sales/QuotationPdfService';
+import { DocumentPdfArtifactService } from '../services/DocumentPdfArtifactService';
+import type { DocumentTemplateRecord } from '../services/DocumentTemplateService';
 
 export class Phase8Controller {
   // --- QUOTATION PDF API ---
@@ -18,6 +20,27 @@ export class Phase8Controller {
       const { id, revisionNumber } = req.params;
 
       if (revisionNumber === undefined) {
+        const issuedArtifact = await DocumentPdfArtifactService.findLatestIssuedArtifact(db, {
+          organizationId: orgId,
+          category: 'quotes',
+          documentId: id,
+        });
+        if (issuedArtifact?.pdfBytes) {
+          if (req.query.templateId) {
+            res.status(409).json({ error: 'An issued quotation PDF cannot be rendered with a different template; use preview to inspect changes' });
+            return;
+          }
+          const artifactFilename = (issuedArtifact.filename || `Quotation-${id}.pdf`).replace(/[\r\n"\\]/g, '-');
+          res.setHeader('Content-Type', 'application/pdf');
+          res.setHeader('Content-Length', String(issuedArtifact.pdfBytes.length));
+          res.setHeader('Content-Disposition', `inline; filename="${artifactFilename}"`);
+          res.setHeader('X-Quotation-PDF-Source', 'issued-artifact');
+          res.setHeader('X-Document-Pdf-Artifact', issuedArtifact.id);
+          res.setHeader('X-Document-Pdf-Issuance', String(issuedArtifact.issuanceNumber || ''));
+          res.setHeader('X-Document-Pdf-SHA256', issuedArtifact.pdfSha256 || '');
+          res.send(issuedArtifact.pdfBytes);
+          return;
+        }
         const rendered = await DocumentPdfService.generatePdf(
           db,
           orgId,
@@ -35,17 +58,45 @@ export class Phase8Controller {
         const safeNumber = rawNumber.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/-+/g, '-').replace(/^[-_]+|[-_]+$/g, '');
         const filename = `Quotation-${safeNumber || id}.pdf`;
         res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+        res.setHeader('X-Quotation-PDF-Source', 'legacy-render');
         res.send(rendered.pdf);
         return;
       }
-      const revNum = revisionNumber !== undefined ? parseInt(revisionNumber, 10) : undefined;
+      const revNum = Number(revisionNumber);
+      if (!Number.isSafeInteger(revNum) || revNum < 0) {
+        res.status(400).json({ error: 'Quotation revision number must be a non-negative integer' });
+        return;
+      }
       const renderModel = await QuotationRenderModelService.buildRenderModel(orgId, id, revNum);
-      const pdfBuffer = await QuotationPdfService.generatePdf(renderModel);
+      let pdfBuffer: Buffer;
+      let templateSource = revNum === undefined ? 'legacy-render' : 'legacy-template-snapshot';
+      if (revNum !== undefined) {
+        const revisionResult = await db.query(
+          'SELECT revision_data FROM quotation_revisions WHERE organization_id = $1 AND quotation_id = $2 AND revision_number = $3',
+          [orgId, id, revNum],
+        );
+        const revisionData = typeof revisionResult.rows[0]?.revision_data === 'string'
+          ? JSON.parse(revisionResult.rows[0].revision_data)
+          : revisionResult.rows[0]?.revision_data;
+        const frozenTemplate = revisionData?.documentTemplateSnapshot as DocumentTemplateRecord | undefined;
+        if (frozenTemplate) {
+          pdfBuffer = await DocumentPdfService.generateQuotationRevisionPdf(renderModel, frozenTemplate);
+          templateSource = 'versioned-template';
+          res.setHeader('X-Document-Pdf-Template', frozenTemplate.modelId);
+          res.setHeader('X-Document-Pdf-Template-Version', frozenTemplate.currentVersionId || 'unversioned');
+        } else {
+          pdfBuffer = await QuotationPdfService.generatePdf(renderModel);
+        }
+      } else {
+        pdfBuffer = await QuotationPdfService.generatePdf(renderModel);
+      }
 
       const filename = `Quotation-${renderModel.document.quotationNumber}.pdf`;
 
       res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Length', String(pdfBuffer.length));
       res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+      res.setHeader('X-Quotation-PDF-Source', templateSource);
       res.send(pdfBuffer);
     } catch (err: any) {
       const msg = err.message || 'Failed to generate PDF';

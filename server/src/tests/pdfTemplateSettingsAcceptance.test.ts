@@ -12,7 +12,7 @@ import { DOCUMENT_PDF_CATALOG, DocumentPdfService, contrastTextForFill, readable
 async function parsePdf(buffer: Buffer): Promise<{ numpages: number; text: string }> {
   const mod = require('pdf-parse');
   const PDFClass = mod.PDFParse || mod.default || mod;
-  const uint8 = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  const uint8 = Uint8Array.from(buffer);
   let text = '';
   let numpages = 1;
 
@@ -46,7 +46,7 @@ function getPdfResponse(url: string, headers: any) {
 async function readPdfTextPositions(buffer: Buffer): Promise<Array<Array<{ text: string; baselineY: number; x: number; width: number; pageWidth: number; pageHeight: number }>>> {
   const mod = require('pdf-parse');
   const PDFClass = mod.PDFParse || mod.default || mod;
-  const bytes = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  const bytes = Uint8Array.from(buffer);
   const parser = new PDFClass(bytes);
   await parser.getText();
   const doc = (parser as any).doc;
@@ -191,6 +191,24 @@ describe('PDF Template Settings Acceptance Suite (14-Category Matrix & Requireme
   });
   // 2. SAMPLE PREVIEW WITHOUT TRANSACTIONS MUTATION
   // =========================================================================
+  it('keeps amount-in-words text above the notes heading across document categories', async () => {
+    for (const category of ['quotes', 'sales-orders', 'invoices', 'payment-receipts', 'expenses'] as const) {
+      const pdf = await getPdfResponse(`/api/v1/finance/documents/${category}/preview/pdf`, authHeadersA);
+      expect(pdf.status).toBe(200);
+      const pages = await readPdfTextPositions(pdf.body);
+      let comparisons = 0;
+      for (const page of pages) {
+        const words = page.find((item) => item.text.startsWith('Amount in words:'));
+        const heading = page.find((item) => item.text === 'Notes & Terms' || item.text === 'Scope of Work & Terms');
+        if (words && heading) {
+          expect(words.baselineY - heading.baselineY, category).toBeGreaterThan(10);
+          comparisons += 1;
+        }
+      }
+      expect(comparisons, category).toBeGreaterThan(0);
+    }
+  });
+
   it('renders realistic sample preview PDFs for all 14 categories without mutating database records', async () => {
     const categories = Object.keys(DOCUMENT_PDF_CATALOG) as DocumentPdfCategory[];
 
@@ -1964,6 +1982,8 @@ describe('PDF Template Settings Acceptance Suite (14-Category Matrix & Requireme
       .get('/api/v1/finance/documents/delivery-challans/templates')
       .set(authHeadersA);
     expect(resolvedRes.status).toBe(200);
+    expect(resolvedRes.body.defaultModelId).toBe('dispatch');
+    expect(resolvedRes.body.defaultTemplateId).toBe(changeRes.body.template.id);
 
     // 2. Restore built-in default
     const restoreRes = await request(app)
@@ -1983,6 +2003,50 @@ describe('PDF Template Settings Acceptance Suite (14-Category Matrix & Requireme
   // =========================================================================
   // 7. TENANT ISOLATION
   // =========================================================================
+  it('serves retained issued bytes from the ordinary document URL after a template change', async () => {
+    const suffix = Date.now().toString(36);
+    const clientId = `pdf-retained-client-${suffix}`;
+    const invoiceId = `pdf-retained-invoice-${suffix}`;
+    await db.query(
+      `INSERT INTO clients (id, organization_id, name, company_name, currency)
+       VALUES ($1, $2, 'Retained PDF Customer', 'Retained PDF Customer', 'INR')`,
+      [clientId, orgIdA],
+    );
+    await db.query(
+      `INSERT INTO invoices (id, organization_id, invoice_number, client_id, client_name, issue_date, due_date, total_amount, balance_due, status)
+       VALUES ($1, $2, $3, $4, 'Retained PDF Customer', '2026-09-01', '2026-10-01', 125, 125, 'SENT')`,
+      [invoiceId, orgIdA, `INV-RETAINED-${suffix}`, clientId],
+    );
+    const issue = await request(app)
+      .post(`/api/v1/finance/documents/invoices/${invoiceId}/pdf/issue`)
+      .set({ ...authHeadersA, 'Idempotency-Key': `pdf-retained-${suffix}-issue` })
+      .send({});
+    expect(issue.status).toBe(200);
+
+    const changedDefault = await request(app)
+      .patch('/api/v1/finance/documents/invoices/templates/pos/default')
+      .set(authHeadersA).send({});
+    expect(changedDefault.status).toBe(200);
+    await db.query(`UPDATE invoices SET client_name = 'Changed after issuance' WHERE organization_id = $1 AND id = $2`, [orgIdA, invoiceId]);
+    const downloaded = await getPdfResponse(`/api/v1/finance/documents/invoices/${invoiceId}/pdf`, authHeadersA);
+    expect(downloaded.status).toBe(200);
+    expect(downloaded.headers['x-document-pdf-artifact']).toBe(issue.headers['x-document-pdf-artifact']);
+    expect(downloaded.body).toEqual(issue.body);
+    const override = await request(app).get(`/api/v1/finance/documents/invoices/${invoiceId}/pdf?templateId=pos`).set(authHeadersA);
+    expect(override.status).toBe(409);
+    const preview = await getPdfResponse(`/api/v1/finance/documents/invoices/${invoiceId}/pdf?preview=true`, authHeadersA);
+    expect(preview.status).toBe(200);
+    expect(preview.body).not.toEqual(issue.body);
+    expect((await parsePdf(preview.body)).text).toContain('Changed after issuance');
+
+    await db.query(`UPDATE document_render_snapshots SET pdf_sha256 = $1 WHERE organization_id = $2 AND id = $3`, [
+      '0'.repeat(64), orgIdA, issue.headers['x-document-pdf-artifact'],
+    ]);
+    const corrupt = await request(app).get(`/api/v1/finance/documents/invoices/${invoiceId}/pdf`).set(authHeadersA);
+    expect(corrupt.status).toBe(500);
+    expect(corrupt.headers['content-type']).not.toMatch(/application\/pdf/);
+  });
+
   it('strictly isolates document PDF access between organizations', async () => {
     // Create an invoice in Org A
     const custA = await request(app)

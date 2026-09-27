@@ -116,6 +116,14 @@ export async function idempotencyMiddleware(
     // context explicit here so downstream nested writes retain their PostgreSQL
     // RLS scope even when Express continues the middleware chain asynchronously.
     const outcome = await db.withOrganizationContext(organizationId, () => db.transaction<CapturedResponse>(async (client) => {
+      // Canonical bank movement allocations share one tenant financial lock.
+      // Acquire it before this middleware's idempotency row lock so the handler
+      // can safely lock statement, journal, journal-line, and allocation rows.
+      const requestPath = String(req.originalUrl || '').split('?', 1)[0];
+      if ((/^\/api\/v1\/banking\/reconciliation\/allocations(?:\/|$)/.test(requestPath) ||
+          /^\/api\/v1\/banking\/transactions\/[^/]+\/create-missing-entry$/.test(requestPath)) && !db.isMemoryMode()) {
+        await client.query(`SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`, [organizationId, 'bank-movement-allocations']);
+      }
       const existing = await client.query(
         `SELECT request_hash, state, response_status, response_body, user_id, required_permissions
            FROM api_idempotency_keys

@@ -7,6 +7,7 @@ import { BalanceSheetReportService } from './BalanceSheetReportService';
 import { BudgetService } from './BudgetService';
 import { CashFlowForecastService } from './CashFlowForecastService';
 import { isFeatureEnabled } from '../middleware/trustedFeature.middleware';
+import { BankReconciliationProjectionService, classifyStatementLineStatus } from '../banking/BankReconciliationProjectionService';
 
 export type WorkspaceReportValueType = 'text' | 'date' | 'number' | 'money' | 'percent' | 'status';
 
@@ -38,7 +39,7 @@ export interface WorkspaceReportResult {
   period: { fromDate?: string; toDate?: string; asOfDate?: string };
   columns: WorkspaceReportColumn[];
   rows: Array<Record<string, unknown>>;
-  summary: Array<{ key: string; label: string; value: number; type: 'money' | 'number' | 'percent' }>;
+  summary: Array<{ key: string; label: string; value: number | null; type: 'money' | 'number' | 'percent' }>;
   chart?: { categoryKey: string; valueKeys: Array<{ key: string; label: string }> };
   warnings?: string[];
 }
@@ -519,76 +520,100 @@ export class ReportWorkspaceService {
   }
 
   private static async bankReconciliationSummary(orgId: string, dates: ReturnType<typeof period>, filter: WorkspaceReportFilter) {
-    const [accountsResult, importsResult, transactionsResult] = await Promise.all([
-      db.query(
-        `SELECT ba.id, ba.ledger_account_id, ba.account_name, ba.bank_name, ba.masked_account_number, ba.currency,
-                COALESCE(SUM(CASE WHEN UPPER(COALESCE(je.status, '')) = 'POSTED' AND je.date <= $2 THEN jl.debit - jl.credit ELSE 0 END), 0) AS book_balance
-           FROM bank_accounts ba
-           LEFT JOIN journal_lines jl ON jl.organization_id = ba.organization_id AND jl.account_id = ba.ledger_account_id
-           LEFT JOIN journal_entries je ON je.organization_id = ba.organization_id AND je.id = jl.journal_entry_id
-          WHERE ba.organization_id = $1 AND ba.is_active = TRUE
-          GROUP BY ba.id, ba.ledger_account_id, ba.account_name, ba.bank_name, ba.masked_account_number, ba.currency
-          ORDER BY ba.account_name`,
-        [orgId, dates.asOfDate],
-      ),
-      db.query(
-        `SELECT bank_account_id, closing_balance, statement_to
-           FROM bank_statement_imports
-          WHERE organization_id = $1 AND statement_to <= $2
-          ORDER BY bank_account_id, statement_to DESC, imported_at DESC`,
-        [orgId, dates.asOfDate],
-      ),
-      db.query(
-        `SELECT bank_account_id, COUNT(*) AS total_count,
-                SUM(CASE WHEN reconciliation_status = 'MATCHED' THEN 1 ELSE 0 END) AS matched_count,
-                SUM(CASE WHEN reconciliation_status <> 'MATCHED' THEN 1 ELSE 0 END) AS unmatched_count
-           FROM bank_statement_transactions
-          WHERE organization_id = $1 AND transaction_date <= $2
-          GROUP BY bank_account_id`,
-        [orgId, dates.asOfDate],
-      ),
-    ]);
-    const latestByAccount = new Map<string, any>();
-    for (const statement of importsResult.rows) if (!latestByAccount.has(statement.bank_account_id)) latestByAccount.set(statement.bank_account_id, statement);
-    const transactionsByAccount = new Map(transactionsResult.rows.map((row: any) => [row.bank_account_id, row]));
-    const rows = accountsResult.rows.map((row: any) => {
-      const latest = latestByAccount.get(row.id);
-      const transaction = transactionsByAccount.get(row.id) as any;
-      const bookBalance = number(row.book_balance);
-      const statementBalance = latest ? number(latest.closing_balance) : 0;
-      return {
-        ...row,
-        statement_to: latest ? dateOnly(latest.statement_to) : '',
-        book_balance: bookBalance,
-        statement_balance: statementBalance,
-        difference: latest ? number(statementBalance - bookBalance) : 0,
-        statement_transactions: Number(transaction?.total_count || 0),
-        matched: Number(transaction?.matched_count || 0),
-        unmatched: Number(transaction?.unmatched_count || 0),
-      };
-    }).filter((row: any) => includesSearch(row, filter.search));
-    const output = baseResult('bank_reconciliation_summary', 'Bank Reconciliation Summary', 'Book balances compared with the latest uploaded statement balance.', 'RECONCILED_SUBLEDGER', dates,
-      [{ key: 'account_name', label: 'Bank account', type: 'text' }, { key: 'bank_name', label: 'Bank', type: 'text' }, { key: 'masked_account_number', label: 'Account', type: 'text' }, { key: 'statement_to', label: 'Statement through', type: 'date' }, { key: 'book_balance', label: 'Balance in FirmBooks', type: 'money', align: 'right' }, { key: 'statement_balance', label: 'Balance in bank', type: 'money', align: 'right' }, { key: 'difference', label: 'Difference', type: 'money', align: 'right' }, { key: 'matched', label: 'Matched', type: 'number', align: 'right' }, { key: 'unmatched', label: 'Unmatched', type: 'number', align: 'right' }], rows,
-      [{ key: 'book_balance', label: 'Balance in FirmBooks', value: sum(rows, 'book_balance'), type: 'money' }, { key: 'statement_balance', label: 'Balance in bank', value: sum(rows, 'statement_balance'), type: 'money' }, { key: 'unmatched', label: 'Unmatched entries', value: sum(rows, 'unmatched'), type: 'number' }]);
+    const projection = await BankReconciliationProjectionService.getProjection(orgId, dates.asOfDate, db, dates.fromDate);
+    const rows = projection.accounts
+      .filter((account) => !filter.accountId || account.accountId === filter.accountId || account.ledgerAccountId === filter.accountId)
+      .map((account) => ({
+        account_name: account.accountName,
+        bank_name: account.bankName,
+        masked_account_number: account.maskedAccountNumber,
+        statement_to: account.statementThrough || '',
+        book_balance: account.bookBalanceAtStatement,
+        statement_balance: account.statementBalance,
+        difference: account.statementBookDifference,
+        later_book_activity: account.laterBookActivity,
+        statement_transactions: account.statementTransactionCount,
+        matched: account.statementResolvedCount,
+        unmatched: account.statementUnresolvedCount,
+        prior_unresolved: account.priorUnresolvedCount,
+        book_outstanding: account.bookOutstandingAmount,
+        book_coverage: account.bookCoverageState,
+      })).filter((row) => includesSearch(row, filter.search));
+    const knownSum = (key: string): number | null => {
+      if (!rows.length || rows.some((row: any) => typeof row[key] !== 'number' || !Number.isFinite(row[key]))) return null;
+      return sum(rows, key);
+    };
+    const unknownCoverage = rows.some((row: any) => row.book_balance === null || row.statement_balance === null || row.difference === null);
+    const output = baseResult('bank_reconciliation_summary', 'Bank Reconciliation Summary', 'Statement lines, book balance at each statement cutoff, and later book activity. Book-side outstanding remains unavailable until legacy matches can be verified against canonical movement allocations.', 'RECONCILED_SUBLEDGER', dates,
+      [{ key: 'account_name', label: 'Bank account', type: 'text' }, { key: 'bank_name', label: 'Bank', type: 'text' }, { key: 'masked_account_number', label: 'Account', type: 'text' }, { key: 'statement_to', label: 'Statement through', type: 'date' }, { key: 'book_balance', label: 'Book balance at statement date', type: 'money', align: 'right' }, { key: 'statement_balance', label: 'Statement closing balance', type: 'money', align: 'right' }, { key: 'difference', label: 'Statement less book', type: 'money', align: 'right' }, { key: 'later_book_activity', label: 'Later book activity', type: 'money', align: 'right' }, { key: 'matched', label: 'Verified resolved lines', type: 'number', align: 'right' }, { key: 'unmatched', label: 'Lines needing review in period', type: 'number', align: 'right' }, { key: 'prior_unresolved', label: 'Earlier lines needing review', type: 'number', align: 'right' }, { key: 'book_outstanding', label: 'Book outstanding', type: 'money', align: 'right' }, { key: 'book_coverage', label: 'Allocation coverage', type: 'status' }], rows,
+      [{ key: 'book_balance', label: 'Book balance at statement dates', value: knownSum('book_balance'), type: 'money' }, { key: 'statement_balance', label: 'Statement closing balance', value: knownSum('statement_balance'), type: 'money' }, { key: 'unmatched', label: 'Lines needing review', value: knownSum('unmatched'), type: 'number' }], undefined,
+      [
+        ...(!projection.hasStatement ? ['No uploaded statement is available through the selected date; statement comparison values are unknown.'] : []),
+        ...(unknownCoverage ? ['One or more bank accounts lack comparable statement, ledger-link, or currency coverage; aggregate balances are unknown.'] : []),
+      ]);
     output.period = { asOfDate: dates.asOfDate }; return output;
   }
 
   private static async bankTransactionDetails(orgId: string, dates: ReturnType<typeof period>, filter: WorkspaceReportFilter) {
     const result = await db.query(
-      `SELECT bst.id, bst.transaction_date, ba.account_name AS bank_account, bst.narration, bst.reference,
+      `WITH posted_reversals AS (
+         SELECT organization_id, reversal_of_journal_id, MIN(id) AS reversal_id
+           FROM journal_entries
+          WHERE reversal_of_journal_id IS NOT NULL AND UPPER(COALESCE(status, '')) = 'POSTED'
+          GROUP BY organization_id, reversal_of_journal_id
+       ), allocation_rollup AS (
+         SELECT m.organization_id, m.statement_transaction_id, COUNT(*) AS active_allocation_count,
+                SUM(CASE WHEN m.identity_state = 'VERIFIED' AND m.creation_origin IN ('CANONICAL_ALLOCATION', 'STATEMENT_CREATION')
+                              AND m.bank_account_id = bst.bank_account_id AND m.ledger_account_id = ba.ledger_account_id
+                              AND jl.account_id = ba.ledger_account_id AND m.journal_entry_id = jl.journal_entry_id
+                              AND UPPER(COALESCE(je.status, '')) = 'POSTED' AND je.reversal_of_journal_id IS NULL
+                              AND pr.reversal_id IS NULL
+                              AND UPPER(bst.currency) = UPPER(ba.currency) AND UPPER(bst.currency) = UPPER(o.base_currency)
+                              AND (la.currency_code IS NULL OR UPPER(la.currency_code) = UPPER(o.base_currency))
+                              AND ((UPPER(bst.direction) = 'CREDIT' AND jl.debit > 0 AND COALESCE(jl.credit, 0) = 0)
+                                OR (UPPER(bst.direction) = 'DEBIT' AND jl.credit > 0 AND COALESCE(jl.debit, 0) = 0))
+                         THEN m.matched_amount ELSE 0 END) AS verified_allocation,
+                SUM(CASE WHEN m.identity_state = 'VERIFIED' AND m.creation_origin IN ('CANONICAL_ALLOCATION', 'STATEMENT_CREATION')
+                              AND m.bank_account_id = bst.bank_account_id AND m.ledger_account_id = ba.ledger_account_id
+                              AND jl.account_id = ba.ledger_account_id AND m.journal_entry_id = jl.journal_entry_id
+                              AND UPPER(COALESCE(je.status, '')) = 'POSTED' AND je.reversal_of_journal_id IS NULL
+                              AND pr.reversal_id IS NULL
+                              AND UPPER(bst.currency) = UPPER(ba.currency) AND UPPER(bst.currency) = UPPER(o.base_currency)
+                              AND (la.currency_code IS NULL OR UPPER(la.currency_code) = UPPER(o.base_currency))
+                              AND ((UPPER(bst.direction) = 'CREDIT' AND jl.debit > 0 AND COALESCE(jl.credit, 0) = 0)
+                                OR (UPPER(bst.direction) = 'DEBIT' AND jl.credit > 0 AND COALESCE(jl.debit, 0) = 0))
+                         THEN 1 ELSE 0 END) AS valid_allocation_count
+           FROM bank_reconciliation_matches m
+           JOIN bank_statement_transactions bst ON bst.organization_id = m.organization_id AND bst.id = m.statement_transaction_id
+           JOIN bank_accounts ba ON ba.organization_id = bst.organization_id AND ba.id = bst.bank_account_id
+           JOIN organizations o ON o.id = bst.organization_id
+           LEFT JOIN accounts la ON la.organization_id = ba.organization_id AND la.id = ba.ledger_account_id
+           LEFT JOIN journal_entries je ON je.organization_id = m.organization_id AND je.id = m.journal_entry_id
+           LEFT JOIN journal_lines jl ON jl.id = m.journal_line_id AND jl.journal_entry_id = je.id
+             AND (jl.organization_id = m.organization_id OR jl.organization_id IS NULL)
+           LEFT JOIN posted_reversals pr ON pr.organization_id = je.organization_id AND pr.reversal_of_journal_id = je.id
+          WHERE m.organization_id = $1 AND m.allocation_state = 'ACTIVE'
+          GROUP BY m.organization_id, m.statement_transaction_id
+       )
+       SELECT bst.id, bst.transaction_date, bst.is_ignored, ba.account_name AS bank_account, bst.narration, bst.reference,
               bst.counterparty_name AS counterparty, bst.direction, bst.amount, bst.running_balance,
-              bst.reconciliation_status AS status
+              bst.reconciliation_status AS status, COALESCE(ar.verified_allocation, 0) AS verified_allocation,
+              COALESCE(ar.active_allocation_count, 0) AS active_allocation_count,
+              COALESCE(ar.valid_allocation_count, 0) AS valid_allocation_count
          FROM bank_statement_transactions bst
          JOIN bank_accounts ba ON ba.organization_id = bst.organization_id AND ba.id = bst.bank_account_id
+         JOIN bank_statement_imports bi ON bi.organization_id = bst.organization_id AND bi.id = bst.statement_import_id
+         LEFT JOIN allocation_rollup ar ON ar.organization_id = bst.organization_id AND ar.statement_transaction_id = bst.id
         WHERE bst.organization_id = $1 AND bst.transaction_date >= $2 AND bst.transaction_date <= $3
+          AND UPPER(COALESCE(bi.status, 'COMPLETED')) NOT IN ('FAILED', 'CANCELLED', 'REJECTED')
           AND ($4 = '' OR bst.bank_account_id = $4 OR ba.ledger_account_id = $4) AND ($5 = '' OR UPPER(COALESCE(bst.reconciliation_status, '')) = UPPER($5))
         ORDER BY bst.transaction_date DESC, bst.id DESC`,
       [orgId, dates.fromDate, dates.toDate, filter.accountId || '', filter.status || ''],
     );
-    const rows = result.rows.map((row: any) => ({ ...row, transaction_date: dateOnly(row.transaction_date), amount: number(row.amount), running_balance: row.running_balance === null ? null : number(row.running_balance), money_in: row.direction === 'CREDIT' ? number(row.amount) : 0, money_out: row.direction === 'DEBIT' ? number(row.amount) : 0, source_type: 'bank_transaction', source_id: row.id })).filter((row: any) => includesSearch(row, filter.search));
-    return baseResult('bank_transaction_details', 'Bank Transaction Details', 'Uploaded statement transactions and their matching status. Statement rows never become expenses automatically.', 'RECONCILED_SUBLEDGER', dates,
-      [{ key: 'transaction_date', label: 'Date', type: 'date' }, { key: 'bank_account', label: 'Bank account', type: 'text' }, { key: 'narration', label: 'Description', type: 'text' }, { key: 'reference', label: 'Reference', type: 'text' }, { key: 'counterparty', label: 'Counterparty', type: 'text' }, { key: 'status', label: 'Match status', type: 'status' }, { key: 'money_in', label: 'Money in', type: 'money', align: 'right' }, { key: 'money_out', label: 'Money out', type: 'money', align: 'right' }, { key: 'running_balance', label: 'Bank balance', type: 'money', align: 'right' }], rows,
-      [{ key: 'money_in', label: 'Money in', value: sum(rows, 'money_in'), type: 'money' }, { key: 'money_out', label: 'Money out', value: sum(rows, 'money_out'), type: 'money' }, { key: 'unmatched', label: 'Unmatched', value: rows.filter((row: any) => row.status !== 'MATCHED').length, type: 'number' }]);
+    const rows = result.rows.map((row: any) => ({ ...row, transaction_date: dateOnly(row.transaction_date), amount: number(row.amount), running_balance: row.running_balance === null ? null : number(row.running_balance), money_in: row.direction === 'CREDIT' ? number(row.amount) : 0, money_out: row.direction === 'DEBIT' ? number(row.amount) : 0, resolution: classifyStatementLineStatus(row.status, row.is_ignored, row.amount, row.verified_allocation, Number(row.active_allocation_count || 0) - Number(row.valid_allocation_count || 0)), source_type: 'bank_transaction', source_id: row.id })).filter((row: any) => includesSearch(row, filter.search));
+    return baseResult('bank_transaction_details', 'Bank Transaction Details', 'Uploaded statement transactions and their review status. Legacy match labels do not prove complete allocation to a posted book movement.', 'RECONCILED_SUBLEDGER', dates,
+      [{ key: 'transaction_date', label: 'Date', type: 'date' }, { key: 'bank_account', label: 'Bank account', type: 'text' }, { key: 'narration', label: 'Description', type: 'text' }, { key: 'reference', label: 'Reference', type: 'text' }, { key: 'counterparty', label: 'Counterparty', type: 'text' }, { key: 'status', label: 'Stored status', type: 'status' }, { key: 'resolution', label: 'Review state', type: 'status' }, { key: 'money_in', label: 'Money in', type: 'money', align: 'right' }, { key: 'money_out', label: 'Money out', type: 'money', align: 'right' }, { key: 'running_balance', label: 'Bank balance', type: 'money', align: 'right' }], rows,
+      [{ key: 'money_in', label: 'Money in', value: sum(rows, 'money_in'), type: 'money' }, { key: 'money_out', label: 'Money out', value: sum(rows, 'money_out'), type: 'money' }, { key: 'unmatched', label: 'Lines needing review', value: rows.filter((row: any) => row.resolution !== 'RESOLVED').length, type: 'number' }]);
   }
 
   private static async gstSummary(orgId: string, dates: ReturnType<typeof period>, filter: WorkspaceReportFilter) {

@@ -3,6 +3,9 @@ import { BankReconciliationService } from '../banking/BankReconciliationService'
 import { FinancialCommandService } from '../accounting/FinancialCommandService';
 import { toFinancialCommandError } from '../accounting/FinancialCommandError';
 import { GatewayActivityService } from '../services/GatewayActivityService';
+import { BankBookMovementService } from '../banking/BankBookMovementService';
+import { BankMovementAllocationService } from '../banking/BankMovementAllocationService';
+import { BankStatementEntryCreationService } from '../banking/BankStatementEntryCreationService';
 
 function getOrgId(req: Request): string {
   const orgId = (req as any).auth?.organizationId;
@@ -15,6 +18,135 @@ function sanitizeError(e: any): string {
 }
 
 export class BankingController {
+  // POST /api/v1/banking/transactions/:transactionId/create-missing-entry
+  public static async createMissingEntryFromStatement(req: Request, res: Response) {
+    try {
+      const { counterAccountId, description } = req.body || {};
+      if (typeof counterAccountId !== 'string' || counterAccountId.length > 64 ||
+          (description !== undefined && (typeof description !== 'string' || description.length > 500))) {
+        return res.status(400).json({ success: false, error: 'A valid counterAccountId and optional description are required' });
+      }
+      const data = await BankStatementEntryCreationService.create(
+        getOrgId(req), req.params.transactionId, counterAccountId, (req as any).auth?.userId, description,
+      );
+      return res.status(201).json({ success: true, data });
+    } catch (error: any) {
+      const code = error instanceof Error ? error.message : '';
+      const conflicts = new Set([
+        'BANK_LEDGER_ACCOUNT_NOT_LINKED', 'BANK_ACCOUNT_INACTIVE', 'BANK_LEDGER_ACCOUNT_UNAVAILABLE',
+        'BANK_CURRENCY_UNSUPPORTED', 'BANK_STATEMENT_DIRECTION_INVALID', 'BANK_STATEMENT_ALREADY_PROCESSED',
+        'BANK_STATEMENT_ALREADY_ALLOCATED', 'BANK_RECONCILIATION_COMPLETED', 'BANK_COUNTER_ACCOUNT_NOT_ALLOWED',
+        'BANK_CREATED_JOURNAL_LINE_NOT_UNIQUE',
+      ]);
+      if (conflicts.has(code)) return res.status(409).json({ success: false, code, error: code });
+      if (code === 'BANK_STATEMENT_TRANSACTION_NOT_FOUND' || code === 'BANK_COUNTER_ACCOUNT_NOT_FOUND') {
+        return res.status(404).json({ success: false, code, error: code });
+      }
+      if (code.endsWith('_INVALID_AMOUNT') || code === 'BANK_COUNTER_ACCOUNT_INVALID') {
+        return res.status(400).json({ success: false, code, error: code });
+      }
+      return res.status(500).json({ success: false, error: sanitizeError(error) });
+    }
+  }
+
+  // POST /api/v1/banking/reconciliation/allocations
+  public static async allocateBookMovement(req: Request, res: Response) {
+    try {
+      const { statementTransactionId, journalLineId, amount } = req.body || {};
+      if (typeof statementTransactionId !== 'string' || statementTransactionId.length > 64 ||
+          typeof journalLineId !== 'string' || journalLineId.length > 64 ||
+          !(typeof amount === 'string' || typeof amount === 'number')) {
+        return res.status(400).json({ success: false, error: 'statementTransactionId, journalLineId, and a decimal amount are required' });
+      }
+      const data = await BankMovementAllocationService.allocate(
+        getOrgId(req), statementTransactionId, journalLineId, amount, (req as any).auth?.userId,
+      );
+      return res.status(201).json({ success: true, data });
+    } catch (error: any) {
+      const code = error instanceof Error ? error.message : '';
+      const conflicts = new Set([
+        'BANK_RECONCILIATION_COMPLETED', 'BANK_LEGACY_ALLOCATION_UNRESOLVED',
+        'BANK_STATEMENT_CAPACITY_EXCEEDED', 'BANK_BOOK_CAPACITY_EXCEEDED',
+        'BANK_CURRENCY_UNSUPPORTED', 'BANK_ACCOUNT_INACTIVE', 'BANK_LEDGER_ACCOUNT_NOT_LINKED',
+        'BANK_BOOK_MOVEMENT_NOT_POSTED', 'BANK_BOOK_MOVEMENT_SIDE_INVALID',
+        'BANK_BOOK_MOVEMENT_REVERSAL_UNSUPPORTED', 'BANK_BOOK_MOVEMENT_PERIOD_LOCKED',
+      ]);
+      if (conflicts.has(code)) return res.status(409).json({ success: false, code, error: code });
+      if (code === 'BANK_STATEMENT_TRANSACTION_NOT_FOUND' || code === 'BANK_BOOK_MOVEMENT_NOT_FOUND') {
+        return res.status(404).json({ success: false, code, error: code });
+      }
+      if (code.endsWith('_INVALID_AMOUNT') || code === 'BANK_STATEMENT_DIRECTION_INVALID') {
+        return res.status(400).json({ success: false, code, error: code });
+      }
+      return res.status(500).json({ success: false, error: sanitizeError(error) });
+    }
+  }
+
+  // DELETE /api/v1/banking/reconciliation/allocations/:allocationId
+  public static async unmatchBookMovement(req: Request, res: Response) {
+    try {
+      if (typeof req.body?.reason !== 'string') {
+        return res.status(400).json({ success: false, error: 'A reason is required to preserve unmatch history' });
+      }
+      const data = await BankMovementAllocationService.unmatch(
+        getOrgId(req), req.params.allocationId, (req as any).auth?.userId, req.body.reason,
+      );
+      return res.json({ success: true, data });
+    } catch (error: any) {
+      const code = error instanceof Error ? error.message : '';
+      if (code === 'BANK_ALLOCATION_NOT_FOUND') return res.status(404).json({ success: false, code, error: code });
+      if (code === 'BANK_ALLOCATION_NOT_ACTIVE' || code === 'BANK_RECONCILIATION_COMPLETED') {
+        return res.status(409).json({ success: false, code, error: code });
+      }
+      if (code === 'BANK_ALLOCATION_UNMATCH_REASON_REQUIRED') return res.status(400).json({ success: false, code, error: code });
+      return res.status(500).json({ success: false, error: sanitizeError(error) });
+    }
+  }
+
+  // GET /api/v1/banking/accounts/:accountId/book-movements
+  public static async getBookMovements(req: Request, res: Response) {
+    try {
+      const rawLimit = req.query.limit;
+      const rawOffset = req.query.offset;
+      const limit = rawLimit === undefined ? 25 : Number(rawLimit);
+      const offset = rawOffset === undefined ? 0 : Number(rawOffset);
+      const search = req.query.search;
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100 ||
+          !Number.isInteger(offset) || offset < 0 || offset > 1_000_000 ||
+          (search !== undefined && (typeof search !== 'string' || search.length > 120))) {
+        return res.status(400).json({ success: false, error: 'Invalid book movement filters' });
+      }
+      const data = await BankBookMovementService.list(getOrgId(req), req.params.accountId, {
+        limit,
+        offset,
+        search: search as string | undefined,
+      });
+      res.json({ success: true, data });
+    } catch (e: any) {
+      const message = e instanceof Error ? e.message : '';
+      if (message === 'BANK_ACCOUNT_NOT_FOUND') return res.status(404).json({ success: false, error: 'Bank account not found' });
+      if (message === 'BANK_LEDGER_ACCOUNT_NOT_LINKED') return res.status(409).json({ success: false, error: 'This bank account is not linked to a ledger account' });
+      if (message === 'BANK_CURRENCY_UNSUPPORTED') return res.status(409).json({ success: false, code: message, error: 'Currency cannot be verified for this bank ledger.' });
+      res.status(500).json({ success: false, error: sanitizeError(e) });
+    }
+  }
+
+  // GET /api/v1/banking/transactions/:id/book-suggestions
+  public static async getBookMovementSuggestions(req: Request, res: Response) {
+    try {
+      const suggestions = await BankBookMovementService.suggestForStatementTransaction(
+        getOrgId(req), req.params.id
+      );
+      res.json({ success: true, data: suggestions });
+    } catch (e: any) {
+      const message = e instanceof Error ? e.message : '';
+      if (message === 'BANK_STATEMENT_TRANSACTION_NOT_FOUND') return res.status(404).json({ success: false, error: 'Statement transaction not found' });
+      if (message === 'BANK_LEDGER_ACCOUNT_NOT_LINKED') return res.status(409).json({ success: false, error: 'This bank account is not linked to a ledger account' });
+      if (message === 'BANK_CURRENCY_UNSUPPORTED') return res.status(409).json({ success: false, code: message, error: 'Currency cannot be verified across this statement, bank profile, and posted ledger. Suggestions are unavailable.' });
+      res.status(500).json({ success: false, error: sanitizeError(e) });
+    }
+  }
+
   // GET /api/v1/banking/gateway-activity
   public static async getGatewayActivity(req: Request, res: Response) {
     try {

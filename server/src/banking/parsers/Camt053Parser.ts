@@ -15,12 +15,14 @@ export class Camt053Parser {
 
     // Opening Balance (OPBD or PRCD)
     const opbdMatch = xmlContent.match(/<Bal>[\s\S]*?<Cd>OPBD<\/Cd>[\s\S]*?<Amt[^>]*>([\d.]+)</i) || xmlContent.match(/<Bal>[\s\S]*?<Cd>PRCD<\/Cd>[\s\S]*?<Amt[^>]*>([\d.]+)</i);
+    const openingBalanceVerified = Boolean(opbdMatch);
     if (opbdMatch) {
       openingBalance = parseFloat(opbdMatch[1]);
     }
 
     // Closing Balance (CLBD)
     const clbdMatch = xmlContent.match(/<Bal>[\s\S]*?<Cd>CLBD<\/Cd>[\s\S]*?<Amt[^>]*>([\d.]+)</i);
+    const closingBalanceVerified = Boolean(clbdMatch);
     if (clbdMatch) {
       closingBalance = parseFloat(clbdMatch[1]);
     }
@@ -73,18 +75,24 @@ export class Camt053Parser {
     const totalCredits = transactions.filter(t => t.direction === 'CREDIT').reduce((s, t) => s + t.amount, 0);
     const totalDebits = transactions.filter(t => t.direction === 'DEBIT').reduce((s, t) => s + t.amount, 0);
 
-    if (!closingBalance) {
+    if (!closingBalanceVerified) {
       closingBalance = Number((openingBalance + totalCredits - totalDebits).toFixed(2));
     }
 
+    const balanceDiscrepancy = openingBalanceVerified && closingBalanceVerified
+      ? Number((closingBalance - (openingBalance + totalCredits - totalDebits)).toFixed(2))
+      : null;
+    const sorted = [...transactions].sort((a, b) => a.transactionDate.localeCompare(b.transactionDate));
     return {
       openingBalance,
       closingBalance,
-      statementFrom: transactions[0]?.transactionDate,
-      statementTo: transactions[transactions.length - 1]?.transactionDate,
+      closingBalanceVerified,
+      balanceDiscrepancy,
+      statementFrom: sorted[0]?.transactionDate,
+      statementTo: sorted[sorted.length - 1]?.transactionDate,
       currency,
       transactions,
-      discrepancy: 0,
+      discrepancy: balanceDiscrepancy ?? 0,
     };
   }
 }

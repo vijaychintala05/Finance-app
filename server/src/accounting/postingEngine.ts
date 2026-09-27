@@ -54,6 +54,32 @@ export function resolveAccountNormalBalance(account: {
   return ['Liability', 'Equity', 'Income', 'Revenue', 'Other Income'].includes(account.type || '') ? 'Credit' : 'Debit';
 }
 
+async function acquireFinancialPostingLock(client: QueryClient, organizationId: string): Promise<void> {
+  if (db.isMemoryMode()) return;
+  await client.query(`SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`, [organizationId, 'financial-posting']);
+}
+
+async function assertBankReconciliationCutoff(
+  client: QueryClient,
+  organizationId: string,
+  date: string,
+  accountIds: string[],
+): Promise<void> {
+  if (db.isMemoryMode() || !accountIds.length) return;
+  const locked = await client.query(
+    `SELECT ba.id FROM bank_accounts ba
+      WHERE ba.organization_id = $1 AND ba.ledger_account_id = ANY($2::text[])
+        AND $3::date <= GREATEST(COALESCE(ba.reconciled_through_date, DATE '0001-01-01'), COALESCE((
+          SELECT MAX(s.statement_end_date) FROM bank_reconciliation_sessions s
+           WHERE s.organization_id = ba.organization_id AND s.bank_account_id = ba.id
+             AND UPPER(COALESCE(s.status, '')) IN ('COMPLETED', 'RECONCILED')
+        ), DATE '0001-01-01'))
+      LIMIT 1`,
+    [organizationId, accountIds, date],
+  );
+  if (locked.rows.length) throw new Error('BANK_RECONCILIATION_CUTOFF_LOCKED');
+}
+
 export class ServerPostingEngine {
   public static async postExistingDraft(
     organizationId: string,
@@ -62,6 +88,7 @@ export class ServerPostingEngine {
   ): Promise<{ entryId: string }> {
     const execute = async (client: QueryClient): Promise<{ entryId: string }> => {
       await TenantRecoveryLockService.assertNotLocked(organizationId, client);
+      await acquireFinancialPostingLock(client, organizationId);
       const headerResult = await client.query(
         `SELECT id, date, status
            FROM journal_entries
@@ -77,6 +104,11 @@ export class ServerPostingEngine {
         ? headerResult.rows[0].date.toISOString().slice(0, 10)
         : String(headerResult.rows[0].date).slice(0, 10);
       if (!isIsoCalendarDate(date)) throw new Error('Journal date must use YYYY-MM-DD format');
+      const cutoffAccounts = await client.query(
+        `SELECT DISTINCT account_id FROM journal_lines WHERE organization_id = $1 AND journal_entry_id = $2`,
+        [organizationId, journalEntryId],
+      );
+      await assertBankReconciliationCutoff(client, organizationId, date, cutoffAccounts.rows.map((row: any) => String(row.account_id)));
 
       const periodLock = await client.query(
         `SELECT id FROM period_locks
@@ -160,6 +192,7 @@ export class ServerPostingEngine {
   public static async postEntry(payload: PostJournalPayload, transactionClient?: QueryClient): Promise<{ entryId: string }> {
     const execute = async (client: QueryClient): Promise<{ entryId: string }> => {
       await TenantRecoveryLockService.assertNotLocked(payload.organizationId, client);
+      await acquireFinancialPostingLock(client, payload.organizationId);
       if (!isIsoCalendarDate(payload.date)) {
         throw new Error('Journal date must use YYYY-MM-DD format');
       }
@@ -183,6 +216,8 @@ export class ServerPostingEngine {
       if (debitCents !== creditCents || debitCents === 0n) {
         throw new Error(`Journal is unbalanced: debit=${formatCents(debitCents)}, credit=${formatCents(creditCents)}`);
       }
+
+      await assertBankReconciliationCutoff(client, payload.organizationId, payload.date, normalizedLines.map((line) => line.accountId));
 
       const periodLock = await client.query(
         `SELECT id FROM period_locks

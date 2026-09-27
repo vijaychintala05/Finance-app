@@ -86,7 +86,7 @@ describe('trustedFeature.middleware', () => {
     }
   });
 
-  it.each(['bank-rules', 'budget-reporting', 'cash-flow-forecasting', 'recurring-journal-generation', 'application-backup', 'data-export'])('cannot enable prototype feature %s using deployment configuration', (feature) => {
+  it.each(['bank-rules', 'bank-feed-connections', 'bank-movement-allocations', 'budget-reporting', 'cash-flow-forecasting', 'recurring-journal-generation', 'application-backup', 'data-export'])('cannot enable prototype feature %s using deployment configuration', (feature) => {
     process.env.NODE_ENV = 'production';
     process.env.TRUSTED_FINANCE_FEATURES = feature;
     const res = { status: vi.fn().mockReturnThis(), json: vi.fn() } as unknown as Response;

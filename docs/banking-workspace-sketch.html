@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bank Reconciliation Workspace — Sketch</title>
+  <style>
+    :root { font: 14px/1.45 system-ui, sans-serif; color: #222; background: #fff; }
+    body { margin: 0; padding: 24px; }
+    main { max-width: 1120px; margin: auto; }
+    header, section, .balance, .toolbar, .close { border: 1px solid #999; padding: 14px; margin: 0 0 14px; }
+    header, .toolbar, .close, .balance { display: flex; justify-content: space-between; gap: 18px; align-items: center; }
+    h1 { font-size: 20px; margin: 0; }
+    h2 { font-size: 15px; margin: 0 0 12px; }
+    .muted { color: #555; }
+    .tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+    .tabs span, button { border: 1px solid #888; border-radius: 3px; padding: 7px 10px; background: white; color: inherit; }
+    .tabs span[aria-current="page"] { border-width: 2px; font-weight: 700; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border-top: 1px solid #aaa; padding: 10px 8px; text-align: left; }
+    th { border-bottom: 2px solid #555; }
+    td.amount, th.amount { text-align: right; font-variant-numeric: tabular-nums; }
+    .close { justify-content: flex-start; }
+    @media (max-width: 680px) {
+      body { padding: 12px; }
+      .balance { align-items: flex-start; flex-direction: column; gap: 4px; }
+      .table-wrap { overflow-x: auto; }
+      table { min-width: 680px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div><h1>Operating bank · •••• 7890</h1><span class="muted">Statement period: Sep 1–30</span></div>
+      <button type="button">Import statement</button>
+    </header>
+    <section class="balance" aria-label="Reconciliation balances">
+      <div>Statement closing <strong>₹125,480.20</strong></div>
+      <div>Books balance <strong>₹124,930.20</strong></div>
+      <div>Difference <strong>₹550.00</strong></div>
+    </section>
+    <section>
+      <div class="tabs" role="tablist" aria-label="Bank activity">
+        <span role="tab" aria-current="page">Statement lines · 64</span>
+        <span role="tab">Needs review · 3</span>
+        <span role="tab">Matched · 55</span>
+        <span role="tab">Added to books · 6</span>
+        <span role="tab">Transactions in FirmBooks</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Date</th><th>Bank description</th><th class="amount">Money out</th><th class="amount">Money in</th><th>Status</th><th>Action</th></tr></thead>
+          <tbody>
+            <tr><td>Sep 24</td><td>UPI/ACME/45021</td><td class="amount">₹1,250.00</td><td class="amount">—</td><td>Suggested match</td><td><button type="button">Review match</button></td></tr>
+            <tr><td>Sep 24</td><td>BANK CHARGES</td><td class="amount">₹25.00</td><td class="amount">—</td><td>Not in books</td><td><button type="button">Add transaction</button></td></tr>
+            <tr><td>Sep 23</td><td>CLIENT PAYMENT</td><td class="amount">—</td><td class="amount">₹8,000.00</td><td>Matched</td><td><button type="button">View match</button></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+    <section class="close"><strong>Close blocked:</strong><span>3 statement lines need review · difference ₹550.00</span><button type="button" disabled>Close reconciliation</button></section>
+  </main>
+</body>
+</html>

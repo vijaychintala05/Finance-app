@@ -2,6 +2,7 @@ import { db, DbQueryClient } from '../database/db';
 import { isIsoCalendarDate } from '../utils/date';
 import { newId } from '../utils/ids';
 import { AccountingIntegrityService } from './AccountingIntegrityService';
+import { BankReconciliationProjectionService } from '../banking/BankReconciliationProjectionService';
 
 export interface CloseCheckItem {
   code: string;
@@ -104,13 +105,16 @@ async function validateWithClient(
   const draftCount = Number.parseInt(drafts.rows[0]?.count || '0', 10);
   checks.push({ code: 'DRAFT_JOURNALS', title: 'Unposted Draft Journals', severity: 'WARNING', passed: draftCount === 0,
     message: draftCount === 0 ? 'No draft journals in period.' : `${draftCount} draft journals remain unposted in this period.` });
-  const unmatched = await client.query(
-    `SELECT COUNT(*) FROM bank_statement_transactions WHERE organization_id=$1 AND reconciliation_status='UNMATCHED'
-      AND transaction_date >= $2 AND transaction_date <= $3`, [orgId, periodStart, periodEnd]
-  );
-  const unmatchedCount = Number.parseInt(unmatched.rows[0]?.count || '0', 10);
-  checks.push({ code: 'BANK_RECONCILIATION', title: 'Bank Statement Reconciliation', severity: 'WARNING', passed: unmatchedCount === 0,
-    message: unmatchedCount === 0 ? 'All bank statement transactions reconciled.' : `${unmatchedCount} bank transactions remain unmatched.` });
+  const bankProjection = await BankReconciliationProjectionService.getProjection(orgId, periodEnd, client, periodStart);
+  const unresolvedCount = bankProjection.statementUnresolvedCount;
+  const priorUnresolvedCount = bankProjection.priorUnresolvedCount;
+  const bankCoverageIncomplete = bankProjection.accounts.some((account) =>
+    ['NO_STATEMENT', 'UNLINKED_ACCOUNT', 'CURRENCY_MISMATCH', 'MISSING_STATEMENT_BALANCE'].includes(account.bookCoverageState));
+  checks.push({ code: 'BANK_RECONCILIATION', title: 'Bank Statement Reconciliation', severity: 'WARNING',
+    passed: unresolvedCount === 0 && priorUnresolvedCount === 0 && !bankCoverageIncomplete,
+    message: bankCoverageIncomplete || unresolvedCount === null ? 'Statement, ledger-link, currency, or balance coverage is incomplete for this period.'
+      : unresolvedCount === 0 && priorUnresolvedCount === 0 ? 'No uploaded bank statement transactions remain unresolved through this period.'
+        : `${unresolvedCount} uploaded bank statement transactions are in period and ${priorUnresolvedCount || 0} earlier transactions remain unresolved.` });
   const close = await client.query(
     'SELECT status FROM accounting_period_closes WHERE organization_id=$1 AND period_key=$2', [orgId, periodKey]
   );

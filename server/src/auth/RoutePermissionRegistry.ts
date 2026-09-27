@@ -59,6 +59,9 @@ RoutePermissionRegistry.register('POST', '/finance/payments-made', ['purchases.c
 RoutePermissionRegistry.register('POST', '/expenses', ['expenses.create']);
 RoutePermissionRegistry.register('POST', '/finance/expenses', ['expenses.create']);
 RoutePermissionRegistry.register('POST', '/banking/reconciliation/categorize', ['banking.reconcile']);
+RoutePermissionRegistry.register('POST', '/reconciliation/allocations', ['banking.reconcile']);
+RoutePermissionRegistry.register('DELETE', '/reconciliation/allocations/:allocationId', ['banking.unreconcile']);
+RoutePermissionRegistry.register('POST', '/transactions/:transactionId/create-missing-entry', ['banking.reconcile']);
 RoutePermissionRegistry.register('POST', '/migration/opening-balances', ['migration.import', 'opening_balances.manage']);
 RoutePermissionRegistry.register('POST', '/finance/migration/opening-balances', ['migration.import', 'opening_balances.manage']);
 

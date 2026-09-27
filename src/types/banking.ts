@@ -73,6 +73,8 @@ export interface BankStatementImport {
   statementTo?: string;
   openingBalance: number;
   closingBalance: number;
+  closingBalanceVerified?: boolean;
+  balanceDiscrepancy?: number | null;
   currency: string;
   importedBy?: string;
   importedAt: string;
@@ -201,6 +203,8 @@ export interface ParsedTransactionLine {
 export interface ParsedStatementResult {
   openingBalance: number;
   closingBalance: number;
+  closingBalanceVerified?: boolean;
+  balanceDiscrepancy?: number | null;
   statementFrom?: string;
   statementTo?: string;
   currency: string;
@@ -267,12 +271,14 @@ export interface StatementImportPreviewResponse {
   statementTo?: string;
   openingBalance: number;
   closingBalance: number;
+  closingBalanceVerified?: boolean;
+  balanceDiscrepancy?: number | null;
   totalRows: number;
   exactDuplicatesCount: number;
   newRowsCount: number;
   possibleDuplicatesCount: number;
   statementHealthWarning?: string | null;
-  discrepancy: number;
+  discrepancy: number | null;
   previewRows: Array<{
     date: string;
     narration: string;
@@ -324,4 +330,47 @@ export interface BankWorkspaceResponse {
   }>;
   totalTransactions: number;
   discrepancyWarnings?: string[];
+}
+
+/** A read-only posted journal line affecting a bank account's explicitly linked ledger account. */
+export interface BankBookMovement {
+  id: string;
+  journalEntryId: string;
+  entryNumber: string;
+  date: string;
+  reference: string | null;
+  description: string | null;
+  lineDescription: string | null;
+  debit: number;
+  credit: number;
+  direction: 'INFLOW' | 'OUTFLOW';
+  amount: number;
+  currency: string;
+  isReversal: boolean;
+  reversalOfJournalId: string | null;
+}
+
+export interface BankBookMovementPage {
+  movements: BankBookMovement[];
+  currency: string;
+  total: number;
+  inflowTotal: number;
+  outflowTotal: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+}
+
+export interface BankBookMovementSuggestion {
+  movementId: string;
+  journalEntryId: string;
+  entryNumber: string;
+  date: string;
+  amount: number;
+  direction: 'INFLOW' | 'OUTFLOW';
+  reference: string | null;
+  description: string | null;
+  confidenceScore: number;
+  reasons: string[];
+  readonlyOnly: true;
 }

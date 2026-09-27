@@ -39,8 +39,39 @@ export class FinancialDestructiveActionsService {
     journalEntryId: string,
     userId: string,
     reason: string,
-    sourceLabel: string
+    sourceLabel: string,
+    allowedBankAllocationId?: string,
   ): Promise<string> {
+    // Serialize source reversals with canonical bank allocations before
+    // checking or changing the posted journal. If another caller already
+    // holds a source row lock, PostgreSQL may abort a deadlock victim; it
+    // cannot allow an allocation and reversal to both commit unchecked.
+    if (!db.isMemoryMode()) {
+      await client.query(`SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`, [organizationId, 'bank-movement-allocations']);
+    }
+    const linkedAllocations = await client.query(
+      `SELECT id, creation_origin, journal_entry_id FROM bank_reconciliation_matches
+        WHERE organization_id = $1 AND journal_entry_id = $2 AND allocation_state = 'ACTIVE'
+          AND ($3::varchar IS NULL OR id <> $3)
+        LIMIT 1`,
+      [organizationId, journalEntryId, allowedBankAllocationId || null],
+    );
+    if (linkedAllocations.rows.length) {
+      throw new FinancialActionDomainError(
+        'This posting is linked to an active bank statement allocation. Unmatch or reverse it through Banking first.',
+        409,
+        'BANK_RECONCILIATION_ALLOCATION_ACTIVE',
+      );
+    }
+    if (allowedBankAllocationId) {
+      const allowed = await client.query(
+        `SELECT id FROM bank_reconciliation_matches
+          WHERE organization_id = $1 AND id = $2 AND journal_entry_id = $3
+            AND creation_origin = 'STATEMENT_CREATION' AND allocation_state = 'ACTIVE' AND identity_state = 'VERIFIED'`,
+        [organizationId, allowedBankAllocationId, journalEntryId],
+      );
+      if (!allowed.rows.length) throw new FinancialActionDomainError('The linked statement allocation is not eligible for reversal', 409, 'BANK_ALLOCATION_REVERSAL_INVALID');
+    }
     const originalResult = await client.query(
       `SELECT * FROM journal_entries
         WHERE organization_id = $1 AND id = $2

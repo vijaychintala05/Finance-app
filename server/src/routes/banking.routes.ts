@@ -14,10 +14,14 @@ router.get('/gateway-activity', requirePermission('banking.view'), BankingContro
 router.post('/imports/preview', requirePermission('banking.import'), requireTrustedFinanceFeature('bank-statement-import'), BankingController.previewImport);
 router.post('/imports/confirm', requirePermission('banking.import'), requireTrustedFinanceFeature('bank-statement-import'), BankingController.confirmImport);
 router.get('/workspace', requirePermission('banking.view'), BankingController.getWorkspace);
+router.get('/accounts/:accountId/book-movements', requirePermission('banking.view'), BankingController.getBookMovements);
+router.get('/transactions/:id/book-suggestions', requirePermission('banking.view'), BankingController.getBookMovementSuggestions);
 router.get('/transactions/:id/suggestions', requirePermission('banking.view'), BankingController.getTransactionSuggestions);
 router.post('/transactions/:id/categorize', requirePermission('banking.reconcile'), requireTrustedFinanceFeature('bank-reconciliation'), BankingController.categorizeTransaction);
 router.post('/transactions/:id/ignore', requirePermission('banking.reconcile'), BankingController.ignoreTransaction);
 router.post('/reconciliation/reopen', requirePermission('banking.unreconcile'), requireTrustedFinanceFeature('bank-reconciliation'), BankingController.reopenReconciliation);
+router.post('/reconciliation/allocations', requirePermission('banking.reconcile'), requireTrustedFinanceFeature('bank-movement-allocations'), BankingController.allocateBookMovement);
+router.delete('/reconciliation/allocations/:allocationId', requirePermission('banking.unreconcile'), requireTrustedFinanceFeature('bank-movement-allocations'), BankingController.unmatchBookMovement);
 
 // Accounts
 router.get('/accounts', requirePermission('banking.view'), BankingController.getAccounts);
@@ -38,6 +42,7 @@ router.get('/imports', requirePermission('banking.view'), BankingController.getI
 router.get('/accounts/:accountId/transactions', requirePermission('banking.view'), BankingController.getTransactions);
 router.get('/transactions', requirePermission('banking.view'), BankingController.getTransactions);
 router.post('/transactions/:transactionId/create-accounting-transaction', requirePermission('banking.reconcile'), requireTrustedFinanceFeature('bank-reconciliation'), BankingController.createTransactionFromStatement);
+router.post('/transactions/:transactionId/create-missing-entry', requirePermission('banking.reconcile'), requireTrustedFinanceFeature('bank-statement-entry-creation'), BankingController.createMissingEntryFromStatement);
 router.post('/transactions/:transactionId/reverse-created-transaction', requirePermission('banking.unreconcile'), requireTrustedFinanceFeature('bank-reconciliation'), BankingController.reverseTransactionCreatedFromStatement);
 
 // Matching Engine & Suggestions
@@ -56,15 +61,15 @@ router.get('/reconciliation/summary', requirePermission('banking.view'), Banking
 router.post('/reconciliation/complete', requirePermission('banking.reconcile'), requireTrustedFinanceFeature('bank-reconciliation'), BankingController.completeSession);
 
 // Bank Feeds (Sync, Connect, Status)
-router.post('/feeds/connect', requirePermission('banking.rules.manage'), async (req: any, res: any) => {
+router.post('/feeds/connect', requirePermission('banking.rules.manage'), requireTrustedFinanceFeature('bank-feed-connections'), async (req: any, res: any) => {
   const conn = await BankFeedSyncService.connectFeed(req.organizationId!, req.body.bankAccountId, req.body.provider, req.body.credentials);
   res.status(201).json(conn);
 });
-router.get('/feeds/:bankAccountId', requirePermission('banking.view'), async (req: any, res: any) => {
+router.get('/feeds/:bankAccountId', requirePermission('banking.view'), requireTrustedFinanceFeature('bank-feed-connections'), async (req: any, res: any) => {
   const conn = await BankFeedSyncService.getFeedConnection(req.organizationId!, req.params.bankAccountId);
   res.json({ connection: conn });
 });
-router.post('/feeds/:bankAccountId/sync', requirePermission('banking.import'), async (req: any, res: any) => {
+router.post('/feeds/:bankAccountId/sync', requirePermission('banking.import'), requireTrustedFinanceFeature('bank-feed-connections'), async (req: any, res: any) => {
   const result = await BankFeedSyncService.syncFeed(req.organizationId!, req.params.bankAccountId, req.body?.provider);
   res.json(result);
 });

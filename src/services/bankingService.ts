@@ -4,6 +4,8 @@ import {
   BankWorkspaceResponse,
   AccountingTransactionType,
   BankAccount,
+  BankBookMovementPage,
+  BankBookMovementSuggestion,
   BankReconciliationMatch,
   BankReconciliationRule,
   BankReconciliationSession,
@@ -84,6 +86,27 @@ export class BankingService {
     return this.apiCall<BankAccount[]>('/accounts', 'GET');
   }
 
+  public static getBookMovements(
+    bankAccountId: string,
+    options: { search?: string; limit?: number; offset?: number } = {}
+  ): Promise<BankBookMovementPage> {
+    const params = new URLSearchParams();
+    if (options.search) params.set('search', options.search);
+    if (options.limit) params.set('limit', String(options.limit));
+    if (options.offset !== undefined) params.set('offset', String(options.offset));
+    return this.apiCall<BankBookMovementPage>(
+      `/accounts/${encodeURIComponent(bankAccountId)}/book-movements?${params.toString()}`,
+      'GET'
+    );
+  }
+
+  public static getBookMovementSuggestions(statementTransactionId: string): Promise<BankBookMovementSuggestion[]> {
+    return this.apiCall<BankBookMovementSuggestion[]>(
+      `/transactions/${encodeURIComponent(statementTransactionId)}/book-suggestions`,
+      'GET'
+    );
+  }
+
   public static getGatewayActivity(options: { limit?: number; cursor?: string; gateway?: string; status?: string } = {}) {
     const params = new URLSearchParams();
     if (options.limit) params.set('limit', String(options.limit));
@@ -128,7 +151,7 @@ export class BankingService {
     content: string,
     sourceFormat?: BankStatementSourceFormat,
     mapping?: CSVColumnMapping
-  ): Promise<{ import: BankStatementImport; newTransactionsCount: number; duplicateCount: number; discrepancy: number }> {
+  ): Promise<{ import: BankStatementImport; newTransactionsCount: number; duplicateCount: number; discrepancy: number | null }> {
     return this.apiCall('/imports', 'POST', { bankAccountId, filename, content, sourceFormat, mapping });
   }
 
@@ -311,7 +334,7 @@ export class BankingService {
     newTransactionsCount: number;
     exactDuplicatesCount: number;
     possibleDuplicatesCount: number;
-    discrepancy: number;
+    discrepancy: number | null;
   }> {
     return this.apiCall('/imports/confirm', 'POST', payload);
   }

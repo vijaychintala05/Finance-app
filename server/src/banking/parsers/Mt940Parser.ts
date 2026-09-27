@@ -8,7 +8,9 @@ export class Mt940Parser {
     const transactions: ParsedTransactionLine[] = [];
 
     let openingBalance = 0;
+    let openingBalanceVerified = false;
     let closingBalance = 0;
+    let closingBalanceVerified = false;
     let currency = 'INR';
 
     let currentTransaction: Partial<ParsedTransactionLine> | null = null;
@@ -25,6 +27,7 @@ export class Mt940Parser {
           const sign = match[1] === 'C' ? 1 : -1;
           currency = match[3];
           openingBalance = sign * parseFloat(match[4].replace(',', '.'));
+          openingBalanceVerified = true;
         }
       }
 
@@ -34,6 +37,7 @@ export class Mt940Parser {
         if (match) {
           const sign = match[1] === 'C' ? 1 : -1;
           closingBalance = sign * parseFloat(match[4].replace(',', '.'));
+          closingBalanceVerified = true;
         }
       }
 
@@ -117,18 +121,24 @@ export class Mt940Parser {
     const totalCredits = transactions.filter(t => t.direction === 'CREDIT').reduce((s, t) => s + t.amount, 0);
     const totalDebits = transactions.filter(t => t.direction === 'DEBIT').reduce((s, t) => s + t.amount, 0);
 
-    if (!closingBalance) {
+    if (!closingBalanceVerified) {
       closingBalance = Number((openingBalance + totalCredits - totalDebits).toFixed(2));
     }
 
+    const balanceDiscrepancy = openingBalanceVerified && closingBalanceVerified
+      ? Number((closingBalance - (openingBalance + totalCredits - totalDebits)).toFixed(2))
+      : null;
+    const sorted = [...transactions].sort((a, b) => a.transactionDate.localeCompare(b.transactionDate));
     return {
       openingBalance,
       closingBalance,
-      statementFrom: transactions[0]?.transactionDate,
-      statementTo: transactions[transactions.length - 1]?.transactionDate,
+      closingBalanceVerified,
+      balanceDiscrepancy,
+      statementFrom: sorted[0]?.transactionDate,
+      statementTo: sorted[sorted.length - 1]?.transactionDate,
       currency,
       transactions,
-      discrepancy: 0,
+      discrepancy: balanceDiscrepancy ?? 0,
     };
   }
 }

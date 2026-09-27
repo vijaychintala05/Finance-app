@@ -65,7 +65,7 @@ describe('Point-1 shared foundations', () => {
       expect(result.rows).toEqual([]);
     }
 
-    expect(CURRENT_SCHEMA_VERSION).toBe('2026.09.25-v17-pdf-template-issued-artifact-recovery');
+    expect(CURRENT_SCHEMA_VERSION).toBe('2026.09.27-v19-bank-statement-balance-evidence');
     expect(await MigrationRunner.isCurrent()).toBe(true);
   });
 });

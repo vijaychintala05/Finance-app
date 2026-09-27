@@ -195,26 +195,32 @@ export class CsvXlsxParser {
       });
     }
 
-    if (transactions.length > 0) {
-      const firstBal = transactions[0].runningBalance;
-      const lastBal = transactions[transactions.length - 1].runningBalance;
-
-      if (firstBal !== undefined && lastBal !== undefined) {
-        if (transactions[0].direction === 'CREDIT') {
-          openingBalance = firstBal - transactions[0].amount;
-        } else {
-          openingBalance = firstBal + transactions[0].amount;
-        }
-        closingBalance = lastBal;
-      }
+    const preambleLines = lines.slice(0, Math.max(headerIdx + 1, 10));
+    const preambleText = preambleLines.join(' ');
+    const closeMatch = preambleText.match(/(?:closing\s*balance|close\s*bal)\s*[:\-,\t]?\s*(-?[0-9,]+(?:\.\d{1,2})?)/i);
+    const openMatch = preambleText.match(/(?:opening\s*balance|open\s*bal)\s*[:\-,\t]?\s*(-?[0-9,]+(?:\.\d{1,2})?)/i);
+    const hasExplicitClosingBalance = Boolean(closeMatch?.[1]);
+    const chronologicalTransactions = [...transactions].sort((a, b) => a.transactionDate.localeCompare(b.transactionDate));
+    const firstTransaction = chronologicalTransactions[0];
+    const lastTransaction = chronologicalTransactions[chronologicalTransactions.length - 1];
+    const sameDayLatestCount = transactions.filter((transaction) => transaction.transactionDate === lastTransaction?.transactionDate).length;
+    const hasLastRowBalance = lastTransaction?.runningBalance !== undefined;
+    const hasRunningBalanceClose = hasLastRowBalance && sameDayLatestCount === 1;
+    const earliestDateCount = transactions.filter((transaction) => transaction.transactionDate === firstTransaction?.transactionDate).length;
+    // A first-row running balance can estimate opening cash, but cannot prove
+    // the file starts at the declared statement boundary. Close needs an
+    // independent bank-supplied opening balance or a separately verified carry-forward.
+    const openingBalanceVerified = Boolean(openMatch?.[1]);
+    if (openingBalanceVerified) openingBalance = CsvXlsxParser.parseAmount(openMatch![1]);
+    else if (firstTransaction?.runningBalance !== undefined && earliestDateCount === 1) {
+      openingBalance = firstTransaction.runningBalance - (firstTransaction.direction === 'CREDIT' ? firstTransaction.amount : -firstTransaction.amount);
     }
+    if (hasExplicitClosingBalance) closingBalance = CsvXlsxParser.parseAmount(closeMatch![1]);
+    else if (hasLastRowBalance) closingBalance = lastTransaction.runningBalance!;
 
     // Detect metadata from statement header/preamble (scanning strictly before transaction table rows)
     let detectedBankName: string | undefined;
     let detectedAccountNumber: string | undefined;
-    const preambleLines = lines.slice(0, Math.max(headerIdx + 1, 10));
-    const preambleText = preambleLines.join(' ');
-
     if (/icici|optransactionhistory/i.test(preambleText)) detectedBankName = 'ICICI Bank';
     else if (/state\s*bank\s*of\s*india|\bsbi\b/i.test(preambleText)) detectedBankName = 'State Bank of India';
     else if (/\bhdfc\b/i.test(preambleText)) detectedBankName = 'HDFC Bank';
@@ -232,23 +238,13 @@ export class CsvXlsxParser {
       detectedAccountNumber = accMatch[1].replace(/[\s,]+/g, '').trim();
     }
 
-    if (!openingBalance) {
-      const openMatch = preambleText.match(/(?:opening\s*balance|open\s*bal)\s*[:\-,\t]?\s*([0-9,]+(?:\.\d{1,2})?)/i);
-      if (openMatch && openMatch[1]) {
-        openingBalance = CsvXlsxParser.parseAmount(openMatch[1]);
-      }
-    }
-    if (!closingBalance) {
-      const closeMatch = preambleText.match(/(?:closing\s*balance|close\s*bal)\s*[:\-,\t]?\s*([0-9,]+(?:\.\d{1,2})?)/i);
-      if (closeMatch && closeMatch[1]) {
-        closingBalance = CsvXlsxParser.parseAmount(closeMatch[1]);
-      }
-    }
-
     const totalCredits = transactions.filter((t) => t.direction === 'CREDIT').reduce((s, t) => s + t.amount, 0);
     const totalDebits = transactions.filter((t) => t.direction === 'DEBIT').reduce((s, t) => s + t.amount, 0);
     const calculatedClosing = Number((openingBalance + totalCredits - totalDebits).toFixed(2));
-    const discrepancy = closingBalance ? Number((closingBalance - calculatedClosing).toFixed(2)) : 0;
+    const balanceDiscrepancy = openingBalanceVerified && (hasRunningBalanceClose || hasExplicitClosingBalance)
+      ? Number((closingBalance - calculatedClosing).toFixed(2))
+      : null;
+    const discrepancy = balanceDiscrepancy ?? 0;
     const currency = (mapping as any)?.currency || 'INR';
 
     const statementHealthWarning = Math.abs(discrepancy) >= 0.01 && (openingBalance !== 0 || closingBalance !== 0)
@@ -257,9 +253,11 @@ export class CsvXlsxParser {
 
     return {
       openingBalance,
-      closingBalance: closingBalance || calculatedClosing,
-      statementFrom: transactions[0]?.transactionDate,
-      statementTo: transactions[transactions.length - 1]?.transactionDate,
+      closingBalance: hasLastRowBalance || hasExplicitClosingBalance ? closingBalance : calculatedClosing,
+      closingBalanceVerified: hasRunningBalanceClose || hasExplicitClosingBalance,
+      balanceDiscrepancy,
+      statementFrom: firstTransaction?.transactionDate,
+      statementTo: lastTransaction?.transactionDate,
       currency,
       transactions,
       discrepancy,

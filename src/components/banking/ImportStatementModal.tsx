@@ -263,7 +263,9 @@ export const ImportStatementModal: React.FC<ImportStatementModalProps> = ({
                 <div>
                   <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Discrepancy</span>
                   <span className="text-sm font-black text-slate-800 dark:text-slate-100 font-mono">
-                    {formatCurrency(preview?.discrepancy || 0, preview?.currency || 'INR')}
+                    {preview?.discrepancy == null
+                      ? 'Not verified'
+                      : formatCurrency(preview.discrepancy, preview.currency || 'INR')}
                   </span>
                 </div>
               </div>

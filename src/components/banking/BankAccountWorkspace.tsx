@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowDownLeft,
   ArrowLeft,
+  BookOpen,
   CheckCircle2,
   ChevronRight,
   CreditCard,
@@ -18,8 +19,9 @@ import {
   XCircle,
 } from 'lucide-react';
 import { Account, JournalEntry } from '../../types';
-import { BankAccount, BankStatementTransaction } from '../../types/banking';
+import { BankAccount, BankBookMovement, BankBookMovementPage, BankBookMovementSuggestion, BankStatementTransaction } from '../../types/banking';
 import { BankingService } from '../../services/bankingService';
+import { ApiRequestError } from '../../api/client';
 import { formatCurrency, formatDate } from '../../utils/formatters';
 
 interface BankAccountWorkspaceProps {
@@ -56,6 +58,13 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
   refreshTrigger,
 }) => {
   const [statementRows, setStatementRows] = useState<BankStatementTransaction[]>([]);
+  const [bookMovementPage, setBookMovementPage] = useState<BankBookMovementPage | null>(null);
+  const [bookMovementOffset, setBookMovementOffset] = useState(0);
+  const [isBookLoading, setIsBookLoading] = useState(false);
+  const [bookMovementError, setBookMovementError] = useState<string | null>(null);
+  const [activeSourceView, setActiveSourceView] = useState<'STATEMENT' | 'BOOKS'>('STATEMENT');
+  const workspaceRequestId = useRef(0);
+  const bookRequestId = useRef(0);
   const [isLoading, setIsLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<
     'ALL' | 'TO_REVIEW' | 'POSSIBLE_DUPLICATES' | 'MATCHED' | 'CATEGORIZED' | 'RECONCILED'
@@ -63,6 +72,11 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [resolvingTransactionId, setResolvingTransactionId] = useState<string | null>(null);
   const [resolutionError, setResolutionError] = useState<string | null>(null);
+  const [bookSuggestions, setBookSuggestions] = useState<BankBookMovementSuggestion[] | null>(null);
+  const [suggestionStatementId, setSuggestionStatementId] = useState<string | null>(null);
+  const [suggestionError, setSuggestionError] = useState<{ code?: string; message: string } | null>(null);
+  const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(false);
+  const suggestionRequestId = useRef(0);
 
   const [workspaceBalances, setWorkspaceBalances] = useState<{
     bookBalance: number | null;
@@ -72,10 +86,12 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
 
   // Fetch statement rows and live balances for this bank account
   const loadWorkspaceTransactions = React.useCallback(async () => {
+    const requestId = ++workspaceRequestId.current;
     let targetBnk = bankAccount;
     if (!targetBnk && account && typeof BankingService.getAccounts === 'function') {
       try {
         const list = await BankingService.getAccounts();
+        if (requestId !== workspaceRequestId.current) return;
         targetBnk = list.find((b) => b.ledgerAccountId === account.id || b.id === account.id) || null;
       } catch (e) {
         // Fallback silently
@@ -87,6 +103,7 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
       if (typeof BankingService.getWorkspace === 'function') {
         try {
           const ws = await BankingService.getWorkspace(targetBnk.id);
+          if (requestId !== workspaceRequestId.current) return;
           if (ws?.transactions) {
             setStatementRows(ws.transactions);
             if (ws.balances) {
@@ -104,21 +121,68 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
           bankAccountId: targetBnk.id,
           limit: 100,
         });
+        if (requestId !== workspaceRequestId.current) return;
         setStatementRows(rows || []);
       }
     } catch (err) {
-      console.warn('Could not load bank statement transactions:', err);
+      if (requestId === workspaceRequestId.current) console.warn('Could not load bank statement transactions:', err);
     } finally {
-      setIsLoading(false);
+      if (requestId === workspaceRequestId.current) setIsLoading(false);
     }
   }, [bankAccount, account]);
+
+  useEffect(() => {
+    workspaceRequestId.current += 1;
+    bookRequestId.current += 1;
+    suggestionRequestId.current += 1;
+    setStatementRows([]);
+    setWorkspaceBalances(null);
+    setBookMovementPage(null);
+    setBookMovementError(null);
+    setBookSuggestions(null);
+    setSuggestionStatementId(null);
+    setSuggestionError(null);
+    setIsLoadingSuggestions(false);
+    setBookMovementOffset(0);
+    setSearchQuery('');
+    setActiveSourceView('STATEMENT');
+  }, [bankAccount?.id, account.id]);
 
   useEffect(() => {
     void loadWorkspaceTransactions();
   }, [loadWorkspaceTransactions, refreshTrigger]);
 
-  // Bank workspaces show statement evidence only. Ledger movements remain in
-  // the accounting workspace until an explicit bank match links the two.
+  useEffect(() => {
+    if (activeSourceView !== 'BOOKS' || !bankAccount?.id || !bankAccount.ledgerAccountId) {
+      setBookMovementPage(null);
+      setIsBookLoading(false);
+      return;
+    }
+    const requestId = ++bookRequestId.current;
+    const accountId = bankAccount.id;
+    setBookMovementPage(null);
+    setBookMovementError(null);
+    setIsBookLoading(true);
+    const timer = window.setTimeout(() => {
+      void BankingService.getBookMovements(accountId, {
+        search: searchQuery.trim() || undefined,
+        limit: 25,
+        offset: bookMovementOffset,
+      }).then((page) => {
+        if (requestId === bookRequestId.current && bankAccount?.id === accountId) setBookMovementPage(page);
+      }).catch((error) => {
+        if (requestId === bookRequestId.current && bankAccount?.id === accountId) {
+          setBookMovementPage(null);
+          setBookMovementError(error instanceof Error ? error.message : 'Could not load posted book transactions.');
+        }
+      }).finally(() => {
+        if (requestId === bookRequestId.current && bankAccount?.id === accountId) setIsBookLoading(false);
+      });
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [activeSourceView, bankAccount?.id, bankAccount?.ledgerAccountId, searchQuery, bookMovementOffset, refreshTrigger]);
+
+  // Keep imported statement evidence separate from posted FirmBooks movements.
   const mergedTransactions = useMemo(() => {
     return statementRows.map((tx: any) => {
       const isCredit = tx.direction === 'CREDIT' || tx.type === 'CREDIT' || tx.type === 'DEPOSIT';
@@ -209,6 +273,29 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
       setResolutionError(error instanceof Error ? error.message : 'Could not resolve the possible duplicate.');
     } finally {
       setResolvingTransactionId(null);
+    }
+  };
+
+  const loadBookSuggestions = async (transactionId: string) => {
+    const requestId = ++suggestionRequestId.current;
+    setSuggestionStatementId(transactionId);
+    setBookSuggestions(null);
+    setSuggestionError(null);
+    setIsLoadingSuggestions(true);
+    setResolutionError(null);
+    try {
+      const suggestions = await BankingService.getBookMovementSuggestions(transactionId);
+      if (requestId === suggestionRequestId.current) setBookSuggestions(suggestions);
+    } catch (error) {
+      if (requestId === suggestionRequestId.current) {
+        const apiError = error instanceof ApiRequestError ? error : null;
+        setSuggestionError({
+          code: apiError?.response.errorCode,
+          message: error instanceof Error ? error.message : 'Could not load read-only book suggestions.',
+        });
+      }
+    } finally {
+      if (requestId === suggestionRequestId.current) setIsLoadingSuggestions(false);
     }
   };
 
@@ -346,6 +433,26 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
         </div>
       </div>
 
+      <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2 dark:border-slate-800 dark:bg-slate-900">
+        <button
+          type="button"
+          onClick={() => setActiveSourceView('STATEMENT')}
+          className={`rounded-xl px-3.5 py-2 text-xs font-bold ${activeSourceView === 'STATEMENT' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800'}`}
+        >
+          Imported Bank Statement
+        </button>
+        <button
+          type="button"
+          onClick={() => { setBookMovementOffset(0); setActiveSourceView('BOOKS'); }}
+          className={`rounded-xl px-3.5 py-2 text-xs font-bold ${activeSourceView === 'BOOKS' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800'}`}
+        >
+          Transactions in FirmBooks
+        </button>
+        <span className="ml-auto px-2 text-[11px] text-slate-500 dark:text-slate-400">
+          Posted ledger activity is read-only here. Reversals appear as separate entries.
+        </span>
+      </div>
+
       {/* 4. TABS & SEARCH TOOLBAR */}
       {resolutionError && (
         <div role="alert" className="flex items-start justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-semibold text-rose-800 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-300">
@@ -428,7 +535,7 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
               type="text"
               placeholder="Search description, reference, party..."
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={(e) => { setBookMovementOffset(0); setSearchQuery(e.target.value); }}
               className="w-full sm:w-64 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs font-semibold pl-9 pr-3 py-2 rounded-xl text-slate-800 dark:text-slate-200 focus:outline-hidden focus:border-blue-500"
             />
           </div>
@@ -446,7 +553,8 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
         </div>
       </div>
 
-      {/* 5. THE ZOHO BOOKS BANKING TABLE COLUMNS */}
+      {activeSourceView === 'STATEMENT' ? <>
+      {/* 5. Imported statement transactions */}
       <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs overflow-hidden">
         <div className="overflow-x-auto">
           <table className="mobile-record-table w-full text-left text-xs border-collapse">
@@ -596,6 +704,17 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
                             </>
                           ) : isUnmatched && (
                             <>
+                              {bankAccount?.ledgerAccountId && (
+                                <button
+                                  type="button"
+                                  onClick={() => void loadBookSuggestions(tx.id)}
+                                  className="px-2.5 py-1 text-xs font-bold text-violet-700 hover:bg-violet-50 dark:text-violet-300 dark:hover:bg-violet-950/40 rounded-lg transition-colors cursor-pointer inline-flex items-center space-x-1"
+                                  title="Find read-only suggestions from posted FirmBooks ledger activity"
+                                >
+                                  <BookOpen className="w-3.5 h-3.5" />
+                                  <span>Book suggestions</span>
+                                </button>
+                              )}
                               <button
                                 type="button"
                                 onClick={() => onOpenMatch(tx.rawTx)}
@@ -632,6 +751,79 @@ export const BankAccountWorkspace: React.FC<BankAccountWorkspaceProps> = ({
           </table>
         </div>
       </div>
+      </> : <section className="space-y-3">
+        {!bankAccount?.ledgerAccountId ? (
+          <div role="status" className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm font-semibold text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">
+            Transactions in FirmBooks cannot be shown because this bank profile has no explicit ledger account link. Link the bank profile to its ledger account in account settings.
+          </div>
+        ) : (
+          <>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+                <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Posted movements</div>
+                <div className="mt-1 text-xl font-black text-slate-900 dark:text-white">{bookMovementError ? '—' : bookMovementPage?.total ?? (isBookLoading ? '…' : '0')}</div>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+                <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Total debits · money into bank</div>
+                <div className="mt-1 text-lg font-black text-emerald-700 dark:text-emerald-300">{bookMovementPage && !bookMovementError ? formatCurrency(bookMovementPage.inflowTotal, bookMovementPage.currency) : '—'}</div>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+                <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Total credits · money out of bank</div>
+                <div className="mt-1 text-lg font-black text-slate-900 dark:text-white">{bookMovementPage && !bookMovementError ? formatCurrency(bookMovementPage.outflowTotal, bookMovementPage.currency) : '—'}</div>
+              </div>
+            </div>
+            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[760px] text-left text-xs">
+                  <thead><tr className="border-b border-slate-200 bg-slate-50 text-[10px] font-extrabold uppercase tracking-wider text-slate-500 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400">
+                    <th className="px-5 py-3.5">Date</th><th className="px-5 py-3.5">Journal / Description</th><th className="px-5 py-3.5">Reference</th><th className="px-5 py-3.5 text-right">Debit</th><th className="px-5 py-3.5 text-right">Credit</th><th className="px-5 py-3.5 text-center">Entry state</th>
+                  </tr></thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {isBookLoading ? <tr><td colSpan={6} className="px-5 py-12 text-center text-slate-500">Loading posted ledger activity…</td></tr>
+                      : bookMovementError ? <tr><td colSpan={6} role="alert" className="px-5 py-12 text-center font-semibold text-rose-700 dark:text-rose-300">{bookMovementError}</td></tr>
+                      : !bookMovementPage?.movements.length ? <tr><td colSpan={6} className="px-5 py-12 text-center text-slate-500">No posted ledger movements found for this bank account.</td></tr>
+                        : bookMovementPage.movements.map((movement: BankBookMovement) => <tr key={movement.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
+                          <td className="whitespace-nowrap px-5 py-3.5 font-mono text-slate-600 dark:text-slate-300">{formatDate(movement.date)}</td>
+                          <td className="px-5 py-3.5"><div className="font-semibold text-slate-900 dark:text-white">{movement.entryNumber}</div><div className="mt-0.5 text-[11px] text-slate-500">{movement.lineDescription || movement.description || 'Posted journal entry'}</div></td>
+                          <td className="px-5 py-3.5 font-mono text-slate-500">{movement.reference || '—'}</td>
+                          <td className="px-5 py-3.5 text-right font-mono font-bold text-emerald-700 dark:text-emerald-300">{movement.debit ? formatCurrency(movement.debit, movement.currency) : '—'}</td>
+                          <td className="px-5 py-3.5 text-right font-mono font-bold text-slate-800 dark:text-slate-200">{movement.credit ? formatCurrency(movement.credit, movement.currency) : '—'}</td>
+                          <td className="px-5 py-3.5 text-center"><span className={`rounded-full px-2 py-1 text-[10px] font-bold ${movement.isReversal ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/50 dark:text-amber-300' : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300'}`}>{movement.isReversal ? 'Posted reversal' : 'Posted'}</span></td>
+                        </tr>)}
+                  </tbody>
+                </table>
+              </div>
+              <div className="flex items-center justify-between border-t border-slate-200 px-4 py-3 text-xs dark:border-slate-800">
+                <span className="text-slate-500">{bookMovementPage ? `Showing ${bookMovementPage.total === 0 ? 0 : bookMovementPage.offset + 1}–${Math.min(bookMovementPage.offset + bookMovementPage.movements.length, bookMovementPage.total)} of ${bookMovementPage.total}` : ' '}</span>
+                <div className="flex gap-2">
+                  <button type="button" disabled={bookMovementOffset === 0 || isBookLoading} onClick={() => setBookMovementOffset((offset) => Math.max(0, offset - 25))} className="rounded-lg border border-slate-200 px-3 py-1.5 font-bold text-slate-700 disabled:opacity-40 dark:border-slate-700 dark:text-slate-200">Previous</button>
+                  <button type="button" disabled={!bookMovementPage?.hasMore || isBookLoading} onClick={() => setBookMovementOffset((offset) => offset + 25)} className="rounded-lg border border-slate-200 px-3 py-1.5 font-bold text-slate-700 disabled:opacity-40 dark:border-slate-700 dark:text-slate-200">Next</button>
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+      </section>}
+      {suggestionStatementId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) { suggestionRequestId.current += 1; setSuggestionStatementId(null); } }}>
+          <section role="dialog" aria-modal="true" aria-labelledby="book-suggestions-title" className="max-h-[85vh] w-full max-w-2xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-900">
+            <div className="flex items-start justify-between border-b border-slate-200 p-5 dark:border-slate-800">
+              <div><h2 id="book-suggestions-title" className="text-base font-black text-slate-900 dark:text-white">Possible FirmBooks matches</h2><p className="mt-1 text-xs text-slate-500">Suggestions compare this statement line with posted ledger movements. They do not create or confirm a match.</p></div>
+              <button type="button" onClick={() => { suggestionRequestId.current += 1; setSuggestionStatementId(null); }} className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="Close suggestions"><XCircle className="h-5 w-5" /></button>
+            </div>
+            <div className="max-h-[65vh] space-y-3 overflow-y-auto p-5">
+              {suggestionError ? <div role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200"><div>{suggestionError.code === 'BANK_CURRENCY_UNSUPPORTED' ? 'Currency unsupported or unverified' : 'Suggestions unavailable'}</div><p className="mt-1 text-xs font-normal">{suggestionError.message}</p></div>
+                : isLoadingSuggestions ? <p className="py-8 text-center text-sm text-slate-500">Finding posted ledger candidates…</p>
+                : !bookSuggestions?.length ? <p className="py-8 text-center text-sm text-slate-500">No likely posted ledger candidates were found. You can still review Transactions in FirmBooks separately.</p>
+                  : bookSuggestions.map((suggestion) => <article key={suggestion.movementId} className="rounded-xl border border-slate-200 p-4 dark:border-slate-700">
+                    <div className="flex flex-wrap items-start justify-between gap-3"><div><div className="font-bold text-slate-900 dark:text-white">{suggestion.entryNumber} · {formatDate(suggestion.date)}</div><div className="mt-1 text-xs text-slate-600 dark:text-slate-300">{suggestion.description || 'Posted journal movement'}{suggestion.reference ? ` · Ref ${suggestion.reference}` : ''}</div><div className="mt-2 text-[11px] text-slate-500">{suggestion.reasons.join(' · ')}</div></div><div className="text-right"><div className="font-mono font-black text-slate-900 dark:text-white">{formatCurrency(suggestion.amount, currencySymbol)}</div><div className="mt-1 text-[10px] font-bold uppercase text-violet-700 dark:text-violet-300">{suggestion.confidenceScore}% suggestion</div></div></div>
+                    <div className="mt-3 text-[10px] font-semibold text-amber-700 dark:text-amber-300">Review only · {suggestion.movementId}</div>
+                  </article>)}
+            </div>
+            <div className="border-t border-slate-200 px-5 py-3 text-right dark:border-slate-800"><button type="button" onClick={() => { suggestionRequestId.current += 1; setSuggestionStatementId(null); }} className="rounded-lg bg-slate-100 px-4 py-2 text-xs font-bold text-slate-700 dark:bg-slate-800 dark:text-slate-200">Close</button></div>
+          </section>
+        </div>
+      )}
     </div>
   );
 };

@@ -76,7 +76,7 @@ export async function applyPaymentAccountingSchema(client: DbQueryClient): Promi
     const duplicates = await client.query(
       `SELECT organization_id, statement_transaction_id, accounting_transaction_type, accounting_transaction_id, COUNT(*) AS match_count
          FROM bank_reconciliation_matches
-        WHERE COALESCE(status, '') != 'REJECTED'
+        WHERE COALESCE(status, '') NOT IN ('REJECTED', 'REVERSED', 'UNMATCHED')
         GROUP BY organization_id, statement_transaction_id, accounting_transaction_type, accounting_transaction_id
        HAVING COUNT(*) > 1`
     );
@@ -94,10 +94,6 @@ export async function applyPaymentAccountingSchema(client: DbQueryClient): Promi
     }
     // Table may not exist yet on fresh installations
   }
-
-  statements.push(
-    `CREATE UNIQUE INDEX IF NOT EXISTS uk_bank_reconciliation_active_match ON bank_reconciliation_matches (organization_id, statement_transaction_id, accounting_transaction_type, accounting_transaction_id) WHERE COALESCE(status, '') != 'REJECTED'`
-  );
 
   for (const statement of statements) {
     try {

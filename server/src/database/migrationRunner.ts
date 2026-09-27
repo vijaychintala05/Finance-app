@@ -8,9 +8,10 @@ import { applyPaymentAccountingSchema } from './paymentAccountingSchema';
 import { applyBankingStatementSchema } from './bankingStatementSchema';
 import { applyFinancialCommandSchema } from './financialCommandSchema';
 import { applyDocumentTemplateSchema } from './documentTemplateSchema';
+import { applyBankAllocationSchema } from './bankAllocationSchema';
 import type { DbQueryResult } from './db';
 
-export const CURRENT_SCHEMA_VERSION = '2026.09.25-v17-pdf-template-issued-artifact-recovery';
+export const CURRENT_SCHEMA_VERSION = '2026.09.27-v19-bank-statement-balance-evidence';
 
 export class MigrationRunner {
   public static async runMigrations(queryClient?: { query: (text: string, params?: any[]) => Promise<DbQueryResult> }): Promise<void> {
@@ -2033,6 +2034,7 @@ export class MigrationRunner {
     await applyEnterpriseHardeningSchema(queryClient);
     await applyUsabilitySchema(queryClient);
     await applyBankingStatementSchema(queryClient);
+    await applyBankAllocationSchema(queryClient);
     await applyFinancialCommandSchema(queryClient);
     await applyDocumentTemplateSchema(queryClient);
 
@@ -2047,7 +2049,7 @@ export class MigrationRunner {
       `INSERT INTO schema_migrations (version, description)
        VALUES ($1, $2)
        ON CONFLICT (version) DO NOTHING`,
-      [CURRENT_SCHEMA_VERSION, 'FirmBooks v17 versioned document templates and immutable PDF artifacts']
+      [CURRENT_SCHEMA_VERSION, 'FirmBooks v19 bank statement balance evidence']
     );
 
     console.log('[Migration] All PostgreSQL tables initialized successfully.');

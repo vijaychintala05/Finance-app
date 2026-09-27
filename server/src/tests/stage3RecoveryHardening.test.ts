@@ -12,7 +12,7 @@ import {
   SqlRecoveryPromoter,
   SqlRecoveryStager,
 } from '../recovery/ProductionRecoveryAdapters';
-import { POINT1_RECOVERY_SCHEMA, POINT1_RECOVERY_SCHEMA_V13, POINT1_RECOVERY_SCHEMA_V15 } from '../recovery/schema';
+import { POINT1_RECOVERY_SCHEMA, POINT1_RECOVERY_SCHEMA_V13, POINT1_RECOVERY_SCHEMA_V15, POINT1_RECOVERY_SCHEMA_V17, POINT1_RECOVERY_SCHEMA_V18 } from '../recovery/schema';
 import { RecoveryMigrationPolicy } from '../recovery/RecoveryMigrationPolicy';
 import { TenantRecoveryLockService } from '../recovery/TenantRecoveryLockService';
 import { newId } from '../utils/ids';
@@ -573,6 +573,96 @@ describe('Stage 3: Enterprise Backup/Restore Retirement & Recovery Hardening', (
       edit_version: 1, line_items: null, customer_snapshot: null, is_gst_inclusive: null,
       terms: null, edit_history: null, salesperson_id: null,
     });
+  });
+
+  it('validates and upgrades a sealed v17 artifact using its historical bank-match shape', async () => {
+    const artifactId = newId('art-v17-bank');
+    const createdAt = new Date().toISOString();
+    const tables: Record<string, any[]> = Object.fromEntries(POINT1_RECOVERY_SCHEMA_V17.map((table) => [table.name, []]));
+    tables.bank_reconciliation_matches = [{
+      id: 'legacy-bank-match-v17', organization_id: ORG_A, statement_transaction_id: 'old-statement',
+      accounting_transaction_type: 'EXPENSE', accounting_transaction_id: 'old-expense', matched_amount: '12.00',
+      match_confidence: 1, match_reasons: [], matched_by: OWNER_USER_ID, matched_at: createdAt, status: 'MATCHED',
+    }];
+    const manifest: RecoveryManifest = {
+      format: 'firmbooks.point1-recovery', formatVersion: 1, artifactId, organizationId: ORG_A,
+      schemaVersion: RecoveryMigrationPolicy.V17_SCHEMA_VERSION, createdBy: OWNER_USER_ID, createdAt,
+      keyId: 's3-key-v1', cipher: 'aes-256-gcm',
+      tables: POINT1_RECOVERY_SCHEMA_V17.map((table) => ({
+        name: table.name, columns: [...table.columns], rowCount: tables[table.name].length, sha256: sha256(tables[table.name]),
+      })),
+    };
+    await new SqlRecoveryRepository().saveArtifact({
+      id: artifactId, organizationId: ORG_A, status: 'READY',
+      envelope: sealRecoveryPayload(manifest, { organizationId: ORG_A, schemaVersion: manifest.schemaVersion, tables }, recoveryKeyring),
+      createdBy: OWNER_USER_ID, createdAt,
+    }, db);
+    let upgradedMatch: Record<string, any> | undefined;
+    const compatibleService = new RecoveryArtifactService({
+      repository: new SqlRecoveryRepository(), keyring: recoveryKeyring,
+      stager: { stage: async ({ payload }) => { upgradedMatch = payload.tables.bank_reconciliation_matches[0]; } },
+      reconcilers: [{ name: 'v17-bank-compatibility-test', reconcile: async () => ({ passed: true, details: {} }) }],
+      ownerAuthorizer: { assertOwner: async () => {} }, promoter: { promote: async () => {} },
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+    });
+    expect((await compatibleService.stageRestore({ artifactId, targetOrganizationId: ORG_A, requestedBy: OWNER_USER_ID })).status).toBe('VALIDATED');
+    expect(upgradedMatch).toMatchObject({
+      id: 'legacy-bank-match-v17', identity_state: 'LEGACY_UNRESOLVED', creation_origin: 'LEGACY', allocation_state: 'LEGACY',
+      journal_line_id: null,
+    });
+  });
+
+  it('validates a nonempty v18 statement import and marks its unproven closing balance unknown', async () => {
+    const artifactId = newId('art-v18-statement');
+    const createdAt = new Date().toISOString();
+    const tables: Record<string, any[]> = Object.fromEntries(POINT1_RECOVERY_SCHEMA_V18.map((table) => [table.name, []]));
+    const importShape = POINT1_RECOVERY_SCHEMA_V18.find((table) => table.name === 'bank_statement_imports')!;
+    const imported = Object.fromEntries(importShape.columns.map((column) => [column, null])) as Record<string, any>;
+    Object.assign(imported, {
+      id: 'legacy-statement-import-v18', organization_id: ORG_A, bank_account_id: 'legacy-bank-account',
+      source_format: 'CSV', original_filename: 'statement.csv', file_hash: 'legacy-v18-hash', parser_version: '3.0',
+      statement_from: '2026-08-01', statement_to: '2026-08-31', opening_balance: '100.00', closing_balance: '125.00',
+      currency: 'INR', imported_by: OWNER_USER_ID, imported_at: createdAt, transaction_count: 1, status: 'Completed',
+    });
+    tables.bank_statement_imports = [imported];
+    const manifest: RecoveryManifest = {
+      format: 'firmbooks.point1-recovery', formatVersion: 1, artifactId, organizationId: ORG_A,
+      schemaVersion: RecoveryMigrationPolicy.V18_SCHEMA_VERSION, createdBy: OWNER_USER_ID, createdAt,
+      keyId: 's3-key-v1', cipher: 'aes-256-gcm',
+      tables: POINT1_RECOVERY_SCHEMA_V18.map((table) => ({
+        name: table.name, columns: [...table.columns], rowCount: tables[table.name].length, sha256: sha256(tables[table.name]),
+      })),
+    };
+    await new SqlRecoveryRepository().saveArtifact({
+      id: artifactId, organizationId: ORG_A, status: 'READY',
+      envelope: sealRecoveryPayload(manifest, { organizationId: ORG_A, schemaVersion: manifest.schemaVersion, tables }, recoveryKeyring),
+      createdBy: OWNER_USER_ID, createdAt,
+    }, db);
+    let upgradedImport: Record<string, any> | undefined;
+    const compatibilityService = new RecoveryArtifactService({
+      repository: new SqlRecoveryRepository(), keyring: recoveryKeyring,
+      stager: { stage: async ({ payload }) => { upgradedImport = payload.tables.bank_statement_imports[0]; } },
+      reconcilers: [{ name: 'v18-bank-import-compatibility-test', reconcile: async () => ({ passed: true, details: {} }) }],
+      ownerAuthorizer: { assertOwner: async () => {} }, promoter: { promote: async () => {} }, schemaVersion: CURRENT_SCHEMA_VERSION,
+    });
+    expect((await compatibilityService.stageRestore({ artifactId, targetOrganizationId: ORG_A, requestedBy: OWNER_USER_ID })).status).toBe('VALIDATED');
+    expect(upgradedImport).toMatchObject({ id: 'legacy-statement-import-v18', closing_balance: '125.00', closing_balance_verified: false, balance_discrepancy: null });
+  });
+
+  it('includes verified closing-balance provenance for nonempty v19 statement imports in backups', async () => {
+    await db.query(
+      `INSERT INTO bank_statement_imports
+        (id, organization_id, bank_account_id, source_format, original_filename, file_hash, parser_version,
+         statement_from, statement_to, opening_balance, closing_balance, closing_balance_verified, balance_discrepancy, currency,
+         imported_by, transaction_count, status)
+       VALUES ('current-statement-import-v19', $1, 'bank-account-v19', 'CSV', 'statement.csv', 'v19-statement-hash', '3.0',
+         '2026-08-01', '2026-08-31', 100, 125, TRUE, 0, 'INR', $2, 1, 'Completed')`,
+      [ORG_A, OWNER_USER_ID],
+    );
+    const artifact = await service.createArtifact(ORG_A, OWNER_USER_ID);
+    const table = artifact.envelope.manifest.tables.find((entry) => entry.name === 'bank_statement_imports');
+    expect(table?.columns).toContain('closing_balance_verified');
+    expect(table?.rowCount).toBe(1);
   });
 
 

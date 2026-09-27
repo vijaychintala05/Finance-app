@@ -1247,7 +1247,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                 </div>
                 <div className="flex items-center gap-1.5">
                   <span className="font-financial text-sm font-black text-amber-950 dark:text-amber-100">
-                    {dashboard.overview?.bankReconciliationAttentionCount ?? 0}
+                    {dashboard.overview?.bankReconciliationAttentionCount == null ? '—' : dashboard.overview.bankReconciliationAttentionCount}
                   </span>
                   <ChevronRight className="w-4 h-4 text-amber-700 dark:text-amber-400" />
                 </div>
@@ -1853,15 +1853,23 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
             <Metric
               title="Reconciliation Status"
-              value={`${dashboard.overview.bankReconciliationAttentionCount} Items`}
+              value={dashboard.overview.bankReconciliationAttentionCount == null
+                ? 'Not available'
+                : `${dashboard.overview.bankReconciliationAttentionCount} Items`}
               subtitle={
                 dashboard.cashOperations.oldestUnmatchedDate
                   ? `Oldest feed: ${formatDate(dashboard.cashOperations.oldestUnmatchedDate)}`
-                  : 'No unmatched imported items'
+                  : dashboard.overview.bankReconciliationAttentionCount == null
+                    ? 'No statement coverage available'
+                    : 'No unresolved imported items'
               }
-              badge={dashboard.overview.bankReconciliationAttentionCount > 0 ? 'Pending' : 'Reconciled'}
+              badge={dashboard.overview.bankReconciliationAttentionCount == null
+                ? 'Coverage unknown'
+                : dashboard.overview.bankReconciliationAttentionCount > 0 ? 'Needs review' : 'No unresolved lines'}
               badgeTone={
-                dashboard.overview.bankReconciliationAttentionCount > 0
+                dashboard.overview.bankReconciliationAttentionCount == null
+                  ? 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
+                  : dashboard.overview.bankReconciliationAttentionCount > 0
                   ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
                   : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
               }

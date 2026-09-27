@@ -15,6 +15,7 @@ export class OfxParser {
 
     // Ledger balance (Closing balance)
     const balMatch = content.match(/<LEDGERBAL>[\s\S]*?<BALAMT>([\d.-]+)/i) || content.match(/<BALAMT>([\d.-]+)/i);
+    const closingBalanceVerified = Boolean(balMatch);
     if (balMatch) {
       closingBalance = parseFloat(balMatch[1]);
     }
@@ -66,17 +67,20 @@ export class OfxParser {
     const totalCredits = transactions.filter(t => t.direction === 'CREDIT').reduce((s, t) => s + t.amount, 0);
     const totalDebits = transactions.filter(t => t.direction === 'DEBIT').reduce((s, t) => s + t.amount, 0);
 
-    if (closingBalance) {
+    if (closingBalanceVerified) {
       openingBalance = Number((closingBalance - totalCredits + totalDebits).toFixed(2));
     } else {
       closingBalance = Number((totalCredits - totalDebits).toFixed(2));
     }
 
+    const sorted = [...transactions].sort((a, b) => a.transactionDate.localeCompare(b.transactionDate));
     return {
       openingBalance,
       closingBalance,
-      statementFrom: transactions[0]?.transactionDate,
-      statementTo: transactions[transactions.length - 1]?.transactionDate,
+      closingBalanceVerified,
+      balanceDiscrepancy: null,
+      statementFrom: sorted[0]?.transactionDate,
+      statementTo: sorted[sorted.length - 1]?.transactionDate,
       currency,
       transactions,
       discrepancy: 0,

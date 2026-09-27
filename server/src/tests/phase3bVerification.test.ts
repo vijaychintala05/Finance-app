@@ -199,15 +199,10 @@ describe('Phase 3B Final Production Verification - PostgreSQL Engine (pg-mem)', 
     expect(summary.unmatchedDepositsTotal).toBe(0);
     expect(summary.unmatchedWithdrawalsTotal).toBe(0);
 
-    // Complete Session
-    const session = await BankReconciliationService.completeReconciliationSession(ORG_ID, HDFC_BANK_ACC_ID, '2026-01-31', 89500, glBankBalance);
-    expect(session.status).toBe('COMPLETED');
-    expect(session.difference).toBe(0);
-
-    // Query DB directly to verify persistence
-    const dbSession = await db.query<any>(`SELECT * FROM bank_reconciliation_sessions WHERE id = $1`, [session.id]);
-    expect(dbSession.rows.length).toBe(1);
-    expect(parseFloat(dbSession.rows[0].difference)).toBe(0);
+    // Legacy document-level match IDs do not prove journal-line allocations,
+    // and this scenario has no imported closing statement. Close must fail closed.
+    await expect(BankReconciliationService.completeReconciliationSession(ORG_ID, HDFC_BANK_ACC_ID, '2026-01-31', 89500, glBankBalance))
+      .rejects.toThrow('BANK_STATEMENT_CUTOFF_NOT_IMPORTED');
   });
 
   // -------------------------------------------------------------
@@ -258,11 +253,12 @@ describe('Phase 3B Final Production Verification - PostgreSQL Engine (pg-mem)', 
     dbTx = await db.query<any>(`SELECT reconciliation_status FROM bank_statement_transactions WHERE id = $1`, [tx.id]);
     expect(dbTx.rows[0].reconciliation_status).toBe('MATCHED');
 
-    // Reconcile
-    await BankReconciliationService.completeReconciliationSession(ORG_ID, HDFC_BANK_ACC_ID, '2026-02-28', 74500, 74500);
-
+    // Stored MATCHED from the document-level alias cannot close as a verified
+    // journal-line allocation, even when the account balance happens to agree.
+    await expect(BankReconciliationService.completeReconciliationSession(ORG_ID, HDFC_BANK_ACC_ID, '2026-02-28', 74500, 74500))
+      .rejects.toThrow('BANK_STATEMENT_CUTOFF_NOT_IMPORTED');
     dbTx = await db.query<any>(`SELECT reconciliation_status FROM bank_statement_transactions WHERE id = $1`, [tx.id]);
-    expect(dbTx.rows[0].reconciliation_status).toBe('RECONCILED');
+    expect(dbTx.rows[0].reconciliation_status).toBe('MATCHED');
   });
 
   // -------------------------------------------------------------

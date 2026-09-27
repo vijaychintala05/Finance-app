@@ -17,6 +17,53 @@ describe('Real-World Bank Statement Parsing & Import Suite', () => {
     );
   });
 
+  it('uses chronological boundaries and a bank supplied closing balance for newest-first CSV exports', async () => {
+    const parsed = await BankStatementParserFactory.parseStatement(
+      'Date,Description,Debit,Credit,Balance\n2026-09-20,Deposit,,10,110\n2026-09-10,Charge,10,,100',
+      'bank-newest-first', 'CSV', undefined, 'statement.csv',
+    );
+    expect(parsed.statementFrom).toBe('2026-09-10');
+    expect(parsed.statementTo).toBe('2026-09-20');
+    expect(parsed.closingBalance).toBe(110);
+    expect(parsed.closingBalanceVerified).toBe(true);
+  });
+
+  it('does not treat a calculated balance as a bank supplied closing balance', async () => {
+    const parsed = await BankStatementParserFactory.parseStatement(
+      'Date,Description,Debit,Credit\n2026-09-10,Charge,10,',
+      'bank-no-balance', 'CSV', undefined, 'statement.csv',
+    );
+    expect(parsed.closingBalance).toBe(-10);
+    expect(parsed.closingBalanceVerified).toBe(false);
+  });
+
+  it('leaves a same-day running balance unverified when transaction order is ambiguous', async () => {
+    const parsed = await BankStatementParserFactory.parseStatement(
+      'Date,Description,Debit,Credit,Balance\n2026-09-10,Earlier deposit,,20,120\n2026-09-10,Later charge,10,,110',
+      'bank-same-day', 'CSV', undefined, 'statement.csv',
+    );
+    expect(parsed.closingBalance).toBe(110);
+    expect(parsed.closingBalanceVerified).toBe(false);
+  });
+
+  it('does not infer a verified opening control total from a single running-balance row', async () => {
+    const parsed = await BankStatementParserFactory.parseStatement(
+      'Date,Description,Debit,Credit,Balance\n2026-09-10,Charge,10,,90',
+      'bank-truncated-running-balance', 'CSV', undefined, 'statement.csv',
+    );
+    expect(parsed.closingBalanceVerified).toBe(true);
+    expect(parsed.balanceDiscrepancy).toBeNull();
+  });
+
+  it('preserves a nonzero statement control-total discrepancy for close validation', async () => {
+    const parsed = await BankStatementParserFactory.parseStatement(
+      'Opening Balance: 100\nClosing Balance: 111\nDate,Description,Debit,Credit\n2026-09-10,Deposit,,10',
+      'bank-control-total', 'CSV', undefined, 'statement.csv',
+    );
+    expect(parsed.closingBalanceVerified).toBe(true);
+    expect(parsed.balanceDiscrepancy).toBe(1);
+  });
+
   it('1. Parses ICICI Bank OpTransactionHistory statement with 12+ preamble lines and 2-digit years', async () => {
     const iciciExport = `
 <html>

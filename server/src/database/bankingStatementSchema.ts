@@ -12,6 +12,8 @@ export async function applyBankingStatementSchema(client: DbQueryClient): Promis
       created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
     )`,
     `ALTER TABLE bank_accounts ADD COLUMN IF NOT EXISTS reconciled_through_date DATE`,
+    `ALTER TABLE bank_statement_imports ADD COLUMN IF NOT EXISTS closing_balance_verified BOOLEAN NOT NULL DEFAULT FALSE`,
+    `ALTER TABLE bank_statement_imports ADD COLUMN IF NOT EXISTS balance_discrepancy NUMERIC(15, 2)`,
     `ALTER TABLE bank_accounts ADD COLUMN IF NOT EXISTS is_archived BOOLEAN DEFAULT FALSE`,
     `ALTER TABLE bank_statement_transactions ADD COLUMN IF NOT EXISTS is_ignored BOOLEAN DEFAULT FALSE`,
     `ALTER TABLE bank_statement_transactions ADD COLUMN IF NOT EXISTS categorization_data JSONB`,

@@ -1,5 +1,6 @@
 import { db } from '../database/db';
 import { AccountingIntegrityService } from './AccountingIntegrityService';
+import { BankReconciliationProjectionService } from '../banking/BankReconciliationProjectionService';
 
 export interface AccountantOverviewResponse {
   currentPeriod: string;
@@ -11,7 +12,7 @@ export interface AccountantOverviewResponse {
   trialBalanceStatus: string;
   accountsReceivable: number;
   accountsPayable: number;
-  unreconciledBankCount: number;
+  unreconciledBankCount: number | null;
   gstLiability: number;
   gstInputCredit: number;
   gstNetPosition: number;
@@ -53,11 +54,8 @@ export class AccountantOverviewService {
     const apBal = Number(apRes.rows[0]?.total || 0);
 
     // 3. Unreconciled Bank Count
-    const bankUnmatchedRes = await db.query(
-      `SELECT COUNT(*) FROM bank_statement_transactions WHERE organization_id = $1 AND reconciliation_status = 'UNMATCHED'`,
-      [orgId]
-    );
-    const unreconciledBankCount = parseInt(bankUnmatchedRes.rows[0]?.count || '0');
+    const bankProjection = await BankReconciliationProjectionService.getProjection(orgId, new Date().toISOString().slice(0, 10));
+    const unreconciledBankCount = bankProjection.statementUnresolvedCount;
 
     // 4. Pending Draft / Submitted Journals
     const pendingJournalsRes = await db.query(

@@ -325,6 +325,12 @@ DATA:OFXSGML
       const importRes = await BankReconciliationService.importStatement(ORG_A, bankAcc.id, 'golden_stmt.csv', goldenCsv);
       expect(importRes.import.openingBalance).toBe(100000);
       expect(importRes.import.closingBalance).toBe(89500);
+      // This fixture models a full month-end statement whose last transaction
+      // happened earlier in the period; reconciliation requires the imported
+      // file itself to certify the exact close date.
+      await db.query(`UPDATE bank_statement_imports SET statement_to = '2026-08-31', status = 'COMPLETED', closing_balance_verified = TRUE, balance_discrepancy = 0 WHERE organization_id = $1 AND bank_account_id = $2 AND id = $3`, [ORG_A, bankAcc.id, importRes.import.id]);
+      const cutoffImport = await db.query(`SELECT id, statement_to FROM bank_statement_imports WHERE organization_id = $1 AND bank_account_id = $2 AND id = $3`, [ORG_A, bankAcc.id, importRes.import.id]);
+      expect(cutoffImport.rows).toHaveLength(1);
 
       const txs = await BankReconciliationService.getTransactions(ORG_A, { bankAccountId: bankAcc.id });
       expect(txs.length).toBe(5);
@@ -352,10 +358,15 @@ DATA:OFXSGML
       expect(summary.difference).toBe(0);
       expect(summary.status).toBe('BALANCED');
 
-      // Complete session
-      const session = await BankReconciliationService.completeReconciliationSession(ORG_A, bankAcc.id, '2026-08-31', 89500, 89500);
-      expect(session.status).toBe('COMPLETED');
-      expect(session.difference).toBe(0);
+      // Legacy document-level matches do not prove an exact posted bank line.
+      // A balanced account total is insufficient to close with unresolved rows.
+      await expect(BankReconciliationService.completeReconciliationSession(ORG_A, bankAcc.id, '2026-08-31', 89500, 89500))
+        .rejects.toThrow('BANK_RECONCILIATION_HAS_UNRESOLVED_LINES');
+      const sessions = await db.query(
+        `SELECT id FROM bank_reconciliation_sessions WHERE organization_id = $1 AND bank_account_id = $2 AND status = 'COMPLETED'`,
+        [ORG_A, bankAcc.id],
+      );
+      expect(sessions.rows).toHaveLength(0);
     });
   });
 

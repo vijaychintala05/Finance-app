@@ -16,6 +16,13 @@ router.post('/imports/confirm', requirePermission('banking.import'), requireTrus
 router.get('/workspace', requirePermission('banking.view'), BankingController.getWorkspace);
 router.get('/accounts/:accountId/book-movements', requirePermission('banking.view'), BankingController.getBookMovements);
 router.get('/transactions/:id/book-suggestions', requirePermission('banking.view'), BankingController.getBookMovementSuggestions);
+router.get('/transactions/:transactionId/possible-duplicates', requirePermission('banking.view'), requireTrustedFinanceFeature('bank-movement-allocations'), BankingController.getPossibleDuplicateCandidates);
+router.post('/transactions/:transactionId/confirm-duplicate', requirePermission('banking.reconcile'), requireTrustedFinanceFeature('bank-movement-allocations'), BankingController.confirmStatementDuplicate);
+router.post('/transactions/:transactionId/revoke-duplicate', requirePermission('banking.reconcile'), requireTrustedFinanceFeature('bank-movement-allocations'), BankingController.revokeStatementDuplicate);
+router.get('/transactions/:transactionId/canonical-receipt', requirePermission('banking.view'), requireTrustedFinanceFeature('bank-movement-allocations'), BankingController.getCanonicalStatementReceipt);
+router.get('/transactions/:transactionId/legacy-matches/:matchId/candidate', requirePermission('banking.view'), requireTrustedFinanceFeature('bank-movement-allocations'), BankingController.getLegacyAllocationCandidate);
+router.post('/transactions/:transactionId/legacy-matches/:matchId/verify', requirePermission('banking.reconcile'), requireTrustedFinanceFeature('bank-movement-allocations'), BankingController.verifyLegacyAllocation);
+router.post('/transactions/:transactionId/review', requirePermission('banking.reconcile'), requireTrustedFinanceFeature('bank-movement-allocations'), BankingController.reviewStatementTransaction);
 router.get('/transactions/:id/suggestions', requirePermission('banking.view'), BankingController.getTransactionSuggestions);
 router.post('/transactions/:id/categorize', requirePermission('banking.reconcile'), requireTrustedFinanceFeature('bank-reconciliation'), BankingController.categorizeTransaction);
 router.post('/transactions/:id/ignore', requirePermission('banking.reconcile'), BankingController.ignoreTransaction);

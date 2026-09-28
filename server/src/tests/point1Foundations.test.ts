@@ -65,7 +65,7 @@ describe('Point-1 shared foundations', () => {
       expect(result.rows).toEqual([]);
     }
 
-    expect(CURRENT_SCHEMA_VERSION).toBe('2026.09.27-v19-bank-statement-balance-evidence');
+    expect(CURRENT_SCHEMA_VERSION).toBe('2026.09.28-v21-bank-statement-dispositions');
     expect(await MigrationRunner.isCurrent()).toBe(true);
   });
 });

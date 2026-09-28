@@ -50,7 +50,7 @@ Health endpoints:
 
 Production startup fails unless `DATABASE_URL` is present and `JWT_SECRET` contains at least 32 characters. Deploy behind TLS, set `TRUST_PROXY=true` only behind a trusted reverse proxy, configure `ALLOWED_ORIGINS`, and enable PostgreSQL TLS when required.
 
-Optional financial features use a two-key release gate: a feature must first be added to the source-controlled certification allowlist and then named in `TRUSTED_FINANCE_FEATURES`. This build's allowlist is intentionally empty, so configuration alone cannot expose prototype financial code.
+Optional financial features use a two-key release gate: a feature must first be added to the source-controlled certification allowlist and then named in `TRUSTED_FINANCE_FEATURES`. The registry certifies file-based bank statement import, reconciliation, canonical movement allocation, and statement-created accounting entries. Direct bank feed connections remain prototype-only. Production deployments must opt in to the bank workflow capabilities in `TRUSTED_FINANCE_FEATURES`; configuration alone cannot expose other prototype code.
 
 The authentication cookie is HttpOnly, Secure in production, SameSite=Strict, and short-lived. Financial mutation clients must send a unique `Idempotency-Key`.
 

@@ -3,7 +3,7 @@ import { db } from '../database/db';
 import { newId } from '../utils/ids';
 import { openRecoveryPayload, sealRecoveryPayload, sha256 } from './crypto';
 import { RecoveryError } from './errors';
-import { decodeRecoveryPdfRow, encodeRecoveryPdfRow, POINT1_RECOVERY_SCHEMA, POINT1_RECOVERY_SCHEMA_V13, POINT1_RECOVERY_SCHEMA_V15, POINT1_RECOVERY_SCHEMA_V16, POINT1_RECOVERY_SCHEMA_V17, POINT1_RECOVERY_SCHEMA_V18, type RecoverySchemaShape, type RecoveryTableSchema } from './schema';
+import { decodeRecoveryPdfRow, encodeRecoveryPdfRow, POINT1_RECOVERY_SCHEMA, POINT1_RECOVERY_SCHEMA_V13, POINT1_RECOVERY_SCHEMA_V15, POINT1_RECOVERY_SCHEMA_V16, POINT1_RECOVERY_SCHEMA_V17, POINT1_RECOVERY_SCHEMA_V18, POINT1_RECOVERY_SCHEMA_V19, type RecoverySchemaShape, type RecoveryTableSchema } from './schema';
 import { RecoveryMigrationPolicy } from './RecoveryMigrationPolicy';
 import { TenantRecoveryLockService, type TenantRecoveryLockInfo } from './TenantRecoveryLockService';
 import {
@@ -388,7 +388,9 @@ export class RecoveryArtifactService {
             ? POINT1_RECOVERY_SCHEMA_V17
             : manifest.schemaVersion === RecoveryMigrationPolicy.V18_SCHEMA_VERSION
               ? POINT1_RECOVERY_SCHEMA_V18
-              : POINT1_RECOVERY_SCHEMA;
+              : manifest.schemaVersion === RecoveryMigrationPolicy.V19_SCHEMA_VERSION
+                ? POINT1_RECOVERY_SCHEMA_V19
+                : POINT1_RECOVERY_SCHEMA;
     this.assertManifestSchema(manifest, sourceSchema);
     let payload = openRecoveryPayload(envelope, this.dependencies.keyring);
     if (payload.organizationId !== manifest.organizationId || payload.schemaVersion !== manifest.schemaVersion) {

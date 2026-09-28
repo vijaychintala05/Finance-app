@@ -276,6 +276,21 @@ export const ImportStatementModal: React.FC<ImportStatementModalProps> = ({
                 </div>
               )}
 
+              {!!preview?.unparsedTransactionRows?.length && (
+                <div role="alert" className="rounded-xl border border-rose-300 bg-rose-50 p-3 text-xs text-rose-900 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-200">
+                  <p className="font-bold">{preview.unparsedTransactionRowCount ?? preview.unparsedTransactionRows.length} row(s) need correction before import</p>
+                  <p className="mt-1">No transaction-like row will be skipped. Fix the source file or column mapping, then preview it again.</p>
+                  <ul className="mt-2 max-h-24 list-inside list-disc overflow-y-auto font-mono text-[10px]">
+                    {preview.unparsedTransactionRows.slice(0, 10).map((row) => <li key={row.rowNumber}>Row {row.rowNumber}: {row.raw.join(' · ')}</li>)}
+                  </ul>
+                </div>
+              )}
+              {!!preview?.importBlockedReason && !preview.unparsedTransactionRows?.length && (
+                <div role="alert" className="rounded-xl border border-rose-300 bg-rose-50 p-3 text-xs text-rose-900 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-200">
+                  {preview.importBlockedReason}
+                </div>
+              )}
+
               {(preview?.exactDuplicatesCount || preview?.possibleDuplicatesCount) ? (
                 <div className="rounded-xl border border-blue-200 bg-blue-50/70 px-3.5 py-3 text-[11px] leading-relaxed text-blue-900 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200">
                   Exact duplicates are skipped but retained in the import audit trail. Possible duplicates are imported into a dedicated review queue and do not change the General Ledger.
@@ -369,7 +384,7 @@ export const ImportStatementModal: React.FC<ImportStatementModalProps> = ({
             ) : (
               <button
                 type="button"
-                disabled={busy}
+                disabled={busy || !!preview?.unparsedTransactionRows?.length || !!preview?.importBlockedReason}
                 onClick={handleConfirm}
                 className="rounded-xl bg-emerald-600 hover:bg-emerald-700 px-5 py-2.5 text-xs font-bold text-white shadow-xs disabled:opacity-50 transition-colors cursor-pointer flex items-center gap-1.5"
               >

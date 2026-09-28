@@ -37,6 +37,16 @@ describe('Real-World Bank Statement Parsing & Import Suite', () => {
     expect(parsed.closingBalanceVerified).toBe(false);
   });
 
+  it('does not infer bank control totals from transaction narration', async () => {
+    const parsed = await BankStatementParserFactory.parseStatement(
+      'Date,Description,Debit,Credit\n2026-09-10,"Closing Balance: 1000 Opening Balance: 500",,10',
+      'bank-control-words-in-narration', 'CSV', undefined, 'statement.csv',
+    );
+    expect(parsed.openingBalance).toBe(0);
+    expect(parsed.closingBalance).toBe(10);
+    expect(parsed.closingBalanceVerified).toBe(false);
+  });
+
   it('leaves a same-day running balance unverified when transaction order is ambiguous', async () => {
     const parsed = await BankStatementParserFactory.parseStatement(
       'Date,Description,Debit,Credit,Balance\n2026-09-10,Earlier deposit,,20,120\n2026-09-10,Later charge,10,,110',
@@ -62,6 +72,61 @@ describe('Real-World Bank Statement Parsing & Import Suite', () => {
     );
     expect(parsed.closingBalanceVerified).toBe(true);
     expect(parsed.balanceDiscrepancy).toBe(1);
+  });
+
+  it('exposes malformed monetary rows with their original source row number instead of dropping them', async () => {
+    const parsed = await BankStatementParserFactory.parseStatement(
+      'Date,Description,Debit,Credit\n2026-09-10,Valid deposit,,10\nnot-a-date,Possible transaction,15,\n2026-09-12,Bad amount,abc,\n2026-99-99,Impossible date,,5',
+      'bank-unparsed-rows', 'CSV', undefined, 'statement.csv',
+    );
+    expect(parsed.transactions).toHaveLength(1);
+    expect(parsed.transactions[0].rawData?.rowNumber).toBe(2);
+    expect(parsed.unparsedTransactionRows?.map((row) => row.rowNumber)).toEqual([3, 4, 5]);
+  });
+
+  it('rejects zero-amount rows and rows with both debit and credit as unresolved input', async () => {
+    const parsed = await BankStatementParserFactory.parseStatement(
+      'Date,Description,Debit,Credit\n2026-09-10,Zero row,0,\n2026-09-11,Conflicting row,10,5',
+      'bank-invalid-rows', 'CSV', undefined, 'statement.csv',
+    );
+    expect(parsed.transactions).toHaveLength(0);
+    expect(parsed.unparsedTransactionRows?.map((row) => row.rowNumber)).toEqual([2, 3]);
+  });
+
+  it('preserves signed and Dr/Cr amount direction and never exempts a transaction by narration prefix', async () => {
+    const parsed = await BankStatementParserFactory.parseStatement(
+      'Date,Description,Amount\n2026-09-10,Parenthesized debit,(100.00)\n2026-09-11,Debit suffix,75 Dr\n2026-09-12,Credit suffix,25 Cr\nBADDATE,Closing fee,100',
+      'bank-signed-amounts', 'CSV', undefined, 'statement.csv',
+    );
+    expect(parsed.transactions.map(({ amount, direction }) => ({ amount, direction }))).toEqual([
+      { amount: 100, direction: 'DEBIT' }, { amount: 75, direction: 'DEBIT' }, { amount: 25, direction: 'CREDIT' },
+    ]);
+    expect(parsed.unparsedTransactionRows?.map((row) => row.rowNumber)).toEqual([5]);
+  });
+
+  it('blocks confirmation and rolls back CREATE_NEW when any transaction-like CSV row is unparsed', async () => {
+    const content = 'Date,Description,Debit,Credit\n2026-09-10,Valid deposit,,10\nnot-a-date,Missing booking date,15,';
+    const preview = await BankReconciliationService.previewStatementImport(ORG_ID, { fileContent: content, filename: 'incomplete.csv' });
+    expect(preview.unparsedTransactionRows).toHaveLength(1);
+    const before = await db.query(`SELECT
+      (SELECT COUNT(*)::int FROM bank_accounts WHERE organization_id = $1) AS banks,
+      (SELECT COUNT(*)::int FROM accounts WHERE organization_id = $1) AS accounts,
+      (SELECT COUNT(*)::int FROM bank_statement_imports WHERE organization_id = $1) AS imports,
+      (SELECT COUNT(*)::int FROM bank_statement_transactions WHERE organization_id = $1) AS transactions,
+      (SELECT COUNT(*)::int FROM bank_statement_import_observations WHERE organization_id = $1) AS observations,
+      (SELECT COUNT(*)::int FROM audit_logs WHERE organization_id = $1) AS audit`, [ORG_ID]);
+    await expect(BankReconciliationService.confirmStatementImport(ORG_ID, {
+      fileContent: content, filename: 'incomplete.csv', mode: 'CREATE_NEW',
+      newBankData: { bankName: 'Test Bank', accountName: 'Incomplete Import', accountNumber: 'UNPARSED-001', currency: 'INR' },
+    }, 'usr-tester')).rejects.toThrow('BANK_STATEMENT_UNPARSED_TRANSACTION_ROWS');
+    const after = await db.query(`SELECT
+      (SELECT COUNT(*)::int FROM bank_accounts WHERE organization_id = $1) AS banks,
+      (SELECT COUNT(*)::int FROM accounts WHERE organization_id = $1) AS accounts,
+      (SELECT COUNT(*)::int FROM bank_statement_imports WHERE organization_id = $1) AS imports,
+      (SELECT COUNT(*)::int FROM bank_statement_transactions WHERE organization_id = $1) AS transactions,
+      (SELECT COUNT(*)::int FROM bank_statement_import_observations WHERE organization_id = $1) AS observations,
+      (SELECT COUNT(*)::int FROM audit_logs WHERE organization_id = $1) AS audit`, [ORG_ID]);
+    expect(after.rows[0]).toEqual(before.rows[0]);
   });
 
   it('1. Parses ICICI Bank OpTransactionHistory statement with 12+ preamble lines and 2-digit years', async () => {
@@ -252,7 +317,7 @@ S No.,Value Date,Transaction Date,Cheque Number,Transaction Remarks,Withdrawal A
     );
     expect(importEvidence.rows[0]).toEqual(expect.objectContaining({
       source_format: 'XLS',
-      parser_version: '3.0',
+      parser_version: '3.1',
     }));
 
     // 3. Verify workspace fetch returns the transactions
@@ -298,5 +363,15 @@ Date,Particulars,Cheque No,Debit,Credit,Balance
 
     const ws = await BankReconciliationService.getWorkspace(ORG_ID, bankAcc.id, { tab: 'ALL' });
     expect(ws.totalTransactions).toBe(4);
+  });
+
+  it('blocks the older importStatement service from bypassing rejected-row validation', async () => {
+    const accounts = await BankReconciliationService.getBankAccounts(ORG_ID);
+    const bank = accounts.find((item: any) => item.accountName === 'ICICI Current Account') || accounts[0];
+    const before = await db.query(`SELECT COUNT(*)::int AS count FROM bank_statement_imports WHERE organization_id = $1 AND bank_account_id = $2`, [ORG_ID, bank.id]);
+    await expect(BankReconciliationService.importStatement(ORG_ID, bank.id, 'legacy-incomplete.csv',
+      'Date,Description,Debit,Credit\nBADDATE,Closing fee,100,')).rejects.toThrow('BANK_STATEMENT_UNPARSED_TRANSACTION_ROWS');
+    const after = await db.query(`SELECT COUNT(*)::int AS count FROM bank_statement_imports WHERE organization_id = $1 AND bank_account_id = $2`, [ORG_ID, bank.id]);
+    expect(after.rows[0].count).toBe(before.rows[0].count);
   });
 });

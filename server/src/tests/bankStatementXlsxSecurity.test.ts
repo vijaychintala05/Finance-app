@@ -22,7 +22,7 @@ describe('Secure XLSX statement boundary', () => {
       'HDFC-September.xlsx',
     );
 
-    expect(parsed.parserVersion).toBe('3.0');
+    expect(parsed.parserVersion).toBe('3.1');
     expect(parsed.detectedBankName).toContain('HDFC');
     expect(parsed.detectedAccountNumber).toBe('50100234567890');
     expect(parsed.transactions).toHaveLength(2);
@@ -43,5 +43,14 @@ describe('Secure XLSX statement boundary', () => {
       undefined,
       'legacy-statement.xls',
     )).rejects.toThrow(/LEGACY_XLS_BINARY_UNSUPPORTED.*CSV or XLSX/);
+  });
+
+  it('rejects non-empty secondary worksheets instead of importing only the first one', async () => {
+    const workbook = new ExcelJS.Workbook();
+    workbook.addWorksheet('September').addRows([['Date', 'Description', 'Debit', 'Credit'], ['2026-09-01', 'Rent', 100, '']]);
+    workbook.addWorksheet('October').addRows([['Date', 'Description', 'Debit', 'Credit'], ['2026-10-01', 'Utilities', 20, '']]);
+    const file = Buffer.from(await workbook.xlsx.writeBuffer());
+    await expect(BankStatementParserFactory.parseStatement(file.toString('base64'), 'bank-multisheet', 'XLSX', undefined, 'multi.xlsx'))
+      .rejects.toThrow('XLSX_MULTIPLE_STATEMENT_SHEETS');
   });
 });

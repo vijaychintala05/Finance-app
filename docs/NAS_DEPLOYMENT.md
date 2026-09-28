@@ -66,6 +66,13 @@ Edit `.env` with the NAS PostgreSQL URL, a unique 32+ character `JWT_SECRET`,
 the NAS HTTPS origin in `ALLOWED_ORIGINS`, and the correct proxy settings. Keep
 the database outside the Git checkout and enable scheduled PostgreSQL backups.
 
+To enable manual statement reconciliation, append `bank-statement-import`,
+`bank-reconciliation`, `bank-movement-allocations`, and
+`bank-statement-entry-creation` to the existing `TRUSTED_FINANCE_FEATURES`
+allowlist. Keep `bank-feed-connections` out of that list; direct bank linking
+is not part of this workflow. The import and reconciliation screens remain
+unavailable in production until their capability keys are enabled.
+
 For each release, run `deploy/nas/deploy.sh` from the repository root while on
 the `nas-deploy` branch. It fetches with fast-forward-only behavior, installs
 the lockfile dependencies, builds the production bundle, prunes development

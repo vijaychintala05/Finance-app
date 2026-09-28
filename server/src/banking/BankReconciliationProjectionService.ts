@@ -46,10 +46,11 @@ const dateOnly = (value: unknown): string | null => {
  * only when verified active movement allocations cover it exactly; historical
  * labels alone keep the line visible for review.
  */
-export function classifyStatementLineStatus(statusValue: unknown, isIgnoredValue?: unknown, amountValue?: unknown, allocatedValue?: unknown, invalidAllocationsValue?: unknown): StatementLineClass {
+export function classifyStatementLineStatus(statusValue: unknown, isIgnoredValue?: unknown, amountValue?: unknown, allocatedValue?: unknown, invalidAllocationsValue?: unknown, confirmedDuplicateValidated?: unknown): StatementLineClass {
   const status = String(statusValue || '').trim().toUpperCase();
   const isIgnored = isIgnoredValue === true || isIgnoredValue === 'true';
   if (isIgnored || status === 'IGNORED') return 'REVIEW';
+  if (status === 'CONFIRMED_DUPLICATE') return confirmedDuplicateValidated === true || confirmedDuplicateValidated === 'true' ? 'RESOLVED' : 'REVIEW';
   if (status === 'MATCHED' || status === 'CATEGORIZED' || status === 'RECONCILED') {
     const amount = Number(amountValue);
     const allocated = Number(allocatedValue);
@@ -86,10 +87,26 @@ export class BankReconciliationProjectionService {
           ORDER BY bank_account_id, statement_to DESC, imported_at DESC, id DESC`, [organizationId, asOfDate],
       ),
       client.query(
-        `SELECT bst.bank_account_id, bst.reconciliation_status, bst.is_ignored,
+        `WITH duplicate_proofs AS (
+          SELECT DISTINCT d.organization_id, d.statement_transaction_id
+            FROM bank_statement_line_dispositions d
+            JOIN bank_reconciliation_session_items si ON si.organization_id = d.organization_id
+              AND si.statement_transaction_id = d.statement_transaction_id AND si.disposition_id = d.id
+              AND si.resolution_kind = 'CONFIRMED_DUPLICATE'
+            JOIN bank_reconciliation_session_items target_item ON target_item.organization_id = si.organization_id
+              AND target_item.session_id = si.session_id AND target_item.statement_transaction_id = d.target_statement_transaction_id
+              AND target_item.resolution_kind = 'ALLOCATED'
+            JOIN bank_reconciliation_sessions rs ON rs.organization_id = si.organization_id AND rs.id = si.session_id
+              AND UPPER(COALESCE(rs.status, '')) IN ('COMPLETED', 'RECONCILED')
+           WHERE d.kind = 'CONFIRMED_DUPLICATE' AND d.revoked_at IS NULL
+             AND si.statement_import_id IS NOT NULL AND si.target_statement_transaction_id = d.target_statement_transaction_id
+             AND rs.bank_account_id = d.bank_account_id AND rs.statement_end_date <= $2
+        )
+        SELECT bst.bank_account_id, bst.reconciliation_status, bst.is_ignored,
                 CASE WHEN $3::date IS NOT NULL AND bst.transaction_date < $3::date THEN TRUE ELSE FALSE END AS is_prior,
                 bst.amount AS statement_amount, COALESCE(alloc.valid_amount, 0) AS valid_amount,
                 COALESCE(alloc.invalid_count, 0) AS invalid_count,
+                (dp.statement_transaction_id IS NOT NULL) AS duplicate_valid,
                 COUNT(*) AS line_count, MIN(bst.transaction_date) AS oldest_date
            FROM bank_statement_transactions bst
            JOIN bank_statement_imports bi ON bi.organization_id = bst.organization_id
@@ -97,7 +114,7 @@ export class BankReconciliationProjectionService {
            LEFT JOIN (
              SELECT m.organization_id, m.statement_transaction_id,
                     SUM(CASE WHEN m.identity_state = 'VERIFIED'
-                                  AND m.creation_origin IN ('CANONICAL_ALLOCATION', 'STATEMENT_CREATION')
+                                  AND m.creation_origin IN ('CANONICAL_ALLOCATION', 'STATEMENT_CREATION', 'LEGACY_VERIFIED')
                                   AND m.bank_account_id = st.bank_account_id
                                   AND m.ledger_account_id = ba.ledger_account_id
                                   AND jl.account_id = ba.ledger_account_id
@@ -108,13 +125,14 @@ export class BankReconciliationProjectionService {
                                   AND m.journal_line_id = jl.id
                                   AND je.organization_id = m.organization_id
                                   AND UPPER(COALESCE(je.status, '')) = 'POSTED'
+                                  AND je.date <= $2
                                   AND je.reversal_of_journal_id IS NULL
                                   AND rev.journal_entry_id IS NULL
                                   AND ((UPPER(st.direction) = 'CREDIT' AND jl.debit > 0 AND COALESCE(jl.credit, 0) = 0)
                                     OR (UPPER(st.direction) = 'DEBIT' AND jl.credit > 0 AND COALESCE(jl.debit, 0) = 0))
                              THEN m.matched_amount ELSE 0 END) AS valid_amount,
                     SUM(CASE WHEN m.identity_state = 'VERIFIED'
-                                  AND m.creation_origin IN ('CANONICAL_ALLOCATION', 'STATEMENT_CREATION')
+                                  AND m.creation_origin IN ('CANONICAL_ALLOCATION', 'STATEMENT_CREATION', 'LEGACY_VERIFIED')
                                   AND m.bank_account_id = st.bank_account_id
                                   AND m.ledger_account_id = ba.ledger_account_id
                                   AND jl.account_id = ba.ledger_account_id
@@ -125,6 +143,7 @@ export class BankReconciliationProjectionService {
                                   AND m.journal_line_id = jl.id
                                   AND je.organization_id = m.organization_id
                                   AND UPPER(COALESCE(je.status, '')) = 'POSTED'
+                                  AND je.date <= $2
                                   AND je.reversal_of_journal_id IS NULL
                                   AND rev.journal_entry_id IS NULL
                                   AND ((UPPER(st.direction) = 'CREDIT' AND jl.debit > 0 AND COALESCE(jl.credit, 0) = 0)
@@ -145,10 +164,12 @@ export class BankReconciliationProjectionService {
               WHERE m.organization_id = $1 AND m.allocation_state = 'ACTIVE'
               GROUP BY m.organization_id, m.statement_transaction_id
            ) alloc ON alloc.organization_id = bst.organization_id AND alloc.statement_transaction_id = bst.id
+          LEFT JOIN duplicate_proofs dp ON dp.organization_id = bst.organization_id AND dp.statement_transaction_id = bst.id
           WHERE bst.organization_id = $1 AND bst.transaction_date <= $2
             AND UPPER(COALESCE(bi.status, 'COMPLETED')) NOT IN ('FAILED', 'CANCELLED', 'REJECTED')
           GROUP BY bst.bank_account_id, bst.reconciliation_status, bst.is_ignored, bst.amount, alloc.valid_amount, alloc.invalid_count,
-                   CASE WHEN $3::date IS NOT NULL AND bst.transaction_date < $3::date THEN TRUE ELSE FALSE END`,
+                   CASE WHEN $3::date IS NOT NULL AND bst.transaction_date < $3::date THEN TRUE ELSE FALSE END,
+                   (dp.statement_transaction_id IS NOT NULL)`,
         [organizationId, asOfDate, transactionFromDate || null],
       ),
       client.query(`SELECT base_currency FROM organizations WHERE id = $1`, [organizationId]),
@@ -183,10 +204,10 @@ export class BankReconciliationProjectionService {
       });
     }));
 
-    const grouped = new Map<string, Array<{ status: string; ignored: unknown; count: number; oldest: string | null; isPrior: boolean; amount: unknown; allocated: unknown; invalidAllocations: unknown }>>();
+    const grouped = new Map<string, Array<{ status: string; ignored: unknown; count: number; oldest: string | null; isPrior: boolean; amount: unknown; allocated: unknown; invalidAllocations: unknown; duplicateValid: unknown }>>();
     for (const row of transactionRows.rows as any[]) {
       const items = grouped.get(String(row.bank_account_id)) || [];
-      items.push({ status: String(row.reconciliation_status || ''), ignored: row.is_ignored, count: Number(row.line_count || 0), oldest: dateOnly(row.oldest_date), isPrior: row.is_prior === true || row.is_prior === 'true', amount: row.statement_amount, allocated: row.valid_amount, invalidAllocations: row.invalid_count });
+      items.push({ status: String(row.reconciliation_status || ''), ignored: row.is_ignored, count: Number(row.line_count || 0), oldest: dateOnly(row.oldest_date), isPrior: row.is_prior === true || row.is_prior === 'true', amount: row.statement_amount, allocated: row.valid_amount, invalidAllocations: row.invalid_count, duplicateValid: row.duplicate_valid });
       grouped.set(String(row.bank_account_id), items);
     }
 
@@ -210,7 +231,7 @@ export class BankReconciliationProjectionService {
       let oldestUnresolvedDate: string | null = null;
       for (const group of statusGroups) {
         const status = String(group.status || 'UNKNOWN').toUpperCase();
-        const lineClass = classifyStatementLineStatus(status, group.ignored, group.amount, group.allocated, group.invalidAllocations);
+        const lineClass = classifyStatementLineStatus(status, group.ignored, group.amount, group.allocated, group.invalidAllocations, group.duplicateValid);
         statusCounts[status] = (statusCounts[status] || 0) + group.count;
         statementTransactionCount += group.count;
         if (lineClass === 'RESOLVED') statementResolvedCount += group.count;

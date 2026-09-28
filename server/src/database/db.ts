@@ -444,6 +444,7 @@ class DatabaseService {
         if ((err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND' || err.code === 'ETIMEDOUT' || err.code === 'EHOSTUNREACH' || err.code === 'ECONNRESET') && this.isMemoryAllowed()) {
           console.warn('PostgreSQL unavailable for transaction, switching to pg-mem...');
           this.initPgMem();
+          return this.transaction(callback, options);
         } else {
           throw err;
         }

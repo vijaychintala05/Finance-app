@@ -67,8 +67,8 @@ export const FINANCE_CAPABILITY_DEFINITIONS = Object.freeze([
   // Known route-guarded workflows that intentionally remain fail-closed.
   { key: 'bank-rules', label: 'Bank rules', tier: 'prototype', published: false },
   { key: 'bank-feed-connections', label: 'Direct bank feed connections', tier: 'prototype', published: false },
-  { key: 'bank-movement-allocations', label: 'Bank movement allocations', tier: 'prototype', published: false },
-  { key: 'bank-statement-entry-creation', label: 'Create entries from bank statements', tier: 'prototype', published: false },
+  { key: 'bank-movement-allocations', label: 'Bank movement allocations', tier: 'certified-optional', published: true },
+  { key: 'bank-statement-entry-creation', label: 'Create entries from bank statements', tier: 'certified-optional', published: true },
   { key: 'budget-reporting', label: 'Budget reporting', tier: 'prototype', published: false },
   { key: 'cash-flow-forecasting', label: 'Cash-flow forecasting', tier: 'prototype', published: false },
   { key: 'recurring-journal-generation', label: 'Recurring journal generation', tier: 'prototype', published: false },

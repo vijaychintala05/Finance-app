@@ -68,6 +68,24 @@ describe('BankMovementAllocationService (prototype write path)', () => {
     await expect(BankMovementAllocationService.unmatch(orgId, partial.allocationId, actorId, 'Again')).rejects.toThrow('BANK_ALLOCATION_NOT_ACTIVE');
   });
 
+  it('returns tenant-scoped canonical receipt details for ambiguous client retries', async () => {
+    const allocation = await BankMovementAllocationService.allocate(orgId, statementId, 'line-allocation', '100.00', actorId);
+    const receipt = await BankMovementAllocationService.getStatementReceipt(orgId, statementId);
+    expect(receipt).toMatchObject({ statementTransactionId: statementId, statementStatus: 'MATCHED' });
+    expect(receipt.allocations).toContainEqual(expect.objectContaining({
+      allocationId: allocation.allocationId,
+      journalLineId: 'line-allocation',
+      journalEntryId: 'journal-allocation',
+      entryNumber: 'JE-ALLOC',
+      amount: '100',
+      allocationState: 'ACTIVE',
+      identityState: 'VERIFIED',
+      creationOrigin: 'CANONICAL_ALLOCATION',
+    }));
+    await expect(BankMovementAllocationService.getStatementReceipt('other-organization', statementId))
+      .rejects.toThrow('BANK_STATEMENT_TRANSACTION_NOT_FOUND');
+  });
+
   it('rejects over-allocation against either statement or posted book-line capacity', async () => {
     await BankMovementAllocationService.allocate(orgId, statementId, 'line-allocation', '70.00', actorId);
     await expect(BankMovementAllocationService.allocate(orgId, statementId, 'line-allocation-2', '30.01', actorId))

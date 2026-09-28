@@ -563,7 +563,7 @@ export class ReportWorkspaceService {
           GROUP BY organization_id, reversal_of_journal_id
        ), allocation_rollup AS (
          SELECT m.organization_id, m.statement_transaction_id, COUNT(*) AS active_allocation_count,
-                SUM(CASE WHEN m.identity_state = 'VERIFIED' AND m.creation_origin IN ('CANONICAL_ALLOCATION', 'STATEMENT_CREATION')
+                SUM(CASE WHEN m.identity_state = 'VERIFIED' AND m.creation_origin IN ('CANONICAL_ALLOCATION', 'STATEMENT_CREATION', 'LEGACY_VERIFIED')
                               AND m.bank_account_id = bst.bank_account_id AND m.ledger_account_id = ba.ledger_account_id
                               AND jl.account_id = ba.ledger_account_id AND m.journal_entry_id = jl.journal_entry_id
                               AND UPPER(COALESCE(je.status, '')) = 'POSTED' AND je.reversal_of_journal_id IS NULL
@@ -573,7 +573,7 @@ export class ReportWorkspaceService {
                               AND ((UPPER(bst.direction) = 'CREDIT' AND jl.debit > 0 AND COALESCE(jl.credit, 0) = 0)
                                 OR (UPPER(bst.direction) = 'DEBIT' AND jl.credit > 0 AND COALESCE(jl.debit, 0) = 0))
                          THEN m.matched_amount ELSE 0 END) AS verified_allocation,
-                SUM(CASE WHEN m.identity_state = 'VERIFIED' AND m.creation_origin IN ('CANONICAL_ALLOCATION', 'STATEMENT_CREATION')
+                SUM(CASE WHEN m.identity_state = 'VERIFIED' AND m.creation_origin IN ('CANONICAL_ALLOCATION', 'STATEMENT_CREATION', 'LEGACY_VERIFIED')
                               AND m.bank_account_id = bst.bank_account_id AND m.ledger_account_id = ba.ledger_account_id
                               AND jl.account_id = ba.ledger_account_id AND m.journal_entry_id = jl.journal_entry_id
                               AND UPPER(COALESCE(je.status, '')) = 'POSTED' AND je.reversal_of_journal_id IS NULL

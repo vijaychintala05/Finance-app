@@ -30,4 +30,10 @@ describe('bank reconciliation read-model classification', () => {
     expect(classifyStatementLineStatus('UNMATCHED', true)).toBe('REVIEW');
     expect(classifyStatementLineStatus('FUTURE_STATUS')).toBe('REVIEW');
   });
+
+  it('resolves a confirmed duplicate only when a completed close snapshot proves it was validated', () => {
+    expect(classifyStatementLineStatus('CONFIRMED_DUPLICATE')).toBe('REVIEW');
+    expect(classifyStatementLineStatus('CONFIRMED_DUPLICATE', false, undefined, undefined, undefined, false)).toBe('REVIEW');
+    expect(classifyStatementLineStatus('CONFIRMED_DUPLICATE', false, undefined, undefined, undefined, true)).toBe('RESOLVED');
+  });
 });

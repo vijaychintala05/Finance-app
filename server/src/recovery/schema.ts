@@ -183,9 +183,12 @@ export const POINT1_RECOVERY_SCHEMA: readonly RecoveryTableSchema[] = [
   tenantTable('bank_transfers', ['id', 'organization_id', 'transfer_number', 'transfer_date', 'from_bank_account_id', 'to_bank_account_id', 'from_ledger_account_id', 'to_ledger_account_id', 'amount', 'reference', 'description', 'status', 'journal_entry_id', 'reversal_journal_id', 'reversed_at', 'reversed_by', 'reversal_reason', 'created_by', 'created_at']),
   tenantTable('treasury_transactions', ['id', 'organization_id', 'transaction_number', 'transaction_type', 'transaction_date', 'monetary_account_id', 'counter_account_id', 'amount', 'principal_amount', 'interest_amount', 'interest_expense_account_id', 'employee_name', 'reference', 'description', 'status', 'journal_entry_id', 'reversal_journal_id', 'reversed_at', 'reversed_by', 'reversal_reason', 'created_by', 'created_at']),
   tenantTable('bank_statement_imports', ['id', 'organization_id', 'bank_account_id', 'source_format', 'original_filename', 'file_hash', 'parser_version', 'statement_from', 'statement_to', 'opening_balance', 'closing_balance', 'closing_balance_verified', 'balance_discrepancy', 'currency', 'imported_by', 'imported_at', 'transaction_count', 'status']),
-  tenantTable('bank_statement_transactions', ['id', 'organization_id', 'bank_account_id', 'statement_import_id', 'transaction_date', 'value_date', 'amount', 'direction', 'running_balance', 'narration', 'reference', 'transaction_type', 'utr', 'rrn', 'upi_reference', 'cheque_number', 'counterparty_name', 'currency', 'reconciliation_status', 'fingerprint', 'raw_data', 'created_at']),
+  tenantTable('bank_statement_transactions', ['id', 'organization_id', 'bank_account_id', 'statement_import_id', 'transaction_date', 'value_date', 'amount', 'direction', 'running_balance', 'narration', 'reference', 'transaction_type', 'utr', 'rrn', 'upi_reference', 'cheque_number', 'counterparty_name', 'currency', 'reconciliation_status', 'fingerprint', 'raw_data', 'created_at', 'review_decision', 'reviewed_by', 'reviewed_at', 'review_duplicate_candidates']),
+  tenantTable('bank_statement_import_observations', ['id', 'organization_id', 'statement_import_id', 'statement_transaction_id', 'row_number', 'raw_data', 'created_at']),
   tenantTable('bank_reconciliation_rules', ['id', 'organization_id', 'rule_name', 'priority', 'narration_pattern', 'direction', 'suggested_category', 'suggested_account_id', 'is_enabled', 'created_at']),
   tenantTable('bank_reconciliation_sessions', ['id', 'organization_id', 'bank_account_id', 'statement_end_date', 'statement_closing_balance', 'ledger_balance', 'difference', 'reconciled_by', 'reconciled_at', 'status']),
+  tenantTable('bank_statement_line_dispositions', ['id', 'organization_id', 'bank_account_id', 'statement_transaction_id', 'kind', 'target_statement_transaction_id', 'reason', 'evidence', 'decided_by', 'decided_at', 'revoked_by', 'revoked_at', 'revocation_reason']),
+  tenantTable('bank_reconciliation_session_items', ['id', 'organization_id', 'session_id', 'bank_account_id', 'statement_transaction_id', 'statement_import_id', 'resolution_kind', 'allocation_snapshot', 'observation_ids', 'disposition_id', 'target_statement_transaction_id', 'evidence_hash', 'created_at']),
   tenantTable('bank_reconciliation_matches', ['id', 'organization_id', 'statement_transaction_id', 'accounting_transaction_type', 'accounting_transaction_id', 'matched_amount', 'match_confidence', 'match_reasons', 'matched_by', 'matched_at', 'status', 'bank_account_id', 'ledger_account_id', 'journal_entry_id', 'journal_line_id', 'identity_state', 'identity_reason', 'creation_origin', 'allocation_state', 'unmatched_by', 'unmatched_at', 'unmatch_reason']),
   tenantTable('bank_feed_connections', ['id', 'organization_id', 'bank_account_id', 'provider', 'connection_status', 'created_at', 'updated_at']),
   tenantTable('period_locks', ['id', 'organization_id', 'year', 'month', 'period_name', 'is_locked', 'lock_date', 'region', 'locked_by', 'locked_at', 'reason', 'status']),
@@ -410,7 +413,7 @@ export const POINT1_RECOVERY_SCHEMA_V13: readonly RecoverySchemaShape[] = Object
   POINT1_RECOVERY_SCHEMA_V15.map((table) => Object.freeze({
     ...table,
     columns: Object.freeze([...table.columns]),
-  }))
+  })).filter((table) => !['bank_statement_line_dispositions', 'bank_reconciliation_session_items', 'bank_statement_import_observations'].includes(table.name))
 );
 
 // Immutable source shape for v17 backups. v18 adds canonical allocation
@@ -426,9 +429,10 @@ export const POINT1_RECOVERY_SCHEMA_V17: readonly RecoverySchemaShape[] = Object
     name: table.name,
     columns: Object.freeze(table.columns.filter((column) =>
       !(table.name === 'bank_reconciliation_matches' && V18_BANK_ALLOCATION_COLUMNS.has(column)) &&
-      !(table.name === 'bank_statement_imports' && ['closing_balance_verified', 'balance_discrepancy'].includes(column)))),
+      !(table.name === 'bank_statement_imports' && ['closing_balance_verified', 'balance_discrepancy'].includes(column)) &&
+      !(table.name === 'bank_statement_transactions' && ['review_decision', 'reviewed_by', 'reviewed_at', 'review_duplicate_candidates'].includes(column)))),
     tenantColumn: table.tenantColumn,
-  }))
+  })).filter((table) => !['bank_statement_line_dispositions', 'bank_reconciliation_session_items', 'bank_statement_import_observations'].includes(table.name))
 );
 
 // v18 includes canonical allocation identity but predates bank-balance provenance.
@@ -437,7 +441,25 @@ export const POINT1_RECOVERY_SCHEMA_V18: readonly RecoverySchemaShape[] = Object
     name: table.name,
     columns: Object.freeze(table.name === 'bank_statement_imports'
       ? table.columns.filter((column) => !['closing_balance_verified', 'balance_discrepancy'].includes(column))
-      : [...table.columns]),
+      : table.name === 'bank_statement_transactions'
+        ? table.columns.filter((column) => !['review_decision', 'reviewed_by', 'reviewed_at', 'review_duplicate_candidates'].includes(column))
+        : [...table.columns]),
     tenantColumn: table.tenantColumn,
-  }))
+  })).filter((table) => !['bank_statement_line_dispositions', 'bank_reconciliation_session_items', 'bank_statement_import_observations'].includes(table.name))
+);
+
+// v19 predates explicit statement-line review provenance.
+export const POINT1_RECOVERY_SCHEMA_V19: readonly RecoverySchemaShape[] = Object.freeze(
+  POINT1_RECOVERY_SCHEMA.map((table) => Object.freeze({
+    name: table.name,
+    columns: Object.freeze(table.columns.filter((column) => !(table.name === 'bank_statement_transactions' && ['review_decision', 'reviewed_by', 'reviewed_at', 'review_duplicate_candidates'].includes(column)))),
+    tenantColumn: table.tenantColumn,
+  })).filter((table) => !['bank_statement_line_dispositions', 'bank_reconciliation_session_items', 'bank_statement_import_observations'].includes(table.name))
+);
+
+// v20 contains explicit line-review provenance but predates dispositions and
+// close-membership snapshots.
+export const POINT1_RECOVERY_SCHEMA_V20: readonly RecoverySchemaShape[] = Object.freeze(
+  POINT1_RECOVERY_SCHEMA.map((table) => Object.freeze({ ...table, columns: Object.freeze([...table.columns]) }))
+    .filter((table) => !['bank_statement_line_dispositions', 'bank_reconciliation_session_items', 'bank_statement_import_observations'].includes(table.name))
 );

@@ -58,7 +58,7 @@ async function assertNotCompleted(
   if (session.rows.length) throw new Error('BANK_RECONCILIATION_COMPLETED');
 }
 
-async function recomputeStatementStatus(
+export async function recomputeStatementStatus(
   client: DbQueryClient,
   organizationId: string,
   statementTransactionId: string,
@@ -90,8 +90,81 @@ export interface BankMovementAllocationResult {
   statementStatus: string;
 }
 
+export interface BankStatementCanonicalReceipt {
+  statementTransactionId: string;
+  statementStatus: string;
+  reviewDecision: string | null;
+  allocations: Array<{
+    allocationId: string;
+    journalLineId: string | null;
+    journalEntryId: string | null;
+    entryNumber: string | null;
+    reversalJournalEntryId: string | null;
+    reversalEntryNumber: string | null;
+    amount: string;
+    allocationState: string;
+    identityState: string;
+    creationOrigin: string;
+    creationOperationId: string | null;
+  }>;
+  legacyMatches: Array<{ matchId: string; sourceType: string; sourceId: string; amount: string; status: string }>;
+}
+
 /** Canonical write path. It never calls or aliases into document-level matching. */
 export class BankMovementAllocationService {
+  public static async getStatementReceipt(organizationId: string, statementTransactionId: string): Promise<BankStatementCanonicalReceipt> {
+    const result = await db.query(
+      `SELECT st.id, st.reconciliation_status, st.review_decision,
+              m.id AS allocation_id, m.journal_line_id, m.journal_entry_id, je.entry_number,
+              m.matched_amount, m.allocation_state, m.identity_state, m.creation_origin, m.match_reasons,
+              reversal.id AS reversal_journal_entry_id, reversal.entry_number AS reversal_entry_number
+         FROM bank_statement_transactions st
+         LEFT JOIN bank_reconciliation_matches m
+           ON m.organization_id = st.organization_id AND m.statement_transaction_id = st.id
+          AND m.identity_state = 'VERIFIED' AND m.allocation_state IN ('ACTIVE', 'UNMATCHED', 'REVERSED')
+         LEFT JOIN journal_entries je ON je.organization_id = m.organization_id AND je.id = m.journal_entry_id
+         LEFT JOIN journal_entries reversal ON reversal.organization_id = m.organization_id
+          AND reversal.reversal_of_journal_id = m.journal_entry_id AND UPPER(reversal.status) = 'POSTED'
+        WHERE st.organization_id = $1 AND st.id = $2
+        ORDER BY m.matched_at, m.id`,
+      [organizationId, statementTransactionId],
+    );
+    if (!result.rows.length) throw new Error('BANK_STATEMENT_TRANSACTION_NOT_FOUND');
+    const row = result.rows[0];
+    const legacy = await db.query(
+      `SELECT id, accounting_transaction_type, accounting_transaction_id, matched_amount, status
+         FROM bank_reconciliation_matches WHERE organization_id = $1 AND statement_transaction_id = $2
+          AND allocation_state = 'LEGACY' AND COALESCE(status, '') NOT IN ('REJECTED', 'REVERSED', 'UNMATCHED') ORDER BY id`,
+      [organizationId, statementTransactionId],
+    );
+    return {
+      statementTransactionId: String(row.id),
+      statementStatus: String(row.reconciliation_status || ''),
+      reviewDecision: row.review_decision == null ? null : String(row.review_decision),
+      allocations: result.rows.filter((allocation: any) => allocation.allocation_id).map((allocation: any) => ({
+        allocationId: String(allocation.allocation_id),
+        journalLineId: allocation.journal_line_id == null ? null : String(allocation.journal_line_id),
+        journalEntryId: allocation.journal_entry_id == null ? null : String(allocation.journal_entry_id),
+        entryNumber: allocation.entry_number == null ? null : String(allocation.entry_number),
+        reversalJournalEntryId: allocation.reversal_journal_entry_id == null ? null : String(allocation.reversal_journal_entry_id),
+        reversalEntryNumber: allocation.reversal_entry_number == null ? null : String(allocation.reversal_entry_number),
+        amount: String(allocation.matched_amount),
+        allocationState: String(allocation.allocation_state),
+        identityState: String(allocation.identity_state),
+        creationOrigin: String(allocation.creation_origin || ''),
+        creationOperationId: (() => {
+          try {
+            const reasons = typeof allocation.match_reasons === 'string' ? JSON.parse(allocation.match_reasons) : allocation.match_reasons;
+            const operationId = !Array.isArray(reasons) ? reasons?.creationOperationId : null;
+            return typeof operationId === 'string' ? operationId : null;
+          } catch { return null; }
+        })(),
+      })),
+      legacyMatches: legacy.rows.map((match: any) => ({ matchId: String(match.id), sourceType: String(match.accounting_transaction_type),
+        sourceId: String(match.accounting_transaction_id), amount: String(match.matched_amount), status: String(match.status || '') })),
+    };
+  }
+
   public static async allocate(
     organizationId: string,
     statementTransactionId: string,
@@ -120,6 +193,20 @@ export class BankMovementAllocationService {
       );
       if (!statementResult.rows.length) throw new Error('BANK_STATEMENT_TRANSACTION_NOT_FOUND');
       const statement = statementResult.rows[0];
+      const activeDisposition = await client.query(
+        `SELECT id FROM bank_statement_line_dispositions WHERE organization_id = $1 AND statement_transaction_id = $2 AND revoked_at IS NULL LIMIT 1`,
+        [organizationId, statementTransactionId],
+      );
+      if (activeDisposition.rows.length || ['CONFIRMED_DUPLICATE', 'PROVEN_ARTIFACT'].includes(String(statement.reconciliation_status || '').toUpperCase())) {
+        throw new Error('BANK_STATEMENT_DISPOSITION_ACTIVE');
+      }
+      const importState = await client.query(
+        `SELECT status FROM bank_statement_imports WHERE organization_id = $1 AND id = $2`,
+        [organizationId, statement.statement_import_id],
+      );
+      if (!importState.rows.length || String(importState.rows[0].status || '').toUpperCase() !== 'COMPLETED') {
+        throw new Error('BANK_STATEMENT_IMPORT_NOT_COMPLETE');
+      }
       if (!statement.ledger_account_id) throw new Error('BANK_LEDGER_ACCOUNT_NOT_LINKED');
       const profiles = await client.query(
         `SELECT id FROM bank_accounts WHERE organization_id = $1 AND ledger_account_id = $2
@@ -140,7 +227,7 @@ export class BankMovementAllocationService {
         throw new Error('BANK_CURRENCY_UNSUPPORTED');
       }
       if (String(statement.reconciliation_status).toUpperCase() === 'RECONCILED') throw new Error('BANK_RECONCILIATION_COMPLETED');
-      if (statement.is_ignored === true || ['IGNORED', 'NEEDS_REVIEW', 'POSSIBLE_DUPLICATE', 'TO_REVIEW'].includes(String(statement.reconciliation_status).toUpperCase())) {
+      if (statement.is_ignored === true || ['IGNORED', 'NEEDS_REVIEW', 'POSSIBLE_DUPLICATE', 'TO_REVIEW', 'RECOGNIZED', 'CONFIRMED_DUPLICATE', 'PROVEN_ARTIFACT'].includes(String(statement.reconciliation_status).toUpperCase())) {
         throw new Error('BANK_STATEMENT_REVIEW_REQUIRED');
       }
       await assertNotCompleted(client, organizationId, statement.bank_account_id, statement.transaction_date);
@@ -183,7 +270,9 @@ export class BankMovementAllocationService {
       const sideCents = bookSide === 'debit' ? debitCents : creditCents;
       const otherSideCents = bookSide === 'debit' ? creditCents : debitCents;
       if (sideCents <= 0n || otherSideCents !== 0n) throw new Error('BANK_BOOK_MOVEMENT_SIDE_INVALID');
-      const journalDate = String(line.journal_date).slice(0, 10);
+      const journalDate = line.journal_date instanceof Date
+        ? line.journal_date.toISOString().slice(0, 10)
+        : String(line.journal_date).slice(0, 10);
       const periodLock = await client.query(
         `SELECT id FROM period_locks
           WHERE organization_id = $1 AND COALESCE(is_locked, FALSE) = TRUE
@@ -258,7 +347,7 @@ export class BankMovementAllocationService {
       await acquireFinancialLock(client, organizationId);
       const identity = await client.query(
         `SELECT statement_transaction_id FROM bank_reconciliation_matches
-          WHERE organization_id = $1 AND id = $2 AND creation_origin = 'CANONICAL_ALLOCATION'`,
+          WHERE organization_id = $1 AND id = $2 AND creation_origin IN ('CANONICAL_ALLOCATION', 'LEGACY_VERIFIED')`,
         [organizationId, allocationId],
       );
       if (!identity.rows.length) throw new Error('BANK_ALLOCATION_NOT_FOUND');

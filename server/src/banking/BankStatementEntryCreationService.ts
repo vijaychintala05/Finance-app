@@ -2,6 +2,7 @@ import { db, type DbQueryClient } from '../database/db';
 import { ServerPostingEngine } from '../accounting/postingEngine';
 import { DocumentNumberingEngine } from '../services/DocumentNumberingEngine';
 import { newId } from '../utils/ids';
+import { recomputeStatementStatus } from './BankMovementAllocationService';
 
 const AMOUNT = /^(?:0|[1-9]\d{0,12})(?:\.\d{1,2})?$/;
 
@@ -39,13 +40,14 @@ export interface CreatedStatementEntry {
   journalEntryId: string;
   journalLineId: string;
   allocationId: string;
+  creationOperationId: string;
   amount: string;
-  statementStatus: 'MATCHED';
+  statementStatus: string;
 }
 
 /**
- * Fail-closed prototype for creating one simple two-line journal from a fully
- * unallocated imported statement transaction. The route remains capability
+ * Fail-closed prototype for creating one simple two-line journal from the
+ * unallocated amount of an imported statement transaction. The route remains capability
  * gated; this method deliberately has no client-supplied lifecycle origin.
  */
 export class BankStatementEntryCreationService {
@@ -54,10 +56,13 @@ export class BankStatementEntryCreationService {
     statementTransactionId: string,
     counterAccountId: string,
     actorId: string,
+    expectedRemainderAmount: string,
+    creationOperationId: string,
     description?: string,
   ): Promise<CreatedStatementEntry> {
     if (!actorId) throw new Error('BANK_ENTRY_CREATOR_REQUIRED');
     if (!counterAccountId || counterAccountId.length > 64) throw new Error('BANK_COUNTER_ACCOUNT_INVALID');
+    if (!/^[a-zA-Z0-9_-]{8,80}$/.test(creationOperationId || '')) throw new Error('BANK_CREATION_OPERATION_INVALID');
     const cleanDescription = String(description || '').trim().slice(0, 500);
 
     return db.transaction(async (client) => {
@@ -83,6 +88,20 @@ export class BankStatementEntryCreationService {
       );
       if (!statementResult.rows.length) throw new Error('BANK_STATEMENT_TRANSACTION_NOT_FOUND');
       const statement = statementResult.rows[0];
+      const activeDisposition = await client.query(
+        `SELECT id FROM bank_statement_line_dispositions WHERE organization_id = $1 AND statement_transaction_id = $2 AND revoked_at IS NULL LIMIT 1`,
+        [organizationId, statementTransactionId],
+      );
+      if (activeDisposition.rows.length || ['CONFIRMED_DUPLICATE', 'PROVEN_ARTIFACT'].includes(String(statement.reconciliation_status || '').toUpperCase())) {
+        throw new Error('BANK_STATEMENT_DISPOSITION_ACTIVE');
+      }
+      const importState = await client.query(
+        `SELECT status FROM bank_statement_imports WHERE organization_id = $1 AND id = $2`,
+        [organizationId, statement.statement_import_id],
+      );
+      if (!importState.rows.length || String(importState.rows[0].status || '').toUpperCase() !== 'COMPLETED') {
+        throw new Error('BANK_STATEMENT_IMPORT_NOT_COMPLETE');
+      }
       if (!statement.ledger_account_id) throw new Error('BANK_LEDGER_ACCOUNT_NOT_LINKED');
       const profiles = await client.query(
         `SELECT id FROM bank_accounts WHERE organization_id = $1 AND ledger_account_id = $2
@@ -97,18 +116,18 @@ export class BankStatementEntryCreationService {
           statement.bank_ledger_locked === true || statement.bank_ledger_direct === false) {
         throw new Error('BANK_LEDGER_ACCOUNT_UNAVAILABLE');
       }
-      const amount = amountCents(statement.amount, 'BANK_STATEMENT');
-      if (amount <= 0n) throw new Error('BANK_STATEMENT_INVALID_AMOUNT');
+      const statementAmount = amountCents(statement.amount, 'BANK_STATEMENT');
+      if (statementAmount <= 0n) throw new Error('BANK_STATEMENT_INVALID_AMOUNT');
       const currency = String(statement.currency || '').toUpperCase();
       const baseCurrency = String(statement.base_currency || '').toUpperCase();
       const ledgerCurrency = String(statement.bank_ledger_currency || baseCurrency).toUpperCase();
       if (!/^[A-Z]{3}$/.test(currency) || currency !== String(statement.bank_currency || '').toUpperCase() ||
           currency !== ledgerCurrency || currency !== baseCurrency) throw new Error('BANK_CURRENCY_UNSUPPORTED');
       if (!['DEBIT', 'CREDIT'].includes(String(statement.direction).toUpperCase())) throw new Error('BANK_STATEMENT_DIRECTION_INVALID');
-      if (['MATCHED', 'CATEGORIZED', 'RECONCILED', 'PARTIALLY_MATCHED'].includes(String(statement.reconciliation_status).toUpperCase())) {
+      if (['MATCHED', 'CATEGORIZED', 'RECONCILED'].includes(String(statement.reconciliation_status).toUpperCase())) {
         throw new Error('BANK_STATEMENT_ALREADY_PROCESSED');
       }
-      if (statement.is_ignored === true || ['IGNORED', 'NEEDS_REVIEW', 'POSSIBLE_DUPLICATE', 'TO_REVIEW'].includes(String(statement.reconciliation_status).toUpperCase())) {
+      if (statement.is_ignored === true || ['IGNORED', 'NEEDS_REVIEW', 'POSSIBLE_DUPLICATE', 'TO_REVIEW', 'RECOGNIZED', 'CONFIRMED_DUPLICATE', 'PROVEN_ARTIFACT'].includes(String(statement.reconciliation_status).toUpperCase())) {
         throw new Error('BANK_STATEMENT_REVIEW_REQUIRED');
       }
       await assertNoUnresolvedLegacyMatches(client, organizationId, statement.bank_account_id);
@@ -121,17 +140,35 @@ export class BankStatementEntryCreationService {
       );
       if (completion.rows.length) throw new Error('BANK_RECONCILIATION_COMPLETED');
 
-      // Existing canonical allocations and unresolved document-level aliases both
-      // consume the statement line. Do not silently make a duplicate journal.
+      // Existing verified allocations consume statement capacity. Derive the
+      // remainder under the shared lock; never accept an amount from the UI.
       const matches = await client.query(
-        `SELECT id FROM bank_reconciliation_matches
+        `SELECT id, matched_amount::text AS matched_amount, allocation_state, identity_state
+           FROM bank_reconciliation_matches
           WHERE organization_id = $1 AND statement_transaction_id = $2
-            AND (allocation_state = 'ACTIVE' OR
-                 (allocation_state = 'LEGACY' AND COALESCE(status, '') NOT IN ('REJECTED', 'REVERSED', 'UNMATCHED')))
-          LIMIT 1`,
+            AND allocation_state = 'ACTIVE'
+          ${db.isMemoryMode() ? '' : 'FOR UPDATE'}`,
         [organizationId, statementTransactionId],
       );
-      if (matches.rows.length) throw new Error('BANK_STATEMENT_ALREADY_ALLOCATED');
+      let allocatedCents = 0n;
+      for (const match of matches.rows) {
+        if (String(match.identity_state || '').toUpperCase() !== 'VERIFIED') throw new Error('BANK_STATEMENT_ALLOCATION_UNVERIFIED');
+        const allocationCents = amountCents(match.matched_amount, 'BANK_ALLOCATION');
+        if (allocationCents <= 0n) throw new Error('BANK_STATEMENT_ALLOCATION_INVALID');
+        allocatedCents += allocationCents;
+      }
+      if (allocatedCents > statementAmount) throw new Error('BANK_STATEMENT_CAPACITY_EXCEEDED');
+      const amount = statementAmount - allocatedCents;
+      if (amount <= 0n) throw new Error('BANK_STATEMENT_ALREADY_PROCESSED');
+      if (amountCents(expectedRemainderAmount, 'EXPECTED_REMAINDER') !== amount) {
+        throw new Error('BANK_STATEMENT_REMAINDER_CHANGED');
+      }
+      if (allocatedCents === 0n && String(statement.reconciliation_status).toUpperCase() === 'PARTIALLY_MATCHED') {
+        throw new Error('BANK_STATEMENT_ALLOCATION_STATE_INVALID');
+      }
+      if (allocatedCents > 0n && String(statement.reconciliation_status).toUpperCase() !== 'PARTIALLY_MATCHED') {
+        throw new Error('BANK_STATEMENT_ALLOCATION_STATE_INVALID');
+      }
 
       const counterAccount = await client.query(
         `SELECT id, type, status, is_locked, is_system_account, allow_direct_posting, archived_at,
@@ -143,7 +180,7 @@ export class BankStatementEntryCreationService {
       );
       if (!counterAccount.rows.length) throw new Error('BANK_COUNTER_ACCOUNT_NOT_FOUND');
       const account = counterAccount.rows[0];
-      const allowedTypes = new Set(['EXPENSE', 'INCOME', 'OTHER INCOME', 'COST OF GOODS SOLD']);
+      const allowedTypes = new Set(['EXPENSE', 'INCOME', 'REVENUE', 'OTHER INCOME', 'COST OF GOODS SOLD']);
       if (String(account.status).toUpperCase() !== 'ACTIVE' || account.is_locked === true || account.is_system_account === true ||
           account.allow_direct_posting === false || account.archived_at || account.system_role ||
           !allowedTypes.has(String(account.type || '').toUpperCase())) throw new Error('BANK_COUNTER_ACCOUNT_NOT_ALLOWED');
@@ -198,23 +235,19 @@ export class BankStatementEntryCreationService {
            $7, CURRENT_TIMESTAMP, 'MATCHED', $8, $9, $10, $4,
            'VERIFIED', NULL, 'STATEMENT_CREATION', 'ACTIVE')`,
         [allocationId, organizationId, statementTransactionId, bankLine.rows[0].id, decimal(amount),
-          JSON.stringify({ source: 'server-created-statement-entry' }), actorId,
+          JSON.stringify({ source: 'server-created-statement-entry', creationOperationId }), actorId,
           statement.bank_account_id, statement.ledger_account_id, posting.entryId],
       );
-      await client.query(
-        `UPDATE bank_statement_transactions SET reconciliation_status = 'MATCHED'
-          WHERE organization_id = $1 AND id = $2`,
-        [organizationId, statementTransactionId],
-      );
+      const statementStatus = await recomputeStatementStatus(client, organizationId, statementTransactionId, statementAmount);
       await client.query(
         `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, metadata)
          VALUES ($1, $2, $3, 'BANK_STATEMENT_ENTRY_CREATED', 'BankStatementTransaction', $4, $5::jsonb)`,
         [newId('aud'), organizationId, actorId, statementTransactionId,
           JSON.stringify({ journalEntryId: posting.entryId, journalLineId: bankLine.rows[0].id,
-            allocationId, counterAccountId, amount: decimal(amount), currency })],
+            allocationId, counterAccountId, creationOperationId, amount: decimal(amount), statementAmount: decimal(statementAmount), currency, statementStatus })],
       );
       return { journalEntryId: posting.entryId, journalLineId: bankLine.rows[0].id,
-        allocationId, amount: decimal(amount), statementStatus: 'MATCHED' };
+        allocationId, creationOperationId, amount: decimal(amount), statementStatus };
     }, { organizationId });
   }
 }

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { lazy, Suspense, useMemo, useState } from 'react';
 import { CheckCircle2, X } from 'lucide-react';
 import { useBooks } from '../../context/BooksContext';
 import { Account, JournalEntry } from '../../types';
@@ -6,14 +6,12 @@ import { QuickAddAccountModal, QuickAccountCategory } from '../common/QuickAddAc
 import { BankTransactionDetailsModal, BankTransactionItem } from './BankTransactionDetailsModal';
 import { RecordBankTransactionModal } from './RecordBankTransactionModal';
 import { ReconcileBankModal } from './ReconcileBankModal';
-import { ImportStatementModal } from './ImportStatementModal';
 import { DeleteBankAccountModal } from './DeleteBankAccountModal';
 import { BankAccountsSummaryCards } from './BankAccountsSummaryCards';
 import { BankAccountsListSidebar } from './BankAccountsListSidebar';
 import { BankTransactionsFeed } from './BankTransactionsFeed';
 import { BankingOverviewTable } from './BankingOverviewTable';
 import { GatewayActivityView } from './GatewayActivityView';
-import { BankAccountWorkspace } from './BankAccountWorkspace';
 import { TransactionMatchDrawer } from './TransactionMatchDrawer';
 import { TransactionCategorizeDrawer } from './TransactionCategorizeDrawer';
 import { TransferFundsModal } from './TransferFundsModal';
@@ -21,6 +19,9 @@ import { TreasuryTransactionModal } from './TreasuryTransactionModal';
 import { BankingService } from '../../services/bankingService';
 import { BankAccount, BankingAccountOverviewItem } from '../../types/banking';
 import { displayJournalNumber } from '../../utils/journalDisplay';
+
+const BankAccountWorkspace = lazy(() => import('./BankAccountWorkspace').then((module) => ({ default: module.BankAccountWorkspace })));
+const ImportStatementModal = lazy(() => import('./ImportStatementModal').then((module) => ({ default: module.ImportStatementModal })));
 
 interface BankingViewProps {
   autoOpenReconcile?: boolean;
@@ -214,7 +215,7 @@ export const BankingView: React.FC<BankingViewProps> = ({
       )}
       {/* 1. PRIMARY VIEW: ZOHO BOOKS BANK ACCOUNT WORKSPACE */}
       {(selectedAccountId || selectedBankAccountId) && activeAccount ? (
-        <BankAccountWorkspace
+        <Suspense fallback={<div className="py-12 text-center text-sm text-slate-500">Loading bank workspace…</div>}><BankAccountWorkspace
           account={activeAccount}
           bankAccount={activeBankAccount}
           journalEntries={journalEntries}
@@ -235,7 +236,7 @@ export const BankingView: React.FC<BankingViewProps> = ({
           onSelectTxDetails={(tx) => setSelectedTx(tx)}
           onRefresh={loadBankingData}
           refreshTrigger={workspaceRefreshTrigger}
-        />
+        /></Suspense>
       ) : (
         /* 2. PRIMARY VIEW: BANKING OVERVIEW */
         activeOverviewTab === 'gateway' ? <GatewayActivityView /> : (
@@ -392,7 +393,7 @@ export const BankingView: React.FC<BankingViewProps> = ({
       )}
 
       {isImportStatementOpen && (
-        <ImportStatementModal
+        <Suspense fallback={<div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 text-white">Loading statement import…</div>}><ImportStatementModal
           isOpen={isImportStatementOpen}
           account={activeAccount || accounts.find((a) => a.type === 'Bank' || a.subType === 'Bank') || accounts[0] || null}
           bankAccount={activeBankAccount}
@@ -443,7 +444,7 @@ export const BankingView: React.FC<BankingViewProps> = ({
               console.error('Failed to load accounts after bank import:', e);
             }
           }}
-        />
+        /></Suspense>
       )}
 
       {isDeleteOpen && activeAccount && (

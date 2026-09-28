@@ -80,7 +80,7 @@ jobs:
             -e ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000 \
             -e ALLOW_PUBLIC_SIGNUP=true \
             -e REGISTRATION_LIMIT_PER_HOUR=1000 \
-            -e TRUSTED_FINANCE_FEATURES=period-close,recovery-center,bank-statement-import,bank-reconciliation,receivables-corrections,payables-settlement,recurring-transactions,fixed-assets,team-access \
+            -e TRUSTED_FINANCE_FEATURES=period-close,recovery-center,bank-statement-import,bank-reconciliation,bank-movement-allocations,bank-statement-entry-creation,receivables-corrections,payables-settlement,recurring-transactions,fixed-assets,team-access \
             firmbooks-ci:${{ github.sha }}
           TEST_BASE_URL="http://127.0.0.1:3000" node scripts/ci-smoke-test.mjs
 

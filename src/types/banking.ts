@@ -103,6 +103,10 @@ export interface BankStatementTransaction {
   counterpartyAccountMasked?: string;
   currency: string;
   reconciliationStatus: BankReconciliationStatus;
+  reviewDecision?: 'ACCEPT' | 'KEEP_AS_NEW' | null;
+  reviewedBy?: string | null;
+  reviewedAt?: string | null;
+  reviewDuplicateCandidates?: string[] | null;
   fingerprint: string;
   rawData?: Record<string, any>;
   createdAt: string;
@@ -213,6 +217,8 @@ export interface ParsedStatementResult {
   detectedBankName?: string;
   detectedAccountNumber?: string;
   statementHealthWarning?: string;
+  unparsedTransactionRows?: Array<{ rowNumber: number; raw: string[] }>;
+  importBlockedReason?: string | null;
 }
 
 export interface BankStatementImportObservation {
@@ -278,7 +284,10 @@ export interface StatementImportPreviewResponse {
   newRowsCount: number;
   possibleDuplicatesCount: number;
   statementHealthWarning?: string | null;
+  unparsedTransactionRows?: Array<{ rowNumber: number; raw: string[] }>;
   discrepancy: number | null;
+  unparsedTransactionRowCount?: number;
+  importBlockedReason?: string | null;
   previewRows: Array<{
     date: string;
     narration: string;
@@ -329,6 +338,7 @@ export interface BankWorkspaceResponse {
     ruleMatchName?: string;
   }>;
   totalTransactions: number;
+  filteredTransactionsCount?: number;
   discrepancyWarnings?: string[];
 }
 

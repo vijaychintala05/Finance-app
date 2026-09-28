@@ -153,7 +153,7 @@ export class BankStatementParserFactory {
     BankStatementParserFactory.validateAllowedFormat(filename, content, sourceFormat);
 
     const fileHash = crypto.createHash('sha256').update(content).digest('hex');
-    const parserVersion = '3.0';
+    const parserVersion = '3.1';
 
     let csvContent = content;
 
@@ -175,6 +175,17 @@ export class BankStatementParserFactory {
           });
           const worksheet = workbook.worksheets[0];
           if (!worksheet) throw new Error('The workbook does not contain a worksheet.');
+          const additionalNonEmptySheets = workbook.worksheets.slice(1).filter((sheet) => {
+            let hasContent = false;
+            sheet.eachRow({ includeEmpty: false }, (row) => {
+              const values = Array.isArray(row.values) ? row.values : Object.values(row.values as Record<string, unknown>);
+              if (values.some((value) => value != null && String(value).trim() !== '')) hasContent = true;
+            });
+            return hasContent;
+          });
+          if (additionalNonEmptySheets.length) {
+            throw new Error('XLSX_MULTIPLE_STATEMENT_SHEETS: This import supports one non-empty worksheet at a time. Save each statement sheet as its own file and retry.');
+          }
           csvContent = this.worksheetToCsv(worksheet);
         } catch (error: any) {
           if (String(error?.message || '').startsWith('XLSX_')) throw error;

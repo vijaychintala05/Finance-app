@@ -101,7 +101,7 @@ export async function applyBankAllocationSchema(client: DbQueryClient): Promise<
       ALTER TABLE bank_reconciliation_matches DROP CONSTRAINT IF EXISTS ck_bank_reconciliation_canonical_active;
       ALTER TABLE bank_reconciliation_matches ADD CONSTRAINT ck_bank_reconciliation_canonical_active
         CHECK (allocation_state <> 'ACTIVE' OR
-          (creation_origin IN ('CANONICAL_ALLOCATION', 'STATEMENT_CREATION') AND identity_state = 'VERIFIED' AND
+          (creation_origin IN ('CANONICAL_ALLOCATION', 'STATEMENT_CREATION', 'LEGACY_VERIFIED') AND identity_state = 'VERIFIED' AND
            bank_account_id IS NOT NULL AND ledger_account_id IS NOT NULL AND
            journal_entry_id IS NOT NULL AND journal_line_id IS NOT NULL AND matched_amount > 0));
       IF EXISTS (

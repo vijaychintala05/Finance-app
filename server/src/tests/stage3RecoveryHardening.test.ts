@@ -12,7 +12,7 @@ import {
   SqlRecoveryPromoter,
   SqlRecoveryStager,
 } from '../recovery/ProductionRecoveryAdapters';
-import { POINT1_RECOVERY_SCHEMA, POINT1_RECOVERY_SCHEMA_V13, POINT1_RECOVERY_SCHEMA_V15, POINT1_RECOVERY_SCHEMA_V17, POINT1_RECOVERY_SCHEMA_V18 } from '../recovery/schema';
+import { POINT1_RECOVERY_SCHEMA, POINT1_RECOVERY_SCHEMA_V13, POINT1_RECOVERY_SCHEMA_V15, POINT1_RECOVERY_SCHEMA_V17, POINT1_RECOVERY_SCHEMA_V18, POINT1_RECOVERY_SCHEMA_V19 } from '../recovery/schema';
 import { RecoveryMigrationPolicy } from '../recovery/RecoveryMigrationPolicy';
 import { TenantRecoveryLockService } from '../recovery/TenantRecoveryLockService';
 import { newId } from '../utils/ids';
@@ -649,13 +649,13 @@ describe('Stage 3: Enterprise Backup/Restore Retirement & Recovery Hardening', (
     expect(upgradedImport).toMatchObject({ id: 'legacy-statement-import-v18', closing_balance: '125.00', closing_balance_verified: false, balance_discrepancy: null });
   });
 
-  it('includes verified closing-balance provenance for nonempty v19 statement imports in backups', async () => {
+  it('includes statement balance and review provenance in v20 backups', async () => {
     await db.query(
       `INSERT INTO bank_statement_imports
         (id, organization_id, bank_account_id, source_format, original_filename, file_hash, parser_version,
          statement_from, statement_to, opening_balance, closing_balance, closing_balance_verified, balance_discrepancy, currency,
          imported_by, transaction_count, status)
-       VALUES ('current-statement-import-v19', $1, 'bank-account-v19', 'CSV', 'statement.csv', 'v19-statement-hash', '3.0',
+       VALUES ('current-statement-import-v20', $1, 'bank-account-v19', 'CSV', 'statement.csv', 'v20-statement-hash', '3.0',
          '2026-08-01', '2026-08-31', 100, 125, TRUE, 0, 'INR', $2, 1, 'Completed')`,
       [ORG_A, OWNER_USER_ID],
     );
@@ -663,6 +663,32 @@ describe('Stage 3: Enterprise Backup/Restore Retirement & Recovery Hardening', (
     const table = artifact.envelope.manifest.tables.find((entry) => entry.name === 'bank_statement_imports');
     expect(table?.columns).toContain('closing_balance_verified');
     expect(table?.rowCount).toBe(1);
+    const statementTable = artifact.envelope.manifest.tables.find((entry) => entry.name === 'bank_statement_transactions');
+    expect(statementTable?.columns).toContain('review_decision');
+    expect(statementTable?.columns).toContain('review_duplicate_candidates');
+  });
+
+  it('upgrades v19 statement rows with empty review provenance', () => {
+    const createdAt = new Date().toISOString();
+    const tables: Record<string, any[]> = Object.fromEntries(POINT1_RECOVERY_SCHEMA_V19.map((table) => [table.name, []]));
+    const shape = POINT1_RECOVERY_SCHEMA_V19.find((table) => table.name === 'bank_statement_transactions')!;
+    tables.bank_statement_transactions = [Object.assign(
+      Object.fromEntries(shape.columns.map((column) => [column, null])),
+      { id: 'v19-statement-row', organization_id: ORG_A, bank_account_id: 'legacy-bank-account', statement_import_id: 'legacy-import' },
+    )];
+    const manifest: RecoveryManifest = {
+      format: 'firmbooks.point1-recovery', formatVersion: 1, artifactId: 'artifact-v19-review-upgrade', organizationId: ORG_A,
+      schemaVersion: RecoveryMigrationPolicy.V19_SCHEMA_VERSION, createdBy: OWNER_USER_ID, createdAt,
+      keyId: 's3-key-v1', cipher: 'aes-256-gcm',
+      tables: POINT1_RECOVERY_SCHEMA_V19.map((table) => ({
+        name: table.name, columns: [...table.columns], rowCount: tables[table.name].length, sha256: sha256(tables[table.name]),
+      })),
+    };
+    const upgraded = RecoveryMigrationPolicy.evaluateAndMigrate(manifest, { organizationId: ORG_A, schemaVersion: manifest.schemaVersion, tables }).payload;
+    expect(upgraded.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+    expect(upgraded.tables.bank_statement_transactions[0]).toMatchObject({
+      review_decision: null, reviewed_by: null, reviewed_at: null, review_duplicate_candidates: null,
+    });
   });
 
 

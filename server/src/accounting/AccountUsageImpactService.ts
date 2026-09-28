@@ -30,6 +30,7 @@ const ACCOUNT_REFERENCE_QUERIES: ReadonlyArray<{ label: string; sql: string }> =
   { label: 'accounting defaults', sql: `SELECT COUNT(*)::int AS count FROM accounting_defaults WHERE organization_id = $1 AND account_id = $2` },
   { label: 'bank account profiles', sql: `SELECT COUNT(*)::int AS count FROM bank_accounts WHERE organization_id = $1 AND ledger_account_id = $2` },
   { label: 'bank reconciliation rules', sql: `SELECT COUNT(*)::int AS count FROM bank_reconciliation_rules WHERE organization_id = $1 AND suggested_account_id = $2` },
+  { label: 'bank reconciliation allocations', sql: `SELECT COUNT(*)::int AS count FROM bank_reconciliation_matches WHERE organization_id = $1 AND ledger_account_id = $2` },
   { label: 'invoice lines', sql: `SELECT COUNT(*)::int AS count FROM invoice_items WHERE organization_id = $1 AND account_id = $2` },
   { label: 'customer payments', sql: `SELECT COUNT(*)::int AS count FROM payments_received WHERE organization_id = $1 AND deposit_to_account_id = $2` },
   { label: 'vendor payments', sql: `SELECT COUNT(*)::int AS count FROM payments_made WHERE organization_id = $1 AND paid_from_account_id = $2` },
@@ -57,6 +58,7 @@ const REGISTERED_ACCOUNT_REFERENCE_COLUMNS = new Set([
   'accounting_defaults.account_id',
   'bank_accounts.ledger_account_id',
   'bank_reconciliation_rules.suggested_account_id',
+  'bank_reconciliation_matches.ledger_account_id',
   'invoice_items.account_id',
   'payments_received.deposit_to_account_id',
   'payments_made.paid_from_account_id',
@@ -78,6 +80,9 @@ const REGISTERED_ACCOUNT_REFERENCE_COLUMNS = new Set([
 // These IDs point to bank profiles or external systems, not ledger accounts. Their
 // ledger-account relationships are covered by the registered bank/transfer queries.
 const NON_LEDGER_ACCOUNT_ID_COLUMNS = new Set([
+  'bank_reconciliation_matches.bank_account_id',
+  'bank_statement_line_dispositions.bank_account_id',
+  'bank_reconciliation_session_items.bank_account_id',
   'bank_statement_imports.bank_account_id', 'bank_statement_transactions.bank_account_id',
   'bank_reconciliation_sessions.bank_account_id', 'bank_feed_connections.bank_account_id',
   'bank_transfers.from_bank_account_id', 'bank_transfers.to_bank_account_id',

@@ -27,6 +27,12 @@ export function useFinanceCapabilities() {
       if (!active) return;
       setCapabilities(response.data?.capabilities || []);
       setLoading(false);
+    }).catch(() => {
+      if (!active) return;
+      // Capability lookup failure must fail closed without leaving views stuck
+      // in a loading state or producing an unhandled rejection.
+      setCapabilities([]);
+      setLoading(false);
     });
     return () => {
       active = false;

@@ -22,6 +22,109 @@ import { ServerPostingEngine } from '../accounting/postingEngine';
 import { MonetaryAccountPolicy } from '../accounting/monetaryAccountPolicy';
 import { FinancialDestructiveActionsService } from '../accounting/FinancialDestructiveActionsService';
 import { LedgerQueryService } from '../services/LedgerQueryService';
+import { recomputeStatementStatus } from './BankMovementAllocationService';
+
+function dateOnly(value: unknown): string | null {
+  if (!value) return null;
+  return value instanceof Date ? value.toISOString().slice(0, 10) : String(value).slice(0, 10);
+}
+
+async function assertConfirmedDuplicatesValid(
+  client: DbQueryClient,
+  organizationId: string,
+  bankAccountId: string,
+  ledgerAccountId: string,
+  cutoff: string,
+): Promise<void> {
+  const duplicates = await client.query(
+    `SELECT d.id AS disposition_id, d.statement_transaction_id, d.target_statement_transaction_id,
+            source.bank_account_id, source.transaction_date AS source_date, source.amount AS source_amount,
+            source.direction AS source_direction, source.currency AS source_currency,
+            source.statement_import_id AS source_import_id, source.is_ignored AS source_ignored,
+            source_import.status AS source_import_status
+       FROM bank_statement_transactions source
+       JOIN bank_statement_imports source_import ON source_import.organization_id = source.organization_id AND source_import.id = source.statement_import_id
+       LEFT JOIN bank_statement_line_dispositions d ON d.organization_id = source.organization_id
+         AND d.statement_transaction_id = source.id AND d.kind = 'CONFIRMED_DUPLICATE' AND d.revoked_at IS NULL
+      WHERE source.organization_id = $1 AND source.bank_account_id = $2
+        AND source.reconciliation_status = 'CONFIRMED_DUPLICATE' AND source.transaction_date <= $3`,
+    [organizationId, bankAccountId, cutoff],
+  );
+  const fail = () => { throw new Error('BANK_RECONCILIATION_HAS_UNRESOLVED_LINES'); };
+  for (const duplicate of duplicates.rows) {
+    const sourceDate = dateOnly(duplicate.source_date)!;
+    if (!duplicate.disposition_id || !duplicate.target_statement_transaction_id ||
+        String(duplicate.source_import_status || '').toUpperCase() !== 'COMPLETED' || duplicate.source_ignored === true ||
+        String(duplicate.bank_account_id) !== bankAccountId) fail();
+    const targetResult = await client.query(
+      `SELECT st.id, st.bank_account_id, st.transaction_date, st.amount, st.direction, st.currency,
+              st.statement_import_id, st.reconciliation_status, st.is_ignored, imp.status AS import_status
+         FROM bank_statement_transactions st
+         JOIN bank_statement_imports imp ON imp.organization_id = st.organization_id AND imp.id = st.statement_import_id
+        WHERE st.organization_id = $1 AND st.id = $2`,
+      [organizationId, duplicate.target_statement_transaction_id],
+    );
+    if (!targetResult.rows.length) fail();
+    const target = targetResult.rows[0];
+    const targetDate = dateOnly(target.transaction_date)!;
+    if (String(target.bank_account_id) !== bankAccountId || targetDate > cutoff || target.is_ignored === true ||
+        String(target.import_status || '').toUpperCase() !== 'COMPLETED' ||
+        !['MATCHED', 'RECONCILED'].includes(String(target.reconciliation_status || '').toUpperCase()) ||
+        String(duplicate.source_direction).toUpperCase() !== String(target.direction).toUpperCase() ||
+        String(duplicate.source_currency).toUpperCase() !== String(target.currency).toUpperCase() ||
+        databaseMoneyToCents(duplicate.source_amount, 'duplicateSource') !== databaseMoneyToCents(target.amount, 'duplicateTarget') ||
+        Math.abs(Date.parse(`${sourceDate}T00:00:00Z`) - Date.parse(`${targetDate}T00:00:00Z`)) > 3 * 86400000) fail();
+    const targetDisposition = await client.query(
+      `SELECT id FROM bank_statement_line_dispositions WHERE organization_id = $1 AND statement_transaction_id = $2 AND revoked_at IS NULL LIMIT 1`,
+      [organizationId, target.id],
+    );
+    if (targetDisposition.rows.length) fail();
+    const allocationProof = await client.query(
+      `SELECT COALESCE(SUM(m.matched_amount), 0)::text AS total_amount,
+              COALESCE(SUM(CASE WHEN m.identity_state = 'VERIFIED'
+                 AND m.creation_origin IN ('CANONICAL_ALLOCATION', 'STATEMENT_CREATION', 'LEGACY_VERIFIED')
+                 AND m.bank_account_id = $3 AND m.ledger_account_id = $4 AND ba.ledger_account_id = $4
+                 AND jl.organization_id = $1 AND jl.account_id = $4 AND jl.journal_entry_id = m.journal_entry_id
+                 AND je.organization_id = $1 AND UPPER(COALESCE(je.status, '')) = 'POSTED' AND je.date <= $5
+                 AND je.reversal_of_journal_id IS NULL AND reversal.id IS NULL
+                 AND UPPER(st.currency) = UPPER(ba.currency) AND UPPER(st.currency) = UPPER(o.base_currency)
+                 AND (linked_account.currency_code IS NULL OR UPPER(linked_account.currency_code) = UPPER(o.base_currency))
+                 AND cap.used <= CASE WHEN UPPER(st.direction) = 'CREDIT' THEN jl.debit ELSE jl.credit END
+                 AND ((UPPER(st.direction) = 'CREDIT' AND jl.debit > 0 AND COALESCE(jl.credit, 0) = 0)
+                   OR (UPPER(st.direction) = 'DEBIT' AND jl.credit > 0 AND COALESCE(jl.debit, 0) = 0))
+               THEN m.matched_amount ELSE 0 END), 0)::text AS valid_amount,
+              COALESCE(SUM(CASE WHEN m.identity_state = 'VERIFIED'
+                 AND m.creation_origin IN ('CANONICAL_ALLOCATION', 'STATEMENT_CREATION', 'LEGACY_VERIFIED')
+                 AND m.bank_account_id = $3 AND m.ledger_account_id = $4 AND ba.ledger_account_id = $4
+                 AND jl.organization_id = $1 AND jl.account_id = $4 AND jl.journal_entry_id = m.journal_entry_id
+                 AND je.organization_id = $1 AND UPPER(COALESCE(je.status, '')) = 'POSTED' AND je.date <= $5
+                 AND je.reversal_of_journal_id IS NULL AND reversal.id IS NULL
+                 AND UPPER(st.currency) = UPPER(ba.currency) AND UPPER(st.currency) = UPPER(o.base_currency)
+                 AND (linked_account.currency_code IS NULL OR UPPER(linked_account.currency_code) = UPPER(o.base_currency))
+                 AND cap.used <= CASE WHEN UPPER(st.direction) = 'CREDIT' THEN jl.debit ELSE jl.credit END
+                 AND ((UPPER(st.direction) = 'CREDIT' AND jl.debit > 0 AND COALESCE(jl.credit, 0) = 0)
+                   OR (UPPER(st.direction) = 'DEBIT' AND jl.credit > 0 AND COALESCE(jl.debit, 0) = 0))
+               THEN 0 ELSE 1 END), 0)::int AS invalid_count
+         FROM bank_statement_transactions st
+         JOIN bank_accounts ba ON ba.organization_id = st.organization_id AND ba.id = st.bank_account_id
+         JOIN organizations o ON o.id = st.organization_id
+         LEFT JOIN accounts linked_account ON linked_account.organization_id = ba.organization_id AND linked_account.id = ba.ledger_account_id
+         LEFT JOIN bank_reconciliation_matches m ON m.organization_id = st.organization_id AND m.statement_transaction_id = st.id AND m.allocation_state = 'ACTIVE'
+         LEFT JOIN journal_entries je ON je.organization_id = m.organization_id AND je.id = m.journal_entry_id
+         LEFT JOIN journal_lines jl ON jl.id = m.journal_line_id AND (jl.organization_id = $1 OR jl.organization_id IS NULL)
+         LEFT JOIN journal_entries reversal ON reversal.organization_id = $1 AND reversal.reversal_of_journal_id = je.id AND UPPER(reversal.status) = 'POSTED'
+         LEFT JOIN (SELECT organization_id, journal_line_id, SUM(matched_amount) AS used FROM bank_reconciliation_matches
+                     WHERE organization_id = $1 AND allocation_state = 'ACTIVE' GROUP BY organization_id, journal_line_id) cap
+           ON cap.organization_id = m.organization_id AND cap.journal_line_id = m.journal_line_id
+        WHERE st.organization_id = $1 AND st.id = $2`,
+      [organizationId, target.id, bankAccountId, ledgerAccountId, cutoff],
+    );
+    const proof = allocationProof.rows[0];
+    if (!proof || databaseMoneyToCents(proof.total_amount, 'duplicateTotal') !== databaseMoneyToCents(target.amount, 'duplicateTarget') ||
+        databaseMoneyToCents(proof.valid_amount, 'duplicateValid') !== databaseMoneyToCents(target.amount, 'duplicateTarget') ||
+        Number(proof.invalid_count || 0) !== 0) fail();
+  }
+}
 
 /**
  * BANK RECONCILIATION SERVICE
@@ -525,6 +628,11 @@ export class BankReconciliationService {
     importedBy?: string
   ): Promise<{ import: BankStatementImport; newTransactionsCount: number; duplicateCount: number; discrepancy: number | null }> {
     const fileHash = crypto.createHash('sha256').update(content).digest('hex');
+    const parsed = await BankStatementParserFactory.parseStatement(content, bankAccountId, sourceFormat, mapping);
+    if (parsed.unparsedTransactionRows?.length) {
+      throw new Error(`BANK_STATEMENT_UNPARSED_TRANSACTION_ROWS: ${parsed.unparsedTransactionRows.length} transaction-like row(s) could not be parsed.`);
+    }
+    if (!parsed.transactions.length) throw new Error('BANK_STATEMENT_NO_TRANSACTIONS');
 
     // Check Duplicate Statement Import by file hash
     const existingImports = await this.getStatementImports(orgId, bankAccountId);
@@ -539,8 +647,6 @@ export class BankReconciliationService {
       };
     }
 
-    // Parse Statement
-    const parsed = await BankStatementParserFactory.parseStatement(content, bankAccountId, sourceFormat, mapping);
     const accountResult = await db.query(
       `SELECT currency FROM bank_accounts WHERE organization_id = $1 AND id = $2 AND is_active = TRUE`,
       [orgId, bankAccountId]
@@ -846,6 +952,13 @@ export class BankReconciliationService {
     const txResult = await client.query(`SELECT * FROM bank_statement_transactions WHERE organization_id = $1 AND id = $2 FOR UPDATE`, [orgId, statementTxId]);
     if (txResult.rows.length !== 1) throw new Error('Statement transaction was not found in this organization');
     const statementTx = this.formatTransaction(txResult.rows[0]);
+    const activeDisposition = await client.query(
+      `SELECT id FROM bank_statement_line_dispositions WHERE organization_id = $1 AND statement_transaction_id = $2 AND revoked_at IS NULL LIMIT 1`,
+      [orgId, statementTxId],
+    );
+    if (activeDisposition.rows.length || ['CONFIRMED_DUPLICATE', 'PROVEN_ARTIFACT'].includes(statementTx.reconciliationStatus)) {
+      throw new Error('BANK_STATEMENT_DISPOSITION_ACTIVE');
+    }
     if (statementTx.reconciliationStatus === 'RECONCILED') throw new Error('A completed reconciliation must be reopened before its matches can change');
     const canonical = await client.query(
       `SELECT id FROM bank_reconciliation_matches WHERE organization_id = $1 AND statement_transaction_id = $2
@@ -1312,7 +1425,8 @@ export class BankReconciliationService {
     orgId: string,
     statementTransactionId: string,
     reversedBy: string,
-    reason: string
+    reason: string,
+    allocationId?: string,
   ): Promise<{ statementTransactionId: string; reversalJournalEntryId: string }> {
     const normalizedReason = String(reason || '').trim();
     if (normalizedReason.length < 3 || normalizedReason.length > 1000) {
@@ -1322,6 +1436,27 @@ export class BankReconciliationService {
       if (!db.isMemoryMode()) {
         await client.query(`SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`, [orgId, 'bank-movement-allocations']);
       }
+      const cutoff = await client.query(
+        `SELECT st.bank_account_id, st.transaction_date, st.amount::text AS statement_amount,
+                st.reconciliation_status, ba.reconciled_through_date
+           FROM bank_statement_transactions st
+           JOIN bank_accounts ba ON ba.organization_id = st.organization_id AND ba.id = st.bank_account_id
+          WHERE st.organization_id = $1 AND st.id = $2
+          ${db.isMemoryMode() ? '' : 'FOR UPDATE OF st, ba'}`,
+        [orgId, statementTransactionId],
+      );
+      if (!cutoff.rows.length) throw new Error('BANK_STATEMENT_TRANSACTION_NOT_FOUND');
+      const statementDate = dateOnly(cutoff.rows[0].transaction_date)!;
+      const reconciledThrough = dateOnly(cutoff.rows[0].reconciled_through_date);
+      if (String(cutoff.rows[0].reconciliation_status || '').toUpperCase() === 'RECONCILED' || (reconciledThrough && statementDate <= reconciledThrough)) {
+        throw new Error('BANK_RECONCILIATION_COMPLETED: Reopen the completed reconciliation before reversing this entry');
+      }
+      const completedSession = await client.query(
+        `SELECT id FROM bank_reconciliation_sessions WHERE organization_id = $1 AND bank_account_id = $2
+          AND statement_end_date >= $3 AND UPPER(COALESCE(status, '')) IN ('COMPLETED', 'RECONCILED') LIMIT 1`,
+        [orgId, cutoff.rows[0].bank_account_id, statementDate],
+      );
+      if (completedSession.rows.length) throw new Error('BANK_RECONCILIATION_COMPLETED: Reopen the completed reconciliation before reversing this entry');
       const matchResult = await client.query(
         `SELECT * FROM bank_reconciliation_matches
           WHERE organization_id = $1 AND statement_transaction_id = $2
@@ -1330,11 +1465,17 @@ export class BankReconciliationService {
           FOR UPDATE`,
         [orgId, statementTransactionId]
       );
-      const createdMatch = matchResult.rows.find((row) => {
+      const eligibleCreatedMatches = matchResult.rows.filter((row) => {
         const reasons = typeof row.match_reasons === 'string' ? JSON.parse(row.match_reasons || '[]') : (row.match_reasons || []);
         return (row.creation_origin === 'STATEMENT_CREATION' && row.allocation_state === 'ACTIVE') ||
           (row.accounting_transaction_type === 'journal' && reasons.some((item: any) => item?.code === 'CREATE_FROM_BANK'));
       });
+      const createdMatch = allocationId
+        ? eligibleCreatedMatches.find((row) => String(row.id) === allocationId)
+        : eligibleCreatedMatches.length === 1 ? eligibleCreatedMatches[0] : undefined;
+      if (!allocationId && eligibleCreatedMatches.length > 1) {
+        throw new Error('CREATED_BANK_TRANSACTION_AMBIGUOUS: Select the exact statement-created entry to reverse');
+      }
       if (!createdMatch) throw new Error('CREATED_BANK_TRANSACTION_NOT_FOUND: No posted transaction created from this statement line was found');
       const createdJournalEntryId = createdMatch.creation_origin === 'STATEMENT_CREATION'
         ? createdMatch.journal_entry_id
@@ -1351,17 +1492,16 @@ export class BankReconciliationService {
           WHERE organization_id = $1 AND id = $2 AND status = 'MATCHED'`,
         [orgId, createdMatch.id]
       );
-      await client.query(
-        `UPDATE bank_statement_transactions SET reconciliation_status = 'UNMATCHED'
-          WHERE organization_id = $1 AND id = $2`,
-        [orgId, statementTransactionId]
+      const statementStatus = await recomputeStatementStatus(
+        client, orgId, statementTransactionId,
+        databaseMoneyToCents(cutoff.rows[0].statement_amount, 'BANK_STATEMENT'),
       );
       await client.query(
         `INSERT INTO audit_logs (id, organization_id, user_id, action, entity_type, entity_id, before_state, after_state)
          VALUES ($1, $2, $3, 'BANK_CREATED_TRANSACTION_REVERSED', 'BankStatementTransaction', $4, $5, $6)`,
         [newId('aud'), orgId, reversedBy, statementTransactionId,
           JSON.stringify({ matchId: createdMatch.id, journalEntryId: createdJournalEntryId }),
-          JSON.stringify({ matchStatus: 'REVERSED', reversalJournalEntryId, reason: normalizedReason })]
+          JSON.stringify({ matchStatus: 'REVERSED', reversalJournalEntryId, reason: normalizedReason, statementStatus })]
       );
       return { statementTransactionId, reversalJournalEntryId };
     });
@@ -1540,6 +1680,7 @@ export class BankReconciliationService {
         [orgId, bankAccountId, statementEndDate],
       );
       if (laterOrEqualSession.rows.length) throw new Error('BANK_RECONCILIATION_CUTOFF_NOT_MONOTONIC');
+      await assertConfirmedDuplicatesValid(client, orgId, bankAccountId, String(bank.rows[0].ledger_account_id), statementEndDate);
       const unresolved = await client.query(
         `WITH active_allocations AS (
           SELECT m.organization_id, m.statement_transaction_id, m.journal_line_id,
@@ -1555,8 +1696,8 @@ export class BankReconciliationService {
               AND UPPER(reversal.status) = 'POSTED'
            WHERE m.organization_id = $1 AND m.bank_account_id = $2 AND m.ledger_account_id = $4
              AND m.allocation_state = 'ACTIVE' AND m.identity_state = 'VERIFIED'
-             AND m.creation_origin IN ('CANONICAL_ALLOCATION', 'STATEMENT_CREATION')
-             AND reversal.id IS NULL
+             AND m.creation_origin IN ('CANONICAL_ALLOCATION', 'STATEMENT_CREATION', 'LEGACY_VERIFIED')
+             AND reversal.id IS NULL AND je.date <= $3
            GROUP BY m.organization_id, m.statement_transaction_id, m.journal_line_id
         ), line_capacity AS (
           SELECT m.journal_line_id, SUM(m.matched_amount)::numeric AS used
@@ -1583,9 +1724,13 @@ export class BankReconciliationService {
           LEFT JOIN valid_alloc alloc ON alloc.organization_id = bst.organization_id AND alloc.statement_transaction_id = bst.id
          WHERE bst.organization_id = $1 AND bst.bank_account_id = $2 AND bst.transaction_date <= $3
            AND UPPER(COALESCE(bi.status, 'COMPLETED')) NOT IN ('FAILED', 'CANCELLED', 'REJECTED')
-           AND (COALESCE(bst.is_ignored, FALSE) = TRUE OR UPPER(COALESCE(bst.reconciliation_status, '')) NOT IN ('MATCHED', 'RECONCILED')
-             OR COALESCE(alloc.allocated, 0)::numeric <> bst.amount::numeric
-             OR COALESCE(alloc.total_allocated, 0)::numeric <> bst.amount::numeric)
+           AND UPPER(COALESCE(bst.reconciliation_status, '')) <> 'CONFIRMED_DUPLICATE'
+           AND (COALESCE(bst.is_ignored, FALSE) = TRUE OR (
+             UPPER(COALESCE(bst.reconciliation_status, '')) NOT IN ('MATCHED', 'RECONCILED')
+             OR (
+               COALESCE(alloc.allocated, 0)::numeric <> bst.amount::numeric
+               OR COALESCE(alloc.total_allocated, 0)::numeric <> bst.amount::numeric
+             )))
          LIMIT 1`, [orgId, bankAccountId, statementEndDate, bank.rows[0].ledger_account_id],
       );
       if (unresolved.rows.length) throw new Error('BANK_RECONCILIATION_HAS_UNRESOLVED_LINES');
@@ -1619,6 +1764,70 @@ export class BankReconciliationService {
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
         [session.id, orgId, bankAccountId, statementEndDate, statementClosingBalance, ledgerBalance, difference, userId, session.reconciledAt, 'COMPLETED'],
       );
+      const snapshotLines = await client.query(
+        `SELECT bst.id, bst.statement_import_id, bst.reconciliation_status,
+                d.id AS disposition_id, d.target_statement_transaction_id
+           FROM bank_statement_transactions bst
+           JOIN bank_statement_imports snapshot_import ON snapshot_import.organization_id = bst.organization_id
+             AND snapshot_import.id = bst.statement_import_id
+           LEFT JOIN bank_statement_line_dispositions d ON d.organization_id = bst.organization_id AND d.statement_transaction_id = bst.id
+             AND d.revoked_at IS NULL
+          WHERE bst.organization_id = $1 AND bst.bank_account_id = $2 AND bst.transaction_date <= $3
+            AND UPPER(COALESCE(snapshot_import.status, 'COMPLETED')) NOT IN ('FAILED', 'CANCELLED', 'REJECTED')
+          ORDER BY bst.id`, [orgId, bankAccountId, statementEndDate],
+      );
+      const snapshotObservations = await client.query(
+        `SELECT o.statement_transaction_id, o.id, o.row_number, o.raw_data
+           FROM bank_statement_import_observations o
+           JOIN bank_statement_transactions bst ON bst.organization_id = o.organization_id AND bst.id = o.statement_transaction_id
+          WHERE o.organization_id = $1 AND bst.bank_account_id = $2 AND bst.transaction_date <= $3
+          ORDER BY o.statement_transaction_id, o.row_number, o.id`, [orgId, bankAccountId, statementEndDate],
+      );
+      const snapshotAllocations = await client.query(
+        `SELECT m.statement_transaction_id, m.id, m.journal_line_id, m.journal_entry_id, m.matched_amount, m.creation_origin
+           FROM bank_reconciliation_matches m
+           JOIN bank_statement_transactions bst ON bst.organization_id = m.organization_id AND bst.id = m.statement_transaction_id
+          WHERE m.organization_id = $1 AND bst.bank_account_id = $2 AND bst.transaction_date <= $3
+            AND m.allocation_state = 'ACTIVE' AND m.identity_state = 'VERIFIED'
+          ORDER BY m.statement_transaction_id, m.id`, [orgId, bankAccountId, statementEndDate],
+      );
+      const observationsByStatement = new Map<string, any[]>();
+      for (const observation of snapshotObservations.rows) {
+        const key = String(observation.statement_transaction_id);
+        const group = observationsByStatement.get(key) || [];
+        group.push({ id: observation.id, rowNumber: observation.row_number, rawData: observation.raw_data });
+        observationsByStatement.set(key, group);
+      }
+      const allocationsByStatement = new Map<string, any[]>();
+      for (const allocation of snapshotAllocations.rows) {
+        const key = String(allocation.statement_transaction_id);
+        const group = allocationsByStatement.get(key) || [];
+        group.push({ allocationId: allocation.id, journalLineId: allocation.journal_line_id,
+          journalEntryId: allocation.journal_entry_id, amount: allocation.matched_amount, origin: allocation.creation_origin });
+        allocationsByStatement.set(key, group);
+      }
+      for (const row of snapshotLines.rows) {
+        const resolutionKind = String(row.reconciliation_status).toUpperCase() === 'CONFIRMED_DUPLICATE' ? 'CONFIRMED_DUPLICATE' : 'ALLOCATED';
+        const observations = observationsByStatement.get(String(row.id)) || [];
+        const allocations = allocationsByStatement.get(String(row.id)) || [];
+        const observationIds = observations.map((observation: any) => String(observation.id));
+        const evidence = {
+          statementTransactionId: String(row.id), importId: String(row.statement_import_id),
+          resolutionKind, dispositionId: row.disposition_id == null ? null : String(row.disposition_id),
+          targetStatementTransactionId: row.target_statement_transaction_id == null ? null : String(row.target_statement_transaction_id),
+          observationIds, allocations,
+        };
+        const evidenceHash = crypto.createHash('sha256').update(JSON.stringify(evidence)).digest('hex');
+        await client.query(
+          `INSERT INTO bank_reconciliation_session_items
+            (id, organization_id, session_id, bank_account_id, statement_transaction_id, statement_import_id,
+             resolution_kind, allocation_snapshot, observation_ids, disposition_id, target_statement_transaction_id, evidence_hash)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11, $12)`,
+          [newId('bsi'), orgId, session.id, bankAccountId, String(row.id), String(row.statement_import_id), resolutionKind,
+            JSON.stringify(evidence.allocations), JSON.stringify(evidence.observationIds),
+            evidence.dispositionId, evidence.targetStatementTransactionId, evidenceHash],
+        );
+      }
       await client.query(
         `UPDATE bank_statement_transactions SET reconciliation_status = 'RECONCILED'
           WHERE organization_id = $1 AND bank_account_id = $2 AND transaction_date <= $3 AND reconciliation_status = 'MATCHED'`,
@@ -1715,6 +1924,15 @@ export class BankReconciliationService {
       counterpartyName: row.counterparty_name || row.counterpartyName,
       currency: row.currency,
       reconciliationStatus: row.reconciliation_status || row.reconciliationStatus || 'UNMATCHED',
+      reviewDecision: row.review_decision || row.reviewDecision || null,
+      reviewedBy: row.reviewed_by || row.reviewedBy || null,
+      reviewedAt: row.reviewed_at || row.reviewedAt || null,
+      reviewDuplicateCandidates: (() => {
+        const candidates = row.review_duplicate_candidates || row.reviewDuplicateCandidates;
+        if (Array.isArray(candidates)) return candidates;
+        if (typeof candidates === 'string') { try { return JSON.parse(candidates); } catch { return null; } }
+        return null;
+      })(),
       fingerprint: row.fingerprint,
       rawData: raw,
       createdAt: row.created_at || row.createdAt || new Date().toISOString(),
@@ -1992,6 +2210,11 @@ export class BankReconciliationService {
       possibleDuplicatesCount,
       statementHealthWarning: parsed.statementHealthWarning,
       discrepancy: parsed.balanceDiscrepancy ?? null,
+      unparsedTransactionRows: (parsed.unparsedTransactionRows || []).slice(0, 100),
+      unparsedTransactionRowCount: parsed.unparsedTransactionRows?.length || 0,
+      importBlockedReason: parsed.unparsedTransactionRows?.length
+        ? 'Correct every unparsed row before importing this statement.'
+        : parsed.transactions.length ? null : 'No bank transaction rows were found in this file.',
       closingBalanceVerified: parsed.closingBalanceVerified === true,
       balanceDiscrepancy: parsed.balanceDiscrepancy,
       previewRows: previewRows.slice(0, 50),
@@ -2092,6 +2315,10 @@ export class BankReconciliationService {
         payload.mapping,
         filename
       );
+      if (parsed.unparsedTransactionRows?.length) {
+        throw new Error(`BANK_STATEMENT_UNPARSED_TRANSACTION_ROWS: ${parsed.unparsedTransactionRows.length} transaction-like row(s) could not be parsed. Correct the file or column mapping and preview it again.`);
+      }
+      if (!parsed.transactions.length) throw new Error('BANK_STATEMENT_NO_TRANSACTIONS');
       const activeCutoff = db.isMemoryMode() ? { rows: [] } : await client.query(
         `SELECT GREATEST(COALESCE(ba.reconciled_through_date, DATE '0001-01-01'), COALESCE((
             SELECT MAX(s.statement_end_date) FROM bank_reconciliation_sessions s
@@ -2155,7 +2382,7 @@ export class BankReconciliationService {
 
       for (let idx = 0; idx < parsed.transactions.length; idx++) {
         const tx = parsed.transactions[idx];
-        const rowNumber = idx + 1;
+        const rowNumber = Number(tx.rawData?.rowNumber || idx + 1);
         const existingTxId = fpToTxId.get(tx.fingerprint!);
 
         if (existingTxId) {
@@ -2349,7 +2576,7 @@ export class BankReconciliationService {
       else if (st === 'CATEGORIZED') categorizedCount += cnt;
       else if (st === 'RECOGNIZED') recognizedCount += cnt;
       else if (st === 'POSSIBLE_DUPLICATE') possibleDuplicatesCount += cnt;
-      else if (['UNMATCHED', 'TO_REVIEW'].includes(st) && !ignored) toReviewCount += cnt;
+      else if (['UNMATCHED', 'TO_REVIEW', 'RECOGNIZED', 'PARTIALLY_MATCHED', 'POSTED'].includes(st) && !ignored) toReviewCount += cnt;
     }
 
     const tab = (options.tab || 'ALL').toUpperCase();
@@ -2358,7 +2585,7 @@ export class BankReconciliationService {
     let pIdx = 3;
 
     if (tab === 'TO_REVIEW') {
-      filterClause += ` AND reconciliation_status IN ('UNMATCHED', 'TO_REVIEW') AND COALESCE(is_ignored, FALSE) = FALSE`;
+      filterClause += ` AND reconciliation_status IN ('UNMATCHED', 'TO_REVIEW', 'RECOGNIZED', 'PARTIALLY_MATCHED', 'POSTED') AND COALESCE(is_ignored, FALSE) = FALSE`;
     } else if (tab === 'RECOGNIZED') {
       filterClause += ` AND reconciliation_status = 'RECOGNIZED'`;
     } else if (tab === 'MATCHED') {
@@ -2376,6 +2603,13 @@ export class BankReconciliationService {
       params.push(`%${options.search.trim()}%`);
       pIdx++;
     }
+
+    const filteredCountResult = await db.query(
+      `SELECT COUNT(*) AS count FROM bank_statement_transactions
+       WHERE organization_id = $1 AND bank_account_id = $2 ${filterClause}`,
+      params,
+    );
+    const filteredTransactionsCount = Number(filteredCountResult.rows[0]?.count || 0);
 
     const limit = options.limit || 50;
     const offset = options.offset || 0;
@@ -2431,6 +2665,7 @@ export class BankReconciliationService {
       },
       transactions,
       totalTransactions: allCount,
+      filteredTransactionsCount,
     };
   }
 
@@ -2614,10 +2849,31 @@ export class BankReconciliationService {
         await client.query(`SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`, [orgId, 'bank-movement-allocations']);
       }
       const statement = await client.query(
-        `SELECT id FROM bank_statement_transactions WHERE organization_id = $1 AND id = $2 ${db.isMemoryMode() ? '' : 'FOR UPDATE'}`,
+        `SELECT st.id, st.bank_account_id, st.transaction_date, st.reconciliation_status, ba.reconciled_through_date
+           FROM bank_statement_transactions st
+           JOIN bank_accounts ba ON ba.organization_id = st.organization_id AND ba.id = st.bank_account_id
+          WHERE st.organization_id = $1 AND st.id = $2 ${db.isMemoryMode() ? '' : 'FOR UPDATE OF st, ba'}`,
         [orgId, statementTxId],
       );
       if (!statement.rows.length) throw new Error('BANK_TRANSACTION_NOT_FOUND: Statement transaction does not exist in this organization.');
+      const statementDate = dateOnly(statement.rows[0].transaction_date)!;
+      const reconciledThrough = dateOnly(statement.rows[0].reconciled_through_date);
+      if (String(statement.rows[0].reconciliation_status || '').toUpperCase() === 'RECONCILED' || (reconciledThrough && statementDate <= reconciledThrough)) {
+        throw new Error('BANK_RECONCILIATION_COMPLETED: Reopen the completed reconciliation before changing this statement line');
+      }
+      const completedSession = await client.query(
+        `SELECT id FROM bank_reconciliation_sessions WHERE organization_id = $1 AND bank_account_id = $2
+          AND statement_end_date >= $3 AND UPPER(COALESCE(status, '')) IN ('COMPLETED', 'RECONCILED') LIMIT 1`,
+        [orgId, statement.rows[0].bank_account_id, statementDate],
+      );
+      if (completedSession.rows.length) throw new Error('BANK_RECONCILIATION_COMPLETED: Reopen the completed reconciliation before changing this statement line');
+      const activeDisposition = await client.query(
+        `SELECT id FROM bank_statement_line_dispositions WHERE organization_id = $1 AND statement_transaction_id = $2 AND revoked_at IS NULL LIMIT 1`,
+        [orgId, statementTxId],
+      );
+      if (activeDisposition.rows.length || ['CONFIRMED_DUPLICATE', 'PROVEN_ARTIFACT'].includes(String(statement.rows[0].reconciliation_status || '').toUpperCase())) {
+        throw new Error('BANK_STATEMENT_DISPOSITION_ACTIVE');
+      }
       const allocations = await client.query(
         `SELECT id FROM bank_reconciliation_matches
           WHERE organization_id = $1 AND statement_transaction_id = $2 AND allocation_state = 'ACTIVE' LIMIT 1`,
@@ -2681,7 +2937,7 @@ export class BankReconciliationService {
         const allocated = await client.query(
           `SELECT COALESCE(SUM(matched_amount), 0)::numeric AS total FROM bank_reconciliation_matches
             WHERE organization_id = $1 AND statement_transaction_id = $2 AND allocation_state = 'ACTIVE'
-              AND identity_state = 'VERIFIED' AND creation_origin IN ('CANONICAL_ALLOCATION', 'STATEMENT_CREATION')`,
+              AND identity_state = 'VERIFIED' AND creation_origin IN ('CANONICAL_ALLOCATION', 'STATEMENT_CREATION', 'LEGACY_VERIFIED')`,
           [orgId, tx.id],
         );
         const status = databaseMoneyToCents(allocated.rows[0]?.total ?? '0', 'activeAllocationTotal') ===

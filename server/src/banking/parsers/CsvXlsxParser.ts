@@ -7,6 +7,7 @@ export class CsvXlsxParser {
     mapping?: Partial<CSVColumnMapping>
   ): ParsedStatementResult {
     const lines = content.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    const sourceRowNumbers = content.split(/\r?\n/).map((line, index) => line.trim() ? index + 1 : null).filter((row): row is number => row !== null);
     if (lines.length === 0) {
       return {
         openingBalance: 0,
@@ -89,6 +90,7 @@ export class CsvXlsxParser {
 
       // 3. Partial match with synonyms (in declared order of priority)
       for (const syn of synonyms) {
+        if (syn.trim().length <= 2) continue;
         const idx = headers.findIndex((h) => h.toLowerCase().includes(syn.toLowerCase()));
         if (idx !== -1) return idx;
       }
@@ -128,6 +130,7 @@ export class CsvXlsxParser {
     const chqColIdx = findColIndex(colMap.chequeNumberColumn || '', ['cheque no', 'chq no', 'cheque number', 'chq.no']);
 
     const transactions: ParsedTransactionLine[] = [];
+    const unparsedTransactionRows: Array<{ rowNumber: number; raw: string[] }> = [];
     let openingBalance = 0;
     let closingBalance = 0;
 
@@ -137,7 +140,21 @@ export class CsvXlsxParser {
 
       const rawDate = dateColIdx !== -1 ? row[dateColIdx] : row[0];
       const parsedDate = CsvXlsxParser.normalizeDate(rawDate, colMap.dateFormat);
-      if (!parsedDate) continue;
+      if (!parsedDate || !CsvXlsxParser.isCalendarDate(parsedDate)) {
+        const monetaryValues = [debitColIdx, creditColIdx, amountColIdx].filter((index) => index >= 0)
+          .map((index) => row[index] || '').filter(Boolean);
+        const repeatedHeader = headers.length > 0 && row.length === headers.length && row.every((cell, index) => cell.trim().toLowerCase() === headers[index].trim().toLowerCase());
+        const controlRow = row.some((cell) => /^(opening balance|closing balance|brought forward|carried forward|grand total|page\s+\d+)$/i.test(cell.trim()));
+        const hasNonzeroOrMalformedMoney = monetaryValues.some((value) => {
+          const parsed = CsvXlsxParser.strictAmount(value);
+          return parsed === null || parsed !== 0;
+        });
+        const hasContent = row.some((cell) => cell.trim() !== '');
+        if (!repeatedHeader && (hasNonzeroOrMalformedMoney || (hasContent && !controlRow))) {
+          unparsedTransactionRows.push({ rowNumber: sourceRowNumbers[i] || i + 1, raw: row });
+        }
+        continue;
+      }
 
       const rawValueDate = valueDateColIdx !== -1 ? row[valueDateColIdx] : undefined;
       const parsedValueDate = rawValueDate ? CsvXlsxParser.normalizeDate(rawValueDate, colMap.dateFormat) : undefined;
@@ -150,23 +167,41 @@ export class CsvXlsxParser {
       let creditAmount = 0;
 
       if (debitColIdx !== -1 && row[debitColIdx]) {
-        debitAmount = Math.abs(CsvXlsxParser.parseAmount(row[debitColIdx]));
+        const parsedDebit = CsvXlsxParser.strictAmount(row[debitColIdx]);
+        if (parsedDebit === null) {
+          unparsedTransactionRows.push({ rowNumber: sourceRowNumbers[i] || i + 1, raw: row });
+          continue;
+        }
+        debitAmount = Math.abs(parsedDebit);
       }
       if (creditColIdx !== -1 && row[creditColIdx]) {
-        creditAmount = Math.abs(CsvXlsxParser.parseAmount(row[creditColIdx]));
+        const parsedCredit = CsvXlsxParser.strictAmount(row[creditColIdx]);
+        if (parsedCredit === null) {
+          unparsedTransactionRows.push({ rowNumber: sourceRowNumbers[i] || i + 1, raw: row });
+          continue;
+        }
+        creditAmount = Math.abs(parsedCredit);
       }
 
       if (debitAmount === 0 && creditAmount === 0 && amountColIdx !== -1 && row[amountColIdx]) {
         const rawAmountVal = row[amountColIdx];
-        const val = CsvXlsxParser.parseAmount(rawAmountVal);
-        if (/\b(?:dr|debit)\b/i.test(rawAmountVal) || val < 0) {
+        const strictValue = CsvXlsxParser.strictAmount(rawAmountVal);
+        if (strictValue === null) {
+          unparsedTransactionRows.push({ rowNumber: sourceRowNumbers[i] || i + 1, raw: row });
+          continue;
+        }
+        const val = strictValue;
+        if (val < 0) {
           debitAmount = Math.abs(val);
         } else {
           creditAmount = val;
         }
       }
 
-      if (debitAmount === 0 && creditAmount === 0) continue;
+      if ((debitAmount > 0 && creditAmount > 0) || (debitAmount === 0 && creditAmount === 0)) {
+        unparsedTransactionRows.push({ rowNumber: sourceRowNumbers[i] || i + 1, raw: row });
+        continue;
+      }
 
       const direction = creditAmount > 0 ? 'CREDIT' : 'DEBIT';
       const amount = creditAmount > 0 ? creditAmount : debitAmount;
@@ -191,11 +226,13 @@ export class CsvXlsxParser {
         upiReference: extracted.upiReference,
         chequeNumber: chequeNo || extracted.chequeNumber,
         counterpartyName: extracted.counterpartyName,
-        rawData: { row, headers },
+        rawData: { row, headers, rowNumber: sourceRowNumbers[i] || i + 1 },
       });
     }
 
-    const preambleLines = lines.slice(0, Math.max(headerIdx + 1, 10));
+    // Only metadata before the transaction header can prove statement controls
+    // or identify the bank/account. Transaction narration is untrusted text.
+    const preambleLines = lines.slice(0, headerIdx);
     const preambleText = preambleLines.join(' ');
     const closeMatch = preambleText.match(/(?:closing\s*balance|close\s*bal)\s*[:\-,\t]?\s*(-?[0-9,]+(?:\.\d{1,2})?)/i);
     const openMatch = preambleText.match(/(?:opening\s*balance|open\s*bal)\s*[:\-,\t]?\s*(-?[0-9,]+(?:\.\d{1,2})?)/i);
@@ -264,6 +301,7 @@ export class CsvXlsxParser {
       detectedBankName,
       detectedAccountNumber,
       statementHealthWarning,
+      ...(unparsedTransactionRows.length ? { unparsedTransactionRows } : {}),
     };
   }
 
@@ -285,6 +323,26 @@ export class CsvXlsxParser {
     }
     result.push(current.trim());
     return result;
+  }
+
+  private static strictAmount(str: string): number | null {
+    let clean = String(str || '').trim().replace(/[₹$€£,\s]/g, '');
+    const suffix = /(?:dr|debit|cr|credit)$/i.exec(clean)?.[0]?.toLowerCase();
+    if (suffix) clean = clean.slice(0, -suffix.length);
+    const parenthesized = /^\((.+)\)$/.exec(clean);
+    if (parenthesized) clean = `-${parenthesized[1]}`;
+    if (!/^[-+]?\d+(?:\.\d{1,2})?$/.test(clean) || !Number.isFinite(Number(clean))) return null;
+    let value = Number(clean);
+    if (suffix === 'dr' || suffix === 'debit') value = -Math.abs(value);
+    if (suffix === 'cr' || suffix === 'credit') value = Math.abs(value);
+    return value;
+  }
+
+  private static isCalendarDate(value: string): boolean {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+    if (!match) return false;
+    const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+    return date.getUTCFullYear() === Number(match[1]) && date.getUTCMonth() + 1 === Number(match[2]) && date.getUTCDate() === Number(match[3]);
   }
 
   public static parseAmount(str: string): number {

@@ -19,7 +19,50 @@ import { ApiRequestError } from '../api/client';
 import { createBrowserId } from '../utils/browserIds';
 
 export class BankingService {
-  private static async apiCall<T>(endpoint: string, method: string = 'GET', body?: any, validateSuccessData?: (data: unknown) => string | null): Promise<T> {
+  private static readonly pendingBankMutationKeys = new Map<string, string>();
+
+  private static async stableMutationKey(action: string, operationPayload: unknown): Promise<{ key: string; clear: () => void }> {
+    const serialized = JSON.stringify(operationPayload);
+    let digest: string;
+    if (globalThis.crypto?.subtle) {
+      const bytes = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(serialized)));
+      digest = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+    } else {
+      let hash = 2166136261;
+      for (let index = 0; index < serialized.length; index += 1) { hash ^= serialized.charCodeAt(index); hash = Math.imul(hash, 16777619); }
+      digest = (hash >>> 0).toString(16);
+    }
+    const storageKey = `firmbooks:banking:${action}:${digest}`;
+    const clear = () => {
+      this.pendingBankMutationKeys.delete(storageKey);
+      try { if (typeof window !== 'undefined') window.sessionStorage.removeItem(storageKey); } catch { /* In-memory key is still cleared. */ }
+    };
+    try {
+      const storage = typeof window !== 'undefined' ? window.sessionStorage : null;
+      const key = this.pendingBankMutationKeys.get(storageKey) || storage?.getItem(storageKey) || createBrowserId('banking');
+      this.pendingBankMutationKeys.set(storageKey, key);
+      storage?.setItem(storageKey, key);
+      return { key, clear };
+    } catch {
+      const key = this.pendingBankMutationKeys.get(storageKey) || createBrowserId('banking');
+      this.pendingBankMutationKeys.set(storageKey, key);
+      return { key, clear };
+    }
+  }
+
+  private static async stableWrite<T>(action: string, operationPayload: unknown, suppliedKey: string | undefined, request: (key: string) => Promise<T>): Promise<T> {
+    const operation = await this.stableMutationKey(action, operationPayload);
+    try {
+      const result = await request(suppliedKey || operation.key);
+      operation.clear();
+      return result;
+    } catch (error) {
+      if (error instanceof ApiRequestError && error.response.status < 500 && !error.message.toLowerCase().includes('already being processed')) operation.clear();
+      throw error;
+    }
+  }
+
+  private static async apiCall<T>(endpoint: string, method: string = 'GET', body?: any, validateSuccessData?: (data: unknown) => string | null, idempotencyKey?: string): Promise<T> {
     const orgId = typeof window !== 'undefined' ? localStorage.getItem('active_organization_id') : null;
     const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null;
 
@@ -33,7 +76,7 @@ export class BankingService {
       headers.Authorization = `Bearer ${token}`;
     }
     if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method.toUpperCase())) {
-      headers['Idempotency-Key'] = createBrowserId('mutation');
+      headers['Idempotency-Key'] = idempotencyKey || createBrowserId('mutation');
     }
     const origin = typeof window !== 'undefined' && window.location?.origin && window.location.origin.startsWith('http')
       ? window.location.origin
@@ -105,6 +148,158 @@ export class BankingService {
       `/transactions/${encodeURIComponent(statementTransactionId)}/book-suggestions`,
       'GET'
     );
+  }
+
+  /** Confirms a user-selected posted bank-ledger movement against statement evidence. */
+  public static allocateBookMovement(input: {
+    statementTransactionId: string;
+    journalLineId: string;
+    amount: string | number;
+  }, idempotencyKey?: string): Promise<{
+    allocationId: string;
+    statementTransactionId: string;
+    journalLineId: string;
+    journalEntryId: string;
+    amount: string;
+    statementStatus: string;
+  }> {
+    return this.stableWrite('allocate', input, idempotencyKey, (key) => this.apiCall<{
+      allocationId: string; statementTransactionId: string; journalLineId: string; journalEntryId: string; amount: string; statementStatus: string;
+    }>('/reconciliation/allocations', 'POST', input, (data) => {
+      const row = data as Record<string, unknown>;
+      return row && typeof row.allocationId === 'string' && typeof row.statementTransactionId === 'string' &&
+        typeof row.journalLineId === 'string' && typeof row.journalEntryId === 'string' && typeof row.amount === 'string' &&
+        typeof row.statementStatus === 'string' ? null : 'Bank allocation receipt is incomplete.';
+    }, key));
+  }
+
+  /** Posts a simple income/expense entry and links it to the statement in one transaction. */
+  public static createMissingEntryFromStatement(input: {
+    statementTransactionId: string;
+    counterAccountId: string;
+    expectedRemainderAmount: string;
+    creationOperationId: string;
+    description?: string;
+  }, idempotencyKey?: string): Promise<{
+    journalEntryId: string;
+    journalLineId: string;
+    allocationId: string;
+    creationOperationId: string;
+    amount: string;
+    statementStatus: string;
+  }> {
+    return this.stableWrite('create-entry', input, idempotencyKey, (key) => this.apiCall<{
+    journalEntryId: string;
+    journalLineId: string;
+    allocationId: string;
+    creationOperationId: string;
+    amount: string;
+    statementStatus: string;
+  }>(
+      `/transactions/${encodeURIComponent(input.statementTransactionId)}/create-missing-entry`,
+      'POST',
+      { counterAccountId: input.counterAccountId, expectedRemainderAmount: input.expectedRemainderAmount, creationOperationId: input.creationOperationId, description: input.description },
+      (data) => {
+        const row = data as Record<string, unknown>;
+        return row && typeof row.journalEntryId === 'string' && typeof row.journalLineId === 'string' &&
+          typeof row.allocationId === 'string' && row.creationOperationId === input.creationOperationId &&
+          typeof row.amount === 'string' && typeof row.statementStatus === 'string'
+          ? null : 'Created-entry receipt is incomplete.';
+      },
+      key
+    ));
+  }
+
+  public static unmatchBookMovement(allocationId: string, reason: string): Promise<{ allocationId: string; statementStatus: string }> {
+    const input = { allocationId, reason };
+    return this.stableWrite('unmatch-allocation', input, undefined, (key) =>
+      this.apiCall(`/reconciliation/allocations/${encodeURIComponent(allocationId)}`, 'DELETE', { reason }, undefined, key));
+  }
+
+  public static reverseCreatedTransactionFromStatement(statementTransactionId: string, allocationId: string, reason: string): Promise<{
+    statementTransactionId: string; reversalJournalEntryId: string;
+  }> {
+    const input = { statementTransactionId, allocationId, reason };
+    return this.stableWrite('reverse-statement-entry', input, undefined, (key) =>
+      this.apiCall(`/transactions/${encodeURIComponent(statementTransactionId)}/reverse-created-transaction`, 'POST', { allocationId, reason }, undefined, key));
+  }
+
+  public static getPossibleDuplicateCandidates(statementTransactionId: string): Promise<Array<{
+    id: string; transactionDate: string; amount: string; direction: string; narration: string;
+    reference: string | null; reconciliationStatus: string; currency?: string; fingerprint?: string; importId?: string;
+  }>> {
+    return this.apiCall(`/transactions/${encodeURIComponent(statementTransactionId)}/possible-duplicates`, 'GET');
+  }
+
+  public static confirmStatementDuplicate(input: { statementTransactionId: string; targetStatementTransactionId: string; reason: string }, idempotencyKey?: string) {
+    return this.stableWrite('confirm-statement-duplicate', input, idempotencyKey, (key) => this.apiCall<{
+      dispositionId: string; statementTransactionId: string; targetStatementTransactionId: string; status: 'CONFIRMED_DUPLICATE';
+    }>(`/transactions/${encodeURIComponent(input.statementTransactionId)}/confirm-duplicate`, 'POST', {
+      targetStatementTransactionId: input.targetStatementTransactionId, reason: input.reason,
+    }, (data) => {
+      const row = data as Record<string, unknown>;
+      return row && typeof row.dispositionId === 'string' && row.statementTransactionId === input.statementTransactionId &&
+        row.targetStatementTransactionId === input.targetStatementTransactionId && row.status === 'CONFIRMED_DUPLICATE'
+        ? null : 'Duplicate confirmation receipt is incomplete.';
+    }, key));
+  }
+
+  public static revokeStatementDuplicate(input: { statementTransactionId: string; reason: string }) {
+    return this.stableWrite('revoke-statement-duplicate', input, undefined, (key) => this.apiCall<{
+      dispositionId: string; statementTransactionId: string; status: 'POSSIBLE_DUPLICATE';
+    }>(`/transactions/${encodeURIComponent(input.statementTransactionId)}/revoke-duplicate`, 'POST', { reason: input.reason }, (data) => {
+      const row = data as Record<string, unknown>;
+      return row && typeof row.dispositionId === 'string' && row.statementTransactionId === input.statementTransactionId && row.status === 'POSSIBLE_DUPLICATE'
+        ? null : 'Duplicate revocation receipt is incomplete.';
+    }, key));
+  }
+
+  public static getCanonicalStatementReceipt(statementTransactionId: string): Promise<{
+    statementTransactionId: string;
+    statementStatus: string;
+    reviewDecision: string | null;
+    legacyMatches: Array<{ matchId: string; sourceType: string; sourceId: string; amount: string; status: string }>;
+    allocations: Array<{
+      allocationId: string; journalLineId: string | null; journalEntryId: string | null; entryNumber: string | null;
+      reversalJournalEntryId: string | null; reversalEntryNumber: string | null;
+      amount: string; allocationState: string; identityState: string; creationOrigin: string; creationOperationId: string | null;
+    }>;
+  }> {
+    return this.apiCall(`/transactions/${encodeURIComponent(statementTransactionId)}/canonical-receipt`, 'GET');
+  }
+
+  public static getLegacyAllocationCandidate(statementTransactionId: string, matchId: string): Promise<{
+    matchId: string; statementTransactionId: string; journalEntryId: string; journalLineId: string; entryNumber: string;
+    journalDate: string; matchedAmount: string; lineCapacity: string; sourceType: string; sourceId: string;
+  }> {
+    return this.apiCall(`/transactions/${encodeURIComponent(statementTransactionId)}/legacy-matches/${encodeURIComponent(matchId)}/candidate`, 'GET');
+  }
+
+  public static verifyLegacyAllocation(statementTransactionId: string, matchId: string, expectedJournalLineId: string, reason: string): Promise<unknown> {
+    const input = { expectedJournalLineId, reason };
+    return this.stableWrite(`verify-legacy-allocation:${statementTransactionId}:${matchId}`, input, undefined, (key) =>
+      this.apiCall(`/transactions/${encodeURIComponent(statementTransactionId)}/legacy-matches/${encodeURIComponent(matchId)}/verify`, 'POST', input, undefined, key));
+  }
+
+  public static reviewStatementTransaction(input: {
+    statementTransactionId: string;
+    decision: 'ACCEPT' | 'KEEP_AS_NEW';
+    acknowledgedCandidateIds?: string[];
+  }, idempotencyKey?: string): Promise<{
+    statementTransactionId: string; decision: 'ACCEPT' | 'KEEP_AS_NEW'; status: 'UNMATCHED'; candidateIds: string[];
+  }> {
+    return this.stableWrite('review-statement', input, idempotencyKey, (key) => this.apiCall<{
+    statementTransactionId: string; decision: 'ACCEPT' | 'KEEP_AS_NEW'; status: 'UNMATCHED'; candidateIds: string[];
+  }>(
+      `/transactions/${encodeURIComponent(input.statementTransactionId)}/review`, 'POST',
+      { decision: input.decision, acknowledgedCandidateIds: input.acknowledgedCandidateIds || [] },
+      (data) => {
+        const row = data as Record<string, unknown>;
+        return row && row.statementTransactionId === input.statementTransactionId && row.decision === input.decision &&
+          row.status === 'UNMATCHED' && Array.isArray(row.candidateIds)
+          ? null : 'Statement review receipt is incomplete.';
+      }, key
+    ));
   }
 
   public static getGatewayActivity(options: { limit?: number; cursor?: string; gateway?: string; status?: string } = {}) {
@@ -251,12 +446,14 @@ export class BankingService {
     statementClosingBalance: number,
     glBankBalance: number
   ): Promise<BankReconciliationSession> {
-    return this.apiCall<BankReconciliationSession>('/reconciliation/complete', 'POST', {
+    const payload = {
       bankAccountId,
       statementEndDate,
       statementClosingBalance,
       glBankBalance,
-    });
+    };
+    return this.stableWrite('complete-reconciliation', payload, undefined, (key) =>
+      this.apiCall<BankReconciliationSession>('/reconciliation/complete', 'POST', payload, undefined, key));
   }
 
   /** Posts a durable, two-sided bank transfer source document. */
@@ -294,9 +491,10 @@ export class BankingService {
   /** Reverses the created journal and restores the statement line to UNMATCHED. */
   public static reverseTransactionCreatedFromStatement(
     statementTransactionId: string,
-    reason: string
+    reason: string,
+    allocationId?: string,
   ): Promise<{ statementTransactionId: string; reversalJournalEntryId: string }> {
-    return this.apiCall(`/transactions/${encodeURIComponent(statementTransactionId)}/reverse-created-transaction`, 'POST', { reason });
+    return this.apiCall(`/transactions/${encodeURIComponent(statementTransactionId)}/reverse-created-transaction`, 'POST', { allocationId, reason });
   }
 
   // --- STATEMENT-FIRST ZOHO-STYLE BANKING WORKFLOWS ---
@@ -336,7 +534,8 @@ export class BankingService {
     possibleDuplicatesCount: number;
     discrepancy: number | null;
   }> {
-    return this.apiCall('/imports/confirm', 'POST', payload);
+    return this.stableWrite('confirm-import', payload, undefined, (key) =>
+      this.apiCall('/imports/confirm', 'POST', payload, undefined, key));
   }
 
   public static getWorkspace(
@@ -379,7 +578,9 @@ export class BankingService {
   }
 
   public static reopenReconciliation(bankAccountId: string): Promise<{ reopened: boolean }> {
-    return this.apiCall('/reconciliation/reopen', 'POST', { bankAccountId });
+    const payload = { bankAccountId };
+    return this.stableWrite('reopen-reconciliation', payload, undefined, (key) =>
+      this.apiCall('/reconciliation/reopen', 'POST', payload, undefined, key));
   }
 
 }

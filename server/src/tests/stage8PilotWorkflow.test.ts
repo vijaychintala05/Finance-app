@@ -45,12 +45,22 @@ describe('Stage 8: Realistic End-to-End Monthly Pilot Accounting Lifecycle', () 
     bankAccountId = bankAcc.rows[0].id;
     equityAccountId = equityAcc.rows[0].id;
 
-    bankFeedAccountId = `bank_acc_${Date.now()}`;
-    await db.query(
-      `INSERT INTO bank_accounts (id, organization_id, ledger_account_id, account_name, account_number, masked_account_number, bank_name, account_type, currency, current_balance, status, is_active)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-      [bankFeedAccountId, ORG_PILOT, bankAccountId, 'Primary Corporate Checking', '1122334455', '•••• 4455', 'Silicon Valley Bank', 'Checking', 'USD', 50000, 'Active', true]
+    const provisionedBankProfile = await db.query(
+      `SELECT id FROM bank_accounts WHERE organization_id = $1 AND ledger_account_id = $2 AND is_active = TRUE LIMIT 1`,
+      [ORG_PILOT, bankAccountId],
     );
+    if (provisionedBankProfile.rows.length) {
+      bankFeedAccountId = provisionedBankProfile.rows[0].id;
+      await db.query(`UPDATE bank_accounts SET currency = 'USD' WHERE organization_id = $1 AND id = $2`, [ORG_PILOT, bankFeedAccountId]);
+      await db.query(`UPDATE accounts SET currency_code = 'USD' WHERE organization_id = $1 AND id = $2`, [ORG_PILOT, bankAccountId]);
+    } else {
+      bankFeedAccountId = `bank_acc_${Date.now()}`;
+      await db.query(
+        `INSERT INTO bank_accounts (id, organization_id, ledger_account_id, account_name, account_number, masked_account_number, bank_name, account_type, currency, current_balance, status, is_active)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        [bankFeedAccountId, ORG_PILOT, bankAccountId, 'Primary Corporate Checking', '1122334455', '•••• 4455', 'Silicon Valley Bank', 'Checking', 'USD', 50000, 'Active', true]
+      );
+    }
   }, 30000);
 
   it('Step 1: Onboards organization and migrates initial opening balances', async () => {
@@ -194,6 +204,7 @@ describe('Stage 8: Realistic End-to-End Monthly Pilot Accounting Lifecycle', () 
     );
 
     expect(importRes.newTransactionsCount).toBe(2);
+    await db.query(`UPDATE bank_statement_imports SET statement_to = '2026-01-31', status = 'COMPLETED', closing_balance_verified = TRUE, balance_discrepancy = 0 WHERE organization_id = $1 AND bank_account_id = $2 AND id = $3`, [ORG_PILOT, bankFeedAccountId, importRes.import.id]);
 
     const statementTxs = await BankReconciliationService.getTransactions(ORG_PILOT, {
       bankAccountId: bankFeedAccountId,
@@ -252,15 +263,21 @@ describe('Stage 8: Realistic End-to-End Monthly Pilot Accounting Lifecycle', () 
     expect(summary.difference).toBe(0);
     expect(summary.status).toBe('BALANCED');
 
-    const session = await BankReconciliationService.completeReconciliationSession(
+    // The document-level legacy matches above do not prove exact posted bank
+    // journal-line identity. Close must remain blocked until reviewed conversion.
+    await expect(BankReconciliationService.completeReconciliationSession(
       ORG_PILOT,
       bankFeedAccountId,
       '2026-01-31',
       58000,
       glBalance,
       USER_PILOT
+    )).rejects.toThrow('BANK_RECONCILIATION_HAS_UNRESOLVED_LINES');
+    const completedSessions = await db.query(
+      `SELECT id FROM bank_reconciliation_sessions WHERE organization_id = $1 AND bank_account_id = $2 AND status = 'COMPLETED'`,
+      [ORG_PILOT, bankFeedAccountId],
     );
-    expect(session.status).toBe('COMPLETED');
+    expect(completedSessions.rows).toHaveLength(0);
   });
 
   it('Step 5: Enforces period locking and blocks retroactive edits', async () => {

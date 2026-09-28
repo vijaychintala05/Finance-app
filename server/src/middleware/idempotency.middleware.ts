@@ -121,7 +121,8 @@ export async function idempotencyMiddleware(
       // can safely lock statement, journal, journal-line, and allocation rows.
       const requestPath = String(req.originalUrl || '').split('?', 1)[0];
       if ((/^\/api\/v1\/banking\/reconciliation\/allocations(?:\/|$)/.test(requestPath) ||
-          /^\/api\/v1\/banking\/transactions\/[^/]+\/create-missing-entry$/.test(requestPath)) && !db.isMemoryMode()) {
+          /^\/api\/v1\/banking\/transactions\/[^/]+\/(?:create-missing-entry|review|confirm-duplicate|revoke-duplicate|reverse-created-transaction)$/.test(requestPath) ||
+          /^\/api\/v1\/banking\/transactions\/[^/]+\/legacy-matches\/[^/]+\/verify$/.test(requestPath)) && !db.isMemoryMode()) {
         await client.query(`SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`, [organizationId, 'bank-movement-allocations']);
       }
       const existing = await client.query(

@@ -11,10 +11,14 @@ export class RecoveryMigrationPolicy {
   public static readonly V16_SCHEMA_VERSION = '2026.09.24-v16-payment-reversal-allocation-evidence';
   public static readonly V17_SCHEMA_VERSION = '2026.09.25-v17-pdf-template-issued-artifact-recovery';
   public static readonly V18_SCHEMA_VERSION = '2026.09.27-v18-bank-movement-allocation-prototype';
+  public static readonly V19_SCHEMA_VERSION = '2026.09.27-v19-bank-statement-balance-evidence';
+  public static readonly V20_SCHEMA_VERSION = '2026.09.28-v20-bank-statement-review-evidence';
   public static readonly SUPPORTED_SCHEMA_VERSIONS: readonly string[] = [
     CURRENT_SCHEMA_VERSION,
     RecoveryMigrationPolicy.V17_SCHEMA_VERSION,
     RecoveryMigrationPolicy.V18_SCHEMA_VERSION,
+    RecoveryMigrationPolicy.V19_SCHEMA_VERSION,
+    RecoveryMigrationPolicy.V20_SCHEMA_VERSION,
     RecoveryMigrationPolicy.V16_SCHEMA_VERSION,
     RecoveryMigrationPolicy.V15_SCHEMA_VERSION,
     RecoveryMigrationPolicy.V13_SCHEMA_VERSION,
@@ -58,18 +62,33 @@ export class RecoveryMigrationPolicy {
       };
       const upgraded = this.upgradeV16ToV17(manifest, v16Payload);
       const v18 = this.upgradeV17ToV18(upgraded.manifest, upgraded.payload);
-      return this.upgradeV18ToV19(v18.manifest, v18.payload);
+      const v19 = this.upgradeV18ToV19(v18.manifest, v18.payload);
+      const v20 = this.upgradeV19ToV20(v19.manifest, v19.payload);
+      return this.upgradeV20ToV21(v20.manifest, v20.payload);
     }
     if (version === this.V16_SCHEMA_VERSION) {
       const upgraded = this.upgradeV16ToV17(manifest, payload);
       const v18 = this.upgradeV17ToV18(upgraded.manifest, upgraded.payload);
-      return this.upgradeV18ToV19(v18.manifest, v18.payload);
+      const v19 = this.upgradeV18ToV19(v18.manifest, v18.payload);
+      const v20 = this.upgradeV19ToV20(v19.manifest, v19.payload);
+      return this.upgradeV20ToV21(v20.manifest, v20.payload);
     }
     if (version === this.V17_SCHEMA_VERSION) {
       const v18 = this.upgradeV17ToV18(manifest, payload);
-      return this.upgradeV18ToV19(v18.manifest, v18.payload);
+      const v19 = this.upgradeV18ToV19(v18.manifest, v18.payload);
+      const v20 = this.upgradeV19ToV20(v19.manifest, v19.payload);
+      return this.upgradeV20ToV21(v20.manifest, v20.payload);
     }
-    if (version === this.V18_SCHEMA_VERSION) return this.upgradeV18ToV19(manifest, payload);
+    if (version === this.V18_SCHEMA_VERSION) {
+      const v19 = this.upgradeV18ToV19(manifest, payload);
+      const v20 = this.upgradeV19ToV20(v19.manifest, v19.payload);
+      return this.upgradeV20ToV21(v20.manifest, v20.payload);
+    }
+    if (version === this.V19_SCHEMA_VERSION) {
+      const v20 = this.upgradeV19ToV20(manifest, payload);
+      return this.upgradeV20ToV21(v20.manifest, v20.payload);
+    }
+    if (version === this.V20_SCHEMA_VERSION) return this.upgradeV20ToV21(manifest, payload);
 
     const transformer = this.transformers.get(version);
     if (transformer) {
@@ -132,7 +151,7 @@ export class RecoveryMigrationPolicy {
   private static upgradeV17ToV18(manifest: RecoveryManifest, payload: RecoveryPayload): { manifest: RecoveryManifest; payload: RecoveryPayload } {
     const migratedPayload: RecoveryPayload = {
       ...payload,
-      schemaVersion: CURRENT_SCHEMA_VERSION,
+      schemaVersion: this.V19_SCHEMA_VERSION,
       tables: {
         ...payload.tables,
         bank_reconciliation_matches: (payload.tables.bank_reconciliation_matches || []).map((row) => ({
@@ -162,7 +181,7 @@ export class RecoveryMigrationPolicy {
   private static upgradeV18ToV19(manifest: RecoveryManifest, payload: RecoveryPayload): { manifest: RecoveryManifest; payload: RecoveryPayload } {
     const migratedPayload: RecoveryPayload = {
       ...payload,
-      schemaVersion: CURRENT_SCHEMA_VERSION,
+      schemaVersion: this.V19_SCHEMA_VERSION,
       tables: {
         ...payload.tables,
         bank_statement_imports: (payload.tables.bank_statement_imports || []).map((row) => ({
@@ -172,11 +191,43 @@ export class RecoveryMigrationPolicy {
         })),
       },
     };
+    return { manifest: { ...manifest, schemaVersion: this.V19_SCHEMA_VERSION }, payload: migratedPayload };
+  }
+
+  private static upgradeV19ToV20(manifest: RecoveryManifest, payload: RecoveryPayload): { manifest: RecoveryManifest; payload: RecoveryPayload } {
+    const migratedPayload: RecoveryPayload = {
+      ...payload,
+      schemaVersion: this.V20_SCHEMA_VERSION,
+      tables: {
+        ...payload.tables,
+        bank_statement_transactions: (payload.tables.bank_statement_transactions || []).map((row) => ({
+          ...row,
+          review_decision: null,
+          reviewed_by: null,
+          reviewed_at: null,
+          review_duplicate_candidates: null,
+        })),
+      },
+    };
+    return { manifest: { ...manifest, schemaVersion: this.V20_SCHEMA_VERSION }, payload: migratedPayload };
+  }
+
+  private static upgradeV20ToV21(manifest: RecoveryManifest, payload: RecoveryPayload): { manifest: RecoveryManifest; payload: RecoveryPayload } {
+    const migratedPayload: RecoveryPayload = {
+      ...payload,
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      tables: {
+        ...payload.tables,
+        bank_statement_import_observations: payload.tables.bank_statement_import_observations || [],
+        bank_statement_line_dispositions: payload.tables.bank_statement_line_dispositions || [],
+        bank_reconciliation_session_items: payload.tables.bank_reconciliation_session_items || [],
+      },
+    };
     return { manifest: { ...manifest, schemaVersion: CURRENT_SCHEMA_VERSION }, payload: migratedPayload };
   }
 
   public static isSupported(version: string): boolean {
-    return version === CURRENT_SCHEMA_VERSION || version === this.V18_SCHEMA_VERSION || version === this.V17_SCHEMA_VERSION || version === this.V16_SCHEMA_VERSION || version === this.V15_SCHEMA_VERSION
+    return version === CURRENT_SCHEMA_VERSION || version === this.V20_SCHEMA_VERSION || version === this.V19_SCHEMA_VERSION || version === this.V18_SCHEMA_VERSION || version === this.V17_SCHEMA_VERSION || version === this.V16_SCHEMA_VERSION || version === this.V15_SCHEMA_VERSION
       || version === this.V13_SCHEMA_VERSION || this.transformers.has(version);
   }
 }

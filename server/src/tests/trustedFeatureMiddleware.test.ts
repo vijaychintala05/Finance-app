@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { CERTIFIED_OPTIONAL_FEATURES, requireTrustedFinanceFeature } from '../middleware/trustedFeature.middleware';
 import { Request, Response } from 'express';
 import { getFinanceCapabilities } from '../capabilities/financeCapabilities';
+import { RoutePermissionRegistry } from '../auth/RoutePermissionRegistry';
 import {
   CERTIFIED_OPTIONAL_FINANCE_CAPABILITY_KEYS,
   FINANCE_CAPABILITY_DEFINITIONS,
@@ -86,7 +87,7 @@ describe('trustedFeature.middleware', () => {
     }
   });
 
-  it.each(['bank-rules', 'bank-feed-connections', 'bank-movement-allocations', 'budget-reporting', 'cash-flow-forecasting', 'recurring-journal-generation', 'application-backup', 'data-export'])('cannot enable prototype feature %s using deployment configuration', (feature) => {
+  it.each(['bank-rules', 'bank-feed-connections', 'budget-reporting', 'cash-flow-forecasting', 'recurring-journal-generation', 'application-backup', 'data-export'])('cannot enable prototype feature %s using deployment configuration', (feature) => {
     process.env.NODE_ENV = 'production';
     process.env.TRUSTED_FINANCE_FEATURES = feature;
     const res = { status: vi.fn().mockReturnThis(), json: vi.fn() } as unknown as Response;
@@ -94,6 +95,31 @@ describe('trustedFeature.middleware', () => {
     requireTrustedFinanceFeature(feature)({} as Request, res, next);
     expect(next).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(503);
+  });
+
+  it.each(['bank-movement-allocations', 'bank-statement-entry-creation'])('enables the reviewed bank workflow route only when explicitly enabled in production: %s', (feature) => {
+    process.env.NODE_ENV = 'production';
+    process.env.TRUSTED_FINANCE_FEATURES = feature;
+    const res = { status: vi.fn().mockReturnThis(), json: vi.fn() } as unknown as Response;
+    const next = vi.fn();
+    requireTrustedFinanceFeature(feature as any)({} as Request, res, next);
+    expect(next).toHaveBeenCalledOnce();
+    expect(res.status).not.toHaveBeenCalled();
+    expect(getFinanceCapabilities().find((item) => item.key === feature)).toMatchObject({ state: 'enabled', certified: true });
+  });
+
+  it('does not expose file-import write routes merely because legacy bank reconciliation is enabled', () => {
+    process.env.NODE_ENV = 'production';
+    process.env.TRUSTED_FINANCE_FEATURES = 'bank-reconciliation';
+    expect(getFinanceCapabilities().find((item) => item.key === 'bank-reconciliation')?.state).toBe('enabled');
+    for (const feature of ['bank-movement-allocations', 'bank-statement-entry-creation'] as const) {
+      expect(getFinanceCapabilities().find((item) => item.key === feature)?.state).toBe('disabled');
+      const res = { status: vi.fn().mockReturnThis(), json: vi.fn() } as unknown as Response;
+      const next = vi.fn();
+      requireTrustedFinanceFeature(feature)({} as Request, res, next);
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(503);
+    }
   });
 
   it('allows execution when feature is enabled in non-production mode', () => {
@@ -153,5 +179,16 @@ describe('trustedFeature.middleware', () => {
 
     expect(next).toHaveBeenCalledTimes(1);
     expect(res.status).not.toHaveBeenCalled();
+  });
+
+  it('records banking permissions used to authorize idempotent replay for statement workflow mutations', () => {
+    expect(RoutePermissionRegistry.getRequiredPermissions('POST', '/api/v1/banking/imports/confirm')).toEqual(['banking.import']);
+    expect(RoutePermissionRegistry.getRequiredPermissions('POST', '/api/v1/banking/reconciliation/complete')).toEqual(['banking.reconcile']);
+    expect(RoutePermissionRegistry.getRequiredPermissions('POST', '/api/v1/banking/reconciliation/reopen')).toEqual(['banking.unreconcile']);
+    expect(RoutePermissionRegistry.getRequiredPermissions('POST', '/api/v1/banking/transactions/statement-1/review')).toEqual(['banking.reconcile']);
+    expect(RoutePermissionRegistry.getRequiredPermissions('POST', '/api/v1/banking/transactions/statement-1/confirm-duplicate')).toEqual(['banking.reconcile']);
+    expect(RoutePermissionRegistry.getRequiredPermissions('POST', '/api/v1/banking/transactions/statement-1/revoke-duplicate')).toEqual(['banking.reconcile']);
+    expect(RoutePermissionRegistry.getRequiredPermissions('POST', '/api/v1/banking/transactions/statement-1/legacy-matches/match-1/verify')).toEqual(['banking.reconcile']);
+    expect(RoutePermissionRegistry.getRequiredPermissions('POST', '/api/v1/banking/transactions/statement-1/reverse-created-transaction')).toEqual(['banking.unreconcile']);
   });
 });

@@ -56,6 +56,7 @@ export class BankBookMovementService {
   ): Promise<BankBookMovementSuggestion[]> {
     const statementResult = await db.query(
       `SELECT st.id, st.bank_account_id, st.transaction_date, st.amount, st.direction,
+              COALESCE(statement_alloc.allocated_amount, 0) AS allocated_amount,
               st.narration, st.reference, st.utr, st.rrn, st.upi_reference, st.currency AS statement_currency,
               ba.ledger_account_id, ba.currency AS bank_currency,
               a.currency_code AS account_currency, o.base_currency
@@ -63,6 +64,13 @@ export class BankBookMovementService {
          JOIN bank_accounts ba ON ba.id = st.bank_account_id AND ba.organization_id = st.organization_id
          LEFT JOIN accounts a ON a.id = ba.ledger_account_id AND a.organization_id = ba.organization_id
          JOIN organizations o ON o.id = ba.organization_id
+         LEFT JOIN (
+           SELECT organization_id, statement_transaction_id, SUM(matched_amount) AS allocated_amount
+             FROM bank_reconciliation_matches
+            WHERE allocation_state = 'ACTIVE' AND identity_state = 'VERIFIED'
+            GROUP BY organization_id, statement_transaction_id
+         ) statement_alloc ON statement_alloc.organization_id = st.organization_id
+                          AND statement_alloc.statement_transaction_id = st.id
         WHERE st.id = $1 AND st.organization_id = $2
           AND COALESCE(ba.is_active, FALSE) = TRUE
           AND COALESCE(ba.is_archived, FALSE) = FALSE
@@ -89,7 +97,8 @@ export class BankBookMovementService {
       throw new Error('BANK_CURRENCY_UNSUPPORTED');
     }
 
-    const statementAmount = Math.abs(Number(statement.amount || 0));
+    const statementAmountCents = Math.round((Math.abs(Number(statement.amount || 0)) - Number(statement.allocated_amount || 0)) * 100);
+    const statementAmount = statementAmountCents > 0 ? statementAmountCents / 100 : 0;
     if (!Number.isFinite(statementAmount) || statementAmount <= 0) return [];
     const isInflow = String(statement.direction).toUpperCase() === 'CREDIT';
     const side = isInflow ? 'debit' : 'credit';
@@ -150,9 +159,10 @@ export class BankBookMovementService {
             AND UPPER(COALESCE(ba.status, '')) = 'ACTIVE'
             AND je.organization_id = $2 AND COALESCE(jl.organization_id, je.organization_id) = $2
             AND UPPER(je.status) = 'POSTED'
+            AND je.reversal_of_journal_id IS NULL
             AND ((COALESCE(jl.debit, 0) > 0 AND COALESCE(jl.credit, 0) = 0)
               OR (COALESCE(jl.credit, 0) > 0 AND COALESCE(jl.debit, 0) = 0))
-            AND GREATEST(COALESCE(jl.${side}, 0) - COALESCE(alloc.allocated_amount, 0), 0) BETWEEN $4 * 0.9 AND $4 * 1.1
+            AND GREATEST(COALESCE(jl.${side}, 0) - COALESCE(alloc.allocated_amount, 0), 0) > 0
             AND reversal.id IS NULL
        ), selected_movements AS (
          SELECT * FROM (
@@ -183,9 +193,11 @@ export class BankBookMovementService {
       if (movementAmount === statementAmount) {
         score += 50;
         reasons.push('Exact amount');
-      } else {
+      } else if (Math.abs(movementAmount - statementAmount) <= Math.max(statementAmount, movementAmount) * 0.1) {
         score += 30;
         reasons.push('Similar amount');
+      } else {
+        reasons.push('Amount differs; verify split or combined transactions');
       }
       if (days <= 1) { score += 30; reasons.push('Within one day'); }
       else if (days <= 5) { score += 20; reasons.push('Within five days'); }

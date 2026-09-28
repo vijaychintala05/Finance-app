@@ -1,15 +1,17 @@
 # App-wide Bank Statement Reconciliation — Autoplan
 
 Date: 2026-09-27
-Status: Owner approved implementation on 2026-09-27; implementation in progress
+Status: Owner approved implementation on 2026-09-27; implementation, local qualification, and Sol review complete; branch promotion pending
 Product design: [Office Hours design](BANKING_STATEMENT_RECONCILIATION_DESIGN.md)
 Scope: firm-wide accounting behavior, not a single page
 
-## Engineering checkpoint — 2026-09-27
+## Engineering checkpoint — 2026-09-28
 
-The app-wide read and reconciliation foundations are present: posted bank-ledger movements now have a tenant-scoped register and read-only statement suggestions; shared reconciliation coverage/status projections feed Banking, dashboard, accountant overview, reports, and period-close warnings. Canonical allocation and missing-entry services remain unpublished prototypes. Close requires a bank-supplied closing balance, a bank-supplied opening balance (or a verified carry-forward), and a zero statement control-total discrepancy; parsers normalize statement date bounds independent of file row order and preserve balance evidence through backups.
+The workflow now imports CSV/XLS/XLSX statement evidence, previews incomplete rows and duplicate candidates, shows posted bank-ledger movement suggestions, confirms exact journal-line matches, creates a genuinely missing entry through the posting engine, and links the new journal to the exact remaining statement cents. Shared status/projection data feeds Banking, dashboard, accountant overview, reports, and period-close warnings. Statement close records allocation, duplicate-proof, and import-observation snapshots. Reversal requires the selected statement-created allocation when a line has more than one eligible entry. Direct bank feeds remain unavailable.
 
-**The requested confirm-match/add-missing-entry workflow is not yet available, and the write capabilities remain unavailable.** Banking still offers read-only suggestions; existing legacy document matches remain unresolved unless exact journal-line evidence exists. A final Sol review found the approved interaction path missing, so implementation is not complete. PostgreSQL migration, retry, concurrency, permission, reversal, and import-provenance qualification is also outstanding because no `DATABASE_URL` is available. Do not enable canonical writes until those gates pass.
+The two canonical write capabilities are certified and published as opt-in production features. Add `bank-movement-allocations` and `bank-statement-entry-creation` to the deployment's existing `TRUSTED_FINANCE_FEATURES` value along with `bank-statement-import` and `bank-reconciliation`; the server and UI both keep them disabled when omitted. Do not add `bank-feed-connections`.
+
+Local qualification on 2026-09-28: full Vitest suite **282 files passed, 2 skipped; 2,113 tests passed, 18 skipped**; real PostgreSQL suite **14 passed** including file import, exact remainder, reversal, legacy verification, duplicate-proof close/reopen, projections, HTTP idempotency replay for import/close/reopen, and close/posting plus allocation/reversal concurrency; Playwright **30 passed** on desktop and mobile; lint and production build passed; `npm audit --omit=dev` found zero vulnerabilities. Sol's final review passed. Validate the owner's actual sanitized bank export before claiming broad bank-format coverage.
 
 ## Product outcome
 

@@ -11,7 +11,7 @@ import { applyDocumentTemplateSchema } from './documentTemplateSchema';
 import { applyBankAllocationSchema } from './bankAllocationSchema';
 import type { DbQueryResult } from './db';
 
-export const CURRENT_SCHEMA_VERSION = '2026.09.27-v19-bank-statement-balance-evidence';
+export const CURRENT_SCHEMA_VERSION = '2026.09.28-v21-bank-statement-dispositions';
 
 export class MigrationRunner {
   public static async runMigrations(queryClient?: { query: (text: string, params?: any[]) => Promise<DbQueryResult> }): Promise<void> {
@@ -2049,7 +2049,7 @@ export class MigrationRunner {
       `INSERT INTO schema_migrations (version, description)
        VALUES ($1, $2)
        ON CONFLICT (version) DO NOTHING`,
-      [CURRENT_SCHEMA_VERSION, 'FirmBooks v19 bank statement balance evidence']
+      [CURRENT_SCHEMA_VERSION, 'FirmBooks v21 bank statement dispositions and close snapshots']
     );
 
     console.log('[Migration] All PostgreSQL tables initialized successfully.');

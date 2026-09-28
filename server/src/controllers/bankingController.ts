@@ -6,6 +6,8 @@ import { GatewayActivityService } from '../services/GatewayActivityService';
 import { BankBookMovementService } from '../banking/BankBookMovementService';
 import { BankMovementAllocationService } from '../banking/BankMovementAllocationService';
 import { BankStatementEntryCreationService } from '../banking/BankStatementEntryCreationService';
+import { BankStatementReviewService, type StatementReviewDecision } from '../banking/BankStatementReviewService';
+import { BankLegacyAllocationVerificationService } from '../banking/BankLegacyAllocationVerificationService';
 
 function getOrgId(req: Request): string {
   const orgId = (req as any).auth?.organizationId;
@@ -21,13 +23,15 @@ export class BankingController {
   // POST /api/v1/banking/transactions/:transactionId/create-missing-entry
   public static async createMissingEntryFromStatement(req: Request, res: Response) {
     try {
-      const { counterAccountId, description } = req.body || {};
+      const { counterAccountId, expectedRemainderAmount, creationOperationId, description } = req.body || {};
       if (typeof counterAccountId !== 'string' || counterAccountId.length > 64 ||
+          typeof expectedRemainderAmount !== 'string' || expectedRemainderAmount.length > 16 ||
+          typeof creationOperationId !== 'string' || !/^[a-zA-Z0-9_-]{8,80}$/.test(creationOperationId) ||
           (description !== undefined && (typeof description !== 'string' || description.length > 500))) {
-        return res.status(400).json({ success: false, error: 'A valid counterAccountId and optional description are required' });
+        return res.status(400).json({ success: false, error: 'A valid counterAccountId, expected remainder, creationOperationId, and optional description are required' });
       }
       const data = await BankStatementEntryCreationService.create(
-        getOrgId(req), req.params.transactionId, counterAccountId, (req as any).auth?.userId, description,
+        getOrgId(req), req.params.transactionId, counterAccountId, (req as any).auth?.userId, expectedRemainderAmount, creationOperationId, description,
       );
       return res.status(201).json({ success: true, data });
     } catch (error: any) {
@@ -35,14 +39,18 @@ export class BankingController {
       const conflicts = new Set([
         'BANK_LEDGER_ACCOUNT_NOT_LINKED', 'BANK_ACCOUNT_INACTIVE', 'BANK_LEDGER_ACCOUNT_UNAVAILABLE',
         'BANK_CURRENCY_UNSUPPORTED', 'BANK_STATEMENT_DIRECTION_INVALID', 'BANK_STATEMENT_ALREADY_PROCESSED',
-        'BANK_STATEMENT_ALREADY_ALLOCATED', 'BANK_RECONCILIATION_COMPLETED', 'BANK_COUNTER_ACCOUNT_NOT_ALLOWED',
+        'BANK_STATEMENT_REVIEW_REQUIRED', 'BANK_STATEMENT_IMPORT_NOT_COMPLETE', 'BANK_LEDGER_PROFILE_AMBIGUOUS',
+        'BANK_LEGACY_ALLOCATION_UNRESOLVED',
+        'BANK_STATEMENT_ALREADY_ALLOCATED', 'BANK_STATEMENT_DISPOSITION_ACTIVE', 'BANK_RECONCILIATION_COMPLETED', 'BANK_COUNTER_ACCOUNT_NOT_ALLOWED',
+        'BANK_STATEMENT_REMAINDER_CHANGED', 'BANK_STATEMENT_ALLOCATION_UNVERIFIED', 'BANK_STATEMENT_ALLOCATION_INVALID',
+        'BANK_STATEMENT_ALLOCATION_STATE_INVALID', 'BANK_STATEMENT_CAPACITY_EXCEEDED',
         'BANK_CREATED_JOURNAL_LINE_NOT_UNIQUE',
       ]);
       if (conflicts.has(code)) return res.status(409).json({ success: false, code, error: code });
       if (code === 'BANK_STATEMENT_TRANSACTION_NOT_FOUND' || code === 'BANK_COUNTER_ACCOUNT_NOT_FOUND') {
         return res.status(404).json({ success: false, code, error: code });
       }
-      if (code.endsWith('_INVALID_AMOUNT') || code === 'BANK_COUNTER_ACCOUNT_INVALID') {
+      if (code.endsWith('_INVALID_AMOUNT') || code === 'BANK_COUNTER_ACCOUNT_INVALID' || code === 'BANK_CREATION_OPERATION_INVALID') {
         return res.status(400).json({ success: false, code, error: code });
       }
       return res.status(500).json({ success: false, error: sanitizeError(error) });
@@ -66,7 +74,8 @@ export class BankingController {
       const code = error instanceof Error ? error.message : '';
       const conflicts = new Set([
         'BANK_RECONCILIATION_COMPLETED', 'BANK_LEGACY_ALLOCATION_UNRESOLVED',
-        'BANK_STATEMENT_CAPACITY_EXCEEDED', 'BANK_BOOK_CAPACITY_EXCEEDED',
+        'BANK_STATEMENT_REVIEW_REQUIRED', 'BANK_LEDGER_PROFILE_AMBIGUOUS',
+        'BANK_STATEMENT_CAPACITY_EXCEEDED', 'BANK_STATEMENT_DISPOSITION_ACTIVE', 'BANK_BOOK_CAPACITY_EXCEEDED',
         'BANK_CURRENCY_UNSUPPORTED', 'BANK_ACCOUNT_INACTIVE', 'BANK_LEDGER_ACCOUNT_NOT_LINKED',
         'BANK_BOOK_MOVEMENT_NOT_POSTED', 'BANK_BOOK_MOVEMENT_SIDE_INVALID',
         'BANK_BOOK_MOVEMENT_REVERSAL_UNSUPPORTED', 'BANK_BOOK_MOVEMENT_PERIOD_LOCKED',
@@ -144,6 +153,137 @@ export class BankingController {
       if (message === 'BANK_LEDGER_ACCOUNT_NOT_LINKED') return res.status(409).json({ success: false, error: 'This bank account is not linked to a ledger account' });
       if (message === 'BANK_CURRENCY_UNSUPPORTED') return res.status(409).json({ success: false, code: message, error: 'Currency cannot be verified across this statement, bank profile, and posted ledger. Suggestions are unavailable.' });
       res.status(500).json({ success: false, error: sanitizeError(e) });
+    }
+  }
+
+  // GET /api/v1/banking/transactions/:transactionId/possible-duplicates
+  public static async getPossibleDuplicateCandidates(req: Request, res: Response) {
+    try {
+      const data = await BankStatementReviewService.getPossibleDuplicates(getOrgId(req), req.params.transactionId);
+      return res.json({ success: true, data });
+    } catch (error: any) {
+      if (error?.message === 'BANK_STATEMENT_TRANSACTION_NOT_FOUND') {
+        return res.status(404).json({ success: false, code: error.message, error: error.message });
+      }
+      if (error?.message === 'BANK_STATEMENT_REVIEW_STATE_INVALID' || error?.message === 'BANK_STATEMENT_DUPLICATE_CANDIDATES_TOO_MANY') {
+        return res.status(409).json({ success: false, code: error.message, error: error.message });
+      }
+      return res.status(500).json({ success: false, error: sanitizeError(error) });
+    }
+  }
+
+  // POST /api/v1/banking/transactions/:transactionId/confirm-duplicate
+  public static async confirmStatementDuplicate(req: Request, res: Response) {
+    try {
+      const { targetStatementTransactionId, reason } = req.body || {};
+      if (typeof targetStatementTransactionId !== 'string' || targetStatementTransactionId.length > 64 || typeof reason !== 'string') {
+        return res.status(400).json({ success: false, code: 'BANK_STATEMENT_DISPOSITION_REASON_INVALID', error: 'Choose an imported duplicate and provide a reason.' });
+      }
+      const data = await BankStatementReviewService.confirmDuplicate(
+        getOrgId(req), req.params.transactionId, targetStatementTransactionId, reason, (req as any).auth?.userId,
+      );
+      return res.json({ success: true, data });
+    } catch (error: any) {
+      const code = error instanceof Error ? error.message : '';
+      const conflicts = new Set([
+        'BANK_STATEMENT_IMPORT_NOT_COMPLETE', 'BANK_STATEMENT_REVIEW_STATE_INVALID', 'BANK_STATEMENT_DUPLICATE_TARGET_INVALID',
+        'BANK_STATEMENT_DUPLICATE_TARGET_CHANGED', 'BANK_STATEMENT_DUPLICATE_CANDIDATES_TOO_MANY',
+        'BANK_STATEMENT_DUPLICATE_HAS_DEPENDENTS', 'BANK_STATEMENT_ALREADY_ALLOCATED', 'BANK_RECONCILIATION_COMPLETED',
+      ]);
+      if (conflicts.has(code)) return res.status(409).json({ success: false, code, error: code });
+      if (code === 'BANK_STATEMENT_TRANSACTION_NOT_FOUND') return res.status(404).json({ success: false, code, error: code });
+      if (code.endsWith('_INVALID') || code.endsWith('_REQUIRED')) return res.status(400).json({ success: false, code, error: code });
+      return res.status(500).json({ success: false, error: sanitizeError(error) });
+    }
+  }
+
+  public static async revokeStatementDuplicate(req: Request, res: Response) {
+    try {
+      if (typeof req.body?.reason !== 'string') return res.status(400).json({ success: false, code: 'BANK_STATEMENT_DISPOSITION_REASON_INVALID', error: 'A reason is required.' });
+      const data = await BankStatementReviewService.revokeDuplicate(getOrgId(req), req.params.transactionId, req.body.reason, (req as any).auth?.userId);
+      return res.json({ success: true, data });
+    } catch (error: any) {
+      const code = error instanceof Error ? error.message : '';
+      if (['BANK_RECONCILIATION_COMPLETED', 'BANK_STATEMENT_REVIEW_STATE_INVALID', 'BANK_STATEMENT_DISPOSITION_NOT_FOUND'].includes(code)) {
+        return res.status(409).json({ success: false, code, error: code });
+      }
+      if (code === 'BANK_STATEMENT_TRANSACTION_NOT_FOUND') return res.status(404).json({ success: false, code, error: code });
+      if (code.endsWith('_INVALID') || code.endsWith('_REQUIRED')) return res.status(400).json({ success: false, code, error: code });
+      return res.status(500).json({ success: false, error: sanitizeError(error) });
+    }
+  }
+
+  // GET /api/v1/banking/transactions/:transactionId/canonical-receipt
+  public static async getCanonicalStatementReceipt(req: Request, res: Response) {
+    try {
+      const data = await BankMovementAllocationService.getStatementReceipt(getOrgId(req), req.params.transactionId);
+      return res.json({ success: true, data });
+    } catch (error: any) {
+      if (error?.message === 'BANK_STATEMENT_TRANSACTION_NOT_FOUND') {
+        return res.status(404).json({ success: false, code: error.message, error: error.message });
+      }
+      return res.status(500).json({ success: false, error: sanitizeError(error) });
+    }
+  }
+
+  // GET /api/v1/banking/transactions/:transactionId/legacy-matches/:matchId/candidate
+  public static async getLegacyAllocationCandidate(req: Request, res: Response) {
+    try {
+      const data = await BankLegacyAllocationVerificationService.getCandidate(getOrgId(req), req.params.transactionId, req.params.matchId);
+      return res.json({ success: true, data });
+    } catch (error: any) {
+      const code = error instanceof Error ? error.message : '';
+      const conflicts = new Set(['BANK_LEGACY_MATCH_STATE_INVALID', 'BANK_LEGACY_MATCH_SOURCE_UNSUPPORTED', 'BANK_LEGACY_MATCH_SOURCE_UNVERIFIABLE', 'BANK_LEGACY_MATCH_AMBIGUOUS', 'BANK_LEGACY_MATCH_NOT_VERIFIABLE', 'BANK_LEGACY_MATCH_JOURNAL_INVALID', 'BANK_STATEMENT_REVIEW_REQUIRED', 'BANK_STATEMENT_DISPOSITION_ACTIVE', 'BANK_STATEMENT_IMPORT_NOT_COMPLETE', 'BANK_RECONCILIATION_COMPLETED', 'BANK_LEDGER_PROFILE_AMBIGUOUS', 'BANK_ACCOUNT_INACTIVE', 'BANK_CURRENCY_UNSUPPORTED', 'BANK_STATEMENT_CAPACITY_EXCEEDED', 'BANK_BOOK_MOVEMENT_PERIOD_LOCKED']);
+      if (code === 'BANK_LEGACY_MATCH_NOT_FOUND') return res.status(404).json({ success: false, code, error: code });
+      if (conflicts.has(code)) return res.status(409).json({ success: false, code, error: code });
+      return res.status(500).json({ success: false, error: sanitizeError(error) });
+    }
+  }
+
+  // POST /api/v1/banking/transactions/:transactionId/legacy-matches/:matchId/verify
+  public static async verifyLegacyAllocation(req: Request, res: Response) {
+    try {
+      const { expectedJournalLineId, reason } = req.body || {};
+      if (typeof expectedJournalLineId !== 'string' || expectedJournalLineId.length > 64 || typeof reason !== 'string') {
+        return res.status(400).json({ success: false, code: 'BANK_LEGACY_MATCH_INPUT_INVALID', error: 'A selected journal line and explanation are required.' });
+      }
+      const data = await BankLegacyAllocationVerificationService.verify(getOrgId(req), req.params.transactionId, req.params.matchId,
+        expectedJournalLineId, reason, (req as any).auth?.userId);
+      return res.json({ success: true, data });
+    } catch (error: any) {
+      const code = error instanceof Error ? error.message : '';
+      const conflicts = new Set(['BANK_LEGACY_MATCH_STATE_INVALID', 'BANK_LEGACY_MATCH_SOURCE_UNSUPPORTED', 'BANK_LEGACY_MATCH_SOURCE_UNVERIFIABLE', 'BANK_LEGACY_MATCH_AMBIGUOUS', 'BANK_LEGACY_MATCH_NOT_VERIFIABLE', 'BANK_LEGACY_MATCH_CANDIDATE_CHANGED', 'BANK_LEGACY_MATCH_JOURNAL_INVALID', 'BANK_STATEMENT_REVIEW_REQUIRED', 'BANK_STATEMENT_DISPOSITION_ACTIVE', 'BANK_STATEMENT_IMPORT_NOT_COMPLETE', 'BANK_RECONCILIATION_COMPLETED', 'BANK_LEDGER_PROFILE_AMBIGUOUS', 'BANK_ACCOUNT_INACTIVE', 'BANK_CURRENCY_UNSUPPORTED', 'BANK_STATEMENT_CAPACITY_EXCEEDED', 'BANK_BOOK_MOVEMENT_PERIOD_LOCKED']);
+      if (code === 'BANK_LEGACY_MATCH_NOT_FOUND') return res.status(404).json({ success: false, code, error: code });
+      if (conflicts.has(code)) return res.status(409).json({ success: false, code, error: code });
+      if (code.endsWith('_REQUIRED') || code.endsWith('_INVALID')) return res.status(400).json({ success: false, code, error: code });
+      return res.status(500).json({ success: false, error: sanitizeError(error) });
+    }
+  }
+
+  // POST /api/v1/banking/transactions/:transactionId/review
+  public static async reviewStatementTransaction(req: Request, res: Response) {
+    try {
+      const { decision, acknowledgedCandidateIds = [] } = req.body || {};
+      if (!['ACCEPT', 'KEEP_AS_NEW'].includes(decision) || !Array.isArray(acknowledgedCandidateIds)) {
+        return res.status(400).json({ success: false, code: 'BANK_STATEMENT_REVIEW_DECISION_INVALID', error: 'Choose a valid review decision.' });
+      }
+      const data = await BankStatementReviewService.review(
+        getOrgId(req), req.params.transactionId, decision as StatementReviewDecision,
+        acknowledgedCandidateIds, (req as any).auth?.userId,
+      );
+      return res.json({ success: true, data });
+    } catch (error: any) {
+      const code = error instanceof Error ? error.message : '';
+      const conflicts = new Set([
+        'BANK_STATEMENT_IMPORT_NOT_COMPLETE', 'BANK_ACCOUNT_INACTIVE', 'BANK_STATEMENT_IGNORED',
+        'BANK_RECONCILIATION_COMPLETED', 'BANK_STATEMENT_ALREADY_ALLOCATED',
+        'BANK_STATEMENT_REVIEW_STATE_INVALID', 'BANK_STATEMENT_DUPLICATE_ACK_REQUIRED',
+        'BANK_STATEMENT_DUPLICATE_CANDIDATES_TOO_MANY',
+      ]);
+      if (conflicts.has(code)) return res.status(409).json({ success: false, code, error: code });
+      if (code === 'BANK_STATEMENT_TRANSACTION_NOT_FOUND') return res.status(404).json({ success: false, code, error: code });
+      if (code.endsWith('_INVALID') || code.endsWith('_REQUIRED')) return res.status(400).json({ success: false, code, error: code });
+      return res.status(500).json({ success: false, error: sanitizeError(error) });
     }
   }
 
@@ -344,7 +484,7 @@ export class BankingController {
   public static async reverseTransactionCreatedFromStatement(req: Request, res: Response) {
     try {
       const result = await BankReconciliationService.reverseTransactionCreatedFromStatement(
-        getOrgId(req), req.params.transactionId, (req as any).auth.userId, req.body?.reason
+        getOrgId(req), req.params.transactionId, (req as any).auth.userId, req.body?.reason, req.body?.allocationId
       );
       res.json({ success: true, data: result });
     } catch (e: any) {
@@ -657,6 +797,9 @@ export class BankingController {
       res.json({ success: true, data: { isIgnored } });
     } catch (e: any) {
       const message = e instanceof Error ? e.message : 'Statement transaction could not be updated';
+      if (message.startsWith('BANK_RECONCILIATION_COMPLETED') || message === 'BANK_CANONICAL_ALLOCATION_REQUIRES_AUDITED_UNMATCH' || message === 'BANK_STATEMENT_DISPOSITION_ACTIVE') {
+        return res.status(409).json({ success: false, code: message.split(':')[0], error: message });
+      }
       res.status(message.includes('BANK_TRANSACTION_NOT_FOUND') ? 404 : 500).json({
         success: false,
         error: sanitizeError(e),

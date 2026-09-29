@@ -33,6 +33,7 @@ export const ProjectsView: React.FC = () => {
   const [logTimeDefaultProject, setLogTimeDefaultProject] = useState<string | undefined>(undefined);
   const [editingTimeEntry, setEditingTimeEntry] = useState<TimeEntry | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [selectedProjectTab, setSelectedProjectTab] = useState<'overview' | 'time' | 'expenses' | 'invoices' | 'client' | 'pnl'>('overview');
   const [isEditProjectOpen, setIsEditProjectOpen] = useState(false);
   const [archiveCandidateId, setArchiveCandidateId] = useState<string | null>(null);
   const [isArchivingProject, setIsArchivingProject] = useState(false);
@@ -118,7 +119,11 @@ export const ProjectsView: React.FC = () => {
       <div className="p-4 sm:p-6 space-y-6 max-w-7xl mx-auto">
         <ProjectDetailModal
           project={selectedProject}
-          onClose={() => setSelectedProjectId(null)}
+          initialTab={selectedProjectTab}
+          onClose={() => {
+            setSelectedProjectId(null);
+            setSelectedProjectTab('overview');
+          }}
           onEdit={() => setIsEditProjectOpen(true)}
           onArchive={() => openArchiveConfirmation(selectedProject.id)}
           isNewWorkBlocked={archiveOutcomeUncertainProjectId === selectedProject.id}
@@ -239,7 +244,10 @@ export const ProjectsView: React.FC = () => {
           return (
             <div
               key={p.id}
-              onClick={() => setSelectedProjectId(p.id)}
+              onClick={() => {
+                setSelectedProjectTab('overview');
+                setSelectedProjectId(p.id);
+              }}
               className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-xs hover:border-blue-500/60 hover:shadow-md transition-all flex flex-col justify-between space-y-4 cursor-pointer group"
               title="Click to view full project dashboard"
             >
@@ -272,19 +280,43 @@ export const ProjectsView: React.FC = () => {
               {/* Financial Snapshot */}
               <div className="space-y-3 pt-3 border-t border-slate-100 dark:border-slate-800 text-xs">
                 <div className="grid grid-cols-3 gap-2">
-                  <div className="bg-slate-50 dark:bg-slate-800/50 p-2 rounded-lg text-center">
+                  <div
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedProjectTab('invoices');
+                      setSelectedProjectId(p.id);
+                    }}
+                    className="bg-slate-50 dark:bg-slate-800/50 hover:bg-blue-50/80 dark:hover:bg-blue-950/40 p-2 rounded-lg text-center cursor-pointer transition-colors"
+                    title="Click to view project invoices"
+                  >
                     <span className="text-[10px] text-slate-500 block">Invoiced</span>
                     <span className="font-bold font-mono text-slate-800 dark:text-slate-200">
                       {formatCurrency(summary.totalInvoiced, settings.currencySymbol)}
                     </span>
                   </div>
-                  <div className="bg-slate-50 dark:bg-slate-800/50 p-2 rounded-lg text-center">
+                  <div
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedProjectTab('expenses');
+                      setSelectedProjectId(p.id);
+                    }}
+                    className="bg-slate-50 dark:bg-slate-800/50 hover:bg-rose-50/80 dark:hover:bg-rose-950/40 p-2 rounded-lg text-center cursor-pointer transition-colors"
+                    title="Click to view project expenses"
+                  >
                     <span className="text-[10px] text-slate-500 block">Expenses</span>
                     <span className="font-bold font-mono text-rose-600 dark:text-rose-400">
                       {formatCurrency(summary.directExpenses, settings.currencySymbol)}
                     </span>
                   </div>
-                  <div className="bg-slate-50 dark:bg-slate-800/50 p-2 rounded-lg text-center">
+                  <div
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedProjectTab('pnl');
+                      setSelectedProjectId(p.id);
+                    }}
+                    className="bg-slate-50 dark:bg-slate-800/50 hover:bg-emerald-50/80 dark:hover:bg-emerald-950/40 p-2 rounded-lg text-center cursor-pointer transition-colors"
+                    title="Click to view project Profit & Loss"
+                  >
                     <span className="text-[10px] text-slate-500 block">Net Profit</span>
                     <span
                       className={`font-bold font-mono ${

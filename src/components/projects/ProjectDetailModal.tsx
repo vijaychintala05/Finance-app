@@ -37,12 +37,13 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { Invoice, Project, TimeEntry } from '../../types';
+import { Expense, Invoice, Project, TimeEntry } from '../../types';
 import { useBooks } from '../../context/BooksContext';
 import { formatCurrency, formatDate, getStatusBadgeStyle } from '../../utils/formatters';
 import { InvoicePreviewModal } from '../invoices/InvoicePreviewModal';
 import { InvoiceEditorModal } from '../invoices/InvoiceEditorModal';
 import { ExpenseModal } from '../expenses/ExpenseModal';
+import { ExpenseDetailsModal } from '../expenses/ExpenseDetailsModal';
 import { OperationNoticeBanner } from '../common/OperationNoticeBanner';
 import { committedButStaleNotice, mutationExceptionNotice, type OperationNotice } from '../../utils/operationNotice';
 
@@ -54,6 +55,7 @@ interface ProjectDetailModalProps {
   onArchive?: () => void;
   isNewWorkBlocked?: boolean;
   archiveNotice?: OperationNotice | null;
+  initialTab?: 'overview' | 'time' | 'expenses' | 'invoices' | 'client' | 'pnl';
 }
 
 export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
@@ -64,6 +66,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
   onArchive,
   isNewWorkBlocked = false,
   archiveNotice = null,
+  initialTab = 'overview',
 }) => {
   const {
     settings,
@@ -83,13 +86,22 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
   } = useBooks();
 
   const [activeTab, setActiveTab] = useState<'overview' | 'time' | 'expenses' | 'invoices' | 'client' | 'pnl'>(
-    'overview'
+    initialTab
   );
+
+  useEffect(() => {
+    if (initialTab) {
+      setActiveTab(initialTab);
+    }
+  }, [initialTab, project?.id]);
+
   const [timeSearch, setTimeSearch] = useState('');
   const [timeStaffFilter, setTimeStaffFilter] = useState('ALL');
   const [timeStatusFilter, setTimeStatusFilter] = useState('ALL');
 
   const [previewInvoice, setPreviewInvoice] = useState<Invoice | null>(null);
+  const [viewingExpense, setViewingExpense] = useState<Expense | null>(null);
+  const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
   const [timeInvoiceNotice, setTimeInvoiceNotice] = useState<OperationNotice | null>(null);
   const [timeInvoicePending, setTimeInvoicePending] = useState(false);
   const [timeDeleteNotice, setTimeDeleteNotice] = useState<OperationNotice | null>(null);
@@ -256,6 +268,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
       subtitle: t.taskName,
       valueLabel: `${t.hours} hours · ${t.isBillable ? 'Billable' : 'Non-billable'}${t.isBillable ? (t.isBilled ? ' · Invoiced' : ' · Unbilled') : ''}`,
       isBillable: t.isBillable,
+      rawTime: t,
     })),
     ...prjExpenses.map((e) => ({
       id: `exp-${e.id}`,
@@ -265,6 +278,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
       subtitle: e.vendorName || e.referenceNumber,
       valueLabel: formatCurrency(e.amount, settings.currencySymbol),
       isBillable: false,
+      rawExpense: e,
     })),
     ...prjInvoices.map((i) => ({
       id: `inv-${i.id}`,
@@ -274,10 +288,16 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
       subtitle: `Status: ${i.status}`,
       valueLabel: formatCurrency(i.totalAmount, settings.currencySymbol),
       isBillable: true,
+      rawInvoice: i,
     })),
   ]
     .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
     .slice(0, 6);
+
+  // Keep viewingExpense in sync if expenses change in context
+  const activeViewingExpense = viewingExpense
+    ? expenses.find((e) => e.id === viewingExpense.id) || viewingExpense
+    : null;
 
   return (
     <div className="space-y-6 animate-fadeIn pb-12">
@@ -344,7 +364,10 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
 
           <button
             type="button"
-            onClick={() => setIsRecordExpenseOpen(true)}
+            onClick={() => {
+              setEditingExpense(null);
+              setIsRecordExpenseOpen(true);
+            }}
             disabled={projectArchived}
             className="bg-rose-600 hover:bg-rose-500 active:bg-rose-700 text-white px-3.5 py-2.5 rounded-xl text-xs font-bold flex items-center space-x-1.5 cursor-pointer shadow-xs transition-all disabled:cursor-not-allowed disabled:opacity-50"
             title="Record an expense prefilled for this project"
@@ -482,8 +505,17 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
                   </div>
                 </div>
 
-                <div className="p-3.5 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-200/80 dark:border-slate-800 space-y-1">
-                  <span className="text-slate-500 font-medium block">Total Invoiced</span>
+                <div
+                  onClick={() => setActiveTab('invoices')}
+                  className="p-3.5 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-200/80 dark:border-slate-800 space-y-1 cursor-pointer hover:border-blue-400/60 hover:shadow-xs transition-all group"
+                  title="Click to view project invoices"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500 font-medium block">Total Invoiced</span>
+                    <span className="text-[10px] text-blue-600 dark:text-blue-400 font-semibold opacity-0 group-hover:opacity-100 transition-opacity">
+                      View &rarr;
+                    </span>
+                  </div>
                   <span className="text-lg font-bold font-mono text-blue-600 dark:text-blue-400 block">
                     {formatCurrency(summary.totalInvoiced, settings.currencySymbol)}
                   </span>
@@ -492,8 +524,17 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
                   </div>
                 </div>
 
-                <div className="p-3.5 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-200/80 dark:border-slate-800 space-y-1">
-                  <span className="text-slate-500 font-medium block">Direct Expenses</span>
+                <div
+                  onClick={() => setActiveTab('expenses')}
+                  className="p-3.5 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-200/80 dark:border-slate-800 space-y-1 cursor-pointer hover:border-rose-400/60 hover:shadow-xs transition-all group"
+                  title="Click to view direct project expenses"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500 font-medium block">Direct Expenses</span>
+                    <span className="text-[10px] text-rose-600 dark:text-rose-400 font-semibold opacity-0 group-hover:opacity-100 transition-opacity">
+                      View &rarr;
+                    </span>
+                  </div>
                   <span className="text-lg font-bold font-mono text-rose-600 dark:text-rose-400 block">
                     {formatCurrency(summary.directExpenses, settings.currencySymbol)}
                   </span>
@@ -502,8 +543,17 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
                   </div>
                 </div>
 
-                <div className="p-3.5 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-200/80 dark:border-slate-800 space-y-1">
-                  <span className="text-slate-500 font-medium block">Net Profit & Margin</span>
+                <div
+                  onClick={() => setActiveTab('pnl')}
+                  className="p-3.5 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-200/80 dark:border-slate-800 space-y-1 cursor-pointer hover:border-emerald-400/60 hover:shadow-xs transition-all group"
+                  title="Click to view project Profit & Loss statement"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500 font-medium block">Net Profit & Margin</span>
+                    <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold opacity-0 group-hover:opacity-100 transition-opacity">
+                      View &rarr;
+                    </span>
+                  </div>
                   <span
                     className={`text-lg font-bold font-mono block ${
                       summary.netProfit >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600'
@@ -720,21 +770,41 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
                 ) : (
                   <div className="divide-y divide-slate-100 dark:divide-slate-800/60">
                     {recentActivities.map((act) => (
-                      <div key={act.id} className="py-2.5 flex justify-between items-center text-xs">
-                        <div className="flex items-center space-x-2.5">
+                      <div
+                        key={act.id}
+                        onClick={() => {
+                          if (act.type === 'expense' && act.rawExpense) {
+                            setViewingExpense(act.rawExpense);
+                          } else if (act.type === 'invoice' && act.rawInvoice) {
+                            setPreviewInvoice(act.rawInvoice);
+                          } else if (act.type === 'time') {
+                            setActiveTab('time');
+                          }
+                        }}
+                        className="py-2.5 flex justify-between items-center text-xs hover:bg-slate-50 dark:hover:bg-slate-800/40 rounded-lg px-2 -mx-2 cursor-pointer transition-colors group"
+                        title={act.type === 'expense' ? 'Click to inspect expense details' : act.type === 'invoice' ? 'Click to preview invoice' : 'Click to view time logs'}
+                      >
+                        <div className="flex items-center space-x-2.5 min-w-0">
                           {act.type === 'time' && <Clock className="w-4 h-4 text-blue-500 shrink-0" />}
                           {act.type === 'expense' && <Receipt className="w-4 h-4 text-rose-500 shrink-0" />}
                           {act.type === 'invoice' && <FileText className="w-4 h-4 text-emerald-500 shrink-0" />}
-                          <div>
-                            <span className="font-semibold text-slate-800 dark:text-slate-200 block line-clamp-1">{act.title}</span>
-                            <span className="text-[10px] text-slate-400">{act.subtitle}</span>
+                          <div className="min-w-0">
+                            <span className="font-semibold text-slate-800 dark:text-slate-200 block line-clamp-1 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                              {act.title}
+                            </span>
+                            <span className="text-[10px] text-slate-400 block line-clamp-1">{act.subtitle}</span>
                           </div>
                         </div>
-                        <div className="text-right shrink-0">
+                        <div className="text-right shrink-0 ml-2">
                           <span className="font-bold font-mono text-slate-900 dark:text-slate-100 block">
                             {act.valueLabel}
                           </span>
-                          <span className="text-[10px] text-slate-400">{formatDate(act.date)}</span>
+                          <div className="flex items-center justify-end space-x-1 text-[10px] text-slate-400">
+                            <span>{formatDate(act.date)}</span>
+                            <span className="text-blue-600 dark:text-blue-400 font-semibold group-hover:inline hidden ml-1">
+                              &rarr;
+                            </span>
+                          </div>
                         </div>
                       </div>
                     ))}
@@ -893,7 +963,10 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
                 </div>
                 <button
                   type="button"
-                  onClick={() => setIsRecordExpenseOpen(true)}
+                  onClick={() => {
+                    setEditingExpense(null);
+                    setIsRecordExpenseOpen(true);
+                  }}
                   disabled={projectArchived}
                   className="bg-rose-600 hover:bg-rose-500 text-white px-3.5 py-2 rounded-xl font-bold flex items-center space-x-1.5 cursor-pointer shadow-xs shrink-0 transition-all disabled:cursor-not-allowed disabled:opacity-50"
                 >
@@ -908,7 +981,10 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
                   <p className="text-slate-500 font-medium">No direct expenses recorded for this project yet.</p>
                   <button
                     type="button"
-                    onClick={() => setIsRecordExpenseOpen(true)}
+                    onClick={() => {
+                      setEditingExpense(null);
+                      setIsRecordExpenseOpen(true);
+                    }}
                     disabled={projectArchived}
                     className="text-rose-600 dark:text-rose-400 font-bold hover:underline disabled:cursor-not-allowed disabled:opacity-50"
                   >
@@ -926,12 +1002,17 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
                         <th className="p-2.5">Vendor</th>
                         <th className="p-2.5">Amount</th>
                         <th className="p-2.5">Status</th>
+                        <th className="p-2.5 text-right">Action</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                       {prjExpenses.map((exp) => (
-                        <tr key={exp.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/40">
-                          <td className="p-2.5 font-mono text-blue-600 font-bold">
+                        <tr
+                          key={exp.id}
+                          onClick={() => setViewingExpense(exp)}
+                          className="hover:bg-slate-50/80 dark:hover:bg-slate-800/60 cursor-pointer transition-colors"
+                        >
+                          <td className="p-2.5 font-mono text-blue-600 dark:text-blue-400 font-bold">
                             {exp.referenceNumber}
                           </td>
                           <td className="p-2.5 text-slate-500">{formatDate(exp.date)}</td>
@@ -939,13 +1020,25 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
                             {exp.accountName}
                           </td>
                           <td className="p-2.5 text-slate-500">{exp.vendorName || '-'}</td>
-                          <td className="p-2.5 font-semibold font-mono text-rose-600">
+                          <td className="p-2.5 font-semibold font-mono text-rose-600 dark:text-rose-400">
                             {formatCurrency(exp.amount, settings.currencySymbol)}
                           </td>
                           <td className="p-2.5">
-                            <span className="text-[10px] bg-emerald-500/10 text-emerald-600 px-2 py-0.5 rounded font-semibold">
+                            <span className="text-[10px] bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 px-2 py-0.5 rounded font-semibold">
                               {exp.paymentStatus}
                             </span>
+                          </td>
+                          <td className="p-2.5 text-right">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setViewingExpense(exp);
+                              }}
+                              className="text-blue-600 dark:text-blue-400 font-semibold hover:underline"
+                            >
+                              View Expense &rarr;
+                            </button>
                           </td>
                         </tr>
                       ))}
@@ -1362,9 +1455,26 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
         </div>
       )}
 
+      {activeViewingExpense && (
+        <ExpenseDetailsModal
+          isOpen={Boolean(activeViewingExpense)}
+          onClose={() => setViewingExpense(null)}
+          expense={activeViewingExpense}
+          onEdit={(exp) => {
+            setViewingExpense(null);
+            setEditingExpense(exp);
+            setIsRecordExpenseOpen(true);
+          }}
+        />
+      )}
+
       <ExpenseModal
         isOpen={isRecordExpenseOpen}
-        onClose={() => setIsRecordExpenseOpen(false)}
+        onClose={() => {
+          setIsRecordExpenseOpen(false);
+          setEditingExpense(null);
+        }}
+        expenseToEdit={editingExpense}
         defaultProjectId={project.id}
         defaultClientId={project.clientId}
       />

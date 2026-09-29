@@ -1,4 +1,4 @@
-import nodemailer from 'nodemailer';
+import nodemailer, { type SendMailOptions, type Transporter } from 'nodemailer';
 import { createHash } from 'node:crypto';
 import { db, type DbQueryClient } from '../database/db';
 import { newId } from '../utils/ids';
@@ -37,7 +37,7 @@ export interface InvoiceEmailAttachment { filename: string; contentType: string;
 export type EmailSender = (email: OutboxEmailRecord) => Promise<{ success: boolean; error?: string }>;
 
 export class EmailOutboxService {
-  private static transporter: nodemailer.Transporter | null = null;
+  private static transporter: Transporter | null = null;
   private static customSender: EmailSender | null = null;
   private static workerTimer: NodeJS.Timeout | null = null;
 
@@ -64,7 +64,7 @@ export class EmailOutboxService {
     }
   }
 
-  public static getTransporter(): nodemailer.Transporter | null {
+  public static getTransporter(): Transporter | null {
     if (EmailOutboxService.transporter) return EmailOutboxService.transporter;
     if (process.env.SMTP_HOST) {
       EmailOutboxService.transporter = nodemailer.createTransport({
@@ -293,7 +293,7 @@ export class EmailOutboxService {
       const from = process.env.SMTP_FROM || '"FirmBooks" <noreply@firmbooks.local>';
       let subject = 'FirmBooks Notification';
       let html = `<p>${JSON.stringify(email.payload)}</p>`;
-      let attachments: nodemailer.SendMailOptions['attachments'];
+      let attachments: SendMailOptions['attachments'];
 
       switch (email.templateType) {
         case 'INVITATION':
